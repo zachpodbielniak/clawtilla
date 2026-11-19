@@ -350,108 +350,11 @@ on_set_team(HtmxRequest *request, GHashTable *params, gpointer user_data)
 /* ── Attachments ─────────────────────────────────────────────────── */
 
 /*
- * Attaches an uploaded file to the agent's next message.
- *
- * The daemon takes the bytes base64-encoded and writes them where the
- * agent can reach them, then reports both paths -- the host one and the
- * one inside its computer. Both are shown for the reason the first
- * attachment ever sent proved: an agent's own read/write run on the
- * *host*, and only computer_exec enters the container, so a path given
- * without saying which side it is on gets looked for on the wrong one.
+ * Files are sent with a message now, through the composer's own post
+ * (on_send in web-chat.c); the separate /attach route that wrote a file
+ * and told the agent nothing is gone.  Removing one from the agent's
+ * exchange is still its own act.
  */
-static HtmxResponse *
-on_attach(HtmxRequest *request, GHashTable *params, gpointer user_data)
-{
-    ClawtWebApp *app = user_data;
-    g_autofree gchar *agent_id = clawt_web_param(params, "id");
-    g_autoptr(GPtrArray) files = NULL;
-    g_autoptr(GHashTable) fields = NULL;
-    g_autoptr(GError) error = NULL;
-    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
-    g_autoptr(JsonNode) reply = NULL;
-    g_autofree gchar *encoded = NULL;
-    const HtmxUploadedFile *file;
-    const gchar *name;
-    JsonObject *root;
-    g_autofree gchar *said = NULL;
-
-    /*
-     * A real file input, parsed out of the multipart body. The daemon
-     * takes the bytes base64-encoded, and asking somebody to encode a
-     * file by hand before pasting it into a text box is not a feature.
-     */
-    files = htmx_uploaded_file_parse_multipart(
-        htmx_request_get_content_type(request),
-        htmx_request_get_body_bytes(request), &fields, &error);
-
-    if (files == NULL || files->len == 0)
-        return clawt_web_error_page(
-            app, request, agent_id, CLAWT_PAGE_CHAT,
-            error != NULL ? error->message : "Choose a file first.");
-
-    file = g_ptr_array_index(files, 0);
-    name = htmx_uploaded_file_get_filename(file);
-
-    {
-        GBytes *bytes = htmx_uploaded_file_get_data(file);
-        gsize size = 0;
-        const guint8 *data;
-
-        if (bytes == NULL)
-            return clawt_web_error_page(app, request, agent_id,
-                                        CLAWT_PAGE_CHAT,
-                                        "That file is empty.");
-
-        data = g_bytes_get_data(bytes, &size);
-
-        if (data == NULL || size == 0)
-            return clawt_web_error_page(app, request, agent_id,
-                                        CLAWT_PAGE_CHAT,
-                                        "That file is empty.");
-
-        encoded = g_base64_encode(data, size);
-    }
-
-    clawt_web_payload_set(payload, "agent", agent_id);
-    clawt_web_payload_set(payload, "name", name);
-    clawt_web_payload_set(payload, "data", encoded);
-
-    reply = clawt_web_app_call(app, "attachment.put",
-                               clawt_web_payload_take(g_steal_pointer(&payload)));
-
-    if (reply == NULL)
-        return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_PAGE_CHAT,
-                                    clawt_web_app_last_error(app));
-
-    root = clawt_web_root(reply);
-
-    {
-        /*
-         * `host_path` and `path`, which is what attachment.put sends.
-         * This asked for `guest_path`, a member that exists nowhere in
-         * the tree, so the guest spelling was never shown -- and for a
-         * container or VM agent that is the only path a command running
-         * inside the computer can open.  Handing over the host path
-         * alone sends the agent looking for a file that is not there,
-         * which is the failure the first image ever sent ran into.
-         */
-        const gchar *host = clawt_web_member(root, "host_path", NULL);
-        const gchar *guest = clawt_web_member(root, "path", NULL);
-        gboolean differs = host != NULL && guest != NULL &&
-                           g_strcmp0(host, guest) != 0;
-
-        said = g_strdup_printf(
-            "Attached. On this machine: %s%s%s",
-            host != NULL ? host : (guest != NULL ? guest : name),
-            differs ? "  \xc2\xb7  inside its computer: " : "",
-            differs ? guest : "");
-    }
-
-    return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_PAGE_CHAT, said);
-}
-
 static HtmxResponse *
 on_attach_remove(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -1487,12 +1390,112 @@ on_matrix_rooms(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return clawt_web_html_response(html);
 }
 
+/*
+ * "Mark as read" from an agent row's menu: the operator's conversation
+ * with it, read for every client through `room.read`.
+ *
+ * The page that comes back is the one being read -- the agent whose chat
+ * was on screen -- not the agent marked, because marking a conversation
+ * read is not opening it; somebody tidying the list from another
+ * agent's chat should still be in that chat afterwards.
+ */
+static HtmxResponse *
+on_mark_read(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autofree gchar *viewing = g_strdup(clawt_web_app_get_viewing(app));
+    ClawtWebPayload *payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+    reply = clawt_web_app_call(app, "room.read",
+                               clawt_web_payload_take(payload));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, viewing, CLAWT_PAGE_CHAT,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(app, request, viewing, CLAWT_PAGE_CHAT,
+                                  NULL);
+}
+
+/*
+ * "Mute notifications" / "Unmute" from an agent row's menu, for every
+ * client: the agent's notices arrive read, its counts leave every total,
+ * and the push and desktop notifiers skip it.  Back to the page being
+ * read, as Mark as read does.
+ */
+static HtmxResponse *
+on_mute(HtmxRequest *request, GHashTable *params, gpointer user_data,
+        gboolean mute)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autofree gchar *viewing = g_strdup(clawt_web_app_get_viewing(app));
+    ClawtWebPayload *payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+    reply = clawt_web_app_call(app, mute ? "notice.mute" : "notice.unmute",
+                               clawt_web_payload_take(payload));
+
+    /* the sidebar drawn next reads the new mute, not the old list */
+    clawt_web_app_notices_changed(app);
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, viewing, CLAWT_PAGE_CHAT,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(app, request, viewing, CLAWT_PAGE_CHAT,
+                                  NULL);
+}
+
+static HtmxResponse *
+on_mute_agent(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    return on_mute(request, params, user_data, TRUE);
+}
+
+static HtmxResponse *
+on_unmute_agent(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    return on_mute(request, params, user_data, FALSE);
+}
+
+/* "Mark all as read" from the head of the list: every conversation. */
+static HtmxResponse *
+on_mark_all_read(HtmxRequest *request, GHashTable *params,
+                 gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *viewing = g_strdup(clawt_web_app_get_viewing(app));
+    ClawtWebPayload *payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    (void)params;
+
+    clawt_web_payload_set_bool(payload, "all", TRUE);
+    reply = clawt_web_app_call(app, "room.read",
+                               clawt_web_payload_take(payload));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, viewing, CLAWT_PAGE_CHAT,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(app, request, viewing, CLAWT_PAGE_CHAT,
+                                  NULL);
+}
+
 void
 clawt_web_register_extras(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_post(router, "/a/:id/reorder", on_reorder, app);
+    htmx_router_post(router, "/a/:id/read", on_mark_read, app);
+    htmx_router_post(router, "/a/:id/mute", on_mute_agent, app);
+    htmx_router_post(router, "/a/:id/unmute", on_unmute_agent, app);
+    htmx_router_post(router, "/read-all", on_mark_all_read, app);
     htmx_router_post(router, "/a/:id/team", on_set_team, app);
-    htmx_router_post(router, "/a/:id/attach", on_attach, app);
     htmx_router_post(router, "/a/:id/attach/remove", on_attach_remove, app);
     htmx_router_post(router, "/a/:id/memories", on_memories, app);
     htmx_router_get(router, "/a/:id/memories", on_memories, app);

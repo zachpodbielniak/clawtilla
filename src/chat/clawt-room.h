@@ -349,6 +349,79 @@ gboolean clawt_room_append(ClawtRoom     *self,
 GPtrArray *clawt_room_get_history(ClawtRoom *self, guint limit);
 
 /**
+ * clawt_room_count_unread:
+ * @self: a #ClawtRoom
+ * @last_id: (nullable): the id of the last message the operator read
+ * @last_ts: that message's timestamp, in seconds, or 0
+ *
+ * How many messages arrived after the operator's read mark.
+ *
+ * The daemon's half of the shared unread count (see #ClawtReadStore):
+ * the mark is stored, the count is derived here from the history on
+ * every ask, so the two can never disagree.
+ *
+ * - **Not the operator's own.**  A message from `user` is one the
+ *   operator sent, and is never waiting for them -- the same rule as
+ *   clawt_unread_should_count() applies to a live message.
+ * - **By id first.**  The mark names a message, and the walk stops on
+ *   it, so two messages in the same second are told apart.
+ * - **By time when the id is gone.**  A message rewritten out of the
+ *   history leaves a mark naming nothing; then every message stamped
+ *   after @last_ts counts.  Ids are time-sortable, so this is the same
+ *   answer the id would have given to the second.
+ *
+ * A %NULL @last_id with a @last_ts of 0 is a room nobody has read:
+ * every message in it from somebody else counts.  An empty room counts
+ * 0 whatever the mark.
+ *
+ * Returns: the number of messages after the mark not sent by `user`
+ *
+ * Since: 0.52.0
+ */
+guint clawt_room_count_unread(ClawtRoom   *self,
+                              const gchar *last_id,
+                              gint64       last_ts);
+
+/**
+ * clawt_room_get_latest:
+ * @self: a #ClawtRoom
+ * @out_id: (out) (optional) (transfer none) (nullable): the newest
+ *   message's id
+ * @out_ts: (out) (optional): its timestamp, in seconds
+ *
+ * Where a "read everything" mark goes, without copying the history.
+ *
+ * Returns: %TRUE if the room holds at least one message
+ *
+ * Since: 0.52.0
+ */
+gboolean clawt_room_get_latest(ClawtRoom    *self,
+                               const gchar **out_id,
+                               gint64       *out_ts);
+
+/**
+ * clawt_room_message_index:
+ * @self: a #ClawtRoom
+ * @message_id: (nullable): the message
+ * @out_ts: (out) (optional): its timestamp, in seconds, or 0
+ *
+ * Where @message_id sits in the room's history, oldest first.
+ *
+ * What `room.read` checks a client's `upto` against, so a mark can only
+ * ever name a message the room actually holds -- and how it tells
+ * whether a new mark is ahead of the one held.  By position rather than
+ * by id: ids sort by time only to the millisecond, and two messages in
+ * the same millisecond sort by their random half.
+ *
+ * Returns: the index, or -1 if the room does not hold it
+ *
+ * Since: 0.52.0
+ */
+gint clawt_room_message_index(ClawtRoom   *self,
+                              const gchar *message_id,
+                              gint64      *out_ts);
+
+/**
  * clawt_room_get_message_count:
  * @self: a #ClawtRoom
  *

@@ -186,11 +186,25 @@ struct _ClawtLrgApp {
     JsonNode        *agents;       /* agent.list reply, nullable */
     JsonNode        *rooms;        /* room.list reply, nullable */
     GHashTable      *unread;       /* room id -> GUINT count */
+    GHashTable      *muted;        /* agent ids muted (notice.list) */
     GHashTable      *typing;       /* agent id -> set of room ids */
     guint            decisions_open;
     gboolean         held;
     gchar           *daemon_version;  /* control.status, nullable */
     gchar           *daemon_update;   /* an available update, nullable */
+
+    /*
+     * Whether the daemon has answered since this client was pointed at
+     * it (clawt_daemon_link_state()'s reached_once), whether the client
+     * chose it from the last-connection file rather than from a flag
+     * (clawt_connection_choose()'s from_last), and what choosing had to
+     * say, toasted once the window exists.  The first two decide the
+     * banner's Use Local (clawt_connection_offer_local()); a switch
+     * clears both, since after one the person chose.
+     */
+    gboolean         reached_once;
+    gboolean         connection_remembered;
+    gchar           *start_notice;    /* nullable, toasted once */
     ClawtLrgIslandState island;
 
     /* ── per-page state, owned by each page file ── */
@@ -305,6 +319,18 @@ void clawt_lrg_chat_open_conversation(ClawtLrgApp *app, const gchar *peer);
  */
 void clawt_lrg_chat_reopen(ClawtLrgApp *app);
 
+/*
+ * Tells the daemon the operator has read @room_id up to @upto (the
+ * newest message when %NULL), so its count clears in every client
+ * (lrg-chat.c).  Fire and forget: the daemon's `room.read` event is what
+ * zeroes the pill, here as in every other client.
+ */
+void clawt_lrg_mark_room_read(ClawtLrgApp *app, const gchar *room_id,
+                              const gchar *upto);
+
+/* Every conversation read at once, as `clawtilla room read --all`. */
+void clawt_lrg_mark_all_read(ClawtLrgApp *app);
+
 /* The currently selected agent's object from the last agent.list. */
 JsonObject *clawt_lrg_selected_agent(ClawtLrgApp *app);
 
@@ -393,6 +419,9 @@ const ClawtLrgSettingsPage *clawt_lrg_settings_appearance_page(void);   /* lrg-s
 const ClawtLrgSettingsPage *clawt_lrg_settings_devices_page(void);      /* lrg-settings-devices.c */
 const ClawtLrgSettingsPage *clawt_lrg_settings_connections_page(void);  /* lrg-settings-connections.c */
 
+/* The banner's Use Local: Settings → Connections' own switch, to Local. */
+void clawt_lrg_settings_connections_use_local(ClawtLrgApp *app);
+
 /* device.* events: the Devices list redraws, a code on screen learns it was used. */
 void clawt_lrg_settings_devices_event(ClawtLrgApp *app, ClawtEvent *event);
 
@@ -408,7 +437,11 @@ void clawt_lrg_new_room_dialog(ClawtLrgApp *app);
 LrgWidget *build_alerts_panel(ClawtLrgApp *app);
 LrgWidget *clawt_lrg_alerts_bell(ClawtLrgApp *app);
 void       clawt_lrg_alerts_toggle(ClawtLrgApp *app);
-void       clawt_lrg_alerts_event(ClawtLrgApp *app, ClawtEvent *event);
+/* Asks the daemon for `notice.list` and redraws the drawer and the bell. */
+void       clawt_lrg_alerts_refresh(ClawtLrgApp *app);
+/* Mutes or unmutes an agent for every client (notice.mute / notice.unmute). */
+void       clawt_lrg_set_agent_muted(ClawtLrgApp *app, const gchar *agent_id,
+                                     gboolean muted);
 void       clawt_lrg_alerts_reset(void);
 
 /* Ctrl+K "Go to…" (lrg-navigation.c). */

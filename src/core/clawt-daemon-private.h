@@ -26,6 +26,7 @@
 #include "integration/clawt-notify.h"
 #include "plugin/clawt-automation.h"
 #include "task/clawt-handoff-store.h"
+#include "chat/clawt-read-store.h"
 #include "wait/clawt-wait-manager.h"
 #include "task/clawt-routine-runner.h"
 #include "integration/clawt-venture-bridge.h"
@@ -361,6 +362,37 @@ struct _ClawtDaemon {
      * happened" hands the same work over twice.  See daemon-handoff.c.
      */
     ClawtHandoffStore *handoffs;
+
+    /*
+     * How far the operator has read in each conversation: one mark per
+     * room in <state_dir>/reads.db.  The unread counts every client
+     * draws are derived from it, so reading in one client clears the
+     * count in all of them and the count survives a restart.  See
+     * daemon-room.c and chat/clawt-read-store.h.
+     */
+    ClawtReadStore    *reads;
+
+    /*
+     * The fleet's notification list, and the mutes (daemon-notice.c,
+     * core/clawt-notice-store.h): <state_dir>/notices.db, fed from this
+     * daemon's own bus.  NULL when it would not open.  `notices_lapse`
+     * fires when the soonest timed mute runs out; `notices_clock` is a
+     * test's "now", in seconds, and 0 means the real clock.
+     */
+    ClawtNoticeStore  *notices;
+    gulong             notices_bus_handler;
+    GSource           *notices_lapse;
+    gint64             notices_clock;
+
+    /*
+     * Where clawt_daemon_notify() sends a notification instead of the
+     * notifiers: a test's recorder, since a hermetic suite has nobody to
+     * buzz.  NULL is the operator's path.
+     */
+    void             (*notify_sink)(ClawtDaemon       *self,
+                                    ClawtNotification *notification,
+                                    gpointer           user_data);
+    gpointer           notify_sink_data;
 
     /*
      * Conditions agents asked to be told about, checked by code rather
@@ -1230,11 +1262,47 @@ void clawt_daemon_grok_send(ClawtDaemon          *self,
  * @self: the daemon
  * @now: microseconds
  *
- * Gives up every open job past its deadline and tells its agent.  The
- * timer calls it every thirty seconds; a test calls it with a clock of
- * its own.
+ * Gives up every open job past its deadline and tells its agent, and
+ * -- at most once an hour of @now -- prunes settled jobs older than
+ * grok.retention_days.  The timer calls it every thirty seconds; a test
+ * calls it with a clock of its own.
  */
 void clawt_daemon_grok_sweep(ClawtDaemon *self, gint64 now);
+
+/**
+ * clawt_daemon_grok_attention:
+ * @self: the daemon
+ * @now: microseconds
+ *
+ * How many Grok jobs ask for somebody: those whose state needs
+ * attention (failed, needs input, expired, refused) and which settled
+ * within grok.attention_days of @now -- every one of them when that is
+ * 0.  Over the whole store, for a badge or a notification count; the
+ * `grok.jobs` reply counts its own listing with the same rule.  @now is
+ * a parameter so a test can move the clock.
+ *
+ * Returns: the count, 0 without a store
+ */
+guint clawt_daemon_grok_attention(ClawtDaemon *self, gint64 now);
+
+/*
+ * clawt_daemon_grok_attention_jobs:
+ * @self: the daemon
+ * @now: microseconds
+ *
+ * The jobs clawt_daemon_grok_attention() counts, for a list that names
+ * them -- notice.list's Grok section.
+ *
+ * Returns: (transfer full) (element-type ClawtGrokJob): the jobs
+ */
+GPtrArray *clawt_daemon_grok_attention_jobs(ClawtDaemon *self, gint64 now);
+
+/*
+ * grok.attention_days and grok.retention_days as the daemon uses them:
+ * read from the config and clamped (0..365 and 1..3650).
+ */
+gint64 clawt_daemon_grok_attention_days(ClawtDaemon *self);
+gint64 clawt_daemon_grok_retention_days(ClawtDaemon *self);
 
 /*
  * clawt_daemon_grok_get_store:
@@ -1573,6 +1641,77 @@ clawt_daemon_handle_room(
     JsonObject   *payload,
     gboolean     *handled
 );
+
+/*
+ * The notification list (daemon-notice.c): notice.list, notice.read,
+ * notice.dismiss, notice.clear, notice.mute and notice.unmute.
+ */
+JsonNode *
+clawt_daemon_handle_notice(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+/*
+ * Opens notices.db, prunes it, and starts listening to the bus; and the
+ * reverse.  Both are safe to repeat.
+ */
+void clawt_daemon_notices_setup(ClawtDaemon *self);
+void clawt_daemon_notices_teardown(ClawtDaemon *self);
+
+/*
+ * clawt_daemon_notices_now:
+ *
+ * Returns: now in seconds -- the test's clock when `notices_clock` is set
+ */
+gint64 clawt_daemon_notices_now(ClawtDaemon *self);
+
+/*
+ * clawt_daemon_notices_record:
+ * @self: the daemon
+ * @event: an event from the bus
+ * @now: seconds; the mute in force at this time decides whether the
+ *   notice arrives read
+ *
+ * Records @event if it is an error or a notice.  What the bus handler
+ * runs, callable directly so a test can choose the clock.
+ *
+ * Returns: the new notice's id, or 0 when nothing was recorded
+ */
+gint64 clawt_daemon_notices_record(ClawtDaemon *self, ClawtEvent *event,
+                                   gint64 now);
+
+/*
+ * clawt_daemon_notices_prune:
+ *
+ * Applies notices.keep and notices.keep_days at @now (seconds), and
+ * drops lapsed mutes.  Run at start and from the hourly task prune.
+ *
+ * Returns: how many notices were dropped
+ */
+guint clawt_daemon_notices_prune(ClawtDaemon *self, gint64 now);
+
+/*
+ * clawt_daemon_notices_is_muted:
+ *
+ * Returns: %TRUE if @agent is muted at @now (seconds)
+ */
+gboolean clawt_daemon_notices_is_muted(ClawtDaemon *self, const gchar *agent,
+                                       gint64 now);
+
+/*
+ * clawt_daemon_notify:
+ * @self: the daemon
+ * @notification: what happened
+ *
+ * The one door to the push and desktop notifiers: every call site that
+ * used to call clawt_notifier_notify() comes through here, so a muted
+ * agent is skipped in one place.
+ */
+void clawt_daemon_notify(ClawtDaemon *self, ClawtNotification *notification);
 
 JsonNode *
 clawt_daemon_handle_mailbox(
@@ -2131,6 +2270,28 @@ void clawt_daemon_turn_set_grace_seconds(ClawtDaemon *self, guint seconds);
  * exist before one can.
  */
 void clawt_daemon_handoff_setup(ClawtDaemon *self);
+
+/*
+ * Opens <state_dir>/reads.db.  The first time the file is made, every
+ * room is marked read up to its newest message, so the build that
+ * introduces shared read marks does not light up every conversation the
+ * fleet ever had.  Called after the rooms are loaded, which is what the
+ * seeding reads.  In daemon-room.c.
+ */
+void clawt_daemon_reads_setup(ClawtDaemon *self);
+void clawt_daemon_reads_teardown(ClawtDaemon *self);
+
+/**
+ * clawt_daemon_room_unread:
+ * @self: a #ClawtDaemon
+ * @room: the room
+ *
+ * How many messages in @room the operator has not read, from the read
+ * store's mark.  0 when there is no store.
+ *
+ * Returns: the count
+ */
+guint clawt_daemon_room_unread(ClawtDaemon *self, ClawtRoom *room);
 void clawt_daemon_search_setup(ClawtDaemon *self);
 const gchar *clawt_daemon_shared_computer_id(ClawtDaemon *self, const gchar *agent_id);
 GPtrArray *clawt_daemon_shared_users(ClawtDaemon *self, const gchar *computer_id,

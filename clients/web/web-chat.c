@@ -39,65 +39,36 @@
 static GPtrArray *
 attachment_ids(const gchar *body, gchar **out_prose)
 {
-    g_auto(GStrv) lines = NULL;
-    g_autoptr(GString) prose = NULL;
+    g_autoptr(GPtrArray) refs = NULL;
     GPtrArray *ids = NULL;
-    gboolean in_block = FALSE;
-    gsize i;
+    guint i;
 
     *out_prose = NULL;
 
     if (body == NULL || strstr(body, CLAWT_ATTACHMENT_MARKER) == NULL)
         return NULL;
 
-    lines = g_strsplit(body, "\n", -1);
-    prose = g_string_new(NULL);
+    /*
+     * The shared reader, which attachment.list and the libregnum client
+     * use too: one ref per item, the daemon's copy preferred.  Only ids
+     * are drawn here -- a host path opens on the daemon's machine, and
+     * this page may be read anywhere.
+     */
+    refs = clawt_attachment_refs_parse(body);
 
-    for (i = 0; lines[i] != NULL; i++) {
-        const gchar *at;
+    for (i = 0; i < refs->len; i++) {
+        ClawtAttachmentRef *ref = g_ptr_array_index(refs, i);
 
-        if (strstr(lines[i], CLAWT_ATTACHMENT_MARKER) != NULL) {
-            in_block = TRUE;
-            continue;
-        }
-
-        if (!in_block) {
-            if (prose->len > 0)
-                g_string_append_c(prose, '\n');
-
-            g_string_append(prose, lines[i]);
-            continue;
-        }
-
-        /*
-         * The block is its list items and their indented continuations.
-         * Anything at the left margin ends it, so a line an agent wrote
-         * after the files is prose again.
-         */
-        if (lines[i][0] != '\0' && lines[i][0] != ' ' &&
-            lines[i][0] != '-' && lines[i][0] != '\t') {
-            in_block = FALSE;
-            g_string_append_c(prose, '\n');
-            g_string_append(prose, lines[i]);
-            continue;
-        }
-
-        at = strstr(lines[i], "clawt:");
-
-        if (at == NULL)
+        if (!ref->daemon_copy)
             continue;
 
         if (ids == NULL)
             ids = g_ptr_array_new_with_free_func(g_free);
 
-        {
-            gchar *id = g_strdup(at + strlen("clawt:"));
-
-            g_ptr_array_add(ids, g_strchomp(id));
-        }
+        g_ptr_array_add(ids, g_strdup(ref->value));
     }
 
-    *out_prose = g_strdup(g_strchomp(prose->str));
+    *out_prose = clawt_attachment_prose(body);
 
     return ids;
 }
@@ -948,6 +919,23 @@ inline_decisions_before(HtmxDiv *into, JsonArray *asked, guint from,
     return at;
 }
 
+/*
+ * The "New messages" rule, as the page script draws it live -- the same
+ * class and id, so the script finds a server-drawn rule and leaves it
+ * alone instead of drawing a second one.
+ */
+static HtmxElement *
+unread_rule(void)
+{
+    g_autoptr(HtmxDiv) rule = htmx_div_new();
+
+    htmx_element_add_class(HTMX_ELEMENT(rule), "unread-rule");
+    htmx_element_set_id(HTMX_ELEMENT(rule), "unread-rule");
+    htmx_node_set_text_content(HTMX_NODE(rule), "New messages");
+
+    return HTMX_ELEMENT(g_steal_pointer(&rule));
+}
+
 static HtmxElement *
 transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
            const gchar *peer)
@@ -957,6 +945,7 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
     g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
     g_autoptr(JsonNode) reply = NULL;
     JsonArray *messages;
+    gint rule_at = -1;
     guint i;
 
     htmx_element_add_class(HTMX_ELEMENT(scroll), "transcript");
@@ -1031,6 +1020,19 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
     reply = clawt_web_app_call(app, "room.history",
                                clawt_web_payload_take(g_steal_pointer(&payload)));
     messages = clawt_web_member_array(clawt_web_root(reply), "messages");
+
+    /*
+     * Where "New messages" goes: above the first message somebody else
+     * sent after the operator's read mark, which the daemon holds
+     * (`read_upto`) -- the rule every client shares.  Not in a peer
+     * conversation, which the operator is not part of.  The page script
+     * keeps it in place across the fragment refreshes that follow,
+     * since by then the mark has moved on.
+     */
+    if (peer == NULL)
+        rule_at = clawt_unread_rule_index(
+            messages, clawt_web_member(clawt_web_root(reply), "read_upto",
+                                       NULL));
 
     if (messages == NULL || json_array_get_length(messages) == 0) {
         clawt_web_add(inner,
@@ -1150,6 +1152,9 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
             g_free(run_day);
             run_day = g_steal_pointer(&day);
 
+            if ((gint)i == rule_at)
+                clawt_web_add(inner, unread_rule());
+
             clawt_web_add(inner,
                           message_element(one, agent_id, has_avatar,
                                           run_start, color,
@@ -1172,6 +1177,36 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
             clawt_web_add(inner, steps_block(steps, s_at, steps->len));
 
         inline_decisions_before(inner, asked, d_at, G_MAXINT64);
+    }
+
+    /*
+     * On screen is read: the conversation's mark moves to the last
+     * message drawn, which clears its count in every client.  Only when
+     * it is not there already -- the `room.read` event that answers is
+     * itself a fleet event, which re-renders this fragment, and
+     * re-marking unconditionally would go round that loop for ever.
+     */
+    if (peer == NULL && messages != NULL &&
+        json_array_get_length(messages) > 0 &&
+        json_object_has_member(clawt_web_root(reply), "read_upto")) {
+        const gchar *last = clawt_web_member(
+            json_array_get_object_element(messages,
+                                          json_array_get_length(messages) - 1),
+            "id", NULL);
+        const gchar *room = clawt_web_member(clawt_web_root(reply), "room",
+                                             NULL);
+
+        if (last != NULL && room != NULL &&
+            g_strcmp0(last, clawt_web_member(clawt_web_root(reply),
+                                             "read_upto", NULL)) != 0) {
+            ClawtWebPayload *mark = clawt_web_payload_new();
+            g_autoptr(JsonNode) marked = NULL;
+
+            clawt_web_payload_set(mark, "room", room);
+            clawt_web_payload_set(mark, "upto", last);
+            marked = clawt_web_app_call(app, "room.read",
+                                        clawt_web_payload_take(mark));
+        }
     }
 
     /*
@@ -1358,6 +1393,20 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
                                "keyup changed delay:1s");
     htmx_element_set_attribute(HTMX_ELEMENT(area), "hx-swap", "none");
 
+    /*
+     * Only the text, and as an ordinary form post.  htmx sends the
+     * enclosing form's fields with this request and inherits its
+     * hx-encoding: once the form carries files, every debounced draft
+     * save would upload whatever was chosen as well -- and arrive as
+     * multipart, which the draft route does not read, so the draft
+     * would be wiped by the save meant to keep it.
+     */
+    if (attachments) {
+        htmx_element_set_attribute(HTMX_ELEMENT(area), "hx-params", "body");
+        htmx_element_set_attribute(HTMX_ELEMENT(area), "hx-encoding",
+                                   "application/x-www-form-urlencoded");
+    }
+
     htmx_node_add_child(HTMX_NODE(inner), HTMX_NODE(area));
 
     /*
@@ -1510,6 +1559,58 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
     if (busy)
         clawt_web_add(inner, stop_turn_button(agent_id));
 
+    /*
+     * Files go with the message, in the same post.
+     *
+     * The picker used to be a form of its own posting to /attach, which
+     * wrote the file into the agent's workspace and stopped: nothing
+     * told the agent it was there, so it was a file the agent would
+     * never open.  One form means one send -- the files are put, the
+     * block naming them is added to the text, and the agent reads both
+     * as one message, as it does from the GTK and lrg composers.
+     *
+     * A <label> around a hidden input, so the control reads as a button
+     * beside Send rather than the browser's own "Choose files / No file
+     * chosen" pair, which says nothing once the chips below list what
+     * was picked.  Paste and drop add to the same input (web-ui.c).
+     */
+    /*
+     * Every file this conversation has carried, as a grid.  Beside the
+     * composer rather than above the transcript, which is the page's
+     * scroller and whose grid track would have to make room for a row.
+     */
+    {
+        g_autofree gchar *gallery = g_strdup_printf("/%s/%s/attachments",
+                                                    base, escaped);
+        g_autoptr(HtmxA) files = htmx_a_new_with_href(gallery);
+
+        htmx_element_add_class(HTMX_ELEMENT(files), "btn");
+        htmx_element_add_class(HTMX_ELEMENT(files), "files-link");
+        htmx_element_set_attribute(HTMX_ELEMENT(files), "title",
+                                   "Every file sent in this conversation");
+        htmx_node_set_text_content(HTMX_NODE(files), "Files");
+        htmx_node_add_child(HTMX_NODE(inner), HTMX_NODE(files));
+    }
+
+    if (attachments) {
+        g_autoptr(HtmxLabel) pick = htmx_label_new_with_text("Attach");
+        g_autoptr(HtmxInput) picker = htmx_input_new(HTMX_INPUT_FILE);
+
+        htmx_element_add_class(HTMX_ELEMENT(pick), "btn");
+        htmx_element_add_class(HTMX_ELEMENT(pick), "attach-pick");
+        htmx_element_set_attribute(HTMX_ELEMENT(pick), "title",
+                                   "Send files with this message "
+                                   "(or paste or drop them here)");
+
+        htmx_input_set_name(picker, "file");
+        htmx_element_set_id(HTMX_ELEMENT(picker), "composer-files");
+        htmx_element_set_attribute(HTMX_ELEMENT(picker), "multiple",
+                                   "multiple");
+        htmx_element_set_attribute(HTMX_ELEMENT(picker), "hidden", "hidden");
+        htmx_node_add_child(HTMX_NODE(pick), HTMX_NODE(picker));
+        htmx_node_add_child(HTMX_NODE(inner), HTMX_NODE(pick));
+    }
+
     {
         g_autoptr(HtmxButton) send = clawt_web_button("Send", "primary");
 
@@ -1525,6 +1626,32 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
     htmx_node_add_child(HTMX_NODE(pop), HTMX_NODE(pop_inner));
     htmx_node_add_child(HTMX_NODE(foot), HTMX_NODE(pop));
 
+    /*
+     * What is waiting to go, one chip per file with an x to drop it.
+     * Empty in the markup: the browser alone knows what was chosen, and
+     * the script in web-ui.c draws the chips from the input itself so
+     * the list cannot disagree with what will be posted.
+     */
+    if (attachments) {
+        g_autoptr(HtmxDiv) chips = htmx_div_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(chips), "file-chips");
+        htmx_element_set_id(HTMX_ELEMENT(chips), "composer-chips");
+        htmx_element_set_attribute(HTMX_ELEMENT(chips), "aria-live",
+                                   "polite");
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(chips));
+
+        /*
+         * Multipart only when files can be chosen.  A room with no one
+         * agent to file under keeps the plain encoding, and the send
+         * routes read either.
+         */
+        htmx_element_set_attribute(HTMX_ELEMENT(form), "enctype",
+                                   "multipart/form-data");
+        htmx_element_set_attribute(HTMX_ELEMENT(form), "hx-encoding",
+                                   "multipart/form-data");
+    }
+
     htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(inner));
 
     /*
@@ -1532,45 +1659,62 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
      * on any 2xx, so a refusal that came back as a rendered page would
      * also take the text with it -- and a message lost because the daemon
      * said no is worse than the refusal.
+     *
+     * And only for the form's own request.  htmx events bubble, so the
+     * textarea's debounced draft save also lands here; resetting on it
+     * would empty the chosen files (and put the text back to what the
+     * page was rendered with) a second after somebody stopped typing.
      */
     htmx_element_set_attribute(HTMX_ELEMENT(form), "hx-on::after-request",
-                               "if(event.detail.successful)this.reset()");
+                               "if(event.detail.successful&&"
+                               "event.detail.elt===this)this.reset()");
 
     htmx_element_add_class(HTMX_ELEMENT(form), "composer-form");
     htmx_node_add_child(HTMX_NODE(foot), HTMX_NODE(form));
-
-    /*
-     * A separate form, because it posts multipart and the message form
-     * does not. Sharing one would mean encoding every message as a file
-     * upload for the sake of the attachment nobody added.
-     */
-    if (attachments) {
-        g_autofree gchar *attach_action =
-            g_strdup_printf("/a/%s/attach", escaped);
-        g_autoptr(HtmxForm) attach = clawt_web_form(attach_action);
-        g_autoptr(HtmxDiv) row = htmx_div_new();
-        g_autoptr(HtmxInput) picker = htmx_input_new(HTMX_INPUT_FILE);
-        g_autoptr(HtmxButton) send = clawt_web_button("Attach", "default");
-
-        htmx_element_set_attribute(HTMX_ELEMENT(attach), "enctype",
-                                   "multipart/form-data");
-        htmx_element_set_attribute(HTMX_ELEMENT(attach), "hx-encoding",
-                                   "multipart/form-data");
-
-        htmx_input_set_name(picker, "file");
-        htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
-        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(picker));
-
-        htmx_element_set_attribute(HTMX_ELEMENT(send), "type", "submit");
-        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(send));
-        htmx_node_add_child(HTMX_NODE(attach), HTMX_NODE(row));
-        htmx_node_add_child(HTMX_NODE(foot), HTMX_NODE(attach));
-    }
 
     return g_steal_pointer(&foot);
 }
 
 /* ── The view ────────────────────────────────────────────────────── */
+
+/*
+ * A room's entry in room.list, for its members.
+ *
+ * Asked for at the moment it is needed rather than cached beside the
+ * sidebar's set of room ids: a member added or removed while somebody
+ * has the page open would otherwise be offered, or missing, until the
+ * next fleet listing -- and an `@name` for somebody who has left, or a
+ * file filed under an agent no longer in the room, reaches nobody with
+ * nothing in the reply to say so.
+ *
+ * Returns: (transfer full) (nullable): the reply that owns *@members
+ */
+static JsonNode *
+room_members(ClawtWebApp *app, const gchar *room_id, JsonArray **members)
+{
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    JsonNode *reply;
+    JsonArray *rooms;
+    guint i;
+
+    *members = NULL;
+    reply = clawt_web_app_call(app, "room.list",
+                               clawt_web_payload_take(
+                                   g_steal_pointer(&payload)));
+    rooms = clawt_web_member_array(clawt_web_root(reply), "rooms");
+
+    for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+
+        if (g_strcmp0(clawt_web_member(room, "id", ""), room_id) != 0)
+            continue;
+
+        *members = clawt_web_member_array(room, "members");
+        break;
+    }
+
+    return reply;
+}
 
 /*
  * A group room's chat.
@@ -1579,8 +1723,8 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
  * room id: `room.history` takes a room directly, and `msg.send`
  * resolves a room target the same way it resolves an agent one.  What
  * a room does not have is the agent chrome -- the conversation
- * switcher is about one agent's peers, and attachments are not offered
- * because the attach route is agent-scoped.
+ * switcher is about one agent's peers.  Files can be sent only when the
+ * room has exactly one agent to file them under (see room_members()).
  */
 HtmxElement *
 clawt_web_room_body(ClawtWebApp *app, const gchar *room_id)
@@ -1622,29 +1766,19 @@ clawt_web_room_body(ClawtWebApp *app, const gchar *room_id)
      * the reply to say so.
      */
     {
-        g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
-        g_autoptr(JsonNode) reply = NULL;
-        JsonArray *rooms;
         JsonArray *members = NULL;
-        guint i;
+        g_autoptr(JsonNode) reply = room_members(app, room_id, &members);
+        g_autofree gchar *file_agent = clawt_web_room_file_agent(members);
 
-        reply = clawt_web_app_call(app, "room.list",
-                                   clawt_web_payload_take(
-                                       g_steal_pointer(&payload)));
-        rooms = clawt_web_member_array(clawt_web_root(reply), "rooms");
-
-        for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
-            JsonObject *room = json_array_get_object_element(rooms, i);
-
-            if (g_strcmp0(clawt_web_member(room, "id", ""), room_id) != 0)
-                continue;
-
-            members = clawt_web_member_array(room, "members");
-            break;
-        }
-
+        /*
+         * Attach only when the room has exactly one agent to file the
+         * upload under: attachment.put writes into one agent's
+         * exchange, and in a room of several the others could not open
+         * what they were sent.
+         */
         clawt_web_add(main_el,
-                      composer_for(app, "r", room_id, FALSE, FALSE, members));
+                      composer_for(app, "r", room_id, FALSE,
+                                   file_agent != NULL, members));
     }
 
     return g_steal_pointer(&main_el);
@@ -2073,10 +2207,11 @@ run_command(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
     if (g_strcmp0(verb, "/attach") == 0)
         return clawt_web_after_action(
             app, request, agent_id, CLAWT_PAGE_CHAT,
-            "Use the file picker under the message box. The file goes to "
-            "the agent's workspace and is named to it -- both paths, "
-            "because its own tools run on the host and only "
-            "clawtilla_computer_exec enters its computer.");
+            "Use Attach beside Send, or paste or drop files on the "
+            "message box. They go with the message you send: each is "
+            "saved to the agent's workspace and named in the message "
+            "with both paths, because its own tools run on the host "
+            "and only clawtilla_computer_exec enters its computer.");
 
     /* ── The conversation itself ── */
 
@@ -2397,6 +2532,80 @@ clawt_web_send_message(ClawtWebApp *app, HtmxRequest *request,
                                   CLAWT_PAGE_CHAT, NULL);
 }
 
+/* attachment.put through the daemon, for clawt_web_body_with_files(). */
+static JsonNode *
+put_through_daemon(const gchar *agent_id,
+                   const gchar *name,
+                   const gchar *encoded,
+                   gpointer     user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+    clawt_web_payload_set(payload, "name", name);
+    clawt_web_payload_set(payload, "data", encoded);
+
+    return clawt_web_app_call(app, "attachment.put",
+                              clawt_web_payload_take(
+                                  g_steal_pointer(&payload)));
+}
+
+/*
+ * What a composer post says: the typed text, trimmed, plus the block
+ * naming every file sent with it.
+ *
+ * Either encoding is read.  The agent composer posts multipart (it has
+ * a file input); a room with no one agent to file under posts a plain
+ * form, as does anything scripted against the old route.  @with_files
+ * says whether any file came, because a message with files is sent as
+ * a message even when its text starts with "/" -- running a command
+ * and dropping the files would lose what was chosen.
+ *
+ * Returns: (transfer full) (nullable): the body to send, or %NULL with
+ *   @error set
+ */
+static gchar *
+read_composer(ClawtWebApp  *app,
+              HtmxRequest  *request,
+              const gchar  *file_agent,
+              gboolean     *with_files,
+              GError      **error)
+{
+    g_autofree gchar *multipart_body = NULL;
+    g_autofree gchar *trimmed = NULL;
+    g_autoptr(GPtrArray) files = NULL;
+    const gchar *typed;
+
+    *with_files = FALSE;
+    files = clawt_web_composer_read(htmx_request_get_content_type(request),
+                                    htmx_request_get_body_bytes(request),
+                                    &multipart_body, error);
+
+    if (files == NULL)
+        return NULL;
+
+    typed = multipart_body != NULL
+        ? multipart_body : clawt_web_form_value(request, "body");
+    trimmed = g_strdup(typed != NULL ? typed : "");
+    g_strstrip(trimmed);
+
+    if (files->len == 0)
+        return g_steal_pointer(&trimmed);
+
+    if (file_agent == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "This room has no single agent to keep the files "
+                    "for, so nothing was sent.");
+        return NULL;
+    }
+
+    *with_files = TRUE;
+
+    return clawt_web_body_with_files(file_agent, trimmed, files,
+                                     put_through_daemon, app);
+}
+
 /*
  * Posting into a group room.
  *
@@ -2432,16 +2641,32 @@ on_room_send(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
     ClawtWebApp *app = user_data;
     g_autofree gchar *room_id = clawt_web_param(params, "id");
-    const gchar *body = clawt_web_form_value(request, "body");
     g_autofree gchar *trimmed = NULL;
+    g_autofree gchar *file_agent = NULL;
     g_autoptr(ClawtWebPayload) payload = NULL;
     g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GError) error = NULL;
+    gboolean with_files = FALSE;
 
-    if (body == NULL)
-        return room_redirect(room_id);
+    /*
+     * The agent the room's files go to, asked for now rather than
+     * trusted from the page: the room may have gained a second agent
+     * since it was drawn, and then there is no right exchange to use.
+     */
+    if (g_str_has_prefix(htmx_request_get_content_type(request) != NULL
+                             ? htmx_request_get_content_type(request) : "",
+                         "multipart/form-data")) {
+        JsonArray *members = NULL;
+        g_autoptr(JsonNode) rooms = room_members(app, room_id, &members);
 
-    trimmed = g_strdup(body);
-    g_strstrip(trimmed);
+        file_agent = clawt_web_room_file_agent(members);
+    }
+
+    trimmed = read_composer(app, request, file_agent, &with_files, &error);
+
+    if (trimmed == NULL)
+        return clawt_web_error_page(app, request, NULL, CLAWT_PAGE_CHAT,
+                                    error->message);
 
     if (*trimmed == '\0')
         return room_redirect(room_id);
@@ -2455,7 +2680,7 @@ on_room_send(HtmxRequest *request, GHashTable *params, gpointer user_data)
      * has always dispatched them; the room composer is the same box and
      * had no reason to behave differently.
      */
-    if (trimmed[0] == '/')
+    if (!with_files && trimmed[0] == '/')
         return run_command(app, request, NULL, room_id, trimmed);
 
     payload = clawt_web_payload_new();
@@ -2508,21 +2733,27 @@ on_send(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
     ClawtWebApp *app = user_data;
     g_autofree gchar *agent_id = clawt_web_param(params, "id");
-    const gchar *body = clawt_web_form_value(request, "body");
     g_autofree gchar *trimmed = NULL;
+    g_autoptr(GError) error = NULL;
+    gboolean with_files = FALSE;
 
-    if (body == NULL)
-        return clawt_web_after_action(app, request, agent_id,
-                                      CLAWT_PAGE_CHAT, NULL);
+    /*
+     * The text and any files, in one post: each file is put into the
+     * agent's exchange and named in the message by the shared block
+     * builder, so the agent is told about it in the same message --
+     * a file put there and never mentioned is one it will not open.
+     */
+    trimmed = read_composer(app, request, agent_id, &with_files, &error);
 
-    trimmed = g_strdup(body);
-    g_strstrip(trimmed);
+    if (trimmed == NULL)
+        return clawt_web_error_page(app, request, agent_id, CLAWT_PAGE_CHAT,
+                                    error->message);
 
     if (*trimmed == '\0')
         return clawt_web_after_action(app, request, agent_id,
                                       CLAWT_PAGE_CHAT, NULL);
 
-    if (trimmed[0] == '/')
+    if (!with_files && trimmed[0] == '/')
         return run_command(app, request, agent_id, NULL, trimmed);
 
     return clawt_web_send_message(app, request, agent_id, trimmed);
@@ -2668,6 +2899,188 @@ on_attachment(HtmxRequest *request, GHashTable *params, gpointer user_data)
         htmx_response_add_header(response, "Content-Disposition",
                                  disposition);
     }
+
+    return response;
+}
+
+/* ── A conversation's files ──────────────────────────────────────── */
+
+/*
+ * A text file's first lines for each text tile, asked of the daemon.
+ *
+ * Capped, because each is a request made while the page renders: a
+ * conversation with hundreds of logs would otherwise hold the page for
+ * hundreds of round trips.  The rest show as a "text" label.
+ */
+#define GALLERY_TEXT_TILES (24)
+
+static GHashTable *
+gallery_texts(ClawtWebApp *app, JsonArray *items)
+{
+    GHashTable *texts = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                              g_free, g_free);
+    guint asked = 0;
+    guint i;
+
+    for (i = 0; items != NULL && i < json_array_get_length(items) &&
+                asked < GALLERY_TEXT_TILES; i++) {
+        JsonObject *item = json_array_get_object_element(items, i);
+        const gchar *id = clawt_web_member(item, "id", NULL);
+        g_autoptr(ClawtWebPayload) payload = NULL;
+        g_autoptr(JsonNode) reply = NULL;
+        const gchar *text;
+
+        if (id == NULL ||
+            g_strcmp0(clawt_web_member(item, "kind", ""), "text") != 0 ||
+            !clawt_web_member_bool(item, "exists", FALSE) ||
+            g_hash_table_contains(texts, id))
+            continue;
+
+        asked++;
+        payload = clawt_web_payload_new();
+        clawt_web_payload_set(payload, "id", id);
+        reply = clawt_web_app_call(app, "attachment.thumbnail",
+                                   clawt_web_payload_take(
+                                       g_steal_pointer(&payload)));
+        text = clawt_web_member(clawt_web_root(reply), "text", NULL);
+
+        if (text != NULL)
+            g_hash_table_insert(texts, g_strdup(id), g_strdup(text));
+    }
+
+    return texts;
+}
+
+/*
+ * The Files page for one conversation: attachment.list's items as a
+ * grid.  @member is "agent" or "room", the key attachment.list takes.
+ *
+ * Returns: (transfer full): the view
+ */
+static HtmxElement *
+gallery_view(ClawtWebApp *app, const gchar *member, const gchar *target,
+             const gchar *back)
+{
+    g_autoptr(HtmxElement) view = HTMX_ELEMENT(htmx_main_new());
+    g_autoptr(HtmxDiv) pad = htmx_div_new();
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GHashTable) texts = NULL;
+    JsonArray *items;
+
+    htmx_element_add_class(view, "view");
+    htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
+    clawt_web_add(pad, clawt_web_section_title("Files in this conversation"));
+
+    {
+        g_autoptr(HtmxA) link = htmx_a_new_with_href(back);
+
+        htmx_element_add_class(HTMX_ELEMENT(link), "btn");
+        htmx_node_set_text_content(HTMX_NODE(link), "\xe2\x86\x90 Chat");
+        htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(link));
+    }
+
+    clawt_web_payload_set(payload, member, target);
+    reply = clawt_web_app_call(app, "attachment.list",
+                               clawt_web_payload_take(
+                                   g_steal_pointer(&payload)));
+
+    if (reply == NULL) {
+        clawt_web_add(pad, clawt_web_notice(clawt_web_app_last_error(app),
+                                            "error"));
+    } else {
+        items = clawt_web_member_array(clawt_web_root(reply), "items");
+        texts = gallery_texts(app, items);
+        clawt_web_add(pad, clawt_web_files_grid(items, texts));
+    }
+
+    htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
+
+    return g_steal_pointer(&view);
+}
+
+static HtmxResponse *
+on_agent_gallery(HtmxRequest *request, GHashTable *params,
+                 gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
+    g_autofree gchar *back = g_strdup_printf("/a/%s/chat", escaped);
+    g_autoptr(HtmxElement) view = gallery_view(app, "agent", agent_id, back);
+    g_autofree gchar *html = clawt_web_page(app, agent_id, CLAWT_PAGE_CHAT,
+                                            view, request);
+
+    return clawt_web_html_response(html);
+}
+
+static HtmxResponse *
+on_room_gallery(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *room_id = clawt_web_param(params, "id");
+    g_autofree gchar *escaped = g_uri_escape_string(room_id, NULL, FALSE);
+    g_autofree gchar *back = g_strdup_printf("/r/%s", escaped);
+    g_autoptr(HtmxElement) view = gallery_view(app, "room", room_id, back);
+    g_autofree gchar *html = clawt_web_shell_page(app, "Files", view,
+                                                  request);
+
+    return clawt_web_html_response(html);
+}
+
+/*
+ * A PDF's first page, as the PNG attachment.thumbnail draws.
+ *
+ * Served with the headers /f/attachment/<id> uses, though the bytes are
+ * a PNG the daemon wrote rather than the file itself: the type is pinned
+ * and the page that would open it sandboxed.  Anything the daemon will
+ * not draw -- an image, a text file, an unknown or hostile id, a build
+ * without poppler -- is a 404, and the tile's <img> shows its alt text.
+ */
+static HtmxResponse *
+on_attachment_thumb(HtmxRequest *request, GHashTable *params,
+                    gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "id");
+    const gchar *size = htmx_request_get_query_param(request, "size");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GBytes) bytes = NULL;
+    HtmxResponse *response;
+    const gchar *encoded;
+    guchar *raw;
+    gsize length = 0;
+
+    clawt_web_payload_set(payload, "id", id);
+
+    if (size != NULL)
+        clawt_web_payload_set_int(
+            payload, "size",
+            (gint64)clawt_attachment_thumbnail_size(
+                g_ascii_strtoll(size, NULL, 10)));
+
+    reply = clawt_web_app_call(app, "attachment.thumbnail",
+                               clawt_web_payload_take(
+                                   g_steal_pointer(&payload)));
+    encoded = clawt_web_member(clawt_web_root(reply), "base64", NULL);
+
+    if (encoded == NULL)
+        return htmx_response_not_found();
+
+    raw = g_base64_decode(encoded, &length);
+    bytes = g_bytes_new_take(raw, length);
+
+    response = htmx_response_new();
+    htmx_response_set_bytes(response, bytes);
+    htmx_response_set_content_type(response, "image/png");
+    htmx_response_add_header(response, "X-Content-Type-Options", "nosniff");
+    htmx_response_add_header(response, "Content-Security-Policy",
+                             "sandbox; default-src 'none'");
+
+    /* Ids name immutable bytes, so its picture never changes either. */
+    htmx_response_add_header(response, "Cache-Control",
+                             "private, max-age=86400");
 
     return response;
 }
@@ -3005,6 +3418,10 @@ clawt_web_register_chat(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_get(router, "/f/a/:id/transcript", on_transcript_fragment, app);
     htmx_router_get(router, "/f/a/:id/steps", on_steps_fragment, app);
     htmx_router_get(router, "/f/attachment/:id", on_attachment, app);
+    htmx_router_get(router, "/f/attachment/:id/thumb", on_attachment_thumb,
+                    app);
+    htmx_router_get(router, "/a/:id/attachments", on_agent_gallery, app);
+    htmx_router_get(router, "/r/:id/attachments", on_room_gallery, app);
     htmx_router_get(router, "/a/:id/export", on_export, app);
     htmx_router_get(router, "/a/:id/copy", on_copy, app);
     htmx_router_get(router, "/a/:id/compose", on_compose, app);

@@ -95,17 +95,29 @@ info_row(const gchar *title, const gchar *value)
     return row;
 }
 
-/* Shared by the inspector's buttons and the sidebar's context menu. */
+/* The inspector's buttons: the agent on screen. */
 void
 clawt_gtk_agent_action(ClawtWindow *self, const gchar *kind)
 {
+    clawt_gtk_agent_action_for(self, self->selected_agent, kind);
+}
+
+/*
+ * Shared by the inspector and the sidebar's context menu, which names
+ * the agent it was opened on: right-clicking a row does not select it
+ * (opening a conversation reads it, and a menu is not a navigation).
+ */
+void
+clawt_gtk_agent_action_for(ClawtWindow *self, const gchar *agent_id,
+                           const gchar *kind)
+{
     g_autoptr(JsonNode) reply = NULL;
 
-    if (self->selected_agent == NULL || kind == NULL)
+    if (agent_id == NULL || kind == NULL)
         return;
 
     reply = clawt_window_request(
-        self, kind, clawt_build_payload("agent", self->selected_agent, NULL));
+        self, kind, clawt_build_payload("agent", agent_id, NULL));
 
     (void)reply;
 
@@ -154,11 +166,22 @@ action_button(ClawtWindow *self, const gchar *label, const gchar *kind,
 gboolean
 clawt_gtk_apply_setting(ClawtWindow *self, const gchar *key, const gchar *value)
 {
+    return clawt_gtk_apply_setting_for(self, self->selected_agent, key, value);
+}
+
+/* The same, for a named agent -- the sidebar menu's Team submenu. */
+gboolean
+clawt_gtk_apply_setting_for(ClawtWindow *self, const gchar *agent_id,
+                            const gchar *key, const gchar *value)
+{
     g_autoptr(JsonNode) reply = NULL;
+
+    if (agent_id == NULL)
+        return FALSE;
 
     reply = clawt_window_request(
         self, "agent.set",
-        clawt_build_payload("agent", self->selected_agent, "key", key,
+        clawt_build_payload("agent", agent_id, "key", key,
                             "value", value, NULL));
 
     if (reply == NULL)

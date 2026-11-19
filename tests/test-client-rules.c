@@ -987,6 +987,142 @@ test_toast_text_names_a_refused_agent(void)
     g_assert_nonnull(strstr(said, "bob"));
 }
 
+/* ── The agent list's notice menu ──────────────────────────────────── */
+
+/*
+ * One set of words for "Mark as read" in every client, carrying the
+ * count when there is one.  Regressing it puts different words in the
+ * GTK, lrg and web menus -- the drift this helper exists to stop.
+ */
+static void
+test_the_read_label_carries_the_count(void)
+{
+    g_autofree gchar *none = clawt_agent_menu_read_label(0);
+    g_autofree gchar *one = clawt_agent_menu_read_label(1);
+    g_autofree gchar *many = clawt_agent_menu_read_label(12);
+
+    g_assert_cmpstr(none, ==, "Mark as read");
+    g_assert_cmpstr(one, ==, "Mark as read (1)");
+    g_assert_cmpstr(many, ==, "Mark as read (12)");
+}
+
+/*
+ * One item that flips, worded the same in every client: "Mute
+ * notifications" for an agent that is not muted, "Unmute" for one that
+ * is.  Regressing it is three menus saying three things, or a muted
+ * agent offered "Mute" again with no way back.
+ */
+static void
+test_the_mute_label_flips(void)
+{
+    g_autofree gchar *mute = clawt_agent_menu_mute_label(FALSE);
+    g_autofree gchar *unmute = clawt_agent_menu_mute_label(TRUE);
+
+    g_assert_cmpstr(mute, ==, "Mute notifications");
+    g_assert_cmpstr(unmute, ==, "Unmute");
+}
+
+/*
+ * The agent a direct room belongs to, from either spelling of the sorted
+ * pair, and nothing for a group room, a peer room, a malformed name or
+ * none.  Regressing it mutes the wrong conversation, or none.
+ */
+static void
+test_a_direct_room_names_its_agent(void)
+{
+    g_autofree gchar *first = clawt_unread_room_agent("dm:alpha:user");
+    g_autofree gchar *second = clawt_unread_room_agent("dm:user:zed");
+
+    g_assert_cmpstr(first, ==, "alpha");
+    g_assert_cmpstr(second, ==, "zed");
+    g_assert_null(clawt_unread_room_agent("dm:alpha:beta"));
+    g_assert_null(clawt_unread_room_agent("dm:user:user"));
+    g_assert_null(clawt_unread_room_agent("dm:a:b:user"));
+    g_assert_null(clawt_unread_room_agent("standup"));
+    g_assert_null(clawt_unread_room_agent(NULL));
+}
+
+/*
+ * Every total a client draws leaves a muted agent's conversation out --
+ * its pill stays on the row, dimmed, and counts nowhere else -- while a
+ * group room and an unmuted agent still count.  Regressing it is a mute
+ * that leaves the tab and the bell lit.
+ */
+static void
+test_a_muted_agent_leaves_the_total(void)
+{
+    g_autoptr(GHashTable) unread = g_hash_table_new_full(g_str_hash,
+                                                         g_str_equal,
+                                                         g_free, NULL);
+    g_autoptr(GHashTable) muted = g_hash_table_new_full(g_str_hash,
+                                                        g_str_equal,
+                                                        g_free, NULL);
+
+    g_hash_table_insert(unread, g_strdup("dm:alpha:user"),
+                        GUINT_TO_POINTER(3));
+    g_hash_table_insert(unread, g_strdup("dm:user:zed"),
+                        GUINT_TO_POINTER(4));
+    g_hash_table_insert(unread, g_strdup("standup"), GUINT_TO_POINTER(1));
+
+    g_assert_cmpuint(clawt_unread_total(unread, NULL), ==, 8);
+    g_assert_cmpuint(clawt_unread_total(unread, muted), ==, 8);
+
+    g_hash_table_add(muted, g_strdup("zed"));
+    g_assert_cmpuint(clawt_unread_total(unread, muted), ==, 4);
+
+    g_assert_cmpuint(clawt_unread_total(NULL, muted), ==, 0);
+}
+
+/*
+ * The daemon's counts are taken for rows the sidebar draws, never for a
+ * room without one, never for the room on screen, and not at all from a
+ * daemon that holds no marks (no `unread` in its listing).  Regressing
+ * it either lights a count nobody can clear or wipes the live count a
+ * daemon too old for marks depends on.
+ */
+static void
+test_the_daemons_counts_seed_the_table(void)
+{
+    g_autoptr(GHashTable) rows =
+        rows_for("dm:alpha:user", "dm:beta:user", "standup", NULL);
+    g_autoptr(GHashTable) unread = g_hash_table_new_full(g_str_hash,
+                                                         g_str_equal,
+                                                         g_free, NULL);
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(JsonParser) old = json_parser_new();
+    JsonArray *rooms;
+
+    g_assert_true(json_parser_load_from_data(parser,
+        "[{\"id\":\"dm:alpha:user\",\"unread\":4},"
+        " {\"id\":\"dm:beta:user\",\"unread\":2},"
+        " {\"id\":\"standup\",\"unread\":0},"
+        " {\"id\":\"dm:alpha:beta\",\"unread\":7}]", -1, NULL));
+    rooms = json_node_get_array(json_parser_get_root(parser));
+
+    g_hash_table_insert(unread, g_strdup("standup"), GUINT_TO_POINTER(3));
+
+    g_assert_true(clawt_unread_seed(unread, rooms, rows, "dm:beta:user"));
+    g_assert_cmpuint(GPOINTER_TO_UINT(g_hash_table_lookup(unread,
+                                                          "dm:alpha:user")),
+                     ==, 4);
+    g_assert_false(g_hash_table_contains(unread, "dm:beta:user"));
+    g_assert_false(g_hash_table_contains(unread, "standup"));
+    g_assert_false(g_hash_table_contains(unread, "dm:alpha:beta"));
+
+    /* a daemon too old to hold marks changes nothing */
+    g_assert_true(json_parser_load_from_data(old,
+        "[{\"id\":\"dm:alpha:user\",\"messages\":9}]", -1, NULL));
+    g_assert_false(clawt_unread_seed(
+        unread, json_node_get_array(json_parser_get_root(old)), rows, NULL));
+    g_assert_cmpuint(GPOINTER_TO_UINT(g_hash_table_lookup(unread,
+                                                          "dm:alpha:user")),
+                     ==, 4);
+
+    /* and no table, no listing: nothing to do, nothing claimed */
+    g_assert_false(clawt_unread_seed(NULL, rooms, rows, NULL));
+    g_assert_false(clawt_unread_seed(unread, NULL, rows, NULL));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1092,6 +1228,17 @@ g_test_add_func("/client-rules/tier/unknown",
                     test_toast_text_skips_not_connected);
     g_test_add_func("/client-rules/reply/toast-names-refusal",
                     test_toast_text_names_a_refused_agent);
+
+    g_test_add_func("/client-rules/menu/mute-label",
+                    test_the_mute_label_flips);
+    g_test_add_func("/client-rules/unread/room-agent",
+                    test_a_direct_room_names_its_agent);
+    g_test_add_func("/client-rules/unread/muted-total",
+                    test_a_muted_agent_leaves_the_total);
+    g_test_add_func("/client-rules/menu/read-label",
+                    test_the_read_label_carries_the_count);
+    g_test_add_func("/client-rules/unread/seed",
+                    test_the_daemons_counts_seed_the_table);
 
     return g_test_run();
 }

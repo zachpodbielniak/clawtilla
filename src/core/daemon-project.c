@@ -168,7 +168,7 @@ warn_once(
 
 	notification = clawt_notification_new(CLAWT_NOTIFY_EVENTS_BUDGET, NULL,
 	                                      NULL, "project budget", body);
-	clawt_notifier_notify(self->notifier, notification);
+	clawt_daemon_notify(self, notification);
 }
 
 gboolean

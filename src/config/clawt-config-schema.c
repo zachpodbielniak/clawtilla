@@ -2588,6 +2588,48 @@ static const ClawtSchemaEntry schema[] = {
   "id, and a report arriving afterwards is refused. A job may ask for\n"
   "less or more; this is the default.", "0.10.0" },
 
+{ "grok.attention_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "3", NULL,
+  "Days a job that needs somebody keeps counting on the Grok badge.\n"
+  "\n"
+  "A job that failed, was refused, expired or asked for input needs\n"
+  "somebody. It counts on the badge for this many days after it\n"
+  "settled, then stops asking -- it stays listed until it is removed\n"
+  "or grok.retention_days passes. 0 means it counts until it is\n"
+  "removed. Clamped to 0..365.", "0.52.0" },
+
+{ "grok.retention_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "30", NULL,
+  "Days a settled job is kept for the Grok page and `grok jobs`.\n"
+  "\n"
+  "Pruned at start and then hourly. A job still open is never pruned:\n"
+  "it expires through grok.job_ttl_minutes first, and its agent is\n"
+  "told. Clamped to 1..3650.", "0.52.0" },
+
+{ "notices", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The notification list the daemon keeps for every client.\n"
+  "\n"
+  "Errors and notices -- a refused message, a turn that timed out, an\n"
+  "agent that stopped -- are recorded in <state_dir>/notices.db, read\n"
+  "and dismissed there, and drawn by every client from notice.list. Each\n"
+  "agent can be muted. These keys say how much of it is kept. See\n"
+  "docs/clients.org, \"Notifications\".", "0.52.0" },
+
+{ "notices.keep", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "500", NULL,
+  "How many notices are kept, newest first.\n"
+  "\n"
+  "Read and dismissed ones count too: the list is a record, and a\n"
+  "dismissed row is still there with include_dismissed. Pruned at start\n"
+  "and then hourly. 0 keeps every one, until notices.keep_days.", "0.52.0" },
+
+{ "notices.keep_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "30", NULL,
+  "Days a notice is kept.\n"
+  "\n"
+  "Pruned at start and then hourly, whichever of this and notices.keep\n"
+  "drops a notice first. 0 keeps them until notices.keep.", "0.52.0" },
+
 { "routines", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing work: a prompt, an agent, and when to run it.\n"
   "\n"

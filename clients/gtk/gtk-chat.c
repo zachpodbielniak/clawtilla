@@ -1656,6 +1656,348 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
     }
 }
 
+/* ── A conversation's files ──────────────────────────────────────── */
+
+/*
+ * How many tiles decode a picture.  Each is an attachment.get (an image)
+ * or an attachment.thumbnail (a PDF) made while the dialog opens, on the
+ * thread drawing the window, so a conversation with hundreds of files
+ * shows the rest as icons rather than freezing for every one.
+ */
+#define GALLERY_PICTURES 60
+
+/* The edge of a tile's picture, in pixels. */
+#define GALLERY_THUMB 160
+
+/*
+ * Where a tile's file is on this machine: the daemon's copy, fetched to
+ * the cache once, or an old message's host path when this machine can
+ * open it.
+ *
+ * Returns: (transfer full) (nullable): a local path
+ */
+static gchar *
+gallery_local_path(ClawtWindow *self, const gchar *target)
+{
+    if (target == NULL)
+        return NULL;
+
+    if (target[0] == '/')
+        return g_file_test(target, G_FILE_TEST_IS_REGULAR)
+            ? g_strdup(target) : NULL;
+
+    return fetch_attachment(self, target);
+}
+
+/*
+ * A tile's menu: the transcript's own actions, run on the file once it
+ * is on this machine.  Delete is not offered -- it removes a file from
+ * an agent's exchange, which is not where a gallery tile's bytes are.
+ */
+static void
+on_gallery_action(ClawtWindow *self, const gchar *action, gpointer target)
+{
+    g_autofree gchar *path = gallery_local_path(self, target);
+
+    if (path == NULL) {
+        clawt_window_toast(self, "That file is not available here.");
+        return;
+    }
+
+    on_attachment_action(self, action, path);
+}
+
+static const MenuEntry gallery_menu[] = {
+    { "Open",                   "open" },
+    { "Save a copy\xe2\x80\xa6", "save" },
+    { "Copy path",              "copy-path" }
+};
+
+static void
+on_gallery_tile_clicked(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autofree gchar *path = gallery_local_path(
+        self, g_object_get_data(G_OBJECT(button), "target"));
+
+    if (path == NULL) {
+        clawt_window_toast(self, "That file is not available here.");
+        return;
+    }
+
+    open_with_desktop(self, path);
+}
+
+/* A texture from decoded pixels, as the transcript previews make one. */
+static GdkTexture *
+gallery_texture_from_pixbuf(GdkPixbuf *pixbuf)
+{
+    g_autoptr(GBytes) pixels = g_bytes_new(
+        gdk_pixbuf_get_pixels(pixbuf), gdk_pixbuf_get_byte_length(pixbuf));
+
+    return gdk_memory_texture_new(
+        gdk_pixbuf_get_width(pixbuf), gdk_pixbuf_get_height(pixbuf),
+        gdk_pixbuf_get_has_alpha(pixbuf) ? GDK_MEMORY_R8G8B8A8
+                                         : GDK_MEMORY_R8G8B8,
+        pixels, (gsize)gdk_pixbuf_get_rowstride(pixbuf));
+}
+
+/*
+ * A tile's picture: an image decoded at tile size, a PDF's first page
+ * from attachment.thumbnail, a text file's first lines, or an icon.
+ */
+static GtkWidget *
+gallery_preview(ClawtWindow *self, JsonObject *item, gboolean decode)
+{
+    const gchar *id = clawt_json_string(item, "id", NULL);
+    const gchar *kind = clawt_json_string(item, "kind", "other");
+    gboolean exists = json_object_get_boolean_member_with_default(
+        item, "exists", FALSE);
+    g_autoptr(GdkTexture) texture = NULL;
+    GtkWidget *widget;
+
+    if (exists && decode && id != NULL && g_strcmp0(kind, "image") == 0) {
+        g_autofree gchar *path = fetch_attachment(self, id);
+        g_autoptr(GdkPixbuf) scaled = NULL;
+
+        if (path != NULL)
+            scaled = gdk_pixbuf_new_from_file_at_scale(
+                path, GALLERY_THUMB, GALLERY_THUMB, TRUE, NULL);
+
+        if (scaled != NULL)
+            texture = gallery_texture_from_pixbuf(scaled);
+    }
+
+    if (exists && decode && id != NULL &&
+        (g_strcmp0(kind, "pdf") == 0 || g_strcmp0(kind, "text") == 0)) {
+        g_autoptr(JsonNode) reply = NULL;
+        JsonNode *payload = clawt_build_payload("id", id, NULL);
+        JsonObject *result;
+
+        /* an integer, which attachment.thumbnail reads `size` as */
+        json_object_set_int_member(json_node_get_object(payload), "size",
+                                   GALLERY_THUMB);
+
+        /*
+         * Quiet: a build without poppler answers "no PDF renderer", and
+         * a toast per tile for that would bury the dialog.  The tile
+         * falls back to an icon, which says the same thing.
+         */
+        reply = clawt_window_request_quiet(self, "attachment.thumbnail",
+                                           payload);
+        result = clawt_payload_of(reply);
+
+        if (clawt_json_string(result, "text", NULL) != NULL) {
+            widget = gtk_label_new(clawt_json_string(result, "text", ""));
+            gtk_label_set_xalign(GTK_LABEL(widget), 0.0f);
+            gtk_label_set_yalign(GTK_LABEL(widget), 0.0f);
+            gtk_label_set_ellipsize(GTK_LABEL(widget), PANGO_ELLIPSIZE_END);
+            gtk_widget_add_css_class(widget, "monospace");
+            gtk_widget_add_css_class(widget, "caption");
+            gtk_widget_set_size_request(widget, GALLERY_THUMB, GALLERY_THUMB);
+            gtk_widget_set_overflow(widget, GTK_OVERFLOW_HIDDEN);
+
+            return widget;
+        }
+
+        if (clawt_json_string(result, "base64", NULL) != NULL) {
+            gsize length = 0;
+            guchar *raw = g_base64_decode(
+                clawt_json_string(result, "base64", ""), &length);
+            g_autoptr(GBytes) bytes = g_bytes_new_take(raw, length);
+
+            texture = gdk_texture_new_from_bytes(bytes, NULL);
+        }
+    }
+
+    if (texture != NULL) {
+        widget = gtk_picture_new_for_paintable(GDK_PAINTABLE(texture));
+        gtk_picture_set_content_fit(GTK_PICTURE(widget),
+                                    GTK_CONTENT_FIT_CONTAIN);
+        gtk_widget_set_size_request(widget, GALLERY_THUMB, GALLERY_THUMB);
+
+        return widget;
+    }
+
+    /*
+     * The icon the desktop uses for that kind of file, so a tile with
+     * no picture still says what it is -- and a file that is gone says
+     * that instead.
+     */
+    widget = gtk_image_new_from_icon_name(
+        !exists ? "action-unavailable-symbolic"
+        : g_strcmp0(kind, "image") == 0 ? "image-x-generic-symbolic"
+        : g_strcmp0(kind, "pdf") == 0 ? "x-office-document-symbolic"
+        : g_strcmp0(kind, "text") == 0 ? "text-x-generic-symbolic"
+        : "folder-documents-symbolic");
+    gtk_image_set_pixel_size(GTK_IMAGE(widget), 48);
+    gtk_widget_set_size_request(widget, GALLERY_THUMB, GALLERY_THUMB);
+    gtk_widget_add_css_class(widget, "dim-label");
+
+    return widget;
+}
+
+/* "you · 2026-11-18 14:02" for under a tile's name. */
+static gchar *
+gallery_meta(JsonObject *item)
+{
+    const gchar *sender = clawt_json_string(item, "sender", "");
+    gint64 ts = clawt_json_int(item, "ts", 0);
+    g_autoptr(GDateTime) when = ts > 0
+        ? g_date_time_new_from_unix_local(ts) : NULL;
+    g_autofree gchar *date = when != NULL
+        ? g_date_time_format(when, "%Y-%m-%d %H:%M") : NULL;
+
+    return g_strdup_printf("%s%s%s",
+                           g_strcmp0(sender, "user") == 0 ? "you" : sender,
+                           date != NULL ? " \xc2\xb7 " : "",
+                           date != NULL ? date : "");
+}
+
+/*
+ * Every file this conversation carried, as a grid.
+ *
+ * attachment.list reads the room's whole history for attachment blocks,
+ * so this shows exactly the files the transcript names -- newest first,
+ * the ones sent from any client, and the ones that have since been
+ * deleted, marked as gone.
+ */
+void
+clawt_gtk_show_conversation_files(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    AdwDialog *dialog;
+    GtkWidget *toolbar;
+    GtkWidget *scroll;
+    GtkWidget *flow;
+    JsonArray *items = NULL;
+    guint i;
+
+    /*
+     * The room on screen, whatever kind: an agent's direct room, a
+     * group, or a peer exchange.  attachment.list takes a room id
+     * directly, and falls back to an agent's direct room.
+     */
+    if (self->selected_room != NULL)
+        reply = clawt_window_request(
+            self, "attachment.list",
+            clawt_build_payload("room", self->selected_room, NULL));
+    else if (self->selected_agent != NULL)
+        reply = clawt_window_request(
+            self, "attachment.list",
+            clawt_build_payload("agent", self->selected_agent, NULL));
+    else
+        return;
+
+    if (reply == NULL)
+        return;
+
+    if (json_object_has_member(clawt_payload_of(reply), "items"))
+        items = json_object_get_array_member(clawt_payload_of(reply),
+                                             "items");
+
+    dialog = adw_dialog_new();
+    adw_dialog_set_title(dialog, "Files in this conversation");
+    adw_dialog_set_content_width(dialog, 760);
+    adw_dialog_set_content_height(dialog, 560);
+
+    toolbar = adw_toolbar_view_new();
+    adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar),
+                                 adw_header_bar_new());
+
+    if (items == NULL || json_array_get_length(items) == 0) {
+        GtkWidget *empty = adw_status_page_new();
+
+        adw_status_page_set_icon_name(ADW_STATUS_PAGE(empty),
+                                      "folder-documents-symbolic");
+        adw_status_page_set_title(ADW_STATUS_PAGE(empty), "No files yet");
+        adw_status_page_set_description(
+            ADW_STATUS_PAGE(empty),
+            "Files sent in this conversation, by you or the agent, "
+            "appear here.");
+        adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), empty);
+        adw_dialog_set_child(dialog, toolbar);
+        adw_dialog_present(dialog, GTK_WIDGET(self));
+        return;
+    }
+
+    flow = gtk_flow_box_new();
+    gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(flow), GTK_SELECTION_NONE);
+    gtk_flow_box_set_homogeneous(GTK_FLOW_BOX(flow), TRUE);
+    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(flow), 8);
+    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(flow), 12);
+    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(flow), 12);
+    gtk_widget_set_valign(flow, GTK_ALIGN_START);
+    gtk_widget_set_margin_top(flow, 12);
+    gtk_widget_set_margin_bottom(flow, 12);
+    gtk_widget_set_margin_start(flow, 12);
+    gtk_widget_set_margin_end(flow, 12);
+
+    for (i = 0; i < json_array_get_length(items); i++) {
+        JsonObject *item = json_array_get_object_element(items, i);
+        const gchar *id = clawt_json_string(item, "id", NULL);
+        const gchar *path = clawt_json_string(item, "path", NULL);
+        const gchar *name = clawt_json_string(item, "name", "file");
+        gboolean exists = json_object_get_boolean_member_with_default(
+            item, "exists", FALSE);
+        g_autofree gchar *meta = gallery_meta(item);
+        GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        GtkWidget *label = gtk_label_new(name);
+        GtkWidget *sub = gtk_label_new(meta);
+        GtkWidget *button = gtk_button_new();
+
+        gtk_box_append(GTK_BOX(box),
+                       gallery_preview(self, item, i < GALLERY_PICTURES));
+
+        gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_MIDDLE);
+        gtk_label_set_max_width_chars(GTK_LABEL(label), 20);
+        gtk_label_set_ellipsize(GTK_LABEL(sub), PANGO_ELLIPSIZE_END);
+        gtk_label_set_max_width_chars(GTK_LABEL(sub), 24);
+        gtk_widget_add_css_class(sub, "dim-label");
+        gtk_widget_add_css_class(sub, "caption");
+        gtk_box_append(GTK_BOX(box), label);
+        gtk_box_append(GTK_BOX(box), sub);
+
+        gtk_button_set_child(GTK_BUTTON(button), box);
+        gtk_widget_add_css_class(button, "flat");
+        gtk_widget_set_tooltip_text(button, path != NULL ? path : name);
+
+        /*
+         * The target is the id, or an old message's host path; it is
+         * resolved to a local file only when somebody clicks, so opening
+         * the dialog fetches no more than the pictures it draws.
+         */
+        g_object_set_data_full(G_OBJECT(button), "target",
+                               g_strdup(id != NULL ? id : path), g_free);
+        gtk_widget_set_sensitive(button, exists);
+        g_signal_connect(button, "clicked",
+                         G_CALLBACK(on_gallery_tile_clicked), self);
+        add_context_menu(self, button, gallery_menu,
+                         G_N_ELEMENTS(gallery_menu), on_gallery_action,
+                         g_object_get_data(G_OBJECT(button), "target"));
+
+        gtk_flow_box_append(GTK_FLOW_BOX(flow), button);
+    }
+
+    scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), flow);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(scroll, TRUE);
+
+    adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), scroll);
+    adw_dialog_set_child(dialog, toolbar);
+    adw_dialog_present(dialog, GTK_WIDGET(self));
+}
+
+static void
+on_files_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+
+    clawt_gtk_show_conversation_files(user_data);
+}
+
 /*
  * The chat column's geometry, in one place.
  *
@@ -3033,11 +3375,12 @@ clawt_gtk_set_following(ClawtWindow *self, gboolean following)
  *
  *   ---------------------  New messages  ---------------------
  *
- * It stores nothing: no read receipt, no per-agent position, nothing on
- * disk.  It is exactly as durable as `following` itself, which is what
- * lets it promise something the client can always keep -- "these arrived
- * while you were up there" -- rather than "this is where you left off",
- * which would need state across restarts to be true.
+ * Drawn in two places.  Live, it says "these arrived while you were up
+ * there" and is exactly as durable as `following`.  On opening a
+ * conversation, it says "this is where you left off", from the read
+ * mark the daemon holds (`read_upto`, placed by clawt_unread_rule_index())
+ * -- which is the state across restarts that promise needs, kept once
+ * for every client rather than in this one.
  *
  * `accent` on the label rather than a colour, so the palette work
  * redefines it for free; the separators keep the platform colour,
@@ -3427,21 +3770,18 @@ on_attach_clicked(GtkButton *button, gpointer user_data)
 static gchar *
 body_with_attachments(ClawtWindow *self, const gchar *body)
 {
-    g_autoptr(GString) out = NULL;
+    GString *out = NULL;
     guint i;
 
     if (self->pending->len == 0)
         return g_strdup(body);
 
-    out = g_string_new(body);
-
-    if (out->len > 0)
-        g_string_append(out, "\n\n");
-
-    g_string_append(out,
-                    "[clawtilla] Files sent with this message. Open them "
-                    "with your own read tool at the host path below; it "
-                    "runs on the host even when your shell does not.\n");
+    /*
+     * The block itself is clawt_attachment_block_*()'s, shared with lrg
+     * and the web composer: one spelling of the format, so every client
+     * previews what every other one sent and attachment.list finds it.
+     */
+    out = clawt_attachment_block_new(body);
 
     for (i = 0; i < self->pending->len; i++) {
         Attachment *attachment = g_ptr_array_index(self->pending, i);
@@ -3459,48 +3799,32 @@ body_with_attachments(ClawtWindow *self, const gchar *body)
                                 "data", encoded, NULL));
 
         if (reply == NULL) {
-            g_string_append_printf(out, "- %s (could not be saved)\n",
-                                   attachment->name);
+            clawt_attachment_block_add_unsaved(out, attachment->name);
             continue;
         }
 
         {
+            /*
+             * Both paths and the id, as attachment.put reports them:
+             * the host path for the agent's own read tool, the guest
+             * path for a command inside its container, and the id for
+             * every client's preview -- remote, sandboxed, or after the
+             * exchange's cap swept the file.
+             */
             JsonObject *result = clawt_payload_of(reply);
-            const gchar *host = clawt_json_string(result, "host_path", "");
-            const gchar *guest = clawt_json_string(result, "path", "");
 
-            g_string_append_printf(out, "- %s\n  %s\n",
-                                   attachment->name, host);
-
-            /*
-             * Both paths, and the host one first, because they are for
-             * different tools.
-             *
-             * An agent's own read tool runs on the host even when its
-             * shell runs in a container -- so given only the container
-             * path it could stat the file with clawtilla_computer_exec
-             * and never open it, which is exactly what happened to the
-             * first image anybody sent.
-             */
-            if (g_strcmp0(host, guest) != 0)
-                g_string_append_printf(
-                    out, "  (inside your container: %s)\n", guest);
-
-            /*
-             * The daemon's own copy, by id: what every client previews
-             * from when it cannot open the host path itself -- remote,
-             * sandboxed, or after the exchange's cap swept the file.
-             */
-            if (clawt_json_string(result, "id", NULL) != NULL)
-                g_string_append_printf(out, "  clawt:%s\n",
-                                       clawt_json_string(result, "id", ""));
+            clawt_attachment_block_add(
+                out, attachment->name,
+                clawt_json_string(result, "host_path", ""),
+                clawt_json_string(result, "path", ""),
+                clawt_json_string(result, "id", NULL));
         }
     }
 
     g_ptr_array_set_size(self->pending, 0);
     refresh_attachment_strip(self);
 
-    return g_string_free(g_steal_pointer(&out), FALSE);
+    return g_string_free(out, FALSE);
 }
 
 /* ── Composing in $EDITOR ────────────────────────────────────────── */
@@ -4708,6 +5032,7 @@ clawt_gtk_load_history(ClawtWindow *self)
     g_autoptr(JsonNode) reply = NULL;
     JsonArray *messages;
     guint generation;
+    gint rule_at = -1;
     guint i;
 
     /*
@@ -4798,6 +5123,19 @@ clawt_gtk_load_history(ClawtWindow *self)
                                             "messages");
 
     /*
+     * Where the "New messages" rule goes: above the first message
+     * somebody else sent after the operator's read mark, which the
+     * daemon holds (`read_upto`) -- so the rule marks what is new since
+     * the conversation was last read anywhere, not only since this
+     * window last looked.  Not in a peer conversation, which the
+     * operator is not part of and has no mark in.
+     */
+    if (self->selected_conversation == NULL)
+        rule_at = clawt_unread_rule_index(
+            messages, clawt_json_string(clawt_payload_of(reply), "read_upto",
+                                        NULL));
+
+    /*
      * Messages and steps, merged on time.
      *
      * They are fetched separately -- one is the room's transcript, the
@@ -4862,6 +5200,17 @@ clawt_gtk_load_history(ClawtWindow *self)
             if (id != NULL)
                 g_hash_table_add(self->shown, g_strdup(id));
 
+            /*
+             * Above the message, as the live rule is: it labels the
+             * block underneath it.  The borrowed pointer is the same one
+             * the live rule uses, so reaching the bottom by hand clears
+             * either the same way.
+             */
+            if ((gint)i == rule_at && self->unread_marker == NULL) {
+                self->unread_marker = unread_marker_new();
+                gtk_box_append(self->transcript, self->unread_marker);
+            }
+
             clawt_gtk_append_round_marks(self,
                                      clawt_json_int(message, "round", 0),
                                      NULL, NULL, TRUE);
@@ -4908,6 +5257,23 @@ clawt_gtk_load_history(ClawtWindow *self)
     if (self->selected_room != NULL &&
         g_hash_table_remove(self->unread, self->selected_room))
         clawt_gtk_update_unread_tab(self);
+
+    /*
+     * And read for the daemon, up to the last message drawn -- after
+     * the history, never before it, because the history's `read_upto`
+     * is what placed the rule above.  Only when the daemon holds marks
+     * (it sent `read_upto`), and only in a conversation the operator is
+     * part of.
+     */
+    if (self->selected_conversation == NULL &&
+        json_object_has_member(clawt_payload_of(reply), "read_upto") &&
+        json_array_get_length(messages) > 0)
+        clawt_gtk_mark_room_read(
+            self, self->selected_room,
+            clawt_json_string(json_array_get_object_element(
+                                  messages,
+                                  json_array_get_length(messages) - 1),
+                              "id", NULL));
 
     clawt_gtk_set_following(self, TRUE);
     clawt_gtk_queue_scroll(self);
@@ -5226,6 +5592,7 @@ clawt_gtk_build_chat_page(ClawtWindow *self)
     GtkWidget *scroll = gtk_scrolled_window_new();
     GtkWidget *entry_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *attach;
+    GtkWidget *files;
     GtkWidget *send;
 
     /*
@@ -5423,6 +5790,18 @@ clawt_gtk_build_chat_page(ClawtWindow *self)
                                command_scroll);
     }
 
+    /*
+     * Every file this conversation has carried, in a grid: beside the
+     * paperclip, because it is the other half of the same thing.
+     */
+    files = gtk_button_new_from_icon_name("folder-pictures-symbolic");
+    gtk_widget_set_name(files, "clawt-conversation-files");
+    gtk_widget_set_tooltip_text(files, "Files in this conversation");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(files),
+                                   GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                   "Files in this conversation", -1);
+    g_signal_connect(files, "clicked", G_CALLBACK(on_files_clicked), self);
+
     attach = gtk_button_new_from_icon_name("mail-attachment-symbolic");
     gtk_widget_set_name(attach, "clawt-attach");
     gtk_widget_set_tooltip_text(attach,
@@ -5483,9 +5862,11 @@ clawt_gtk_build_chat_page(ClawtWindow *self)
         gtk_box_append(GTK_BOX(entry_box), overlay);
     }
 
+    gtk_widget_set_valign(files, GTK_ALIGN_END);
     gtk_widget_set_valign(attach, GTK_ALIGN_END);
     gtk_widget_set_valign(send, GTK_ALIGN_END);
     gtk_widget_set_valign(self->stop_turn, GTK_ALIGN_END);
+    gtk_box_append(GTK_BOX(entry_box), files);
     gtk_box_append(GTK_BOX(entry_box), attach);
     gtk_box_append(GTK_BOX(entry_box), self->stop_turn);
     gtk_box_append(GTK_BOX(entry_box), send);

@@ -260,6 +260,15 @@ clawt_alert_tier_for_event(ClawtEvent *event)
         return CLAWT_ALERT_SKIP;
 
     /*
+     * Bookkeeping about the notification list and the read marks.  Each
+     * says that something a person did has been recorded, and a row for
+     * it would be a notification about reading notifications.
+     */
+    if (g_strcmp0(kind, "notice.changed") == 0 ||
+        g_strcmp0(kind, "room.read") == 0)
+        return CLAWT_ALERT_SKIP;
+
+    /*
      * The two that arrive on their own.  Every other place a client says
      * something is answering a question somebody is holding right now,
      * and belongs in a toast rather than in a list.
@@ -410,6 +419,101 @@ clawt_alert_tier_for_event(ClawtEvent *event)
     }
 
     return CLAWT_ALERT_ROUTINE;
+}
+
+gchar *
+clawt_alert_text_for_event(ClawtEvent  *event,
+                           gchar      **out_source,
+                           gchar      **out_agent)
+{
+    const gchar *kind;
+    const gchar *subject;
+    const gchar *source;
+    const gchar *agent;
+    gchar *line = NULL;
+
+    if (out_source != NULL)
+        *out_source = NULL;
+
+    if (out_agent != NULL)
+        *out_agent = NULL;
+
+    g_return_val_if_fail(event != NULL, NULL);
+
+    if (clawt_alert_tier_for_event(event) == CLAWT_ALERT_SKIP)
+        return NULL;
+
+    kind = clawt_event_get_kind(event);
+    subject = clawt_event_get_subject(event);
+
+    /*
+     * The source and the agent default to the kind and the subject, which
+     * is what every row that is not said in a sentence of its own shows.
+     */
+    source = kind;
+    agent = subject;
+
+    if (g_strcmp0(kind, "message.refused") == 0) {
+        const gchar *from = clawt_event_get_detail(event, "from");
+        const gchar *to = clawt_event_get_detail(event, "to");
+        const gchar *reason = clawt_event_get_detail(event, "reason");
+
+        /*
+         * A refusal on the link path is invisible otherwise: the two
+         * agents just stop, and the conversation appears to trail off.
+         * About the sender, because the sender is the one that stopped.
+         */
+        line = g_strdup_printf("%s to %s was stopped: %s",
+                               from != NULL ? from : "?",
+                               to != NULL ? to : "?",
+                               reason != NULL ? reason : "a limit");
+        source = "message";
+        agent = from;
+    } else if (g_strcmp0(kind, "image.finished") == 0 &&
+               clawt_event_get_detail(event, "error") != NULL) {
+        line = g_strdup_printf("%s could not be downloaded: %s",
+                               subject != NULL ? subject : "?",
+                               clawt_event_get_detail(event, "error"));
+        source = "download";
+    } else if (g_strcmp0(kind, "routine.turned_off") == 0) {
+        /*
+         * The subject is the routine; the row is about the agent it runs
+         * as, which is what somebody narrows the list to.
+         */
+        line = clawt_routine_turned_off_alert(
+            subject, (guint)clawt_event_get_detail_int(event, "failures"),
+            clawt_event_get_detail(event, "error"));
+        agent = clawt_event_get_detail(event, "agent");
+    } else if (g_strcmp0(kind, "agent.state") == 0) {
+        const gchar *state = clawt_event_get_detail(event, "state");
+
+        line = g_strdup_printf("%s is %s", subject != NULL ? subject : "?",
+                               state != NULL ? state : "?");
+    } else if (g_strcmp0(kind, "task.tree_budget") == 0) {
+        /* named by what its root task was, not by an id */
+        line = clawt_loop_guard_tree_alert_text(
+            clawt_event_get_detail(event, "tree"),
+            (guint)clawt_event_get_detail_int(event, "count"),
+            (guint)clawt_event_get_detail_int(event, "limit"));
+    } else if (clawt_event_get_detail(event, "message") != NULL) {
+        /*
+         * An event that carries its own sentence -- agent.failover does:
+         * who, on what, why and until when -- says it, rather than
+         * "agent.failover · scout".
+         */
+        line = g_strdup(clawt_event_get_detail(event, "message"));
+    } else {
+        line = g_strdup_printf("%s \302\267 %s", kind != NULL ? kind : "?",
+                               subject != NULL ? subject : "the fleet");
+    }
+
+    if (out_source != NULL)
+        *out_source = g_strdup(source != NULL ? source : "");
+
+    if (out_agent != NULL && agent != NULL && *agent != '\0')
+        *out_agent = g_strdup(agent);
+
+    return line;
 }
 
 gboolean

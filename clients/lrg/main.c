@@ -122,11 +122,13 @@ static const gchar *license_text =
  * self-test never remembers: it runs against what it was told.
  */
 static ClawtConnection *
-choose_connection(gboolean remembered, GError **error)
+choose_connection(gboolean remembered, gboolean *from_last, gchar **notice,
+                  GError **error)
 {
     return clawt_connection_choose(
         opt_host, opt_port > 0 ? (guint16)opt_port : 0, opt_token,
-        opt_profile, opt_socket_path, NULL, NULL, remembered, error);
+        opt_profile, opt_socket_path, NULL, NULL, remembered, from_last,
+        notice, error);
 }
 
 int
@@ -136,6 +138,8 @@ main(int argc, char *argv[])
     g_autoptr(ClawtClient) client = NULL;
     g_autoptr(ClawtConnection) connection = NULL;
     g_autoptr(GError) error = NULL;
+    g_autofree gchar *notice = NULL;
+    gboolean from_last = FALSE;
     ClawtLrgApp *app;
     gint status;
 
@@ -178,7 +182,8 @@ main(int argc, char *argv[])
         opt_open = g_steal_pointer(&target);
     }
 
-    connection = choose_connection(opt_self_test == NULL, &error);
+    connection = choose_connection(opt_self_test == NULL, &from_last,
+                                   &notice, &error);
 
     if (connection == NULL) {
         g_printerr("%s: %s\n", CLAWT_LRG_BIN_NAME, error->message);
@@ -188,6 +193,18 @@ main(int argc, char *argv[])
     client = clawt_connection_create_client(connection);
     app = clawt_lrg_app_new(client, connection);
     app->open_target = g_steal_pointer(&opt_open);
+
+    /*
+     * Whether the daemon came from memory (the banner's Use Local) and
+     * what choosing it had to say (a toast once the window is up; on
+     * stderr too, like a connect that fails).
+     */
+    app->connection_remembered = from_last;
+
+    if (notice != NULL) {
+        g_printerr("%s: %s\n", CLAWT_LRG_BIN_NAME, notice);
+        app->start_notice = g_steal_pointer(&notice);
+    }
     status = clawt_lrg_app_run(app, opt_self_test);
     clawt_lrg_app_free(app);
 

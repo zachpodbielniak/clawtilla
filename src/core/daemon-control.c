@@ -44,7 +44,7 @@ on_update_found(ClawtUpdateCheck *check,
         "A newer clawtilla is available",
         version);
 
-    clawt_notifier_notify(self->notifier, notification);
+    clawt_daemon_notify(self, notification);
 }
 
 void

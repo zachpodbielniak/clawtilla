@@ -959,6 +959,33 @@ clawt_web_stylesheet(void)
     "margin-left:6px;}"
     /* Colour is never the only signal; the name goes bold beside it. */
     ".agent-row.is-unread .agent-name{font-weight:700;}"
+    /*
+     * A muted agent's pill: still there, so something is seen to be
+     * waiting, but faded -- it is in no total and asks for nothing.
+     */
+    ".unread-badge.is-muted{opacity:.45;}"
+    /*
+     * The Notifications page: a heading per section, and rows drawn as
+     * the alert rows were, each with its right-click menu after it.
+     */
+    ".notice-section{margin:18px 0 6px;font-size:14px;}"
+    "a.notice-row{display:block;color:inherit;text-decoration:none;}"
+    ".notices .row-menu{margin:0 0 8px;}"
+    /*
+     * An agent row's menu, drawn after the row and opened by a
+     * right-click (the page script).  The summary is there for the
+     * keyboard and kept small; the items appear only while it is open.
+     */
+    ".row-menu{margin:0 20px 4px;font-size:12px}"
+    ".row-menu>summary{cursor:pointer;color:var(--muted);"
+      "opacity:0.6;list-style:none;font-size:11px;padding:0 4px}"
+    ".row-menu>summary::-webkit-details-marker{display:none}"
+    ".row-menu:not([open])>summary{position:absolute;width:1px;height:1px;"
+      "overflow:hidden;clip:rect(0 0 0 0)}"
+    ".row-menu[open]{padding:6px;border:1px solid var(--line);"
+      "border-radius:8px;background:var(--surface)}"
+    ".row-menu-items{display:flex;flex-direction:column;gap:4px}"
+    ".mark-all-read{margin:4px 20px 8px;font-size:12px}"
     ".unread-rule{display:flex;align-items:center;gap:12px;margin:26px 0 22px;"
       "font-size:11px;letter-spacing:0.08em;text-transform:uppercase;"
       "color:var(--bad-fg)}"
@@ -1076,6 +1103,47 @@ clawt_web_stylesheet(void)
      * cursor that was aiming at it.
      */
     ".composer-inner .stop-turn{white-space:nowrap;flex:none}"
+    /*
+     * Attach sits beside Send at its height and never wraps, for the
+     * reason Stop does not; the chips above the row are the files that
+     * will go, each with its own x.
+     */
+    ".composer-inner .attach-pick{white-space:nowrap;flex:none;"
+      "cursor:pointer;align-self:stretch;display:flex;align-items:center}"
+    ".file-chips{max-width:var(--chat-measure);margin:0 auto;display:flex;"
+      "flex-wrap:wrap;gap:6px}"
+    ".file-chips:not(:empty){padding:8px 0 0}"
+    ".file-chip{display:inline-flex;align-items:center;gap:4px;"
+      "padding:2px 4px 2px 10px;border:1px solid var(--line);"
+      "border-radius:999px;background:var(--canvas);font-size:12px;"
+      "max-width:16rem;overflow:hidden;text-overflow:ellipsis;"
+      "white-space:nowrap}"
+    ".file-chip-drop{border:0;background:none;color:var(--muted);"
+      "cursor:pointer;font-size:14px;line-height:1;padding:0 4px}"
+    ".file-chip-drop:hover{color:var(--ink)}"
+    /*
+     * A conversation's Files page: tiles that wrap, each a fixed-height
+     * preview over a name and a line of who and when.  The preview box
+     * is the same for every kind so a grid of mixed files lines up.
+     */
+    ".file-grid{display:grid;gap:14px;"
+      "grid-template-columns:repeat(auto-fill,minmax(min(11rem,100%),1fr))}"
+    ".file-tile{display:flex;flex-direction:column;border:1px solid var(--line);"
+      "border-radius:8px;background:var(--surface);overflow:hidden;min-width:0}"
+    ".file-tile.file-gone{opacity:0.6}"
+    ".file-tile-thumb,.file-tile-text,.file-tile-label{height:9rem;width:100%;"
+      "margin:0;background:var(--canvas);box-sizing:border-box}"
+    ".file-tile-thumb{object-fit:contain;display:block}"
+    ".file-tile-text{padding:8px;font-family:var(--mono);font-size:11px;"
+      "overflow:hidden;white-space:pre;color:var(--ink)}"
+    ".file-tile-label{display:flex;align-items:center;justify-content:center;"
+      "color:var(--muted);font-size:13px;text-transform:uppercase}"
+    ".file-tile-caption{display:flex;flex-direction:column;gap:2px;"
+      "padding:8px 10px;min-width:0}"
+    ".file-tile-name{font-size:13px;overflow:hidden;text-overflow:ellipsis;"
+      "white-space:nowrap}"
+    ".file-tile-meta{font-size:11px;color:var(--muted);overflow:hidden;"
+      "text-overflow:ellipsis;white-space:nowrap}"
 
     /* ── Console ── */
     ".console{font-family:var(--mono);font-size:var(--mono-size);white-space:pre-wrap;"

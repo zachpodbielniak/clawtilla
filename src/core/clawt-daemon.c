@@ -977,7 +977,7 @@ pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
             CLAWT_NOTIFY_EVENTS_QUESTION, agent, NULL, title,
             g_hash_table_lookup(params, "body"));
 
-        clawt_notifier_notify(self->notifier, notification);
+        clawt_daemon_notify(self, notification);
         return TRUE;
     }
 
@@ -1615,7 +1615,7 @@ on_agent_state_changed(ClawtAgentManager *manager,
                                          : "is degraded",
         detail);
 
-    clawt_notifier_notify(self->notifier, notification);
+    clawt_daemon_notify(self, notification);
 }
 
 /*
@@ -2067,7 +2067,7 @@ on_task_changed(ClawtTaskManager *manager,
         config != NULL ? clawt_agent_config_get_string(config, "name") : NULL,
         "finished a task", summary);
 
-    clawt_notifier_notify(self->notifier, notification);
+    clawt_daemon_notify(self, notification);
 }
 
 /*
@@ -2122,7 +2122,7 @@ notify_user_message(ClawtDaemon *self, const gchar *from, const gchar *body,
 
     notification->room_id = g_strdup(room_id);
 
-    clawt_notifier_notify(self->notifier, notification);
+    clawt_daemon_notify(self, notification);
 }
 
 /*
@@ -5961,6 +5961,8 @@ release_components(ClawtDaemon *self)
     clawt_daemon_tree_teardown(self);
     clawt_daemon_crosstalk_teardown(self);
     clawt_daemon_handoff_teardown(self);
+    clawt_daemon_reads_teardown(self);
+    clawt_daemon_notices_teardown(self);
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
     clawt_daemon_policy_teardown(self);
@@ -8243,6 +8245,20 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_daemon_search_setup(self);
 
     /*
+     * The read marks, after the rooms are loaded -- the first open of
+     * the file seeds a mark at every room's newest message, and a room
+     * not yet loaded would be left to count its whole history.
+     */
+    clawt_daemon_reads_setup(self);
+
+    /*
+     * The notification list, after the bus and the read marks: its
+     * notice.list counts unread conversations from the marks, and it
+     * starts listening to the bus here.
+     */
+    clawt_daemon_notices_setup(self);
+
+    /*
      * After the tools exist, whose wait tools it supplies, and after
      * start can no longer refuse: it arms a timer, and one armed by a
      * daemon that never ran is one nothing takes down.
@@ -8448,6 +8464,8 @@ clawt_daemon_stop(ClawtDaemon *self)
     clawt_daemon_tree_teardown(self);
     clawt_daemon_crosstalk_teardown(self);
     clawt_daemon_handoff_teardown(self);
+    clawt_daemon_reads_teardown(self);
+    clawt_daemon_notices_teardown(self);
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
     clawt_daemon_policy_teardown(self);
@@ -11137,6 +11155,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_revision,
     clawt_daemon_handle_fleet,
     clawt_daemon_handle_room,
+    clawt_daemon_handle_notice,
     clawt_daemon_handle_mailbox,
     clawt_daemon_handle_task,
     clawt_daemon_handle_computer,

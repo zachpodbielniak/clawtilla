@@ -153,6 +153,47 @@ clawt_lrg_unread_clear(GHashTable *unread, const gchar *room_id)
 }
 
 gboolean
+clawt_lrg_unread_seed(GHashTable  *unread,
+                      JsonNode    *agents,
+                      JsonNode    *rooms,
+                      const gchar *viewing_room)
+{
+    g_autoptr(GHashTable) rows = NULL;
+    JsonArray *array;
+
+    if (unread == NULL || rooms == NULL)
+        return FALSE;
+
+    /*
+     * The same rows the live count is restricted to, so a seeded count
+     * is always on a row somebody can click to clear it.
+     */
+    rows = clawt_lrg_chat_row_rooms(agents, rooms);
+    array = reply_array(rooms, "rooms");
+
+    return clawt_unread_seed(unread, array, rows, viewing_room);
+}
+
+gboolean
+clawt_lrg_unread_apply_read(GHashTable  *unread,
+                            const gchar *room_id,
+                            gint64       count)
+{
+    if (unread == NULL || room_id == NULL)
+        return FALSE;
+
+    if (count <= 0)
+        return g_hash_table_remove(unread, room_id);
+
+    if (clawt_lrg_unread_count(unread, room_id) == (guint)count)
+        return FALSE;
+
+    g_hash_table_insert(unread, g_strdup(room_id),
+                        GUINT_TO_POINTER((guint)count));
+    return TRUE;
+}
+
+gboolean
 clawt_lrg_unread_prune(GHashTable *unread, GHashTable *rows)
 {
     GHashTableIter iter;
@@ -193,9 +234,15 @@ clawt_lrg_unread_total(GHashTable *unread)
 }
 
 guint
-clawt_lrg_unread_badge(GHashTable *unread, gboolean on_chat)
+clawt_lrg_unread_badge(GHashTable *unread, GHashTable *muted,
+                       gboolean on_chat)
 {
-    return on_chat ? 0 : clawt_lrg_unread_total(unread);
+    /*
+     * Less the muted agents' conversations: their pills stay on their
+     * rows, dimmed, and a mute is the operator asking for no number
+     * anywhere else (clawt_unread_total(), every client's rule).
+     */
+    return on_chat ? 0 : clawt_unread_total(unread, muted);
 }
 
 /* ── Typing ───────────────────────────────────────────────────────── */
@@ -1508,118 +1555,92 @@ clawt_lrg_looks_like_image(const gchar *path)
 void
 clawt_lrg_attachment_ref_free(ClawtLrgAttachmentRef *ref)
 {
-    if (ref == NULL)
-        return;
-
-    g_free(ref->value);
-    g_free(ref);
+    clawt_attachment_ref_free(ref);
 }
 
 GPtrArray *
 clawt_lrg_attachment_refs(const gchar *body)
 {
-    GPtrArray *refs = g_ptr_array_new_with_free_func(
-        (GDestroyNotify)clawt_lrg_attachment_ref_free);
-    g_auto(GStrv) lines = NULL;
-    gboolean in_block = FALSE;
-    gint item_path = -1;   /* this item's host-path ref, while it has one */
-    gboolean item_copy = FALSE;   /* this item already has a daemon copy */
-    gsize i;
+    /*
+     * The shared reader: lifted from here into libclawt so the web
+     * previews and attachment.list read blocks exactly as this did.
+     */
+    return clawt_attachment_refs_parse(body);
+}
 
-    if (body == NULL || strstr(body, CLAWT_ATTACHMENT_MARKER) == NULL)
-        return refs;
+/* ── A conversation's files ───────────────────────────────────────── */
 
-    lines = g_strsplit(body, "\n", -1);
+void
+clawt_lrg_gallery_row_free(ClawtLrgGalleryRow *row)
+{
+    if (row == NULL)
+        return;
 
-    for (i = 0; lines[i] != NULL; i++) {
-        const gchar *start;
-        ClawtLrgAttachmentRef *ref;
+    g_free(row->target);
+    g_free(row->name);
+    g_free(row->kind);
+    g_free(row->subtitle);
+    g_free(row);
+}
 
-        if (strstr(lines[i], CLAWT_ATTACHMENT_MARKER) != NULL) {
-            in_block = TRUE;
+GPtrArray *
+clawt_lrg_gallery_rows(JsonNode *reply)
+{
+    JsonArray *items = reply_array(reply, "items");
+    GPtrArray *rows = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_lrg_gallery_row_free);
+    guint i;
+
+    for (i = 0; items != NULL && i < json_array_get_length(items); i++) {
+        JsonObject *item = array_object(items, i);
+        const gchar *id = clawt_ipc_payload_string(item, "id");
+        const gchar *path = clawt_ipc_payload_string(item, "path");
+        const gchar *sender = clawt_ipc_payload_string(item, "sender");
+        const gchar *name = clawt_ipc_payload_string(item, "name");
+        const gchar *kind = clawt_ipc_payload_string(item, "kind");
+        gint64 ts = clawt_ipc_payload_int(item, "ts", 0);
+        gint64 bytes = clawt_ipc_payload_int(item, "bytes", 0);
+        g_autoptr(GDateTime) when = NULL;
+        g_autofree gchar *date = NULL;
+        g_autofree gchar *size = NULL;
+        ClawtLrgGalleryRow *row;
+
+        if (item == NULL || (id == NULL && path == NULL))
             continue;
-        }
 
-        if (!in_block)
-            continue;
+        row = g_new0(ClawtLrgGalleryRow, 1);
+        row->daemon_copy = id != NULL;
+        row->target = g_strdup(id != NULL ? id : path);
+        row->name = g_strdup(name != NULL ? name : row->target);
 
-        /*
-         * The block is its list items and their indented continuation
-         * lines; anything at the left margin ends it, so a path an agent
-         * quotes further down does not sprout a preview.  (Leaving on "no
-         * slash on this line" cost the first preview: every entry starts
-         * with a name line.)
-         */
-        if (lines[i][0] != '\0' && lines[i][0] != ' ' &&
-            lines[i][0] != '-' && lines[i][0] != '\t') {
-            in_block = FALSE;
-            continue;
-        }
+        /* the daemon's word for it, or the same rule from the name */
+        row->kind = g_strdup(kind != NULL ? kind
+                                          : clawt_attachment_kind(row->name));
+        row->exists = clawt_ipc_payload_boolean(item, "exists", FALSE);
 
-        /* a new item: none of its refs seen yet */
-        if (lines[i][0] == '-') {
-            item_path = -1;
-            item_copy = FALSE;
-        }
+        if (ts > 0)
+            when = g_date_time_new_from_unix_local(ts);
 
-        ref = g_new0(ClawtLrgAttachmentRef, 1);
+        if (when != NULL)
+            date = g_date_time_format(when, "%Y-%m-%d %H:%M");
 
-        /* an agent's file is `clawt:<id>`: the bytes are the daemon's */
-        start = strstr(lines[i], "clawt:");
+        if (bytes > 0)
+            size = g_format_size((guint64)bytes);
 
-        if (start != NULL) {
-            ref->daemon_copy = TRUE;
-            ref->value = g_strdup(start + strlen("clawt:"));
-        } else {
-            start = strchr(lines[i], '/');
+        /* the operator's own files are "you", as the transcript says */
+        row->subtitle = g_strdup_printf(
+            "%s%s%s%s%s",
+            g_strcmp0(sender, "user") == 0
+                ? "you" : (sender != NULL ? sender : ""),
+            date != NULL ? " \302\267 " : "", date != NULL ? date : "",
+            !row->exists ? " \302\267 gone"
+                         : (size != NULL ? " \302\267 " : ""),
+            row->exists && size != NULL ? size : "");
 
-            if (start == NULL) {
-                g_free(ref);
-                continue;
-            }
-
-            ref->value = g_strdup(start);
-        }
-
-        g_strstrip(ref->value);
-
-        /* the container path is in brackets; the host one is not */
-        if (*ref->value == '\0' || g_str_has_suffix(ref->value, ")")) {
-            clawt_lrg_attachment_ref_free(ref);
-            continue;
-        }
-
-        /*
-         * One ref per item, and the daemon's copy wins: an operator's
-         * file is named by its host path (for the agent) and by
-         * `clawt:<id>` (for the clients), and the path opens only on the
-         * daemon's own machine.
-         */
-        if (ref->daemon_copy) {
-            if (item_copy) {
-                clawt_lrg_attachment_ref_free(ref);
-                continue;
-            }
-
-            item_copy = TRUE;
-
-            if (item_path >= 0) {
-                g_ptr_array_remove_index(refs, (guint)item_path);
-                item_path = -1;
-            }
-        } else {
-            if (item_copy || item_path >= 0) {
-                clawt_lrg_attachment_ref_free(ref);
-                continue;
-            }
-
-            item_path = (gint)refs->len;
-        }
-
-        g_ptr_array_add(refs, ref);
+        g_ptr_array_add(rows, row);
     }
 
-    return refs;
+    return rows;
 }
 
 void
@@ -1644,46 +1665,21 @@ clawt_lrg_body_with_attachments(const gchar *body, GPtrArray *files)
     if (files == NULL || files->len == 0)
         return g_strdup(body != NULL ? body : "");
 
-    out = g_string_new(body);
-
-    if (out->len > 0)
-        g_string_append(out, "\n\n");
-
     /*
-     * Named in the message, because an agent reads files with its own
-     * tools and one it has not been told about is one it will not open.
+     * The shared block builder, so this client's messages are spelled
+     * exactly as GTK's and the web composer's are: the previews and
+     * the gallery all read the one format.
      */
-    g_string_append(out, CLAWT_ATTACHMENT_MARKER
-                         ". Open them with your own read tool at the host "
-                         "path below; it runs on the host even when your "
-                         "shell does not.\n");
+    out = clawt_attachment_block_new(body);
 
     for (i = 0; i < files->len; i++) {
         ClawtLrgSentFile *file = g_ptr_array_index(files, i);
 
-        if (!file->saved) {
-            g_string_append_printf(out, "- %s (could not be saved)\n",
-                                   file->name);
-            continue;
-        }
-
-        g_string_append_printf(out, "- %s\n  %s\n", file->name,
-                               file->host_path != NULL ? file->host_path : "");
-
-        /*
-         * Both paths, host first: given only the container one, an agent
-         * could stat the file with computer_exec and never open it.
-         */
-        if (g_strcmp0(file->host_path, file->path) != 0 && file->path != NULL)
-            g_string_append_printf(out, "  (inside your container: %s)\n",
-                                   file->path);
-
-        /*
-         * The daemon's own copy, by id: what every client previews from,
-         * since the host path opens only on the daemon's machine.
-         */
-        if (file->id != NULL)
-            g_string_append_printf(out, "  clawt:%s\n", file->id);
+        if (!file->saved)
+            clawt_attachment_block_add_unsaved(out, file->name);
+        else
+            clawt_attachment_block_add(out, file->name, file->host_path,
+                                       file->path, file->id);
     }
 
     return g_string_free(out, FALSE);

@@ -540,6 +540,467 @@ clawt_web_post_button(const gchar *label, const gchar *action,
     return (HtmxButton *)g_steal_pointer(&button);
 }
 
+HtmxElement *
+clawt_web_agent_row_menu(const gchar *agent_id, guint unread, gboolean muted)
+{
+    g_autoptr(HtmxElement) details = NULL;
+    g_autoptr(HtmxElement) summary = NULL;
+    g_autoptr(HtmxDiv) items = NULL;
+    g_autofree gchar *escaped = NULL;
+
+    if (agent_id == NULL)
+        return NULL;
+
+    details = HTMX_ELEMENT(htmx_details_new());
+    summary = HTMX_ELEMENT(htmx_summary_new());
+    items = htmx_div_new();
+    escaped = g_uri_escape_string(agent_id, NULL, FALSE);
+
+    htmx_element_add_class(details, "row-menu");
+    htmx_element_set_attribute(details, "data-agent", agent_id);
+
+    /*
+     * A summary that says what the menu is for, for a reader who opens
+     * it with the keyboard; the script opens it on right-click.
+     */
+    htmx_node_set_text_content(HTMX_NODE(summary), "Actions");
+    htmx_element_set_attribute(summary, "aria-label", "Agent actions");
+    htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(summary));
+    htmx_element_add_class(HTMX_ELEMENT(items), "row-menu-items");
+
+    /*
+     * Mark as read, worded with the count -- and present but disabled
+     * with nothing to read, as the GTK and lrg menus grey it: the menu
+     * always exists now that Mute is in it, and an item that comes and
+     * goes moves the one under it.
+     */
+    {
+        g_autofree gchar *action = g_strdup_printf("/a/%s/read", escaped);
+        g_autofree gchar *label = clawt_agent_menu_read_label(unread);
+        g_autoptr(HtmxButton) read = clawt_web_post_button(label, action,
+                                                           "default", NULL);
+
+        if (unread == 0)
+            htmx_element_set_attribute(HTMX_ELEMENT(read), "disabled",
+                                       "disabled");
+
+        clawt_web_add(items, g_steal_pointer(&read));
+    }
+
+    /*
+     * Mute notifications / Unmute, one item that flips, in libclawt's
+     * words.  A mute holds everywhere: every client's totals and the
+     * push and desktop notifiers.
+     */
+    {
+        g_autofree gchar *action = g_strdup_printf(
+            muted ? "/a/%s/unmute" : "/a/%s/mute", escaped);
+        g_autofree gchar *label = clawt_agent_menu_mute_label(muted);
+
+        clawt_web_add(items, clawt_web_post_button(label, action, "default",
+                                                   NULL));
+    }
+
+    htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(items));
+
+    return g_steal_pointer(&details);
+}
+
+/* ── The notification list (web-alerts.c draws the page) ─────────── */
+
+/*
+ * Readers for a reply's members, here rather than clawt_web_member() and
+ * its siblings, which live with the app and are not linked into the
+ * render test -- the reason object_member() above exists too.  A member
+ * that is missing, null, or of another type is the fallback.
+ */
+static const gchar *
+notice_string(JsonObject *object, const gchar *name, const gchar *fallback)
+{
+    JsonNode *node;
+
+    if (object == NULL || !json_object_has_member(object, name))
+        return fallback;
+
+    node = json_object_get_member(object, name);
+
+    if (!JSON_NODE_HOLDS_VALUE(node) ||
+        json_node_get_value_type(node) != G_TYPE_STRING)
+        return fallback;
+
+    return json_node_get_string(node);
+}
+
+static gint64
+notice_int(JsonObject *object, const gchar *name, gint64 fallback)
+{
+    JsonNode *node;
+
+    if (object == NULL || !json_object_has_member(object, name))
+        return fallback;
+
+    node = json_object_get_member(object, name);
+
+    if (!JSON_NODE_HOLDS_VALUE(node) ||
+        json_node_get_value_type(node) != G_TYPE_INT64)
+        return fallback;
+
+    return json_node_get_int(node);
+}
+
+static gboolean
+notice_bool(JsonObject *object, const gchar *name, gboolean fallback)
+{
+    JsonNode *node;
+
+    if (object == NULL || !json_object_has_member(object, name))
+        return fallback;
+
+    node = json_object_get_member(object, name);
+
+    if (!JSON_NODE_HOLDS_VALUE(node) ||
+        json_node_get_value_type(node) != G_TYPE_BOOLEAN)
+        return fallback;
+
+    return json_node_get_boolean(node);
+}
+
+/* A member array of a notice.list reply, or NULL. */
+static JsonArray *
+notices_array(JsonObject *reply, const gchar *member)
+{
+    if (reply == NULL || !json_object_has_member(reply, member) ||
+        !JSON_NODE_HOLDS_ARRAY(json_object_get_member(reply, member)))
+        return NULL;
+
+    return json_object_get_array_member(reply, member);
+}
+
+static gboolean
+notice_in_scope(const gchar *agent, const gchar *scope)
+{
+    return scope == NULL || g_strcmp0(agent, scope) == 0;
+}
+
+/* `?<key>=<value>`, escaped, on @path. */
+static gchar *
+notice_action(const gchar *path, const gchar *key, const gchar *value)
+{
+    g_autofree gchar *escaped = g_uri_escape_string(value != NULL ? value
+                                                                  : "",
+                                                    NULL, FALSE);
+
+    return g_strdup_printf("%s?%s=%s", path, key, escaped);
+}
+
+/*
+ * One row: a line, a caption, where it goes, and its menu as the next
+ * sibling -- the shape the agent list uses, so the page script's
+ * right-click handler opens it the same way.
+ */
+static void
+notice_row(HtmxDiv *list, const gchar *line, const gchar *caption,
+           const gchar *href, const gchar *tone, gboolean unread,
+           HtmxDiv *items)
+{
+    g_autoptr(HtmxElement) row = NULL;
+    g_autoptr(HtmxElement) details = HTMX_ELEMENT(htmx_details_new());
+    g_autoptr(HtmxElement) summary = HTMX_ELEMENT(htmx_summary_new());
+    g_autoptr(HtmxDiv) text = htmx_div_new();
+
+    row = (href != NULL) ? HTMX_ELEMENT(htmx_a_new_with_href(href))
+                         : HTMX_ELEMENT(htmx_div_new());
+    htmx_element_add_class(row, "notice-row");
+    htmx_element_add_class(row, "alert-row");
+
+    if (tone != NULL)
+        htmx_element_add_class(row, tone);
+
+    if (unread)
+        htmx_element_add_class(row, "alert-unread");
+
+    htmx_element_add_class(HTMX_ELEMENT(text), "alert-text");
+    htmx_node_set_text_content(HTMX_NODE(text), line != NULL ? line : "");
+    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(text));
+
+    if (caption != NULL && *caption != '\0') {
+        g_autoptr(HtmxDiv) meta = htmx_div_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(meta), "alert-meta");
+        htmx_element_add_class(HTMX_ELEMENT(meta), "muted");
+        htmx_node_set_text_content(HTMX_NODE(meta), caption);
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(meta));
+    }
+
+    htmx_node_add_child(HTMX_NODE(list), HTMX_NODE(row));
+
+    htmx_element_add_class(details, "row-menu");
+    htmx_node_set_text_content(HTMX_NODE(summary), "Actions");
+    htmx_element_set_attribute(summary, "aria-label", "Notification actions");
+    htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(summary));
+    htmx_element_add_class(HTMX_ELEMENT(items), "row-menu-items");
+    htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(items));
+    htmx_node_add_child(HTMX_NODE(list), HTMX_NODE(details));
+}
+
+static void
+notice_heading(HtmxDiv *view, const gchar *title, guint count)
+{
+    g_autofree gchar *text = g_strdup_printf("%s (%u)", title, count);
+    g_autoptr(HtmxHeading) heading = htmx_heading_new(3);
+
+    htmx_element_add_class(HTMX_ELEMENT(heading), "notice-section");
+    htmx_node_set_text_content(HTMX_NODE(heading), text);
+    htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(heading));
+}
+
+/* Appends @list under a heading when it holds anything. */
+static void
+notice_section(HtmxDiv *view, const gchar *title, guint count, HtmxDiv *list)
+{
+    if (count == 0)
+        return;
+
+    notice_heading(view, title, count);
+    htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(list));
+}
+
+static guint
+notice_chats(HtmxDiv *view, JsonObject *reply, const gchar *scope)
+{
+    JsonArray *chats = notices_array(reply, "chats");
+    g_autoptr(HtmxDiv) list = htmx_div_new();
+    guint count = 0;
+    guint i;
+
+    for (i = 0; chats != NULL && i < json_array_get_length(chats); i++) {
+        JsonObject *chat = json_array_get_object_element(chats, i);
+        const gchar *agent = notice_string(chat, "agent", NULL);
+        const gchar *room = notice_string(chat, "room", NULL);
+        guint unread = (guint)notice_int(chat, "unread", 0);
+        g_autofree gchar *line = NULL;
+        g_autofree gchar *href = NULL;
+        g_autofree gchar *read = NULL;
+        g_autofree gchar *label = NULL;
+        g_autoptr(HtmxDiv) items = htmx_div_new();
+
+        if (room == NULL || !notice_in_scope(agent, scope))
+            continue;
+
+        if (agent != NULL) {
+            href = clawt_web_agent_url(agent, CLAWT_PAGE_CHAT);
+        } else {
+            g_autofree gchar *escaped = g_uri_escape_string(room, NULL,
+                                                            FALSE);
+
+            href = g_strdup_printf("/r/%s", escaped);
+        }
+
+        line = g_strdup_printf("%s · %u unread",
+                               agent != NULL ? agent
+                                   : notice_string(chat, "name", room),
+                               unread);
+        read = notice_action("/alerts/chat-read", "room", room);
+        label = clawt_agent_menu_read_label(unread);
+        clawt_web_add(items, clawt_web_post_button(label, read, "default",
+                                                   NULL));
+
+        if (agent != NULL) {
+            g_autofree gchar *mute = notice_action("/alerts/mute", "agent",
+                                                   agent);
+            g_autofree gchar *words = clawt_agent_menu_mute_label(FALSE);
+
+            clawt_web_add(items, clawt_web_post_button(words, mute,
+                                                       "default", NULL));
+        }
+
+        notice_row(list, line, NULL, href, NULL, TRUE, items);
+        count++;
+    }
+
+    notice_section(view, "Chats", count, list);
+
+    return count;
+}
+
+static guint
+notice_decisions(HtmxDiv *view, JsonObject *reply, const gchar *scope)
+{
+    JsonArray *decisions = notices_array(reply, "decisions");
+    g_autoptr(HtmxDiv) list = htmx_div_new();
+    guint count = 0;
+    guint i;
+
+    for (i = 0; decisions != NULL && i < json_array_get_length(decisions);
+         i++) {
+        JsonObject *decision = json_array_get_object_element(decisions, i);
+        const gchar *agent = notice_string(decision, "agent", NULL);
+        g_autoptr(HtmxDiv) items = htmx_div_new();
+        g_autoptr(HtmxA) open = htmx_a_new_with_href("/decisions");
+
+        if (!notice_in_scope(agent, scope))
+            continue;
+
+        htmx_element_add_class(HTMX_ELEMENT(open), "btn");
+        htmx_node_set_text_content(HTMX_NODE(open), "Open Decisions");
+        htmx_node_add_child(HTMX_NODE(items), HTMX_NODE(open));
+
+        notice_row(list, notice_string(decision, "question", ""), agent,
+                   "/decisions", NULL, FALSE, items);
+        count++;
+    }
+
+    notice_section(view, "Decisions waiting", count, list);
+
+    return count;
+}
+
+static guint
+notice_grok(HtmxDiv *view, JsonObject *reply, const gchar *scope)
+{
+    JsonArray *jobs = notices_array(reply, "grok");
+    g_autoptr(HtmxDiv) list = htmx_div_new();
+    guint count = 0;
+    guint i;
+
+    for (i = 0; jobs != NULL && i < json_array_get_length(jobs); i++) {
+        JsonObject *job = json_array_get_object_element(jobs, i);
+        const gchar *agent = notice_string(job, "agent", NULL);
+        const gchar *note = notice_string(job, "note", NULL);
+        g_autofree gchar *line = NULL;
+        g_autofree gchar *href = NULL;
+        g_autofree gchar *escaped = NULL;
+        g_autofree gchar *remove = NULL;
+        g_autoptr(HtmxDiv) items = htmx_div_new();
+
+        if (!notice_in_scope(agent, scope))
+            continue;
+
+        line = g_strdup_printf("%s · %s", notice_string(job, "bot", "?"),
+                               notice_string(job, "state", "?"));
+        href = clawt_web_agent_url(agent, CLAWT_PAGE_GROK);
+        escaped = g_uri_escape_string(notice_string(job, "id", ""), NULL,
+                                      FALSE);
+        remove = g_strdup_printf("/grok/jobs/%s/remove", escaped);
+
+        /* asked first, in the daemon's words for that job's state */
+        clawt_web_add(items, clawt_web_post_button(
+            "Remove", remove, "danger",
+            notice_string(job, "remove_question",
+                             "Remove this job from the Grok page?")));
+
+        notice_row(list, line, note != NULL ? note : agent, href, NULL,
+                   FALSE, items);
+        count++;
+    }
+
+    notice_section(view, "Grok jobs needing attention", count, list);
+
+    return count;
+}
+
+static guint
+notice_alerts(HtmxDiv *view, JsonObject *reply, const gchar *scope,
+              gint64 now_us)
+{
+    JsonArray *notices = notices_array(reply, "notices");
+    g_autoptr(HtmxDiv) list = htmx_div_new();
+    guint count = 0;
+    guint i;
+
+    for (i = 0; notices != NULL && i < json_array_get_length(notices); i++) {
+        JsonObject *notice = json_array_get_object_element(notices, i);
+        const gchar *agent = notice_string(notice, "agent", NULL);
+        gboolean error = g_strcmp0(notice_string(notice, "tier", ""),
+                                   "error") == 0;
+        gboolean read = notice_bool(notice, "read", TRUE);
+        g_autofree gchar *id = g_strdup_printf(
+            "%" G_GINT64_FORMAT, notice_int(notice, "id", 0));
+        g_autofree gchar *when = clawt_time_ago_label(
+            notice_int(notice, "created_at", 0) * G_USEC_PER_SEC,
+            now_us);
+        g_autofree gchar *caption = g_strdup_printf(
+            "%s%s%s · %s", agent != NULL ? agent : "",
+            agent != NULL ? " · " : "", when,
+            notice_string(notice, "source", ""));
+        g_autofree gchar *dismiss = notice_action("/alerts/dismiss", "id",
+                                                  id);
+        g_autoptr(HtmxDiv) items = htmx_div_new();
+
+        if (!notice_in_scope(agent, scope))
+            continue;
+
+        if (!read) {
+            g_autofree gchar *mark = notice_action("/alerts/read", "id", id);
+
+            clawt_web_add(items, clawt_web_post_button("Mark read", mark,
+                                                       "default", NULL));
+        }
+
+        clawt_web_add(items, clawt_web_post_button("Dismiss", dismiss,
+                                                   "default", NULL));
+
+        if (agent != NULL && !notice_bool(notice, "muted", FALSE)) {
+            g_autofree gchar *mute = notice_action("/alerts/mute", "agent",
+                                                   agent);
+            g_autofree gchar *words = clawt_agent_menu_mute_label(FALSE);
+
+            clawt_web_add(items, clawt_web_post_button(words, mute,
+                                                       "default", NULL));
+        }
+
+        notice_row(list, notice_string(notice, "title", ""), caption, NULL,
+                   error ? "alert-error" : "alert-notice", !read, items);
+        count++;
+    }
+
+    notice_section(view, "Alerts", count, list);
+
+    return count;
+}
+
+HtmxElement *
+clawt_web_notices_sections(JsonObject  *reply,
+                           const gchar *agent,
+                           gint64       now_us,
+                           guint       *out_shown)
+{
+    g_autoptr(HtmxDiv) view = htmx_div_new();
+    guint shown = 0;
+
+    htmx_element_add_class(HTMX_ELEMENT(view), "notices");
+
+    /*
+     * By how much each wants somebody, as every client orders them: a
+     * conversation waiting to be read, an agent waiting for an answer,
+     * work stuck, and something that happened.
+     */
+    shown += notice_chats(view, reply, agent);
+    shown += notice_decisions(view, reply, agent);
+    shown += notice_grok(view, reply, agent);
+    shown += notice_alerts(view, reply, agent, now_us);
+
+    if (out_shown != NULL)
+        *out_shown = shown;
+
+    return HTMX_ELEMENT(g_steal_pointer(&view));
+}
+
+HtmxElement *
+clawt_web_mark_all_read_button(guint total)
+{
+    g_autoptr(HtmxButton) button = NULL;
+
+    if (total == 0)
+        return NULL;
+
+    button = clawt_web_post_button("Mark all as read", "/read-all",
+                                   "default", NULL);
+    htmx_element_add_class(HTMX_ELEMENT(button), "mark-all-read");
+
+    return HTMX_ELEMENT(g_steal_pointer(&button));
+}
+
 HtmxForm *
 clawt_web_form(const gchar *action)
 {
@@ -1594,7 +2055,31 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "e.preventDefault();"
         "if(q){q.focus();q.select();return;}"
         "if(a){navigation_go(a.href);}}});"
-        "var seen=-1,mark=false,keep=0;"
+        /*
+         * Right-click on an agent row, or a notification row, opens its
+         * menu -- the `<details class="row-menu">` drawn as the row's
+         * next sibling -- so the gesture that works in the GTK and lrg
+         * clients works here.  Delegated on `document`, because the
+         * sidebar is replaced on every fleet event.  A row with no menu
+         * keeps the browser's own.  The first item that is not disabled
+         * takes the focus.  A click anywhere else, or Escape, closes it.
+         */
+        "function close_menus(keep){"
+        "var all=document.querySelectorAll('details.row-menu[open]');"
+        "for(var i=0;i<all.length;i++){if(all[i]!==keep){all[i].open=false;}}}"
+        "document.addEventListener('contextmenu',function(e){"
+        "var row=e.target.closest?e.target.closest('.agent-row,.notice-row'):null;"
+        "if(!row){return;}"
+        "var m=row.nextElementSibling;"
+        "if(!m||!m.classList.contains('row-menu')){return;}"
+        "e.preventDefault();close_menus(m);m.open=true;"
+        "var b=m.querySelector('button:not([disabled])');if(b){b.focus();}});"
+        "document.addEventListener('click',function(e){"
+        "var m=e.target.closest?e.target.closest('details.row-menu'):null;"
+        "close_menus(m);});"
+        "document.addEventListener('keydown',function(e){"
+        "if(e.key==='Escape'){close_menus(null);}});"
+        "var seen=-1,mark=false,keep=0,held=-1;"
         "function box(){return document.getElementById('transcript');}"
         "function pill(){return document.getElementById('jump-pill');}"
         "function at_end(b){return b.scrollHeight-b.scrollTop-b.clientHeight<40;}"
@@ -1608,11 +2093,26 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "document.addEventListener('htmx:beforeSwap',function(e){"
         "var b=box();if(!b||e.detail.target.id!=='transcript'){return;}"
         "keep=b.scrollTop;"
-        "seen=at_end(b)?-1:b.querySelectorAll('.msg').length;});"
+        "seen=at_end(b)?-1:b.querySelectorAll('.msg').length;"
+        /*
+         * And where a "New messages" rule stands, counted in messages
+         * above it.  The daemon draws one on opening a conversation,
+         * from its read mark; the mark then moves to the end, so the
+         * next fragment comes back without it, and it is put back here
+         * at the same place rather than vanishing on the first event.
+         */
+        "held=-1;var r=document.getElementById('unread-rule');"
+        "if(r){var all=b.querySelectorAll('.msg,#unread-rule');held=0;"
+        "for(var i=0;i<all.length&&all[i]!==r;i++){held++;}}});"
         /* After: follow, or say what came in while we were not. */
         "document.addEventListener('htmx:afterSwap',function(e){"
         "var b=box();if(!b||e.detail.target.id!=='transcript'){return;}"
         "var msgs=b.querySelectorAll('.msg');"
+        "if(held>=0&&held<msgs.length&&!document.getElementById('unread-rule')){"
+        "var q=document.createElement('div');"
+        "q.className='unread-rule';q.id='unread-rule';"
+        "q.appendChild(document.createTextNode('New messages'));"
+        "msgs[held].parentNode.insertBefore(q,msgs[held]);}"
         "if(seen<0){b.scrollTop=b.scrollHeight;return;}"
         /*
          * Put back where they were reading. The swap replaces the whole
@@ -1625,7 +2125,7 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "b.scrollTop=keep;"
         "if(msgs.length<=seen){return;}"
         "var p=pill();if(p){p.classList.add('on');}"
-        "if(mark){return;}"
+        "if(mark||document.getElementById('unread-rule')){return;}"
         "var r=document.createElement('div');"
         "r.className='unread-rule';r.id='unread-rule';"
         "r.appendChild(document.createTextNode('New messages'));"
@@ -1889,6 +2389,65 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "if(!l[i]){continue;}"
         "var act=l[i].querySelector('.completion-active');"
         "if(act){act.classList.remove('completion-active');}}});"
+        /*
+         * Files sent with a message: paste, drop, and the chips.
+         *
+         * Everything goes through the composer's one file input, so
+         * what is posted is exactly what the chips show -- the chips
+         * are redrawn from `input.files` rather than kept beside it.
+         * DataTransfer is the only way a page may set an input's
+         * files, which is what lets a pasted screenshot and a dropped
+         * PDF join whatever the picker already chose.  Delegated from
+         * the document, as everything here is, because htmx replaces
+         * the composer on a swap.
+         */
+        "function picked(){return document.getElementById('composer-files');}"
+        "function chips(){var i=picked(),c=document.getElementById("
+        "'composer-chips');if(!i||!c){return;}c.textContent='';"
+        "Array.prototype.forEach.call(i.files,function(f,n){"
+        "var s=document.createElement('span');s.className='file-chip';"
+        "s.appendChild(document.createTextNode(f.name));"
+        "var x=document.createElement('button');x.type='button';"
+        "x.className='file-chip-drop';x.dataset.index=String(n);"
+        "x.setAttribute('aria-label','Do not send '+f.name);"
+        "x.textContent='\\u00d7';s.appendChild(x);c.appendChild(s);});}"
+        "function add_files(list){var i=picked();"
+        "if(!i||!list||!list.length||typeof DataTransfer==='undefined'){"
+        "return false;}var d=new DataTransfer();"
+        "Array.prototype.forEach.call(i.files,function(f){d.items.add(f);});"
+        "Array.prototype.forEach.call(list,function(f){d.items.add(f);});"
+        "i.files=d.files;chips();return true;}"
+        "document.addEventListener('change',function(e){"
+        "if(e.target&&e.target.id==='composer-files'){chips();}});"
+        "document.addEventListener('click',function(e){"
+        "var b=e.target.closest?e.target.closest('.file-chip-drop'):null;"
+        "var i=picked();if(!b||!i){return;}e.preventDefault();"
+        "var k=parseInt(b.dataset.index,10),d=new DataTransfer();"
+        "Array.prototype.forEach.call(i.files,function(f,n){"
+        "if(n!==k){d.items.add(f);}});i.files=d.files;chips();});"
+        /*
+         * A paste with files in it is an attachment; a paste of text
+         * is left alone, so copying a paragraph still types it.
+         */
+        "document.addEventListener('paste',function(e){"
+        "if(!e.target||e.target.id!=='composer-body'){return;}"
+        "var c=e.clipboardData;if(!c||!c.files||!c.files.length){return;}"
+        "if(add_files(c.files)){e.preventDefault();}});"
+        "function over_composer(e){return e.target&&e.target.closest&&"
+        "e.target.closest('.composer')&&picked();}"
+        "document.addEventListener('dragover',function(e){"
+        "if(over_composer(e)){e.preventDefault();}});"
+        "document.addEventListener('drop',function(e){"
+        "if(!over_composer(e)||!e.dataTransfer||"
+        "!e.dataTransfer.files.length){return;}"
+        "if(add_files(e.dataTransfer.files)){e.preventDefault();}});"
+        /*
+         * After a send the form is reset, which empties the input but
+         * fires before it does -- so the chips are redrawn a tick later.
+         */
+        "document.addEventListener('reset',function(e){"
+        "if(e.target&&e.target.querySelector&&"
+        "e.target.querySelector('#composer-files')){setTimeout(chips,0);}});"
         /*
          * A profile picture, larger.
          *

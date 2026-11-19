@@ -6,7 +6,8 @@
  *
  * This file is part of clawtilla.
  *
- * clients/lrg/lrg-chat-model.c, without libregnum.  Keyed state is
+ * clients/lrg/lrg-chat-model.c (and the notifications drawer's two
+ * decisions in lrg-alerts-model.c), without libregnum.  Keyed state is
  * tested with two keys -- two rooms, two agents -- because a test with
  * one key cannot see a shared-scalar bug (AGENTS.md).
  */
@@ -18,6 +19,7 @@
 
 #include "../clients/lrg/lrg-chat-model.c"
 #include "../clients/lrg/lrg-agent-model.c"
+#include "../clients/lrg/lrg-alerts-model.c"
 
 /* ── Fixtures ─────────────────────────────────────────────────────── */
 
@@ -148,8 +150,80 @@ test_unread_two_rooms(void)
     g_assert_cmpuint(clawt_lrg_unread_total(unread), ==, 1);
 
     /* the tab hides the number while the chat page is the one showing */
-    g_assert_cmpuint(clawt_lrg_unread_badge(unread, TRUE), ==, 0);
-    g_assert_cmpuint(clawt_lrg_unread_badge(unread, FALSE), ==, 1);
+    g_assert_cmpuint(clawt_lrg_unread_badge(unread, NULL, TRUE), ==, 0);
+    g_assert_cmpuint(clawt_lrg_unread_badge(unread, NULL, FALSE), ==, 1);
+}
+
+/*
+ * The daemon's counts, taken from room.list: every room with a row gets
+ * the daemon's number, the room on screen and a zero are dropped, and a
+ * peer room -- no row to clear it from -- is never seeded.  Two rooms,
+ * so a seed that wrote one key for all would show.  Regressing this is a
+ * window that opens showing nothing for conversations read nowhere, or
+ * one that keeps a count another client already cleared.
+ */
+static void
+test_unread_seed(void)
+{
+    g_autoptr(JsonNode) agents = parse(AGENTS_JSON);
+    g_autoptr(JsonNode) rooms = parse(
+        "{\"rooms\":["
+        "{\"id\":\"dm:ann:user\",\"unread\":3,\"read_upto\":\"\"},"
+        "{\"id\":\"dm:ann:chief\",\"unread\":9,\"read_upto\":\"\"},"
+        "{\"id\":\"war\",\"declared\":true,\"unread\":2,"
+        " \"read_upto\":\"x\"},"
+        "{\"id\":\"lobby\",\"declared\":true,\"unread\":0,"
+        " \"read_upto\":\"y\"}"
+        "]}");
+    g_autoptr(JsonNode) old_daemon = parse(ROOMS_JSON);
+    g_autoptr(GHashTable) unread = new_unread();
+
+    /* a count the daemon now says is zero goes */
+    g_hash_table_insert(unread, g_strdup("lobby"), GUINT_TO_POINTER(5));
+
+    g_assert_true(clawt_lrg_unread_seed(unread, agents, rooms, NULL));
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "dm:ann:user"), ==, 3);
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "war"), ==, 2);
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "lobby"), ==, 0);
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "dm:ann:chief"), ==, 0);
+    g_assert_cmpuint(clawt_lrg_unread_total(unread), ==, 5);
+
+    /* the room on screen never shows a count, whatever the daemon says */
+    g_assert_true(clawt_lrg_unread_seed(unread, agents, rooms, "war"));
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "war"), ==, 0);
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "dm:ann:user"), ==, 3);
+
+    /* a daemon without marks leaves the live count alone */
+    g_hash_table_insert(unread, g_strdup("lobby"), GUINT_TO_POINTER(1));
+    g_assert_false(clawt_lrg_unread_seed(unread, agents, old_daemon, NULL));
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "lobby"), ==, 1);
+}
+
+/*
+ * A `room.read` event: that room takes the daemon's count -- 0 clears
+ * it, a mark set short of the end leaves the rest -- and the other room
+ * is untouched.  Regressing this leaves a badge lit in this client for
+ * a conversation read in another one.
+ */
+static void
+test_unread_apply_read(void)
+{
+    g_autoptr(GHashTable) unread = new_unread();
+
+    g_hash_table_insert(unread, g_strdup("dm:ann:user"), GUINT_TO_POINTER(3));
+    g_hash_table_insert(unread, g_strdup("war"), GUINT_TO_POINTER(2));
+
+    g_assert_true(clawt_lrg_unread_apply_read(unread, "dm:ann:user", 0));
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "dm:ann:user"), ==, 0);
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "war"), ==, 2);
+
+    /* already clear: nothing changed, nothing to redraw */
+    g_assert_false(clawt_lrg_unread_apply_read(unread, "dm:ann:user", 0));
+
+    g_assert_true(clawt_lrg_unread_apply_read(unread, "war", 1));
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "war"), ==, 1);
+    g_assert_false(clawt_lrg_unread_apply_read(unread, "war", 1));
+    g_assert_false(clawt_lrg_unread_apply_read(unread, NULL, 0));
 }
 
 static void
@@ -993,6 +1067,52 @@ test_attachment_prefers_the_daemon_copy(void)
                      g_ptr_array_index(old, 1))->value, ==, "b1");
 }
 
+/*
+ * The Files panel's tiles from attachment.list: newest first as the
+ * daemon gives them, "you" for the operator, a gone file said so and
+ * not offered a size, an old message's host path as the target, and an
+ * item with nothing to open skipped.
+ *
+ * What breaks without it: the libregnum Files panel draws exactly these
+ * rows, so a wrong target opens nothing and a wrong `exists` offers a
+ * tile that cannot be opened.
+ */
+static void
+test_gallery_rows(void)
+{
+    g_autoptr(JsonNode) reply = parse(
+        "{\"room\":\"dm:user:scout\",\"items\":["
+        "{\"id\":\"1-paper.pdf\",\"name\":\"paper.pdf\",\"kind\":\"pdf\","
+        " \"bytes\":2048,\"exists\":true,\"message\":\"m2\","
+        " \"sender\":\"scout\",\"ts\":0},"
+        "{\"path\":\"/h/old.png\",\"name\":\"old.png\",\"kind\":\"image\","
+        " \"bytes\":0,\"exists\":false,\"message\":\"m1\","
+        " \"sender\":\"user\",\"ts\":0},"
+        "{\"name\":\"nothing\",\"kind\":\"other\",\"exists\":false}]}");
+    g_autoptr(GPtrArray) rows = clawt_lrg_gallery_rows(reply);
+    g_autoptr(GPtrArray) empty = clawt_lrg_gallery_rows(NULL);
+    ClawtLrgGalleryRow *row;
+
+    g_assert_cmpuint(rows->len, ==, 2);
+
+    row = g_ptr_array_index(rows, 0);
+    g_assert_true(row->daemon_copy);
+    g_assert_cmpstr(row->target, ==, "1-paper.pdf");
+    g_assert_cmpstr(row->kind, ==, "pdf");
+    g_assert_true(row->exists);
+    g_assert_true(g_str_has_prefix(row->subtitle, "scout"));
+    g_assert_nonnull(strstr(row->subtitle, "kB"));
+
+    row = g_ptr_array_index(rows, 1);
+    g_assert_false(row->daemon_copy);
+    g_assert_cmpstr(row->target, ==, "/h/old.png");
+    g_assert_false(row->exists);
+    g_assert_true(g_str_has_prefix(row->subtitle, "you"));
+    g_assert_nonnull(strstr(row->subtitle, "gone"));
+
+    g_assert_cmpuint(empty->len, ==, 0);
+}
+
 /* ── Mentions and conversations ───────────────────────────────────── */
 
 static void
@@ -1262,6 +1382,55 @@ test_inline_decision_follows_the_inbox(void)
                     ==, CLAWT_LRG_INLINE_NONE);
 }
 
+/*
+ * A muted agent's pill is drawn (dimmed) but counted nowhere: the Chat
+ * tab's number leaves its conversation out, a group room and an unmuted
+ * agent still count, and the number still hides on the Chat page.  The
+ * muted set is taken from each notice.list and reports whether it moved,
+ * which is when the sidebar redraws.  Regressing it is a mute that
+ * leaves the tab lit, or a sidebar redrawn on every message.
+ */
+static void
+test_a_muted_pill_is_not_in_the_total(void)
+{
+    g_autoptr(GHashTable) unread = g_hash_table_new_full(g_str_hash,
+                                                         g_str_equal,
+                                                         g_free, NULL);
+    g_autoptr(GHashTable) muted = g_hash_table_new_full(g_str_hash,
+                                                        g_str_equal,
+                                                        g_free, NULL);
+    g_autoptr(GHashTable) from = g_hash_table_new_full(g_str_hash,
+                                                       g_str_equal, g_free,
+                                                       NULL);
+
+    g_hash_table_insert(unread, g_strdup("dm:scout:user"),
+                        GUINT_TO_POINTER(2));
+    g_hash_table_insert(unread, g_strdup("dm:lead:user"),
+                        GUINT_TO_POINTER(5));
+    g_hash_table_insert(unread, g_strdup("standup"), GUINT_TO_POINTER(1));
+
+    g_assert_cmpuint(clawt_lrg_unread_badge(unread, muted, FALSE), ==, 8);
+
+    g_hash_table_add(from, g_strdup("lead"));
+    g_assert_true(clawt_lrg_muted_take(muted, from));
+    g_assert_false(clawt_lrg_muted_take(muted, from));
+    g_assert_cmpuint(clawt_lrg_unread_badge(unread, muted, FALSE), ==, 3);
+    g_assert_cmpuint(clawt_lrg_unread_badge(unread, muted, TRUE), ==, 0);
+
+    /* the row itself still has its count, for the dimmed pill */
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "dm:lead:user"), ==, 5);
+
+    /* unmuted by the next list: counted again */
+    g_assert_true(clawt_lrg_muted_take(muted, NULL));
+    g_assert_cmpuint(clawt_lrg_unread_badge(unread, muted, FALSE), ==, 8);
+
+    /* a narrowed drawer shows one agent's rows; an open one shows all */
+    g_assert_true(clawt_lrg_notice_in_scope("lead", NULL));
+    g_assert_true(clawt_lrg_notice_in_scope("lead", "lead"));
+    g_assert_false(clawt_lrg_notice_in_scope("scout", "lead"));
+    g_assert_false(clawt_lrg_notice_in_scope(NULL, "lead"));
+}
+
 gint
 main(gint argc, gchar **argv)
 {
@@ -1270,6 +1439,8 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg/chat/unread/rows", test_row_rooms);
     g_test_add_func("/lrg/chat/unread/two-rooms", test_unread_two_rooms);
     g_test_add_func("/lrg/chat/unread/prune", test_unread_prune);
+    g_test_add_func("/lrg/chat/unread/seed", test_unread_seed);
+    g_test_add_func("/lrg/chat/unread/apply-read", test_unread_apply_read);
     g_test_add_func("/lrg/chat/typing/level", test_typing_is_a_level_per_room);
     g_test_add_func("/lrg/chat/typing/forget", test_typing_forget);
     g_test_add_func("/lrg/chat/typing/activity", test_typing_activity);
@@ -1295,6 +1466,7 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg/chat/steps/trim-notice", test_step_trim_notice);
     g_test_add_func("/lrg/chat/attachments/refs", test_attachment_refs);
     g_test_add_func("/lrg/chat/attachments/body", test_body_with_attachments);
+    g_test_add_func("/lrg/chat/attachments/gallery-rows", test_gallery_rows);
     g_test_add_func("/lrg/chat/attachments/prefers-daemon-copy",
                     test_attachment_prefers_the_daemon_copy);
     g_test_add_func("/lrg/chat/mentions", test_mentions);
@@ -1308,6 +1480,9 @@ main(gint argc, gchar **argv)
                     test_inline_decisions_are_placed);
     g_test_add_func("/lrg/chat/inline-decisions/follow-the-inbox",
                     test_inline_decision_follows_the_inbox);
+
+    g_test_add_func("/lrg-models/chat/muted-pill-not-in-total",
+                    test_a_muted_pill_is_not_in_the_total);
 
     return g_test_run();
 }

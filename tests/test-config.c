@@ -15,6 +15,7 @@
 
 #include <glib/gstdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "clawt-test-util.h"
 
@@ -2185,6 +2186,104 @@ test_a_misspelt_enum_falls_back_and_is_reported(void)
     g_assert_true(mentioned);
 }
 
+/*
+ * grok.attention_days and grok.retention_days: the schema's defaults
+ * (3 and 30, since 0.52.0) are what an unset config reads, a value set
+ * survives the write-and-read round trip, and unsetting goes back to the
+ * default.  Regressing it documents one window and runs another.
+ */
+static void
+test_the_grok_windows_round_trip(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtConfig) reread = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *text = NULL;
+    const ClawtSchemaEntry *attention =
+        clawt_config_schema_lookup("grok.attention_days");
+    const ClawtSchemaEntry *retention =
+        clawt_config_schema_lookup("grok.retention_days");
+
+    g_assert_nonnull(attention);
+    g_assert_nonnull(retention);
+    g_assert_cmpstr(attention->default_value, ==, "3");
+    g_assert_cmpstr(retention->default_value, ==, "30");
+    g_assert_cmpstr(attention->since, ==, "0.52.0");
+    g_assert_cmpstr(retention->since, ==, "0.52.0");
+
+    config = clawt_config_load_from_string("agents:\n  - id: worker\n",
+                                           &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(clawt_config_get_int(config, "grok.attention_days"), ==, 3);
+    g_assert_cmpint(clawt_config_get_int(config, "grok.retention_days"), ==,
+                    30);
+
+    g_assert_true(clawt_config_set_int(config, "grok.attention_days", 0));
+    g_assert_true(clawt_config_set_int(config, "grok.retention_days", 90));
+
+    text = clawt_config_to_string(config);
+    reread = clawt_config_load_from_string(text, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(clawt_config_get_int(reread, "grok.attention_days"), ==,
+                    0);
+    g_assert_cmpint(clawt_config_get_int(reread, "grok.retention_days"), ==,
+                    90);
+
+    g_assert_true(clawt_config_unset(reread, "grok.retention_days"));
+    g_assert_cmpint(clawt_config_get_int(reread, "grok.retention_days"), ==,
+                    30);
+}
+
+/*
+ * notices.keep and notices.keep_days: the schema's defaults (500 and 30,
+ * since 0.52.0) are what an unset config reads, a value set survives the
+ * write-and-read round trip, and unsetting goes back to the default.
+ * Regressing it documents one retention and prunes to another.
+ */
+static void
+test_the_notice_retention_round_trips(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtConfig) reread = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *text = NULL;
+    const ClawtSchemaEntry *keep =
+        clawt_config_schema_lookup("notices.keep");
+    const ClawtSchemaEntry *days =
+        clawt_config_schema_lookup("notices.keep_days");
+
+    g_assert_nonnull(keep);
+    g_assert_nonnull(days);
+    g_assert_cmpstr(keep->default_value, ==, "500");
+    g_assert_cmpstr(days->default_value, ==, "30");
+    g_assert_cmpstr(keep->since, ==, "0.52.0");
+    g_assert_cmpstr(days->since, ==, "0.52.0");
+    g_assert_cmpint(atoi(keep->default_value), ==,
+                    CLAWT_NOTICES_KEEP_DEFAULT);
+    g_assert_cmpint(atoi(days->default_value), ==,
+                    CLAWT_NOTICES_KEEP_DAYS_DEFAULT);
+
+    config = clawt_config_load_from_string("agents:\n  - id: worker\n",
+                                           &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(clawt_config_get_int(config, "notices.keep"), ==, 500);
+    g_assert_cmpint(clawt_config_get_int(config, "notices.keep_days"), ==,
+                    30);
+
+    g_assert_true(clawt_config_set_int(config, "notices.keep", 50));
+    g_assert_true(clawt_config_set_int(config, "notices.keep_days", 0));
+
+    text = clawt_config_to_string(config);
+    reread = clawt_config_load_from_string(text, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(clawt_config_get_int(reread, "notices.keep"), ==, 50);
+    g_assert_cmpint(clawt_config_get_int(reread, "notices.keep_days"), ==,
+                    0);
+
+    g_assert_true(clawt_config_unset(reread, "notices.keep"));
+    g_assert_cmpint(clawt_config_get_int(reread, "notices.keep"), ==, 500);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2312,6 +2411,10 @@ main(int argc, char *argv[])
     g_test_add_func(
         "/config/an-orchestrators-routing-defaults-to-agent",
         test_an_orchestrators_routing_defaults_to_agent);
+    g_test_add_func("/config/grok-windows-round-trip",
+                    test_the_grok_windows_round_trip);
+    g_test_add_func("/config/notice-retention-round-trip",
+                    test_the_notice_retention_round_trips);
 
     return g_test_run();
 }

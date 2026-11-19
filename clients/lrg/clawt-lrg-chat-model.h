@@ -84,6 +84,42 @@ gboolean clawt_lrg_unread_clear(GHashTable *unread, const gchar *room_id);
  */
 gboolean clawt_lrg_unread_prune(GHashTable *unread, GHashTable *rows);
 
+/**
+ * clawt_lrg_unread_seed:
+ * @unread: the table
+ * @agents: (nullable): an `agent.list` reply
+ * @rooms: (nullable): a `room.list` reply
+ * @viewing_room: (nullable): the room on screen
+ *
+ * Takes the daemon's counts from a `room.list` reply, for every room
+ * the sidebar draws (clawt_unread_seed() with
+ * clawt_lrg_chat_row_rooms()).  The daemon holds the read marks, so a
+ * conversation read in another client, or before a restart, is read
+ * here too.  A daemon too old to send `unread` changes nothing.
+ *
+ * Returns: %TRUE if the daemon supplied counts
+ */
+gboolean clawt_lrg_unread_seed(GHashTable  *unread,
+                               JsonNode    *agents,
+                               JsonNode    *rooms,
+                               const gchar *viewing_room);
+
+/**
+ * clawt_lrg_unread_apply_read:
+ * @unread: the table
+ * @room_id: (nullable): the `room.read` event's subject
+ * @count: the event's `unread`, the count left after the mark
+ *
+ * A conversation was read somewhere -- this client, another one, the
+ * CLI: its count becomes the daemon's, which is 0 unless the mark was
+ * set short of the newest message.
+ *
+ * Returns: %TRUE if the table changed
+ */
+gboolean clawt_lrg_unread_apply_read(GHashTable  *unread,
+                                     const gchar *room_id,
+                                     gint64       count);
+
 /* The count for one room, and across all of them. */
 guint clawt_lrg_unread_count(GHashTable *unread, const gchar *room_id);
 guint clawt_lrg_unread_total(GHashTable *unread);
@@ -91,15 +127,20 @@ guint clawt_lrg_unread_total(GHashTable *unread);
 /**
  * clawt_lrg_unread_badge:
  * @unread: the table
+ * @muted: (nullable): the muted agents, as a set; their conversations
+ *   are not counted (clawt_unread_total())
  * @on_chat: whether the Chat page is the one showing
  *
  * The number on the Chat tab.  Hidden while the Chat page is on screen:
  * the sidebar beside it says *which* conversation, which is strictly
- * more, and this client's sidebar never collapses.
+ * more, and this client's sidebar never collapses.  A muted agent's pill
+ * stays on its row, dimmed, and is not in this number.
  *
  * Returns: the count to draw, 0 for none
  */
-guint clawt_lrg_unread_badge(GHashTable *unread, gboolean on_chat);
+guint clawt_lrg_unread_badge(GHashTable *unread,
+                             GHashTable *muted,
+                             gboolean    on_chat);
 
 /* ── Typing ───────────────────────────────────────────────────────── */
 
@@ -196,6 +237,9 @@ gchar *clawt_lrg_typing_activity(gboolean typing_now, const gchar *peer);
  * @can_interrupt: whether it offers Stop-this-turn
  * @standing: chief, lead or neither
  * @unread: messages in @dm_room nobody has read
+ * @muted: whether the agent is muted (`notice.mute`): its pill is drawn
+ *   dimmed, and the row does not ask for attention; set by the caller,
+ *   which holds the muted set
  * @fallback: (nullable): "On fallback" while it runs on one of its
  *   model.fallbacks, from clawt_failover_sidebar_badge()
  * @fallback_message: (nullable): the sentence saying why and until when
@@ -222,6 +266,7 @@ typedef struct {
     gboolean        can_interrupt;
     ClawtTeamBadge  standing;
     guint           unread;
+    gboolean        muted;
     gchar          *fallback;
     gchar          *fallback_message;
 } ClawtLrgAgentRow;
@@ -614,14 +659,12 @@ gboolean clawt_lrg_looks_like_image(const gchar *path);
 
 /**
  * ClawtLrgAttachmentRef:
- * @daemon_copy: %TRUE for `clawt:<id>` (an agent's file, fetched with
- *   `attachment.get`), %FALSE for a host path
- * @value: the id or the path
+ *
+ * One file an attachment block names: libclawt's #ClawtAttachmentRef
+ * (@daemon_copy, @value, @name), under the name this client's code has
+ * always used for it.
  */
-typedef struct {
-    gboolean  daemon_copy;
-    gchar    *value;
-} ClawtLrgAttachmentRef;
+typedef ClawtAttachmentRef ClawtLrgAttachmentRef;
 
 void clawt_lrg_attachment_ref_free(ClawtLrgAttachmentRef *ref);
 
@@ -629,13 +672,49 @@ void clawt_lrg_attachment_ref_free(ClawtLrgAttachmentRef *ref);
  * clawt_lrg_attachment_refs:
  * @body: (nullable): a message body
  *
- * The files a message's attachment block names, in order: the block is
- * the list under CLAWT_ATTACHMENT_MARKER, ended by anything at the left
- * margin, and the container path in brackets is skipped.
+ * The files a message's attachment block names, in order, one per item:
+ * clawt_attachment_refs_parse(), the reader every client and
+ * `attachment.list` share, so a file this client previews is a file the
+ * gallery lists.
  *
  * Returns: (transfer full) (element-type ClawtLrgAttachmentRef): refs
  */
 GPtrArray *clawt_lrg_attachment_refs(const gchar *body);
+
+/**
+ * ClawtLrgGalleryRow:
+ * @target: the daemon's copy's id, or an old message's host path
+ * @daemon_copy: %TRUE when @target is an id (fetch with attachment.get)
+ * @name: the file's name
+ * @kind: "image", "pdf", "text" or "other" (clawt_attachment_kind())
+ * @subtitle: who sent it, when, and how big: "you · 2026-11-18 14:02 ·
+ *   1.2 kB"
+ * @exists: whether the file is still there
+ *
+ * One tile of a conversation's Files panel.
+ */
+typedef struct {
+    gchar    *target;
+    gboolean  daemon_copy;
+    gchar    *name;
+    gchar    *kind;
+    gchar    *subtitle;
+    gboolean  exists;
+} ClawtLrgGalleryRow;
+
+void clawt_lrg_gallery_row_free(ClawtLrgGalleryRow *row);
+
+/**
+ * clawt_lrg_gallery_rows:
+ * @reply: (nullable): an `attachment.list` reply
+ *
+ * The tiles of a conversation's Files panel, in the order the daemon
+ * gives them (newest first).  An item with neither an id nor a path is
+ * skipped: there is nothing to open.
+ *
+ * Returns: (transfer full) (element-type ClawtLrgGalleryRow): the rows
+ */
+GPtrArray *clawt_lrg_gallery_rows(JsonNode *reply);
 
 /**
  * ClawtLrgSentFile:

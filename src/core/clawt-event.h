@@ -178,6 +178,47 @@ typedef enum {
 ClawtAlertTier clawt_alert_tier_for_event(ClawtEvent *event);
 
 /**
+ * clawt_alert_text_for_event:
+ * @event: the event
+ * @out_source: (out) (optional) (transfer full) (nullable): where to look,
+ *   for a row's caption -- the event kind, or "download" / "message" for
+ *   the two said in a sentence of their own
+ * @out_agent: (out) (optional) (transfer full) (nullable): who it is
+ *   about: the agent (or, for a download, the image) a row narrows to
+ *
+ * What an alert row says about @event, in words.
+ *
+ * The daemon's notification list (`notice.list`) and every client draw
+ * the same rows, so the sentence is made once, here.  It used to be made
+ * three times -- the GTK, web and lrg clients each had a copy -- and the
+ * copies had drifted: the web one called every error that was not a
+ * refused message or a turned-off routine "could not be downloaded",
+ * and GTK dropped the other errors on the floor.
+ *
+ * The wording is GTK's, which tests/test-notices.c holds as a golden
+ * per kind:
+ *
+ * - `message.refused`: "FROM to TO was stopped: REASON" (source
+ *   "message", agent FROM);
+ * - `image.finished` with an error: "IMAGE could not be downloaded:
+ *   ERROR" (source "download");
+ * - `routine.turned_off`: clawt_routine_turned_off_alert(), about the
+ *   event's `agent` detail;
+ * - `agent.state`: "AGENT is STATE";
+ * - `task.tree_budget`: clawt_loop_guard_tree_alert_text();
+ * - an event carrying its own `message` detail: that sentence;
+ * - anything else: "KIND · SUBJECT" ("the fleet" with no subject).
+ *
+ * Returns: (transfer full) (nullable): the sentence, or %NULL for an
+ *   event that clawt_alert_tier_for_event() skips
+ *
+ * Since: 0.52.0
+ */
+gchar *clawt_alert_text_for_event(ClawtEvent  *event,
+                                  gchar      **out_source,
+                                  gchar      **out_agent);
+
+/**
  * clawt_event_is_ephemeral:
  * @event: the event
  *

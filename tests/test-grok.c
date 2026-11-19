@@ -472,7 +472,7 @@ on_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
  * tell "shared with this agent" from "shared with everyone".
  */
 static void
-fixture_setup(Fixture *fixture)
+fixture_setup_with(Fixture *fixture, const gchar *extra_yaml)
 {
     g_autofree gchar *yaml = NULL;
     g_autofree gchar *key = NULL;
@@ -516,9 +516,11 @@ fixture_setup(Fixture *fixture)
         "    scope: selected\n"
         "    agents: [ibex]\n"
         "orchestration:\n  max_hops: 4\n"
-        "agents:\n  - id: oryx\n  - id: ibex\n",
+        "agents:\n  - id: oryx\n  - id: ibex\n"
+        "%s",
         fixture->dir, fixture->dir, fixture->dir, fixture->dir,
-        fixture->dir, key, key, key);
+        fixture->dir, key, key, key,
+        extra_yaml != NULL ? extra_yaml : "");
 
     g_assert_true(g_file_set_contents(fixture->config_path, yaml, -1,
                                       &error));
@@ -532,6 +534,12 @@ fixture_setup(Fixture *fixture)
 
     g_signal_connect(fixture->daemon->bus, "event", G_CALLBACK(on_event),
                      fixture);
+}
+
+static void
+fixture_setup(Fixture *fixture)
+{
+    fixture_setup_with(fixture, NULL);
 }
 
 static void
@@ -554,6 +562,9 @@ fixture_teardown(Fixture *fixture)
     g_free(fixture->dir);
     g_free(fixture->config_path);
     g_free(fixture->refusal);
+
+    /* So one Fixture can be set up again, as the config tests below do. */
+    memset(fixture, 0, sizeof *fixture);
 }
 
 static void
@@ -979,6 +990,169 @@ test_attention_lapses(void)
 }
 
 /*
+ * Two settled jobs that need somebody, one settled five days ago and one
+ * just now, and the count clawt_daemon_grok_attention() gives for them.
+ */
+static void
+add_two_settled(Fixture *fixture, gint64 now)
+{
+    ClawtGrokStore *store = clawt_daemon_grok_get_store(fixture->daemon);
+    g_autoptr(ClawtGrokJob) old = NULL;
+    g_autoptr(ClawtGrokJob) recent = NULL;
+    gint64 five_days = (gint64)5 * 24 * 3600 * G_USEC_PER_SEC;
+
+    add_job(fixture, "gj-old", "chief", "t1", now);
+    add_job(fixture, "gj-new", "chief", "t2", now);
+    old = clawt_grok_store_settle(store, "gj-old", CLAWT_GROK_JOB_FAILED,
+                                  "no", now - five_days, NULL);
+    recent = clawt_grok_store_settle(store, "gj-new", CLAWT_GROK_JOB_EXPIRED,
+                                     NULL, now, NULL);
+    g_assert_nonnull(old);
+    g_assert_nonnull(recent);
+}
+
+/*
+ * grok.attention_days moves the window: at the default 3 the five-day-old
+ * job has stopped asking, at 7 it still asks, and the `grok.jobs` badge
+ * agrees with clawt_daemon_grok_attention().  Regressing it is a key that
+ * documents a window the badge does not use.
+ */
+static void
+test_attention_days_moves_the_window(void)
+{
+    Fixture fixture = { 0 };
+    gint64 now = g_get_real_time();
+
+    fixture_setup(&fixture);
+    add_two_settled(&fixture, now);
+    g_assert_cmpint(clawt_daemon_grok_attention_days(fixture.daemon), ==, 3);
+    g_assert_cmpuint(clawt_daemon_grok_attention(fixture.daemon, now), ==, 1);
+    fixture_teardown(&fixture);
+
+    fixture_setup_with(&fixture, "grok:\n  attention_days: 7\n");
+    add_two_settled(&fixture, now);
+    g_assert_cmpuint(clawt_daemon_grok_attention(fixture.daemon, now), ==, 2);
+
+    {
+        g_autoptr(JsonNode) frame = clawt_ipc_request_new("grok.jobs", "v1");
+        g_autoptr(JsonNode) reply = clawt_daemon_handle_request(
+            fixture.daemon, frame);
+
+        g_assert_cmpint(json_object_get_int_member(
+                            clawt_ipc_frame_get_payload(reply), "attention"),
+                        ==, 2);
+    }
+
+    /* and a later clock lets both lapse: `now` is a parameter for this */
+    g_assert_cmpuint(clawt_daemon_grok_attention(
+                         fixture.daemon,
+                         now + (gint64)8 * 24 * 3600 * G_USEC_PER_SEC),
+                     ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * 0 means a job that needs somebody counts until it is removed, however
+ * long ago it settled.  Regressing it makes 0 mean "never counts", the
+ * opposite of what the schema says.
+ */
+static void
+test_attention_days_zero_means_until_removed(void)
+{
+    Fixture fixture = { 0 };
+    gint64 now = g_get_real_time();
+
+    fixture_setup_with(&fixture, "grok:\n  attention_days: 0\n");
+    add_two_settled(&fixture, now);
+
+    g_assert_cmpuint(clawt_daemon_grok_attention(
+                         fixture.daemon,
+                         now + (gint64)400 * 24 * 3600 * G_USEC_PER_SEC),
+                     ==, 2);
+    g_assert_true(clawt_grok_store_remove(
+        clawt_daemon_grok_get_store(fixture.daemon), "gj-old"));
+    g_assert_cmpuint(clawt_daemon_grok_attention(fixture.daemon, now), ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The prune runs from the sweep, not only at start: a job past
+ * grok.retention_days is gone after a sweep an hour on, and an open job
+ * is never pruned whatever its age.  Regressing it is a daemon that stays
+ * up for months keeping every job it ever sent.
+ */
+static void
+test_retention_prunes_from_the_sweep(void)
+{
+    Fixture fixture = { 0 };
+    ClawtGrokStore *store;
+    gint64 now = g_get_real_time();
+    gint64 day = (gint64)24 * 3600 * G_USEC_PER_SEC;
+    gint64 later;
+
+    fixture_setup_with(&fixture, "grok:\n  retention_days: 2\n");
+    store = clawt_daemon_grok_get_store(fixture.daemon);
+    add_two_settled(&fixture, now);
+
+    /* an open job with a far deadline, which no sweep expires or prunes */
+    add_job(&fixture, "gj-open", "chief", "t3", now + 400 * day);
+
+    /* a sweep inside the hour after start's prune does not prune again */
+    {
+        g_autoptr(ClawtGrokJob) old = NULL;
+
+        clawt_daemon_grok_sweep(fixture.daemon, now + 60 * G_USEC_PER_SEC);
+        old = clawt_grok_store_get(store, "gj-old");
+        g_assert_nonnull(old);
+    }
+
+    /* three hours on, past the hour: the five-day-old job goes */
+    later = now + (gint64)3 * 3600 * G_USEC_PER_SEC;
+    clawt_daemon_grok_sweep(fixture.daemon, later);
+
+    {
+        g_autoptr(ClawtGrokJob) old = clawt_grok_store_get(store, "gj-old");
+        g_autoptr(ClawtGrokJob) recent = clawt_grok_store_get(store, "gj-new");
+        g_autoptr(ClawtGrokJob) open = clawt_grok_store_get(store, "gj-open");
+
+        g_assert_null(old);
+        g_assert_nonnull(recent);
+        g_assert_nonnull(open);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Out-of-range values are clamped to what the schema documents: a
+ * negative attention window is 0, a retention of 0 is one day -- not a
+ * prune of every job the moment it settles -- and huge ones stop at the
+ * ceilings.  Regressing it lets a typo delete the whole job history.
+ */
+static void
+test_the_new_keys_are_clamped(void)
+{
+    Fixture fixture = { 0 };
+
+    fixture_setup_with(&fixture,
+                       "grok:\n  attention_days: -4\n  retention_days: 0\n");
+    g_assert_cmpint(clawt_daemon_grok_attention_days(fixture.daemon), ==, 0);
+    g_assert_cmpint(clawt_daemon_grok_retention_days(fixture.daemon), ==, 1);
+    fixture_teardown(&fixture);
+
+    fixture_setup_with(&fixture,
+                       "grok:\n  attention_days: 9999\n"
+                       "  retention_days: 99999\n");
+    g_assert_cmpint(clawt_daemon_grok_attention_days(fixture.daemon), ==,
+                    365);
+    g_assert_cmpint(clawt_daemon_grok_retention_days(fixture.daemon), ==,
+                    3650);
+    fixture_teardown(&fixture);
+}
+
+/*
  * The listing every client draws from: each bot once, with the agents it
  * is shared with, and the reason no job could be sent right now.
  */
@@ -1243,6 +1417,14 @@ main(int argc, char **argv)
     g_test_add_func("/grok/daemon/remove-cancels-or-forgets",
                     test_remove_cancels_or_forgets);
     g_test_add_func("/grok/daemon/attention-lapses", test_attention_lapses);
+    g_test_add_func("/grok/daemon/attention-days",
+                    test_attention_days_moves_the_window);
+    g_test_add_func("/grok/daemon/attention-days-zero",
+                    test_attention_days_zero_means_until_removed);
+    g_test_add_func("/grok/daemon/retention-from-sweep",
+                    test_retention_prunes_from_the_sweep);
+    g_test_add_func("/grok/daemon/new-keys-clamped",
+                    test_the_new_keys_are_clamped);
 
     g_test_add_func("/grok/daemon/scoped-and-needs-listener",
                     test_dispatch_is_scoped_and_refuses_without_a_listener);

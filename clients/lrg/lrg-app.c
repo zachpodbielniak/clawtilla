@@ -377,6 +377,8 @@ on_client_connected(ClawtClient *client, gpointer user_data)
 {
     ClawtLrgApp *app = user_data;
 
+    /* lost from here on, never never: the banner reads it */
+    app->reached_once = TRUE;
     clawt_lrg_window_connection_changed(app);
     clawt_lrg_app_wake(app);
 }
@@ -468,6 +470,10 @@ clawt_lrg_app_switch_connection(ClawtLrgApp *app, ClawtConnection *connection)
     g_clear_pointer(&app->connection, clawt_connection_free);
     app->connection = clawt_connection_copy(connection);
 
+    /* a new daemon, not reached yet, and chosen by the person */
+    app->reached_once = FALSE;
+    app->connection_remembered = FALSE;
+
     client = clawt_connection_create_client(connection);
     app->client = g_object_ref(client);
 
@@ -497,6 +503,7 @@ clawt_lrg_app_new(ClawtClient *client, ClawtConnection *connection)
     app->connection = clawt_connection_copy(connection);
     app->context = g_main_context_ref(g_main_context_default());
     app->unread = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    app->muted = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     app->typing = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                         (GDestroyNotify)g_hash_table_unref);
     app->page = CLAWT_PAGE_CHAT;
@@ -567,6 +574,7 @@ clawt_lrg_app_free(ClawtLrgApp *app)
     g_clear_pointer(&app->agents, json_node_unref);
     g_clear_pointer(&app->rooms, json_node_unref);
     g_clear_pointer(&app->unread, g_hash_table_unref);
+    g_clear_pointer(&app->muted, g_hash_table_unref);
     g_clear_pointer(&app->typing, g_hash_table_unref);
     g_clear_pointer(&app->context, g_main_context_unref);
     g_free(app->open_target);
@@ -575,6 +583,7 @@ clawt_lrg_app_free(ClawtLrgApp *app)
     g_free(app->last_toast);
     g_free(app->daemon_version);
     g_free(app->daemon_update);
+    g_free(app->start_notice);
     g_free(app);
 }
 
@@ -861,6 +870,13 @@ clawt_lrg_app_run(ClawtLrgApp *app, const gchar *self_test_page)
 
     clawt_lrg_app_build(app);
     start_connecting(app);
+
+    /* now there is a window to say it in (clawt_connection_choose()) */
+    if (app->start_notice != NULL) {
+        g_autofree gchar *notice = g_steal_pointer(&app->start_notice);
+
+        clawt_lrg_toast(app, notice);
+    }
 
     if (self_test_page != NULL)
         return run_self_test(app, self_test_page);

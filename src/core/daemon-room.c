@@ -138,6 +138,216 @@ clawt_daemon_create_room(ClawtDaemon  *self,
     return room;
 }
 
+/* ── Read marks ──────────────────────────────────────────────────── */
+
+/* The file the marks live in, under the state directory. */
+#define READS_DATABASE_NAME "reads.db"
+
+void
+clawt_daemon_reads_setup(ClawtDaemon *self)
+{
+    g_autofree gchar *path = NULL;
+    g_autoptr(GError) error = NULL;
+
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    if (self->state_dir == NULL || self->reads != NULL)
+        return;
+
+    path = g_build_filename(self->state_dir, READS_DATABASE_NAME, NULL);
+    self->reads = clawt_read_store_new(path, &error);
+
+    if (self->reads == NULL) {
+        /*
+         * A warning rather than a refusal to start.  Without the store
+         * room.list simply leaves `unread` out, and every client falls
+         * back to the count it keeps from live events -- the behaviour
+         * of every build before this one, which is a smaller loss than
+         * a fleet that will not come up.
+         */
+        g_warning("rooms: could not open %s, so unread counts are kept "
+                  "by each client alone: %s", path,
+                  error != NULL ? error->message : "unknown");
+        return;
+    }
+
+    /*
+     * A file made just now: every room is read up to its newest
+     * message.  Without this the upgrade that introduces the store
+     * would greet the operator with every message the fleet ever sent
+     * them counted as unread -- months of conversations already read in
+     * a client that kept the count in memory.
+     */
+    if (self->rooms != NULL && clawt_read_store_was_created(self->reads)) {
+        g_autoptr(GPtrArray) rooms = clawt_room_manager_list(self->rooms);
+        guint i;
+
+        for (i = 0; i < rooms->len; i++) {
+            ClawtRoom *room = g_ptr_array_index(rooms, i);
+            const gchar *last_id = NULL;
+            gint64 last_ts = 0;
+
+            if (!clawt_room_get_latest(room, &last_id, &last_ts))
+                continue;
+
+            if (!clawt_read_store_set(self->reads, clawt_room_get_id(room),
+                                      last_id, last_ts, &error)) {
+                g_warning("rooms: could not seed the read mark of %s: %s",
+                          clawt_room_get_id(room), error->message);
+                g_clear_error(&error);
+            }
+        }
+    }
+}
+
+void
+clawt_daemon_reads_teardown(ClawtDaemon *self)
+{
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    g_clear_object(&self->reads);
+}
+
+guint
+clawt_daemon_room_unread(ClawtDaemon *self, ClawtRoom *room)
+{
+    g_autofree gchar *last_id = NULL;
+    gint64 last_ts = 0;
+
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), 0);
+
+    if (self->reads == NULL || room == NULL)
+        return 0;
+
+    clawt_read_store_get(self->reads, clawt_room_get_id(room), &last_id,
+                         &last_ts);
+
+    return clawt_room_count_unread(room, last_id, last_ts);
+}
+
+/*
+ * The id a room's mark names, or "" for a room never read.
+ *
+ * "" rather than leaving the member out, because the two mean different
+ * things to a client: no member is a daemon that holds no marks, and
+ * clawt_unread_rule_index() draws no rule for it; "" is a room nobody
+ * has read, where the rule goes above the first message.
+ */
+static gchar *
+read_upto_of(ClawtDaemon *self, ClawtRoom *room)
+{
+    g_autofree gchar *last_id = NULL;
+
+    clawt_read_store_get(self->reads, clawt_room_get_id(room), &last_id,
+                         NULL);
+
+    return last_id != NULL ? g_steal_pointer(&last_id) : g_strdup("");
+}
+
+/*
+ * Moves one room's mark and says so.
+ *
+ * @upto_id names the last message read, or %NULL for the newest.  The
+ * event goes out whether or not the mark moved, because a client that
+ * asked expects its own badge -- and every other client's -- to clear,
+ * and a second window may be holding a count from before the first one
+ * read anything.
+ *
+ * Returns: %TRUE, or %FALSE with @error when @upto_id is not in the room
+ *   or the write failed
+ */
+/*
+ * Whether a mark at (@index, @ts) would move the room's held mark
+ * backwards.
+ *
+ * Two clients read the same room and their requests arrive in either
+ * order; the one that read less, landing second, must not undo the one
+ * that read more -- or a conversation finished in one window lights up
+ * again because a second window caught up late.  By position in the
+ * history when the held message is still there, which is exact; by
+ * timestamp when it is not.  Not by id: ids sort by time only to the
+ * millisecond, and a burst inside one millisecond sorts at random.
+ */
+static gboolean
+would_move_back(ClawtDaemon *self, ClawtRoom *room, gint index, gint64 ts)
+{
+    g_autofree gchar *held_id = NULL;
+    gint64 held_ts = 0;
+    gint held_index;
+
+    if (!clawt_read_store_get(self->reads, clawt_room_get_id(room), &held_id,
+                              &held_ts))
+        return FALSE;
+
+    held_index = clawt_room_message_index(room, held_id, NULL);
+
+    if (held_index >= 0)
+        return index < held_index;
+
+    return ts < held_ts;
+}
+
+static gboolean
+mark_room_read(ClawtDaemon  *self,
+               ClawtRoom    *room,
+               const gchar  *upto_id,
+               GError      **error)
+{
+    g_autoptr(ClawtEvent) event = NULL;
+    const gchar *last_id = NULL;
+    gint64 last_ts = 0;
+    gint index;
+
+    if (upto_id != NULL) {
+        /*
+         * Only a message the room holds.  A mark naming nothing would
+         * fall back to its timestamp, which a client could set to any
+         * second it liked -- including one in the future, which would
+         * then swallow every message until that second came round.
+         */
+        index = clawt_room_message_index(room, upto_id, &last_ts);
+
+        if (index < 0) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                        "%s has no message %s", clawt_room_get_id(room),
+                        upto_id);
+            return FALSE;
+        }
+
+        last_id = upto_id;
+    } else {
+        index = clawt_room_get_latest(room, &last_id, &last_ts)
+            ? (gint)clawt_room_get_message_count(room) - 1 : -1;
+    }
+
+    /*
+     * An empty room has nothing to mark, and a mark with no message
+     * behind it would only ever be a timestamp -- the case above that
+     * can swallow messages.  Nothing is unread in it either way.  A mark
+     * behind the one held is not written (see would_move_back()); the
+     * event still goes out, so the asking client hears the room's real
+     * count rather than nothing.
+     */
+    if (index >= 0 && !would_move_back(self, room, index, last_ts) &&
+        !clawt_read_store_set(self->reads, clawt_room_get_id(room), last_id,
+                              last_ts, error))
+        return FALSE;
+
+    {
+        g_autofree gchar *held = read_upto_of(self, room);
+
+        event = clawt_event_new("room.read", clawt_room_get_id(room));
+        clawt_event_set_detail(event, "room", clawt_room_get_id(room));
+        clawt_event_set_detail(event, "upto", held);
+    }
+
+    clawt_event_set_detail_int(event, "unread",
+                               (gint64)clawt_daemon_room_unread(self, room));
+    clawt_event_bus_publish(self->bus, event);
+
+    return TRUE;
+}
+
 JsonNode *
 clawt_daemon_handle_room(
     ClawtDaemon  *self,
@@ -289,6 +499,24 @@ clawt_daemon_handle_room(
             json_builder_set_member_name(builder, "messages");
             json_builder_add_int_value(
                 builder, clawt_room_get_message_count(room));
+
+            /*
+             * How many of them the operator has not read, and the mark
+             * that count runs from -- held here rather than in each
+             * client, so reading in one clears the count in all of them
+             * and a restart forgets nothing.  Left out when there is no
+             * read store, which every client takes as "keep counting
+             * from events", the behaviour before marks existed.
+             */
+            if (self->reads != NULL) {
+                g_autofree gchar *upto = read_upto_of(self, room);
+
+                json_builder_set_member_name(builder, "unread");
+                json_builder_add_int_value(
+                    builder, clawt_daemon_room_unread(self, room));
+                json_builder_set_member_name(builder, "read_upto");
+                json_builder_add_string_value(builder, upto);
+            }
 
             /*
              * What a sidebar needs to draw it beside the agents: where
@@ -716,6 +944,103 @@ clawt_daemon_handle_room(
         return clawt_ipc_response_new(request, NULL);
     }
 
+    /*
+     * The operator has read a conversation -- or all of them.
+     *
+     * `{room}` or `{agent}` names one: an agent means the operator's
+     * direct room with it, named by clawt_room_manager_direct_id() and
+     * never spelled out here, because "dm:user:" + id is right for some
+     * agents and wrong for every one whose id sorts before "user".
+     * `upto` is the last message read, the newest by default.
+     * `{all:true}` reads every room.  Each room marked publishes
+     * `room.read`, which is what clears the badge in every client.
+     */
+    if (g_strcmp0(kind, "room.read") == 0) {
+        const gchar *room_id = clawt_ipc_payload_string(payload, "room");
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        const gchar *upto = clawt_ipc_payload_string(payload, "upto");
+        ClawtRoom *room = NULL;
+
+        if (self->reads == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                       "read marks are not available: the "
+                                       "read store could not be opened");
+
+        if (clawt_ipc_payload_boolean(payload, "all", FALSE)) {
+            g_autoptr(GPtrArray) rooms = clawt_room_manager_list(self->rooms);
+            guint marked = 0;
+            guint i;
+
+            /*
+             * Only the rooms with something unread are touched, so "mark
+             * all as read" on a fleet with hundreds of quiet direct rooms
+             * publishes one event per conversation that actually
+             * changes, not one per room the daemon knows of.
+             */
+            for (i = 0; i < rooms->len; i++) {
+                ClawtRoom *each = g_ptr_array_index(rooms, i);
+
+                if (clawt_daemon_room_unread(self, each) == 0)
+                    continue;
+
+                if (!mark_room_read(self, each, NULL, &error))
+                    return clawt_ipc_error_new(request, error->code,
+                                               error->message);
+
+                marked++;
+            }
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "marked");
+            json_builder_add_int_value(builder, marked);
+            json_builder_end_object(builder);
+
+            return clawt_ipc_response_new(request,
+                                          json_builder_get_root(builder));
+        }
+
+        if (agent_id != NULL) {
+            if (clawt_agent_manager_get(self->agents, agent_id) == NULL)
+                return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                           "no such agent");
+
+            /* Named by clawt_room_manager_direct_id(), inside. */
+            room = clawt_room_manager_get_direct(self->rooms, "user",
+                                                 agent_id);
+        } else {
+            room = resolve_room(self, room_id, NULL);
+        }
+
+        if (room == NULL)
+            return clawt_ipc_error_new(request,
+                                       room_id == NULL
+                                           ? CLAWT_ERROR_INVALID_ARGUMENT
+                                           : CLAWT_ERROR_NOT_FOUND,
+                                       room_id == NULL
+                                           ? "say which room was read, or "
+                                             "all:true"
+                                           : "no such room or agent");
+
+        if (!mark_room_read(self, room, upto, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        {
+            g_autofree gchar *read_upto = read_upto_of(self, room);
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "room");
+            json_builder_add_string_value(builder, clawt_room_get_id(room));
+            json_builder_set_member_name(builder, "read_upto");
+            json_builder_add_string_value(builder, read_upto);
+            json_builder_set_member_name(builder, "unread");
+            json_builder_add_int_value(builder,
+                                       clawt_daemon_room_unread(self, room));
+            json_builder_end_object(builder);
+        }
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "room.history") == 0) {
         const gchar *room_id = clawt_ipc_payload_string(payload, "room");
         const gchar *viewer = clawt_ipc_payload_string(payload, "as");
@@ -743,6 +1068,20 @@ clawt_daemon_handle_room(
          */
         json_builder_set_member_name(builder, "room");
         json_builder_add_string_value(builder, clawt_room_get_id(room));
+
+        /*
+         * Where the "New messages" rule goes: above the first message
+         * after this one that somebody else sent
+         * (clawt_unread_rule_index()).  Read before the client marks
+         * the room read on opening it, which is the order every client
+         * asks in -- so the rule shows what was new when it was opened.
+         */
+        if (self->reads != NULL) {
+            g_autofree gchar *upto = read_upto_of(self, room);
+
+            json_builder_set_member_name(builder, "read_upto");
+            json_builder_add_string_value(builder, upto);
+        }
 
         json_builder_set_member_name(builder, "messages");
         json_builder_begin_array(builder);

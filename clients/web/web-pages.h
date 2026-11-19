@@ -645,6 +645,114 @@ gboolean clawt_web_move_entry(ClawtWebApp  *app,
                               const gchar **message);
 
 
+/* ── Files sent with a message (web-files.c) ─────────────────────── */
+
+/**
+ * CLAWT_WEB_ATTACHMENT_MAX:
+ *
+ * The largest file the composer hands to `attachment.put`: 32 MB, the
+ * limit the lrg client refuses at.  The bytes cross the socket base64
+ * encoded in one frame, and the daemon reads a frame whole.
+ */
+#define CLAWT_WEB_ATTACHMENT_MAX (32u * 1024u * 1024u)
+
+/**
+ * ClawtWebPutFunc:
+ * @agent_id: whose exchange the file goes in
+ * @name: the file's name, as the browser gave it
+ * @encoded: its bytes, base64
+ * @user_data: what was passed beside the function
+ *
+ * Stores one file the way `attachment.put` does.  The routes pass one
+ * that calls the daemon; a test passes one that answers by itself.
+ *
+ * Returns: (transfer full) (nullable): attachment.put's reply, or %NULL
+ *   when it was refused
+ */
+typedef JsonNode *(*ClawtWebPutFunc)(const gchar *agent_id,
+                                     const gchar *name,
+                                     const gchar *encoded,
+                                     gpointer     user_data);
+
+/**
+ * clawt_web_composer_read:
+ * @content_type: (nullable): the request's Content-Type
+ * @raw: (nullable): the request body
+ * @body: (out) (transfer full) (nullable): the typed message, when the
+ *   body was multipart; %NULL otherwise (read it as a form value)
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The files a composer post carries, and its text.
+ *
+ * An empty file input is in every multipart post, as a part with no
+ * filename and no bytes; it is dropped here so a plain message does not
+ * grow an unnamed "(could not be saved)" line.
+ *
+ * Returns: (transfer full) (element-type HtmxUploadedFile) (nullable):
+ *   the chosen files (empty for a urlencoded post), or %NULL when the
+ *   multipart body could not be read
+ */
+GPtrArray *clawt_web_composer_read(const gchar  *content_type,
+                                   GBytes       *raw,
+                                   gchar       **body,
+                                   GError      **error);
+
+/**
+ * clawt_web_room_file_agent:
+ * @members: (nullable): a room's `members`, as room.list gives them
+ *
+ * The one agent a room's uploads are filed under.
+ *
+ * `attachment.put` writes into a single agent's exchange, so a room can
+ * take files only when exactly one agent is in it; with more, the file
+ * would be reachable by one of them and invisible to the rest.
+ *
+ * Returns: (transfer full) (nullable): that agent's id, or %NULL when
+ *   the room has none or several
+ */
+gchar *clawt_web_room_file_agent(JsonArray *members);
+
+/**
+ * clawt_web_body_with_files:
+ * @agent_id: whose exchange the files go in
+ * @body: (nullable): what was typed
+ * @files: (element-type HtmxUploadedFile) (nullable): what was chosen
+ * @put: (scope call): stores one file
+ * @user_data: passed to @put
+ *
+ * The message to send: @body, then the attachment block naming every
+ * file, built with clawt_attachment_block_new() so it is spelled exactly
+ * as the GTK and lrg clients spell it.  A file @put refuses, an empty
+ * one, or one over #CLAWT_WEB_ATTACHMENT_MAX is listed as "(could not be
+ * saved)" rather than dropped.
+ *
+ * Returns: (transfer full): the body for `msg.send`
+ */
+gchar *clawt_web_body_with_files(const gchar      *agent_id,
+                                 const gchar      *body,
+                                 GPtrArray        *files,
+                                 ClawtWebPutFunc   put,
+                                 gpointer          user_data);
+
+/**
+ * clawt_web_files_grid:
+ * @items: (nullable): `attachment.list`'s `items`
+ * @texts: (nullable) (element-type utf8 utf8): the first lines of each
+ *   text file, by id, from `attachment.thumbnail`
+ *
+ * A conversation's files as a grid of tiles: a picture for an image,
+ * the first page for a PDF (from /f/attachment/<id>/thumb), the first
+ * lines for a text file, and a label otherwise.  Each name opens the
+ * file through /f/attachment/<id>; a file that is gone, or named only
+ * by a host path, is a name with nothing to click.
+ *
+ * Built from htmx-glib's own elements only, so a test can render it
+ * without the rest of the client.
+ *
+ * Returns: (transfer full): the grid
+ */
+HtmxElement *clawt_web_files_grid(JsonArray *items, GHashTable *texts);
+
 /* Register the shared destination search entry point. */
 void clawt_web_register_navigation(HtmxRouter *router, ClawtWebApp *app);
 

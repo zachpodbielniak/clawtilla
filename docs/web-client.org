@@ -271,12 +271,14 @@ answers with the page it did it on.
 |-------------------------------+-----------------------------------------|
 | =/=, =/fleet=                 | the fleet index                         |
 | =/a/:id/:view=                | the seven agent views                   |
-| =/a/:id/...=                  | everything done to one agent: send, start, stop, restart, reset, set, team, reorder, remove, exec, rebuild, attach, mount, mailbox, memories, file, files, compose, export, copy |
-| =/f/...=                      | fragments htmx swaps in: the sidebar, a transcript, an attachment, an inline decision answered (=/f/decision/answer=) |
+| =/a/:id/...=                  | everything done to one agent: send, start, stop, restart, reset, set, team, reorder, read, mute, unmute, remove, exec, rebuild, attach/remove, mount, mailbox, memories, file, files, compose, export, copy |
+| =/read-all=                   | *Mark all as read* at the head of the agent list (~room.read~ with ~all: true~) |
+| =/f/...=                      | fragments htmx swaps in: the sidebar, a transcript, an attachment, a PDF attachment's first page (=/f/attachment/:id/thumb=), an inline decision answered (=/f/decision/answer=) |
+| =/a/:id/attachments=, =/r/:id/attachments= | a conversation's Files page; ahead of =/a/:id/:view=, registered with the chat routes |
 | =/settings=, =/settings/:page= | the seven settings pages               |
 | =/settings/<page>/...=        | their actions: add, save, remove, health, test, authorize, revoke |
 | =/new=, =/import=, =/design=  | making an agent                         |
-| =/alerts=, =/decisions=, =/routines/...=, =/tasks/new=, =/tasks/:task= (a task's page: thread, history, comment form), =/tasks/:task/assign=, =/tasks/:task/comment=, =/tasks/:task/link=, =/tasks/:task/unlink=, =/tasks/:task/review=, =/tasks/:task/changes= (the diff), =/tasks/:task/checkout_remove=, =/tasks/:task/venture_retry= (the VENTURE mirror's Retry), =/tasks/:task/cancel=, =/tasks/:task/retry=, =/incidents/:incident/retry=, =/incidents/configure= | the standing surfaces |
+| =/alerts= (and =/alerts/read=, =/alerts/read-all=, =/alerts/dismiss=, =/alerts/clear=, =/alerts/chat-read=, =/alerts/mute=), =/a/:id/mute=, =/a/:id/unmute=, =/decisions=, =/routines/...=, =/tasks/new=, =/tasks/:task= (a task's page: thread, history, comment form), =/tasks/:task/assign=, =/tasks/:task/comment=, =/tasks/:task/link=, =/tasks/:task/unlink=, =/tasks/:task/review=, =/tasks/:task/changes= (the diff), =/tasks/:task/checkout_remove=, =/tasks/:task/venture_retry= (the VENTURE mirror's Retry), =/tasks/:task/cancel=, =/tasks/:task/retry=, =/incidents/:incident/retry=, =/incidents/configure= | the standing surfaces |
 | =/decisions/proposal=         | Approve, Reject or Edit a skill an agent proposed (~skill.proposal_resolve~); a refusal is shown as an error page, not swallowed by the redirect, since the proposal is still waiting |
 | =/activity/:agent/stop=, =/activity/:agent/steer=, =/f/activity= | the Activity page's actions and its polled panel |
 | =/a/:id/rescue= | the chat's first-reply rescue: Stop, or the same message again on another model (~turn.rescue~); before =/a/:id/:view= |
@@ -311,6 +313,31 @@ does not swallow ~/settings/teams/add~ for the same reason.  The rule to
 follow is still the simple one -- register the catch-all last -- because
 counting segments is how somebody gets it wrong.
 
+*** Unread, the "New messages" rule and the row menu
+
+The counts are the daemon's since 0.52.0 (see "Unread" in [[file:clients.org][clients.org]]).  Every sidebar render lists the rooms and =clawt_web_app_note_fleet()= takes their =unread= into the server's table with =clawt_unread_seed()= -- only for rooms with a row, and never for the conversation last rendered.  Between renders a live =message= event still counts (=clawt_unread_should_count()=), and a ~room.read~ event from any client sets that room's count to the event's =unread=.
+
+*The transcript marks what it draws as read.*  =transcript()= reads =read_upto= from ~room.history~, draws a =.unread-rule= (=id="unread-rule"=, the same element the page script draws live) above the message =clawt_unread_rule_index()= picks, and then sends ~room.read~ up to the last message drawn -- *only when the mark is not already there*.  That condition is load-bearing: the ~room.read~ event is itself a fleet event, which re-renders this very fragment, and an unconditional mark would go round that loop for ever.  A peer conversation (=?with==) draws no rule and marks nothing.
+
+*The rule survives the refreshes that follow.*  After the first render the mark has moved to the end, so the next fragment comes back without a rule.  The page script counts the messages above a rule before each swap (=htmx:beforeSwap=) and puts it back above the same message after (=htmx:afterSwap=), so the rule stays where reading stopped for as long as the page is open.  The live rule (messages arriving while scrolled up) is drawn only when no rule is on the page, so there is never a second one.
+
+*The row menu.*  After each agent row the sidebar draws =clawt_web_agent_row_menu()=: a =<details class="row-menu">= -- the row's next sibling rather than inside it, because the row is a link and a button inside a link is two targets for one click.  It holds *Mark as read (N)* (=clawt_agent_menu_read_label()=, the words every client uses), posting to =/a/<id>/read= (~room.read~ with =agent=), and *Mute notifications* or *Unmute* (=clawt_agent_menu_mute_label()=), posting to =/a/<id>/mute= or =/a/<id>/unmute= (~notice.mute~ / ~notice.unmute~).  The menu always exists since 0.52.0; with nothing unread *Mark as read* is drawn disabled rather than left out, so the item under it does not move.  A muted agent's pill is drawn faded (=.unread-badge.is-muted=) and its name not bolded, and it is left out of the Chat tab's total (=clawt_web_app_unread_total()=, through =clawt_unread_total()=).  A =contextmenu= handler in the page script, delegated on =document= because the sidebar is replaced on every fleet event, opens the menu that follows the row right-clicked -- an agent row or a notification row -- and focuses its first button that is not disabled; a click elsewhere or Escape closes it.  The summary is visually hidden but focusable, so the menu is reachable from the keyboard.  The page that comes back is the one being read -- marking a conversation read, or muting it, is not opening it.
+
+*The Notifications page* (=/alerts=, the *Alerts* tab beside Settings, =clients/web/web-alerts.c=) is the daemon's notification list (~notice.list~; see "Notifications" in [[file:clients.org][clients.org]]).  The tab's number is the bell every client shows, =clawt_web_app_notice_count()= over =clawt_notice_list_badge()=.  The list is cached in the server process like the decision count -- marked unknown by ~notice.changed~, ~room.read~, ~message~ and any ~decision.~ or ~grok.~ event, and asked for again by the next render -- and the sections are drawn by =clawt_web_notices_sections()= in =web-ui.c=, which is pure, so =tests/test-web-render.c= draws them from a reply: *Chats*, *Decisions waiting*, *Grok jobs needing attention*, *Alerts*, each row a =.notice-row= followed by its row menu.  Opening the page reads every alert (~notice.read~ =all=), after drawing, so the rows that were new still say so this once.  The routes its buttons post to:
+
+| route | sends |
+|-------+-------|
+| =/alerts/read?id== | ~notice.read~ |
+| =/alerts/read-all= (*Mark all read*) | ~room.read~ =all= and ~notice.read~ =all= |
+| =/alerts/dismiss?id== | ~notice.dismiss~ |
+| =/alerts/clear[?agent=]= (*Clear*) | ~notice.clear~ |
+| =/alerts/chat-read?room== | ~room.read~ |
+| =/alerts/mute?agent== | ~notice.mute~ |
+
+A Grok job's *Remove* posts to the Grok page's own =/grok/jobs/<id>/remove=, confirmed in the daemon's =remove_question=.  Each verb marks the list unknown before redirecting back, so the page shows the result rather than racing the event.  The routine stream is not on the page; *Earlier, from the daemon's log* reads ~event.list~.
+
+*Mark all as read* (=clawt_web_mark_all_read_button()=) sits above the agent list whenever anything is unread, and posts to =/read-all=.
+
 *** Slash commands
 
 The same nineteen the GTK composer answers, typed into the message box.
@@ -322,7 +349,7 @@ so rather than leaving anybody to find out.
 | =/help=             | list them                                           |
 | =/start= =/stop= =/restart= | the agent's lifecycle                       |
 | =/reset=            | start its AI session again, from nothing            |
-| =/attach=           | send a file with the next message                   |
+| =/attach=           | say how to send files: Attach, paste or drop        |
 | =/compose=          | a full-page box, where GTK opens =$EDITOR=          |
 | =/edit [file]=      | open a workspace file *in the page*                 |
 | =/files=            | this agent's workspace files                        |
@@ -494,6 +521,58 @@ and a browser cannot call it.  The duplication is bounded to *what to
 offer*: the worst a disagreement can do is show a name that would not
 have matched, or fail to show one that would.  It cannot change what a
 sent message does.
+
+*** Sending files with a message
+
+The composer sends files *with* a message, the way the GTK and libregnum composers do: the files and the text go in one post, and the agent receives one message that names every file.
+
+**** What you do
+
+- *Attach*, beside *Send*, opens the browser's file picker; several files may be chosen at once.
+- *Paste* into the message box: a paste that carries files (a screenshot, a file copied in a file manager) adds them, and a paste of text is left alone, so copying a paragraph still types it.
+- *Drop* files anywhere on the composer.
+
+Each waiting file is a chip above the message box with an × to drop it.  Nothing is uploaded until *Send*; a draft you abandon leaves nothing in the agent's workspace.  Files may go with no text at all.
+
+**** What is sent
+
+The composer form is ~multipart/form-data~ (both ~enctype~ and ~hx-encoding~), with the text as ~body~ and every file as ~file~, posted to =/a/<id>/send=.  =on_send= (=web-chat.c=) then:
+
+1. reads the post with =clawt_web_composer_read()= (=web-files.c=), which takes the text from the multipart fields and drops the empty part a file input sends when nothing was chosen;
+2. sends each file to the daemon with ~attachment.put~ (~agent~, ~name~, ~data~ as base64), which writes it into that agent's exchange directory, keeps a copy by id, and answers ~host_path~, ~path~ and ~id~;
+3. builds the body with =clawt_web_body_with_files()=, which uses the library's shared block builder (=clawt_attachment_block_new()= and =clawt_attachment_block_add()=), so the block is spelled exactly as the other clients spell it;
+4. sends that one body with ~msg.send~.
+
+A file the daemon refuses, an empty file, or one over 32 MB (=CLAWT_WEB_ATTACHMENT_MAX=, the libregnum client's limit -- the bytes cross the socket base64-encoded in one frame) is listed in the block as ~- name (could not be saved)~ rather than dropped, so the agent and you both see it did not arrive.
+
+A message with files is always sent as a message, even if its text begins with ~/~: running the command and dropping the files would lose what you chose.
+
+Before 0.52.0 the web client had a separate Attach form posting to =/a/<id>/attach=.  It wrote the file into the workspace and showed a toast -- and told the agent nothing, so the agent never opened it.  That route is gone.
+
+**** The draft save stays a plain form post
+
+The message box saves a draft a second after you stop typing (=hx-post= to =/draft=).  htmx sends the enclosing form's fields with that request and inherits the form's ~hx-encoding~, so the textarea carries ~hx-params="body"~ and its own ~hx-encoding~ of ~application/x-www-form-urlencoded~: otherwise every draft save would upload the chosen files, arrive as multipart, which the draft route does not read, and wipe the draft it was meant to keep.  For the same reason the form resets after a send only when the finished request is its own (~event.detail.elt===this~) -- htmx events bubble, and a reset on the draft save would empty the chips a second after you stopped typing.
+
+**** In a group room
+
+A room's composer has Attach only when the room has *exactly one* agent member.  ~attachment.put~ writes a file into one agent's exchange directory, so in a room of two or more agents there is no workspace every recipient can open; a file only one of them could read is worse than no button.  =clawt_web_room_file_agent()= decides, from ~room.list~'s ~members~, and =on_room_send= asks again when the post arrives, so a room that gained a second agent since the page was drawn refuses the files in words instead of filing them under one.
+
+**** Without JavaScript
+
+The form is a real multipart form, so the picker and Send work with scripting off.  Paste, drop and the chips are the script's (inline in =web-ui.c=, delegated from ~document~ because htmx replaces the composer on a swap); the chips are redrawn from the input's own ~files~, so they cannot disagree with what will be posted.  ~DataTransfer~ is the only way a page may set an input's files, which is what lets a pasted screenshot join files already picked.
+
+*** A conversation's Files page
+
+*Files*, beside *Attach* in the composer row (agents and rooms alike), opens =/a/<id>/attachments= or =/r/<id>/attachments=: every file that conversation carried, newest first, as a grid of tiles.  Not =/a/<id>/files=, which was already the agent's workspace files (~/files~).
+
+The page asks ~attachment.list~ (~agent~ or ~room~) and draws =clawt_web_files_grid()= (=web-files.c=, built from htmx-glib's own elements so =test-web-app= renders it without the rest of the client):
+
+- an image is an =<img>= of =/f/attachment/<id>= itself;
+- a PDF is an =<img>= of =/f/attachment/<id>/thumb?size=256=, which asks ~attachment.thumbnail~ and answers the PNG with the inert headers below and =Cache-Control: private, max-age=86400= -- an id names immutable bytes.  Anything the daemon will not draw (a build without poppler, an unknown or hostile id) is a 404, and the tile shows its alt text;
+- a text file shows its first lines, fetched from ~attachment.thumbnail~ while the page renders -- at most 24 of them, since each is a request -- and escaped like every other agent-written string;
+- anything else is a label with its kind; a file that is gone is dimmed and labelled so, with no link.
+
+Each name links to =/f/attachment/<id>= in a new tab, which serves an image inline and anything else as a download.  A file named only by a host path (from before 0.51.5) is a name with the path as its tooltip and nothing to click: this page may be read on another machine.
 
 *** Editing workspace files
 
@@ -786,7 +865,9 @@ from two places.
 A reconnect that could not resume -- the daemon's replay buffer had
 dropped events past this client's cursor -- pushes the same nudge and
 *drops the unread counts*.  They were counted from a stream with a hole
-in it, and a count nobody can trust is worse than none.
+in it, and a count nobody can trust is worse than none.  Since 0.52.0
+the next sidebar render takes the daemon's counts again, so nothing is
+lost for longer than one render.
 
 *** Which version the daemon is
 

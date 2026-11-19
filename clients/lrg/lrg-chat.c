@@ -1019,6 +1019,428 @@ attachment_previews_append(ClawtLrgApp *app, LrgWidget *row,
     }
 }
 
+/* ── A conversation's files ───────────────────────────────────────── */
+
+/* The edge of a tile's picture, before scaling. */
+#define GALLERY_THUMB 160.0f
+
+/*
+ * How many tiles ask for a picture.  Each is a request, and a
+ * conversation with hundreds of files would otherwise queue hundreds of
+ * them the moment the panel opened; the rest show their kind.
+ */
+#define GALLERY_PICTURES 60
+
+/* A tile waiting for its picture or its first lines. */
+typedef struct {
+    LrgWidget *holder;    /* held */
+    gchar     *id;
+    gchar     *kind;
+} GalleryFill;
+
+static void
+gallery_fill_free(gpointer data)
+{
+    GalleryFill *fill = data;
+
+    g_clear_object(&fill->holder);
+    g_free(fill->id);
+    g_free(fill->kind);
+    g_free(fill);
+}
+
+/* Replaces a tile's placeholder with @widget (transfer full). */
+static void
+gallery_fill_with(ClawtLrgApp *app, GalleryFill *fill, LrgWidget *widget)
+{
+    lrg_container_remove_all(LRG_CONTAINER(fill->holder));
+    clawt_lrg_take(fill->holder, widget);
+    clawt_lrg_app_wake(app);
+}
+
+/* attachment.get answered: cache the bytes and draw the picture. */
+static void
+on_gallery_picture(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                   gpointer user_data)
+{
+    GalleryFill *fill = user_data;
+    const gchar *encoded = clawt_ipc_payload_string(
+        clawt_ipc_reply_object(reply), "base64");
+    g_autofree gchar *path = attachment_cache_path(fill->id);
+    g_autofree gchar *dir = g_path_get_dirname(path);
+    g_autofree guchar *bytes = NULL;
+    g_autoptr(GrlImage) image = NULL;
+    g_autoptr(GrlTexture) texture = NULL;
+    gsize length = 0;
+
+    if (encoded == NULL || g_mkdir_with_parents(dir, 0700) != 0)
+        return;
+
+    bytes = g_base64_decode(encoded, &length);
+
+    if (!g_file_set_contents(path, (const gchar *)bytes, (gssize)length,
+                             NULL))
+        return;
+
+    image = grl_image_new_from_file(path);
+
+    if (image != NULL)
+        texture = texture_fit(image, (gint)px(app, GALLERY_THUMB),
+                              (gint)px(app, GALLERY_THUMB));
+
+    if (texture != NULL)
+        gallery_fill_with(app, fill, image_widget(texture, px(app, 6.0f)));
+}
+
+/* attachment.thumbnail answered: a PDF's first page, or a text's lines. */
+static void
+on_gallery_thumbnail(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                     gpointer user_data)
+{
+    GalleryFill *fill = user_data;
+    JsonObject *result = clawt_ipc_reply_object(reply);
+    const gchar *text = clawt_ipc_payload_string(result, "text");
+    const gchar *encoded = clawt_ipc_payload_string(result, "base64");
+
+    if (text != NULL) {
+        LrgWidget *label = clawt_lrg_label(text, "caption");
+
+        lrg_widget_set_max_size(label, px(app, GALLERY_THUMB),
+                                px(app, GALLERY_THUMB));
+        gallery_fill_with(app, fill, label);
+        return;
+    }
+
+    if (encoded != NULL) {
+        gsize length = 0;
+        g_autofree guchar *raw = g_base64_decode(encoded, &length);
+        g_autoptr(GrlTexture) texture = texture_from_bytes(
+            raw, length, (gint)px(app, GALLERY_THUMB),
+            (gint)px(app, GALLERY_THUMB));
+
+        if (texture != NULL)
+            gallery_fill_with(app, fill,
+                              image_widget(texture, px(app, 6.0f)));
+    }
+}
+
+/*
+ * Asks for a tile's picture: an image's own bytes (from the cache when
+ * the transcript already fetched them), or attachment.thumbnail for a
+ * PDF's first page and a text file's first lines.  Quiet: a build
+ * without poppler refuses every PDF, and a toast per tile would bury
+ * the panel -- the tile keeps its kind label, which says as much.
+ */
+static void
+gallery_request_picture(ClawtLrgApp *app, LrgWidget *holder,
+                        ClawtLrgGalleryRow *row)
+{
+    GalleryFill *fill;
+
+    if (!row->daemon_copy || !row->exists)
+        return;
+
+    if (g_strcmp0(row->kind, "image") == 0) {
+        g_autofree gchar *path = attachment_cache_path(row->target);
+
+        if (g_file_test(path, G_FILE_TEST_EXISTS)) {
+            g_autoptr(GrlImage) image = grl_image_new_from_file(path);
+            g_autoptr(GrlTexture) texture = NULL;
+
+            if (image != NULL)
+                texture = texture_fit(image, (gint)px(app, GALLERY_THUMB),
+                                      (gint)px(app, GALLERY_THUMB));
+
+            if (texture != NULL) {
+                lrg_container_remove_all(LRG_CONTAINER(holder));
+                clawt_lrg_take(holder, image_widget(texture,
+                                                    px(app, 6.0f)));
+            }
+
+            return;
+        }
+    } else if (g_strcmp0(row->kind, "pdf") != 0 &&
+               g_strcmp0(row->kind, "text") != 0) {
+        return;
+    }
+
+    fill = g_new0(GalleryFill, 1);
+    fill->holder = g_object_ref(holder);
+    fill->id = g_strdup(row->target);
+    fill->kind = g_strdup(row->kind);
+
+    if (g_strcmp0(row->kind, "image") == 0) {
+        clawt_lrg_request(app, "attachment.get",
+                          clawt_ipc_payload_new("id", row->target, NULL),
+                          CLAWT_LRG_QUIET, on_gallery_picture, fill,
+                          gallery_fill_free);
+    } else {
+        JsonNode *payload = clawt_ipc_payload_new("id", row->target, NULL);
+
+        /* an integer, which attachment.thumbnail reads `size` as */
+        json_object_set_int_member(json_node_get_object(payload), "size",
+                                   (gint64)px(app, GALLERY_THUMB));
+        clawt_lrg_request(app, "attachment.thumbnail", payload,
+                          CLAWT_LRG_QUIET, on_gallery_thumbnail, fill,
+                          gallery_fill_free);
+    }
+}
+
+/* A tile's file, fetched to the cache, then opened or acted on. */
+typedef struct {
+    gchar *id;
+    gchar *action;
+} GalleryOpen;
+
+static void
+gallery_open_free(gpointer data)
+{
+    GalleryOpen *open = data;
+
+    g_free(open->id);
+    g_free(open->action);
+    g_free(open);
+}
+
+/* What a tile's click and menu do, once the file is on this machine. */
+static void
+gallery_act(ClawtLrgApp *app, const gchar *action, const gchar *path)
+{
+    if (g_strcmp0(action, "copy-path") == 0) {
+        copy_text(app, path, "Path");
+    } else if (g_strcmp0(action, "save") == 0) {
+        g_autoptr(LrgFileDialog) dialog = lrg_file_dialog_new();
+        g_autofree gchar *base = g_path_get_basename(path);
+
+        lrg_file_dialog_set_title(dialog, "Save a copy");
+        lrg_file_dialog_set_initial_name(dialog, base);
+        lrg_file_dialog_save(dialog, LRG_WIDGET(app->canvas), NULL,
+                             on_attachment_saved, g_strdup(path));
+    } else {
+        open_with_desktop(app, path);
+    }
+}
+
+static void
+on_gallery_fetched(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                   gpointer user_data)
+{
+    GalleryOpen *open = user_data;
+    const gchar *encoded = clawt_ipc_payload_string(
+        clawt_ipc_reply_object(reply), "base64");
+    g_autofree gchar *path = attachment_cache_path(open->id);
+    g_autofree gchar *dir = g_path_get_dirname(path);
+    g_autofree guchar *bytes = NULL;
+    gsize length = 0;
+
+    if (encoded == NULL || g_mkdir_with_parents(dir, 0700) != 0)
+        return;
+
+    bytes = g_base64_decode(encoded, &length);
+
+    if (!g_file_set_contents(path, (const gchar *)bytes, (gssize)length,
+                             NULL)) {
+        clawt_lrg_toast(app, "That file could not be kept here.");
+        return;
+    }
+
+    gallery_act(app, open->action, path);
+}
+
+/*
+ * Resolves a tile's target to a local file and acts on it: an id is
+ * fetched once into the attachment cache the transcript uses; an old
+ * message's host path is used only when this machine can open it.
+ */
+static void
+gallery_resolve(ClawtLrgApp *app, const gchar *target, const gchar *action)
+{
+    g_autofree gchar *path = NULL;
+    GalleryOpen *open;
+
+    if (target == NULL)
+        return;
+
+    if (target[0] == '/') {
+        if (g_file_test(target, G_FILE_TEST_IS_REGULAR))
+            gallery_act(app, action, target);
+        else
+            clawt_lrg_toast(app, "That file is not available here.");
+
+        return;
+    }
+
+    path = attachment_cache_path(target);
+
+    if (g_file_test(path, G_FILE_TEST_EXISTS)) {
+        gallery_act(app, action, path);
+        return;
+    }
+
+    open = g_new0(GalleryOpen, 1);
+    open->id = g_strdup(target);
+    open->action = g_strdup(action);
+    clawt_lrg_request(app, "attachment.get",
+                      clawt_ipc_payload_new("id", target, NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_gallery_fetched, open,
+                      gallery_open_free);
+}
+
+static void
+on_gallery_tile_clicked(ClawtLrgApp *app, gpointer user_data)
+{
+    gallery_resolve(app, user_data, "open");
+}
+
+static void
+on_gallery_menu(GSimpleAction *action, GVariant *parameter,
+                gpointer user_data)
+{
+    gallery_resolve(chat.app, user_data, g_action_get_name(G_ACTION(action)));
+}
+
+/*
+ * A tile's menu: Open, Save a copy, Copy path.  Not Delete, which
+ * removes a file from an agent's exchange -- not where a gallery tile's
+ * bytes are kept.
+ */
+static void
+attach_gallery_menu(LrgWidget *widget, const gchar *target)
+{
+    static const gchar *const names[] = { "open", "save", "copy-path" };
+    g_autoptr(GSimpleActionGroup) group = g_simple_action_group_new();
+    g_autoptr(GMenu) menu = g_menu_new();
+    gchar *kept = g_strdup(target);
+    gsize i;
+
+    g_object_set_data_full(G_OBJECT(widget), "clawt-target", kept, g_free);
+
+    for (i = 0; i < G_N_ELEMENTS(names); i++) {
+        g_autoptr(GSimpleAction) action = g_simple_action_new(names[i], NULL);
+
+        g_signal_connect(action, "activate", G_CALLBACK(on_gallery_menu),
+                         kept);
+        g_action_map_add_action(G_ACTION_MAP(group), G_ACTION(action));
+    }
+
+    g_menu_append(menu, "Open", "gallery.open");
+    g_menu_append(menu, "Save a copy\342\200\246", "gallery.save");
+    g_menu_append(menu, "Copy path", "gallery.copy-path");
+
+    lrg_widget_insert_action_group(widget, "gallery", G_ACTION_GROUP(group));
+    lrg_widget_set_context_menu(widget, G_MENU_MODEL(menu));
+}
+
+/* attachment.list answered: the panel, one tile per file. */
+static void
+on_gallery_listed(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                  gpointer user_data)
+{
+    g_autoptr(GPtrArray) rows = NULL;
+    LrgWidget *content;
+    LrgScrollBox *scroll;
+    LrgWidget *grid;
+    guint i;
+
+    if (reply == NULL)
+        return;
+
+    rows = clawt_lrg_gallery_rows(reply);
+    content = clawt_lrg_vbox(px(app, 10.0f));
+
+    if (rows->len == 0) {
+        clawt_lrg_take(content, clawt_lrg_label(
+            "No files yet. Files sent in this conversation, by you or the "
+            "agent, appear here.", "muted"));
+        g_object_unref(clawt_lrg_dialog(app, "Files in this conversation",
+                                        NULL, content, NULL, FALSE, NULL,
+                                        NULL, NULL));
+        g_object_unref(content);
+        return;
+    }
+
+    grid = LRG_WIDGET(lrg_wrap_box_new());
+    lrg_wrap_box_set_line_spacing(LRG_WRAP_BOX(grid), px(app, 12.0f));
+    lrg_container_set_spacing(LRG_CONTAINER(grid), px(app, 12.0f));
+
+    for (i = 0; i < rows->len; i++) {
+        ClawtLrgGalleryRow *row = g_ptr_array_index(rows, i);
+        LrgWidget *tile = clawt_lrg_vbox(px(app, 4.0f));
+        LrgWidget *holder = clawt_lrg_vbox(0.0f);
+        LrgWidget *card;
+        g_autofree gchar *kind = g_ascii_strup(row->kind, -1);
+
+        lrg_container_set_padding(LRG_CONTAINER(tile), px(app, 8.0f));
+        lrg_widget_set_min_size(holder, px(app, GALLERY_THUMB),
+                                px(app, GALLERY_THUMB));
+        lrg_widget_set_max_size(tile, px(app, GALLERY_THUMB + 16.0f), -1.0f);
+
+        /* the kind until a picture replaces it, and for good otherwise */
+        clawt_lrg_take(holder, clawt_lrg_badge(row->exists ? kind : "GONE",
+                                               row->exists ? "info"
+                                                           : "warn"));
+        clawt_lrg_add(tile, holder);
+        clawt_lrg_take(tile, clawt_lrg_label(row->name, NULL));
+        clawt_lrg_take(tile, clawt_lrg_label(row->subtitle, "caption"));
+
+        if (i < GALLERY_PICTURES)
+            gallery_request_picture(app, holder, row);
+
+        g_object_unref(holder);
+
+        if (row->exists) {
+            card = clickable_new(app, tile, "clawt-card",
+                                 on_gallery_tile_clicked,
+                                 g_strdup(row->target), g_free);
+            attach_gallery_menu(card, row->target);
+        } else {
+            card = tile;
+            lrg_widget_add_class(card, "clawt-card");
+        }
+
+        clawt_lrg_take(grid, card);
+    }
+
+    scroll = lrg_scroll_box_new();
+    lrg_scroll_box_set_hscroll(scroll, FALSE);
+    lrg_scroll_box_set_vscroll(scroll, TRUE);
+    lrg_scroll_box_set_child(scroll, grid);
+    g_object_unref(grid);
+    lrg_widget_set_min_size(LRG_WIDGET(scroll), px(app, 720.0f),
+                            px(app, 480.0f));
+    lrg_widget_set_max_size(LRG_WIDGET(scroll), -1.0f, px(app, 480.0f));
+    clawt_lrg_take(content, LRG_WIDGET(scroll));
+
+    g_object_unref(clawt_lrg_dialog(app, "Files in this conversation", NULL,
+                                    content, NULL, FALSE, NULL, NULL, NULL));
+    g_object_unref(content);
+}
+
+/*
+ * The Files panel: every file this conversation carried, newest first.
+ * attachment.list reads the room's whole history for attachment blocks,
+ * so it lists what the transcript names -- from any client -- and marks
+ * a file deleted since as gone.
+ */
+static void
+on_files_clicked(LrgButton *button, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    JsonNode *payload;
+
+    (void)button;
+
+    if (chat.room != NULL)
+        payload = clawt_ipc_payload_new("room", chat.room, NULL);
+    else if (app->agent_id != NULL)
+        payload = clawt_ipc_payload_new("agent", app->agent_id, NULL);
+    else
+        return;
+
+    clawt_lrg_request(app, "attachment.list", payload,
+                      CLAWT_LRG_REQUEST_NONE, on_gallery_listed, NULL, NULL);
+}
+
 /* ── The transcript ───────────────────────────────────────────────── */
 
 static gint
@@ -2589,10 +3011,21 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps,
     guint n = (messages != NULL) ? json_array_get_length(messages) : 0;
     guint s_at = 0;
     guint d_at = 0;
+    gint rule_at = -1;
     guint i;
 
     reset_transcript();
     g_hash_table_remove_all(chat.shown);
+
+    /*
+     * Where "New messages" goes: above the first message somebody else
+     * sent after the operator's read mark (`read_upto`, held by the
+     * daemon), by the rule every client shares.  Not in a peer
+     * conversation, which has no mark.
+     */
+    if (chat.conversation == NULL)
+        rule_at = clawt_unread_rule_index(
+            messages, clawt_ipc_payload_string(root, "read_upto"));
 
     /* held for the inline view, which redraws them as events arrive */
     for (i = 0; decisions != NULL && i < decisions->len; i++)
@@ -2632,6 +3065,12 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps,
         if (id != NULL)
             g_hash_table_add(chat.shown, g_strdup(id));
 
+        /* above the message, labelling the block underneath it */
+        if ((gint)i == rule_at && chat.unread_rule == NULL) {
+            chat.unread_rule = unread_rule_new(app);
+            clawt_lrg_take(chat.transcript, chat.unread_rule);
+        }
+
         append_round_marks(app, clawt_ipc_payload_int(message, "round", 0),
                            NULL, NULL, TRUE);
         append_message(app, sender != NULL ? sender : "?",
@@ -2670,6 +3109,18 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps,
      */
     if (clawt_lrg_unread_clear(app->unread, chat.room))
         fleet_marks_changed(app);
+
+    /*
+     * And read for the daemon, up to the last message drawn -- after the
+     * history, whose `read_upto` placed the rule above, and only when
+     * the daemon holds marks at all.
+     */
+    if (chat.conversation == NULL && n > 0 && root != NULL &&
+        json_object_has_member(root, "read_upto"))
+        clawt_lrg_mark_room_read(
+            app, chat.room,
+            clawt_ipc_payload_string(
+                json_array_get_object_element(messages, n - 1), "id"));
 
     set_following(TRUE);
     chat.jump_instantly = TRUE;
@@ -2898,6 +3349,37 @@ on_conversation_chosen(GSimpleAction *action, GVariant *parameter,
 }
 
 void
+clawt_lrg_mark_room_read(ClawtLrgApp *app, const gchar *room_id,
+                         const gchar *upto)
+{
+    if (room_id == NULL)
+        return;
+
+    clawt_lrg_request(app, "room.read",
+                      clawt_ipc_payload_new("room", room_id, "upto", upto,
+                                            NULL),
+                      CLAWT_LRG_QUIET, NULL, NULL, NULL);
+}
+
+void
+clawt_lrg_mark_all_read(ClawtLrgApp *app)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "all");
+    json_builder_add_boolean_value(builder, TRUE);
+    json_builder_end_object(builder);
+
+    /* Cleared here at once; the daemon's events say the same a moment on. */
+    g_hash_table_remove_all(app->unread);
+    fleet_marks_changed(app);
+
+    clawt_lrg_request(app, "room.read", json_builder_get_root(builder),
+                      CLAWT_LRG_QUIET, NULL, NULL, NULL);
+}
+
+void
 clawt_lrg_chat_reopen(ClawtLrgApp *app)
 {
     /*
@@ -2908,6 +3390,9 @@ clawt_lrg_chat_reopen(ClawtLrgApp *app)
      */
     if (clawt_lrg_unread_clear(app->unread, app->room_id))
         fleet_marks_changed(app);
+
+    /* And for every other client, whose counts are the daemon's. */
+    clawt_lrg_mark_room_read(app, app->room_id, NULL);
 
     if (chat.page == NULL || chat.conversation == NULL)
         return;
@@ -4715,6 +5200,15 @@ build_composer(ClawtLrgApp *app)
     clawt_lrg_add(entry_row, chat.editor);
     g_object_unref(chat.editor);
 
+    {
+        LrgWidget *files = clawt_lrg_button("Files", "flat",
+                                            G_CALLBACK(on_files_clicked),
+                                            app);
+
+        lrg_widget_set_valign(files, LRG_ALIGN_END);
+        clawt_lrg_take(entry_row, files);
+    }
+
     attach = clawt_lrg_button("Attach", "flat", G_CALLBACK(on_attach_clicked),
                               app);
     lrg_widget_set_valign(attach, LRG_ALIGN_END);
@@ -5001,6 +5495,14 @@ on_message_event(ClawtLrgApp *app, ClawtEvent *event)
          */
         if (clawt_chat_reply_ends_wait(from, app->agent_id))
             set_activity(NULL);
+
+        /*
+         * On screen is read: without this the daemon's count climbs for
+         * the conversation being watched, and the next client to connect
+         * shows it.  Not a peer conversation, which is never counted.
+         */
+        if (chat.conversation == NULL && g_strcmp0(from, "user") != 0)
+            clawt_lrg_mark_room_read(app, chat.room, id);
     } else if (chat.history_inflight == 0 && chat.conversation == NULL &&
                app->agent_id != NULL && room != NULL &&
                g_strcmp0(room, chat.room) != 0 &&
@@ -5073,6 +5575,19 @@ on_event(ClawtLrgApp *app, ClawtEvent *event)
 
     if (kind == NULL)
         return;
+
+    /*
+     * A conversation read anywhere -- here, another client, the CLI --
+     * takes the daemon's count.  Before the page check, because the
+     * sidebar's pills are drawn whether or not the chat was ever built.
+     */
+    if (g_strcmp0(kind, "room.read") == 0) {
+        if (clawt_lrg_unread_apply_read(
+                app->unread, clawt_event_get_subject(event),
+                clawt_event_get_detail_int(event, "unread")))
+            fleet_marks_changed(app);
+        return;
+    }
 
     /*
      * Before the page is built there is no transcript to draw into, but

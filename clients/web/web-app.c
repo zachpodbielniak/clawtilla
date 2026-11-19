@@ -86,16 +86,17 @@ struct _ClawtWebApp {
     gint64       connected_at;
 
     /*
-     * What has happened, for the alerts page.
-     *
-     * Same split as the GTK client's panel: two of the daemon's events
-     * are notifications -- a download that failed, a message the loop
-     * guard refused -- and everything else is the routine stream, kept
-     * quietly so the page can also answer "what is the fleet doing".
-     * Session-scoped and capped; the daemon's event log is the durable
-     * copy and `event.list` reads it for anything older.
+     * The daemon's notification list (`notice.list`), and whether it is
+     * still true -- kept exactly as the decision count is: marked
+     * unknown by any event that may move it and asked from a render,
+     * never from the event handler.  `muted` is the agents muted in it,
+     * which dims their sidebar pills and leaves them out of every total;
+     * it keeps the last answer while the list is unknown, so a total
+     * drawn before the next ask is not suddenly counting them.
      */
-    GPtrArray   *alerts;
+    JsonNode    *notices;
+    gboolean     notices_known;
+    GHashTable  *muted;
 
     /*
      * How many decisions are open, and whether that number is still
@@ -124,7 +125,6 @@ struct _ClawtWebApp {
      */
     guint        grok_attention;
     gboolean     grok_known;
-    guint        next_alert_id;
 
     /*
      * Which daemon this process serves.
@@ -147,120 +147,88 @@ struct _ClawtWebApp {
 
 G_DEFINE_FINAL_TYPE(ClawtWebApp, clawt_web_app, G_TYPE_OBJECT)
 
-/* ── Alerts ──────────────────────────────────────────────────────── */
-
 /*
- * The most recent 200, matching the limit `agent.logs` already defaults
- * to so the two surfaces agree on what "recent" means.
+ * The web client never starts on a daemon it chose from memory: it has
+ * no last-connection file, and serves whichever daemon its command line
+ * named.  What it passes as clawt_connection_notice_text()'s
+ * `remembered` (see clawt_web_app_connection_notice()).
  */
-#define ALERTS_KEPT 200
+#define WEB_REMEMBERS_NO_CONNECTION (FALSE)
 
-static void
-alert_free(gpointer data)
+/* ── Notifications ───────────────────────────────────────────────── */
+
+JsonObject *
+clawt_web_app_notices(ClawtWebApp *self)
 {
-    ClawtWebAlert *alert = data;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GHashTable) muted = NULL;
+    GHashTableIter iter;
+    gpointer key;
 
-    g_free(alert->text);
-    g_free(alert->source);
-    g_free(alert->agent);
-    g_free(alert);
-}
-
-static void
-note_alert(ClawtWebApp *self, ClawtAlertTier tier, const gchar *source,
-           const gchar *agent, const gchar *text)
-{
-    ClawtWebAlert *alert = g_new0(ClawtWebAlert, 1);
-
-    alert->id = ++self->next_alert_id;
-    alert->tier = tier;
-    alert->text = g_strdup(text);
-    alert->source = g_strdup(source != NULL ? source : "");
-    alert->agent = g_strdup(agent != NULL ? agent : "");
-    alert->ts = g_get_real_time();
-
-    /*
-     * The same rule the GTK client applies, from the same function.
-     *
-     * This client has no panel that stays open, so the case it catches
-     * here is the routine tier: those are never counted, and recording
-     * one unread leaves a flag no badge reads and that a later widening
-     * of the filter would start believing.
-     */
-    alert->read = clawt_alert_arrives_read(FALSE, alert->tier);
-
-    /* Newest first: this list is read from the top. */
-    g_ptr_array_insert(self->alerts, 0, alert);
-
-    while (self->alerts->len > ALERTS_KEPT)
-        g_ptr_array_remove_index(self->alerts, self->alerts->len - 1);
-}
-
-GPtrArray *
-clawt_web_app_alerts(ClawtWebApp *self)
-{
     g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
 
-    return self->alerts;
+    if (self->notices_known)
+        return (self->notices != NULL) ? clawt_web_root(self->notices) : NULL;
+
+    reply = clawt_web_app_call(self, "notice.list", NULL);
+
+    /*
+     * A daemon that did not answer -- down, or too old to keep the list
+     * -- is asked once per change, not once per sidebar row: the answer
+     * is held as "none" until the next event or reconnect marks it
+     * unknown again.  The last list is dropped rather than kept, so a
+     * bell is never drawn from a daemon this process has moved away from.
+     */
+    if (reply == NULL) {
+        g_clear_pointer(&self->notices, json_node_unref);
+        self->notices_known = TRUE;
+        return NULL;
+    }
+
+    g_clear_pointer(&self->notices, json_node_unref);
+    self->notices = g_steal_pointer(&reply);
+    self->notices_known = TRUE;
+
+    muted = clawt_notice_list_mutes(clawt_web_root(self->notices));
+    g_hash_table_remove_all(self->muted);
+    g_hash_table_iter_init(&iter, muted);
+
+    while (g_hash_table_iter_next(&iter, &key, NULL))
+        g_hash_table_add(self->muted, g_strdup(key));
+
+    return clawt_web_root(self->notices);
 }
 
 guint
-clawt_web_app_alert_count(ClawtWebApp *self)
+clawt_web_app_notice_count(ClawtWebApp *self)
 {
-    guint count = 0;
-    guint i;
-
     g_return_val_if_fail(CLAWT_IS_WEB_APP(self), 0);
 
-    for (i = 0; i < self->alerts->len; i++) {
-        ClawtWebAlert *alert = g_ptr_array_index(self->alerts, i);
+    return clawt_notice_list_badge(clawt_web_app_notices(self));
+}
 
-        /*
-         * Never the routine stream.  A badge that counted it would be
-         * permanently non-zero and would stop being read, and widening
-         * the filter is a thing the reader chooses.
-         */
-        if (!alert->read && alert->tier != CLAWT_ALERT_ROUTINE)
-            count++;
-    }
+gboolean
+clawt_web_app_agent_muted(ClawtWebApp *self, const gchar *agent_id)
+{
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), FALSE);
 
-    return count;
+    /*
+     * Asked again when unknown: the sidebar can be drawn before the tab
+     * that would otherwise have asked, and right after a mute it must
+     * show the new state, not the one before the click.
+     */
+    if (!self->notices_known)
+        clawt_web_app_notices(self);
+
+    return agent_id != NULL && g_hash_table_contains(self->muted, agent_id);
 }
 
 void
-clawt_web_app_alerts_mark_read(ClawtWebApp *self)
-{
-    guint i;
-
-    g_return_if_fail(CLAWT_IS_WEB_APP(self));
-
-    for (i = 0; i < self->alerts->len; i++)
-        ((ClawtWebAlert *)g_ptr_array_index(self->alerts, i))->read = TRUE;
-}
-
-void
-clawt_web_app_alert_dismiss(ClawtWebApp *self, guint id)
-{
-    guint i;
-
-    g_return_if_fail(CLAWT_IS_WEB_APP(self));
-
-    for (i = 0; i < self->alerts->len; i++) {
-        ClawtWebAlert *alert = g_ptr_array_index(self->alerts, i);
-
-        if (alert->id == id) {
-            g_ptr_array_remove_index(self->alerts, i);
-            return;
-        }
-    }
-}
-
-void
-clawt_web_app_alerts_clear(ClawtWebApp *self)
+clawt_web_app_notices_changed(ClawtWebApp *self)
 {
     g_return_if_fail(CLAWT_IS_WEB_APP(self));
 
-    g_ptr_array_set_size(self->alerts, 0);
+    self->notices_known = FALSE;
 }
 
 /* ── Requests ────────────────────────────────────────────────────── */
@@ -433,18 +401,14 @@ clawt_web_app_grok_attention(ClawtWebApp *self)
 guint
 clawt_web_app_unread_total(ClawtWebApp *self)
 {
-    GHashTableIter iter;
-    gpointer value;
-    guint total = 0;
-
     g_return_val_if_fail(CLAWT_IS_WEB_APP(self), 0);
 
-    g_hash_table_iter_init(&iter, self->unread);
-
-    while (g_hash_table_iter_next(&iter, NULL, &value))
-        total += GPOINTER_TO_UINT(value);
-
-    return total;
+    /*
+     * Less the muted agents' conversations (clawt_unread_total(), every
+     * client's rule): their pills stay on their rows, dimmed, and are in
+     * no total.
+     */
+    return clawt_unread_total(self->unread, self->muted);
 }
 
 void
@@ -522,6 +486,26 @@ clawt_web_app_note_fleet(ClawtWebApp *self, JsonArray *agents,
                 g_hash_table_iter_remove(&iter);
         }
     }
+
+    /*
+     * And the daemon's counts, which every client shares: the daemon
+     * holds the read marks, so a conversation read in the GTK client,
+     * or before this server restarted, is read here too.  Taken on every
+     * listing, so a stream with a hole in it corrects itself at the next
+     * render rather than at the next reconnect.
+     */
+    {
+        g_autofree gchar *viewing_room = NULL;
+
+        if (self->viewing_room != NULL)
+            viewing_room = g_strdup(self->viewing_room);
+        else if (self->viewing != NULL)
+            viewing_room = clawt_room_manager_direct_id("user",
+                                                        self->viewing);
+
+        clawt_unread_seed(self->unread, rooms, self->sidebar_rooms,
+                          viewing_room);
+    }
 }
 
 void
@@ -578,6 +562,14 @@ clawt_web_app_set_viewing_room(ClawtWebApp *self, const gchar *room_id)
         g_clear_pointer(&self->viewing, g_free);
         g_hash_table_remove(self->unread, room_id);
     }
+}
+
+const gchar *
+clawt_web_app_get_viewing(ClawtWebApp *self)
+{
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
+
+    return self->viewing;
 }
 
 const gchar *
@@ -675,10 +667,18 @@ clawt_web_app_connection_notice(ClawtWebApp *self)
      * and the GTK one cannot come to disagree about whether a connection
      * was lost or never made.  This used to be a second copy of the
      * wording, and it had only two of the three states.
+     *
+     * Never "remembered": the served client has no last-connection
+     * file.  It is started on the daemon its command line names, so the
+     * desktop clients' Use Local offer (for a daemon they chose from
+     * memory) has nothing here to answer.  Named rather than a bare
+     * FALSE, so the parity check's "remembered daemon fallback" row
+     * has a decision to point at in this client.
      */
     return clawt_connection_notice_text(
         clawt_daemon_link_state(self->client, self->reached_once),
-        self->connection, self->daemon_version, self->daemon_update);
+        self->connection, WEB_REMEMBERS_NO_CONNECTION, self->daemon_version,
+        self->daemon_update);
 }
 
 gboolean
@@ -724,6 +724,7 @@ clawt_web_app_switch(ClawtWebApp *self, ClawtConnection *connection,
      */
     self->decisions_known = FALSE;
     self->grok_known = FALSE;
+    self->notices_known = FALSE;
 
     /*
      * The version belongs to the daemon, not to this process, so it is
@@ -818,6 +819,20 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
      * has already been bitten by.  The room map is filled in from the
      * fleet listing the sidebar fetches anyway.
      */
+    /*
+     * A conversation read anywhere -- a browser, the GTK client, the CLI
+     * -- takes the daemon's count, so its pill clears here as well.
+     */
+    if (g_strcmp0(kind, "room.read") == 0 && subject != NULL) {
+        gint64 left = clawt_event_get_detail_int(event, "unread");
+
+        if (left <= 0)
+            g_hash_table_remove(self->unread, subject);
+        else
+            g_hash_table_insert(self->unread, g_strdup(subject),
+                                GUINT_TO_POINTER((guint)left));
+    }
+
     if (g_strcmp0(kind, "message") == 0) {
         const gchar *from = clawt_event_get_detail(event, "from");
         g_autofree gchar *viewing_room = NULL;
@@ -875,84 +890,17 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         self->grok_known = FALSE;
 
     /*
-     * Two of the daemon's kinds are notifications; the rest is the
-     * routine stream, kept quietly.  `image.progress` is excluded -- a
-     * download emits one per percent and would fill the list with one
-     * file -- and so is `agent.typing`, which is a spinner rather than
-     * an event.
+     * The notification list is the daemon's: anything that may move it --
+     * the list itself, a conversation read or written to, a decision, a
+     * Grok job -- marks it unknown, and the next render asks.
      */
-    {
-        /*
-         * Which tier an event belongs in is clawt_alert_tier_for_event(),
-         * in libclawt, because the GTK panel classifies the same stream
-         * -- and two implementations of that rule would differ exactly
-         * once, on the kind somebody adds next.  Only the wording is
-         * decided here.
-         */
-        ClawtAlertTier tier = clawt_alert_tier_for_event(event);
-        g_autofree gchar *line = NULL;
-
-        if (tier == CLAWT_ALERT_ERROR &&
-            g_strcmp0(kind, "message.refused") == 0) {
-            const gchar *from = clawt_event_get_detail(event, "from");
-            const gchar *to = clawt_event_get_detail(event, "to");
-            const gchar *reason = clawt_event_get_detail(event, "reason");
-
-            line = g_strdup_printf("%s to %s was stopped: %s",
-                                   from != NULL ? from : "?",
-                                   to != NULL ? to : "?",
-                                   reason != NULL ? reason : "a limit");
-            note_alert(self, tier, kind, from, line);
-        } else if (tier == CLAWT_ALERT_ERROR &&
-                   g_strcmp0(kind, "routine.turned_off") == 0) {
-            /*
-             * Before the download branch, which would otherwise call a
-             * routine something that "could not be downloaded".  The
-             * sentence is libclawt's, the same in every client.
-             */
-            line = clawt_routine_turned_off_alert(
-                subject, (guint)clawt_event_get_detail_int(event, "failures"),
-                clawt_event_get_detail(event, "error"));
-            note_alert(self, tier, kind,
-                       clawt_event_get_detail(event, "agent"), line);
-        } else if (tier == CLAWT_ALERT_ERROR) {
-            line = g_strdup_printf("%s could not be downloaded: %s",
-                                   subject != NULL ? subject : "an image",
-                                   clawt_event_get_detail(event, "error"));
-            note_alert(self, tier, kind, subject, line);
-        } else if (tier == CLAWT_ALERT_NOTICE ||
-                   tier == CLAWT_ALERT_ROUTINE) {
-            if (g_strcmp0(kind, "agent.state") == 0) {
-                const gchar *state = clawt_event_get_detail(event, "state");
-
-                line = g_strdup_printf("%s is %s",
-                                       subject != NULL ? subject : "?",
-                                       state != NULL ? state : "?");
-            } else if (g_strcmp0(kind, "task.tree_budget") == 0) {
-                /*
-                 * A task tree out of messages, named by its root task,
-                 * in libclawt's words so every client says the same.
-                 */
-                line = clawt_loop_guard_tree_alert_text(
-                    clawt_event_get_detail(event, "tree"),
-                    (guint)clawt_event_get_detail_int(event, "count"),
-                    (guint)clawt_event_get_detail_int(event, "limit"));
-            } else if (clawt_event_get_detail(event, "message") != NULL) {
-                /*
-                 * An event carrying its own sentence -- agent.failover's
-                 * says who, on what, why and until when -- is shown as
-                 * written rather than as "agent.failover · scout".
-                 */
-                line = g_strdup(clawt_event_get_detail(event, "message"));
-            } else {
-                line = g_strdup_printf("%s · %s", kind != NULL ? kind : "?",
-                                       subject != NULL ? subject
-                                                       : "the fleet");
-            }
-
-            note_alert(self, tier, kind, subject, line);
-        }
-    }
+    if (kind != NULL &&
+        (g_strcmp0(kind, "notice.changed") == 0 ||
+         g_strcmp0(kind, "room.read") == 0 ||
+         g_strcmp0(kind, "message") == 0 ||
+         g_str_has_prefix(kind, "decision.") ||
+         g_str_has_prefix(kind, "grok.")))
+        self->notices_known = FALSE;
 
     for (i = 0; i < self->streams->len; i++) {
         HtmxSseConnection *connection = g_ptr_array_index(self->streams, i);
@@ -1051,6 +999,7 @@ on_resync(ClawtClient *client, gpointer user_data)
      */
     self->decisions_known = FALSE;
     self->grok_known = FALSE;
+    self->notices_known = FALSE;
 
     tell_every_page(self, "resync");
 }
@@ -1105,7 +1054,8 @@ clawt_web_app_finalize(GObject *object)
     g_clear_pointer(&self->sidebar_rooms, g_hash_table_unref);
     g_clear_pointer(&self->viewing, g_free);
     g_clear_pointer(&self->viewing_room, g_free);
-    g_clear_pointer(&self->alerts, g_ptr_array_unref);
+    g_clear_pointer(&self->notices, json_node_unref);
+    g_clear_pointer(&self->muted, g_hash_table_unref);
     g_clear_pointer(&self->connection, clawt_connection_free);
     g_clear_pointer(&self->daemon_version, g_free);
     g_clear_pointer(&self->daemon_update, g_free);
@@ -1135,7 +1085,8 @@ clawt_web_app_init(ClawtWebApp *self)
                                                 g_free, NULL);
     self->dm_rooms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                            g_free);
-    self->alerts = g_ptr_array_new_with_free_func(alert_free);
+    self->muted = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                        NULL);
 }
 
 /* ── Reading a reply ─────────────────────────────────────────────── */

@@ -101,6 +101,7 @@
 #include "chat/clawt-draft-store.h"
 #include "chat/clawt-room.h"
 #include "chat/clawt-room-manager.h"
+#include "chat/clawt-read-store.h"
 
 #include "mailbox/clawt-mailbox-router.h"
 
@@ -147,6 +148,7 @@
 #include "teach/clawt-gowl-demo-recorder.h"
 #include "teach/clawt-guest-demo-recorder.h"
 #include "core/clawt-event.h"
+#include "core/clawt-notice-store.h"
 #include "core/clawt-event-bus.h"
 #include "core/clawt-event-log.h"
 #include "core/clawt-sentinel.h"

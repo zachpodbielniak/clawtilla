@@ -1,5 +1,5 @@
 /*
- * web-alerts.c - What has happened, for a reader who was looking elsewhere
+ * web-alerts.c - The notifications page: what wants you, and what happened
  *
  * Copyright (C) 2026
  * SPDX-License-Identifier: AGPL-3.0-or-later
@@ -9,13 +9,16 @@
  * The GTK client puts this in a collapsible panel on the right.  Here it
  * is a page, which is the same capability in the idiom this client has:
  * a panel that pushes the content aside needs a third column and a
- * breakpoint, and a page needs neither and works with JavaScript off.
+ * breakpoint, and a page needs neither.
  *
- * The split is the same and it is the whole design: of the daemon's
- * events, two are notifications -- a download that failed, a message the
- * loop guard refused -- and the rest is a routine stream that is worth
- * having and must not shout.  So: one list, a filter that widens it, and
- * three tiers of which only two are coloured.
+ * Like every client's, it is a view of the daemon's notification list
+ * (`notice.list`, docs/clients.org "Notifications"): conversations with
+ * something unread, decisions waiting, Grok jobs that need somebody, and
+ * the alerts the daemon recorded from its own events.  The sections are
+ * drawn by clawt_web_notices_sections() in web-ui.c, which is pure, so
+ * tests/test-web-render.c holds them; this file is the page around them
+ * and the routes its buttons post to.  Nothing is kept here: a read, a
+ * dismissal or a mute is the daemon's, and shows in every client.
  */
 
 #include "clawt-web.h"
@@ -24,151 +27,57 @@
 
 #include <string.h>
 
-static gchar *
-alert_when(gint64 ts)
-{
-    return clawt_time_ago_label(ts, g_get_real_time());
-}
-
+/* The page, optionally narrowed to one agent. */
 static HtmxElement *
-alert_row(ClawtWebAlert *alert)
-{
-    g_autoptr(HtmxElement) row = HTMX_ELEMENT(htmx_article_new());
-    g_autoptr(HtmxDiv) text = htmx_div_new();
-    g_autoptr(HtmxDiv) meta = htmx_div_new();
-    g_autofree gchar *when = alert_when(alert->ts);
-    g_autofree gchar *line = NULL;
-    g_autofree gchar *dismiss = g_strdup_printf("/alerts/dismiss?id=%u",
-                                                alert->id);
-
-    htmx_element_add_class(row, "alert-row");
-
-    switch (alert->tier) {
-    case CLAWT_ALERT_ERROR:
-        htmx_element_add_class(row, "alert-error");
-        break;
-    case CLAWT_ALERT_NOTICE:
-        htmx_element_add_class(row, "alert-notice");
-        break;
-    default:
-        /*
-         * No card and no disc.  A routine entry is one line of quiet
-         * caption text, because severity is carried by weight and
-         * container as much as by hue -- which also means it survives a
-         * colourblind reader and a Catppuccin palette.
-         */
-        htmx_element_add_class(row, "alert-routine");
-        break;
-    }
-
-    if (!alert->read && alert->tier != CLAWT_ALERT_ROUTINE)
-        htmx_element_add_class(row, "alert-unread");
-
-    htmx_element_add_class(HTMX_ELEMENT(text), "alert-text");
-    htmx_node_set_text_content(HTMX_NODE(text), alert->text);
-    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(text));
-
-    htmx_element_add_class(HTMX_ELEMENT(meta), "alert-meta");
-
-    /*
-     * Relative time and the source, so a row says where to go and look
-     * without a second click.  The agent is a link that narrows the page
-     * to it -- one control for scope, not a second dropdown.
-     */
-    if (alert->agent != NULL && *alert->agent != '\0') {
-        g_autofree gchar *escaped = g_uri_escape_string(alert->agent, NULL,
-                                                        FALSE);
-        g_autofree gchar *url = g_strdup_printf("/alerts?agent=%s", escaped);
-        g_autoptr(HtmxA) who = htmx_a_new_with_href(url);
-
-        htmx_element_add_class(HTMX_ELEMENT(who), "alert-agent");
-        htmx_node_set_text_content(HTMX_NODE(who), alert->agent);
-        htmx_node_add_child(HTMX_NODE(meta), HTMX_NODE(who));
-    }
-
-    line = g_strdup_printf("%s · %s", when, alert->source);
-
-    {
-        g_autoptr(HtmxSpan) span = htmx_span_new();
-
-        htmx_element_add_class(HTMX_ELEMENT(span), "muted");
-        htmx_node_set_text_content(HTMX_NODE(span), line);
-        htmx_node_add_child(HTMX_NODE(meta), HTMX_NODE(span));
-    }
-
-    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(meta));
-
-    /*
-     * Always present rather than revealed on hover: a control that is
-     * invisible until you know it exists is a control nobody finds --
-     * and this page has to work without JavaScript, where there is no
-     * hover to speak of on a touch screen either.
-     */
-    clawt_web_add(row, clawt_web_post_button("Dismiss", dismiss, "default",
-                                             NULL));
-
-    return HTMX_ELEMENT(g_steal_pointer(&row));
-}
-
-static HtmxElement *
-alerts_body(ClawtWebApp *app, gboolean show_all, const gchar *agent)
+alerts_body(ClawtWebApp *app, const gchar *agent)
 {
     g_autoptr(HtmxDiv) view = htmx_div_new();
     g_autoptr(HtmxDiv) head = htmx_div_new();
-    GPtrArray *alerts = clawt_web_app_alerts(app);
+    JsonObject *reply = clawt_web_app_notices(app);
     guint shown = 0;
     guint i;
 
     htmx_element_add_class(HTMX_ELEMENT(view), "view-pad");
 
-    clawt_web_add(view, clawt_web_section_title("Alerts"));
+    clawt_web_add(view, clawt_web_section_title("Notifications"));
 
     {
         g_autoptr(HtmxP) lede = htmx_p_new();
 
         htmx_element_add_class(HTMX_ELEMENT(lede), "muted");
         htmx_node_set_text_content(HTMX_NODE(lede),
-            "What happened while you were looking somewhere else. An alert "
-            "is an event that demanded attention; a routine entry is one "
-            "that did not. This is the session's; the daemon keeps the "
-            "durable copy, which the history below reads.");
+            "What wants you, and what happened while you were looking "
+            "somewhere else. The daemon keeps this list, so reading, "
+            "dismissing or muting here does it in every client. "
+            "Right-click a row for what it offers.");
         htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(lede));
     }
 
-    htmx_element_add_class(HTMX_ELEMENT(head), "btn-row");
-
     /*
-     * Two options, not five.  A page that opens onto every routine event
-     * is noise; one that opens onto only errors hides what you came for.
+     * Two verbs for the whole list, as every client has them.  "Mark all
+     * read" reads the alerts and every conversation; "Clear" dismisses
+     * the alerts -- only the narrowed agent's when the page is narrowed.
      */
+    htmx_element_add_class(HTMX_ELEMENT(head), "btn-row");
+    clawt_web_add(head, clawt_web_post_button("Mark all read",
+                                              "/alerts/read-all", "default",
+                                              NULL));
+
     {
-        g_autoptr(HtmxA) only = htmx_a_new_with_href("/alerts");
-        g_autoptr(HtmxA) every = htmx_a_new_with_href("/alerts?all=1");
+        g_autofree gchar *escaped = (agent != NULL)
+            ? g_uri_escape_string(agent, NULL, FALSE) : NULL;
+        g_autofree gchar *clear = (agent != NULL)
+            ? g_strdup_printf("/alerts/clear?agent=%s", escaped)
+            : g_strdup("/alerts/clear");
 
-        htmx_element_add_class(HTMX_ELEMENT(only), "tab");
-        htmx_element_add_class(HTMX_ELEMENT(every), "tab");
-        htmx_node_set_text_content(HTMX_NODE(only), "Alerts");
-        htmx_node_set_text_content(HTMX_NODE(every), "Everything");
-
-        if (!show_all)
-            htmx_element_set_attribute(HTMX_ELEMENT(only), "aria-current",
-                                       "page");
-        else
-            htmx_element_set_attribute(HTMX_ELEMENT(every), "aria-current",
-                                       "page");
-
-        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(only));
-        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(every));
+        clawt_web_add(head, clawt_web_post_button("Clear", clear, "default",
+                                                  NULL));
     }
 
-    clawt_web_add(head, clawt_web_post_button("Clear all", "/alerts/clear",
-                                              "default", NULL));
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(head));
 
     if (agent != NULL) {
-        g_autoptr(HtmxA) chip = htmx_a_new_with_href(show_all
-                                                     ? "/alerts?all=1"
-                                                     : "/alerts");
+        g_autoptr(HtmxA) chip = htmx_a_new_with_href("/alerts");
         g_autofree gchar *label = g_strdup_printf("Only %s  ×", agent);
 
         htmx_element_add_class(HTMX_ELEMENT(chip), "tab");
@@ -176,35 +85,24 @@ alerts_body(ClawtWebApp *app, gboolean show_all, const gchar *agent)
         htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(chip));
     }
 
-    for (i = 0; alerts != NULL && i < alerts->len; i++) {
-        ClawtWebAlert *alert = g_ptr_array_index(alerts, i);
-
-        if (!show_all && alert->tier == CLAWT_ALERT_ROUTINE)
-            continue;
-
-        if (agent != NULL && g_strcmp0(agent, alert->agent) != 0)
-            continue;
-
-        clawt_web_add(view, alert_row(alert));
-        shown++;
-    }
+    clawt_web_add(view, clawt_web_notices_sections(reply, agent,
+                                                   g_get_real_time(),
+                                                   &shown));
 
     if (shown == 0)
         clawt_web_add(view, clawt_web_empty(
-            show_all ? "Nothing has happened."
-                     : "Nothing has needed you.",
-            show_all ? NULL
-                     : "Widen it to Everything to see the whole stream."));
+            reply != NULL ? "Nothing has needed you."
+                          : "The daemon did not answer.",
+            "Older events are in the daemon's log, below."));
 
     /*
-     * And the durable copy.  ClawtEventLog has been recording every
-     * published event since the daemon was written and was read back by
-     * nobody -- which is why diagnosing a message loop meant running
-     * sqlite3 and grep on the host.
+     * And the routine stream.  ClawtEventLog has been recording every
+     * published event since the daemon was written; the page reads it
+     * rather than keeping a copy.
      */
     {
         g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
-        g_autoptr(JsonNode) reply = NULL;
+        g_autoptr(JsonNode) history = NULL;
         JsonArray *events;
 
         if (agent != NULL)
@@ -212,10 +110,10 @@ alerts_body(ClawtWebApp *app, gboolean show_all, const gchar *agent)
 
         clawt_web_payload_set_int(payload, "limit", 50);
 
-        reply = clawt_web_app_call(app, "event.list",
-                                   clawt_web_payload_take(
-                                       g_steal_pointer(&payload)));
-        events = clawt_web_member_array(clawt_web_root(reply), "events");
+        history = clawt_web_app_call(app, "event.list",
+                                     clawt_web_payload_take(
+                                         g_steal_pointer(&payload)));
+        events = clawt_web_member_array(clawt_web_root(history), "events");
 
         if (events != NULL && json_array_get_length(events) > 0) {
             g_autoptr(HtmxElement) details = HTMX_ELEMENT(htmx_details_new());
@@ -228,7 +126,7 @@ alerts_body(ClawtWebApp *app, gboolean show_all, const gchar *agent)
             htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(summary));
             htmx_element_add_class(HTMX_ELEMENT(inner), "details-body");
 
-            /* Newest first, like the live list above it. */
+            /* Newest first, like the list above it. */
             for (i = n; i > 0; i--) {
                 JsonObject *one = json_array_get_object_element(events, i - 1);
                 g_autoptr(HtmxDiv) line = htmx_div_new();
@@ -250,62 +148,150 @@ alerts_body(ClawtWebApp *app, gboolean show_all, const gchar *agent)
     return HTMX_ELEMENT(g_steal_pointer(&view));
 }
 
+/* {"all": true}, which notice.read and room.read both take. */
+static JsonNode *
+all_payload(void)
+{
+    ClawtWebPayload *payload = clawt_web_payload_new();
+
+    clawt_web_payload_set_bool(payload, "all", TRUE);
+
+    return clawt_web_payload_take(payload);
+}
+
 static HtmxResponse *
 on_alerts(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
     ClawtWebApp *app = user_data;
-    const gchar *all = htmx_request_get_query_param(request, "all");
     const gchar *agent = htmx_request_get_query_param(request, "agent");
     g_autofree gchar *html = NULL;
     g_autoptr(HtmxElement) body = NULL;
+    JsonObject *reply;
 
     (void)params;
 
     /*
-     * Opening the page marks everything read, exactly as opening the GTK
-     * panel does.  The badge is "how much have you not seen", and you
-     * have now seen it.
+     * Opening the page reads every alert, exactly as opening the GTK
+     * panel does -- for every client, since the read is the daemon's.
+     * Drawn first, so the rows that were new still say so this once.
      */
-    body = alerts_body(app, all != NULL && *all != '\0',
-                       (agent != NULL && *agent != '\0') ? agent : NULL);
-    clawt_web_app_alerts_mark_read(app);
+    body = alerts_body(app, (agent != NULL && *agent != '\0') ? agent : NULL);
+    reply = clawt_web_app_notices(app);
+
+    if (reply != NULL && clawt_web_member_int(reply, "unread", 0) > 0) {
+        g_autoptr(JsonNode) read = clawt_web_app_call(app, "notice.read",
+                                                      all_payload());
+
+        (void)read;
+        clawt_web_app_notices_changed(app);
+    }
 
     html = clawt_web_page(app, NULL, CLAWT_PAGE_CHAT, body, request);
 
     return clawt_web_html_response(html);
 }
 
+/*
+ * One verb, then the page again.  The list is marked unknown so the page
+ * shows the result rather than racing the `notice.changed` event; a
+ * refusal is the page's error banner.
+ */
 static HtmxResponse *
-on_dismiss(HtmxRequest *request, GHashTable *params, gpointer user_data)
+after_verb(ClawtWebApp *app, HtmxRequest *request, const gchar *kind,
+           JsonNode *payload)
+{
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, kind, payload);
+
+    clawt_web_app_notices_changed(app);
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, NULL, CLAWT_PAGE_CHAT,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_redirect(request, "/alerts");
+}
+
+/* A query parameter as a one-member payload, or NULL without it. */
+static JsonNode *
+param_payload(HtmxRequest *request, const gchar *query, const gchar *key)
+{
+    const gchar *value = htmx_request_get_query_param(request, query);
+    ClawtWebPayload *payload = clawt_web_payload_new();
+
+    if (value != NULL && *value != '\0')
+        clawt_web_payload_set(payload, key, value);
+
+    return clawt_web_payload_take(payload);
+}
+
+static HtmxResponse *
+on_read(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    (void)params;
+
+    return after_verb(user_data, request, "notice.read",
+                      param_payload(request, "id", "id"));
+}
+
+static HtmxResponse *
+on_read_all(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
     ClawtWebApp *app = user_data;
-    const gchar *id = htmx_request_get_query_param(request, "id");
+    g_autoptr(JsonNode) rooms = NULL;
 
     (void)params;
 
-    if (id != NULL)
-        clawt_web_app_alert_dismiss(app, (guint)g_ascii_strtoull(id, NULL,
-                                                                 10));
+    /* every conversation too: "Mark all read" is the whole list */
+    rooms = clawt_web_app_call(app, "room.read", all_payload());
+    (void)rooms;
 
-    return clawt_web_redirect(request, "/alerts");
+    return after_verb(app, request, "notice.read", all_payload());
+}
+
+static HtmxResponse *
+on_dismiss(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    (void)params;
+
+    return after_verb(user_data, request, "notice.dismiss",
+                      param_payload(request, "id", "id"));
 }
 
 static HtmxResponse *
 on_clear(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
-    ClawtWebApp *app = user_data;
-
     (void)params;
 
-    clawt_web_app_alerts_clear(app);
+    return after_verb(user_data, request, "notice.clear",
+                      param_payload(request, "agent", "agent"));
+}
 
-    return clawt_web_redirect(request, "/alerts");
+static HtmxResponse *
+on_chat_read(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    (void)params;
+
+    return after_verb(user_data, request, "room.read",
+                      param_payload(request, "room", "room"));
+}
+
+static HtmxResponse *
+on_mute(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    (void)params;
+
+    return after_verb(user_data, request, "notice.mute",
+                      param_payload(request, "agent", "agent"));
 }
 
 void
 clawt_web_register_alerts(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_get(router, "/alerts", on_alerts, app);
+    htmx_router_post(router, "/alerts/read", on_read, app);
+    htmx_router_post(router, "/alerts/read-all", on_read_all, app);
     htmx_router_post(router, "/alerts/dismiss", on_dismiss, app);
     htmx_router_post(router, "/alerts/clear", on_clear, app);
+    htmx_router_post(router, "/alerts/chat-read", on_chat_read, app);
+    htmx_router_post(router, "/alerts/mute", on_mute, app);
 }

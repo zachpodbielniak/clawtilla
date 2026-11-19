@@ -453,6 +453,166 @@ clawt_unread_should_count(const gchar *room_id, const gchar *viewing_room,
     return TRUE;
 }
 
+gint
+clawt_unread_rule_index(JsonArray *messages, const gchar *read_upto)
+{
+    guint length;
+    guint start = 0;
+    guint i;
+
+    /* A daemon that holds no marks: nothing true to say. */
+    if (messages == NULL || read_upto == NULL)
+        return -1;
+
+    length = json_array_get_length(messages);
+
+    /*
+     * Where the unread run can begin: just after the marked message,
+     * or -- when the mark is not among these -- after every message
+     * whose id sorts at or before it.  An empty mark is a room never
+     * read, and every message is after it.
+     */
+    if (*read_upto != '\0') {
+        for (i = length; i > 0; i--) {
+            JsonObject *message = json_array_get_object_element(messages,
+                                                                i - 1);
+            const gchar *id = (message != NULL &&
+                               json_object_has_member(message, "id"))
+                ? json_object_get_string_member(message, "id") : NULL;
+
+            if (id != NULL && g_strcmp0(id, read_upto) <= 0) {
+                start = i;
+                break;
+            }
+        }
+    }
+
+    for (i = start; i < length; i++) {
+        JsonObject *message = json_array_get_object_element(messages, i);
+        const gchar *sender = (message != NULL &&
+                               json_object_has_member(message, "sender"))
+            ? json_object_get_string_member(message, "sender") : NULL;
+
+        if (sender != NULL && g_strcmp0(sender, "user") != 0)
+            return (gint)i;
+    }
+
+    return -1;
+}
+
+gboolean
+clawt_unread_seed(GHashTable  *unread,
+                  JsonArray   *rooms,
+                  GHashTable  *rows,
+                  const gchar *viewing_room)
+{
+    gboolean supplied = FALSE;
+    guint i;
+
+    if (unread == NULL || rooms == NULL)
+        return FALSE;
+
+    for (i = 0; i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+        const gchar *id;
+        gint64 count;
+
+        if (room == NULL || !json_object_has_member(room, "unread"))
+            continue;
+
+        supplied = TRUE;
+        id = json_object_has_member(room, "id")
+            ? json_object_get_string_member(room, "id") : NULL;
+
+        /*
+         * Only rooms with a row: the same restriction the live rule
+         * makes, so a count can always be cleared by clicking what it
+         * is drawn on.
+         */
+        if (id == NULL || rows == NULL || !g_hash_table_contains(rows, id))
+            continue;
+
+        count = json_object_get_int_member(room, "unread");
+
+        if (count <= 0 || g_strcmp0(id, viewing_room) == 0)
+            g_hash_table_remove(unread, id);
+        else
+            g_hash_table_insert(unread, g_strdup(id),
+                                GUINT_TO_POINTER((guint)count));
+    }
+
+    return supplied;
+}
+
+gchar *
+clawt_agent_menu_read_label(guint unread)
+{
+    if (unread == 0)
+        return g_strdup("Mark as read");
+
+    return g_strdup_printf("Mark as read (%u)", unread);
+}
+
+gchar *
+clawt_agent_menu_mute_label(gboolean muted)
+{
+    return g_strdup(muted ? "Unmute" : "Mute notifications");
+}
+
+gchar *
+clawt_unread_room_agent(const gchar *room_id)
+{
+    g_auto(GStrv) parts = NULL;
+
+    if (room_id == NULL || !g_str_has_prefix(room_id, "dm:"))
+        return NULL;
+
+    /*
+     * Three parts exactly: "dm", then the sorted pair.  Anything else is
+     * not a name clawt_room_manager_direct_id() makes, and guessing at
+     * one would mute a room nobody asked about.
+     */
+    parts = g_strsplit(room_id, ":", -1);
+
+    if (g_strv_length(parts) != 3)
+        return NULL;
+
+    if (g_strcmp0(parts[1], "user") == 0 && g_strcmp0(parts[2], "user") != 0)
+        return g_strdup(parts[2]);
+
+    if (g_strcmp0(parts[2], "user") == 0 && g_strcmp0(parts[1], "user") != 0)
+        return g_strdup(parts[1]);
+
+    return NULL;
+}
+
+guint
+clawt_unread_total(GHashTable *unread, GHashTable *muted)
+{
+    GHashTableIter iter;
+    gpointer key;
+    gpointer value;
+    guint total = 0;
+
+    if (unread == NULL)
+        return 0;
+
+    g_hash_table_iter_init(&iter, unread);
+
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        if (muted != NULL && g_hash_table_size(muted) > 0) {
+            g_autofree gchar *agent = clawt_unread_room_agent(key);
+
+            if (agent != NULL && g_hash_table_contains(muted, agent))
+                continue;
+        }
+
+        total += GPOINTER_TO_UINT(value);
+    }
+
+    return total;
+}
+
 gboolean
 clawt_transcript_is_at_bottom(gdouble value, gdouble upper, gdouble page_size)
 {

@@ -1145,6 +1145,148 @@ test_room_post_reaches_every_member(void)
     fixture_teardown(&fixture);
 }
 
+/* ── Read marks ──────────────────────────────────────────────────── */
+
+/* A message from @sender in @room, written as a turn ending writes it. */
+static void
+room_say(ClawtRoom *room, const gchar *sender)
+{
+    g_autoptr(ClawtMessage) message = clawt_message_new(
+        clawt_room_get_id(room), sender, "news");
+
+    g_assert_true(clawt_room_append(room, message, NULL));
+}
+
+/* What room.list says is unread in @room_id, or -1 if it says nothing. */
+static gint64
+room_unread(Fixture *fixture, const gchar *room_id)
+{
+    g_autoptr(JsonNode) reply = request(fixture, "room.list", "{}");
+    JsonArray *rooms = json_object_get_array_member(payload_of(reply),
+                                                    "rooms");
+    guint i;
+
+    for (i = 0; i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+
+        if (g_strcmp0(json_object_get_string_member(room, "id"),
+                      room_id) == 0)
+            return json_object_has_member(room, "unread")
+                ? json_object_get_int_member(room, "unread") : -1;
+    }
+
+    return -1;
+}
+
+static void
+on_room_read_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
+{
+    GPtrArray *seen = user_data;
+
+    (void)bus;
+
+    if (g_strcmp0(clawt_event_get_kind(event), "room.read") == 0)
+        g_ptr_array_add(seen, g_strdup_printf(
+            "%s=%" G_GINT64_FORMAT, clawt_event_get_subject(event),
+            clawt_event_get_detail_int(event, "unread")));
+}
+
+/*
+ * Reading is held by the daemon: `room.read` names the operator's
+ * conversation by the agent (resolved through
+ * clawt_room_manager_direct_id(), which gives `dm:user:zed` for an agent
+ * named zed and `dm:alice:user` for alice -- one each side of "user"),
+ * publishes `room.read` with the count left, and room.list reports 0.  A
+ * message after the mark counts 1, and the count survives a restart in
+ * the same state directory.
+ *
+ * Regressing the resolution marks a room nobody is in and leaves the
+ * real one lit; regressing the event leaves every other client's badge
+ * up; regressing the store forgets every read on a restart.
+ */
+static void
+test_room_read_is_shared_and_survives_a_restart(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GPtrArray) seen = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(JsonNode) zed = NULL;
+    g_autoptr(JsonNode) alice = NULL;
+    ClawtRoom *zed_room;
+    ClawtRoom *alice_room;
+
+    fixture_setup(&fixture, "agents:\n  - id: zed\n  - id: alice\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    zed_room = clawt_room_manager_get_direct(fixture.daemon->rooms, "user",
+                                             "zed");
+    alice_room = clawt_room_manager_get_direct(fixture.daemon->rooms,
+                                               "alice", "user");
+    g_assert_cmpstr(clawt_room_get_id(zed_room), ==, "dm:user:zed");
+    g_assert_cmpstr(clawt_room_get_id(alice_room), ==, "dm:alice:user");
+
+    room_say(zed_room, "zed");
+    room_say(zed_room, "user");
+    room_say(zed_room, "zed");
+    room_say(alice_room, "alice");
+    g_assert_cmpint(room_unread(&fixture, "dm:user:zed"), ==, 2);
+    g_assert_cmpint(room_unread(&fixture, "dm:alice:user"), ==, 1);
+
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_room_read_event), seen);
+
+    zed = request(&fixture, "room.read", "{\"agent\":\"zed\"}");
+    g_assert_false(clawt_ipc_frame_is_error(zed));
+    g_assert_cmpstr(json_object_get_string_member(payload_of(zed), "room"),
+                    ==, "dm:user:zed");
+    alice = request(&fixture, "room.read", "{\"agent\":\"alice\"}");
+    g_assert_cmpstr(json_object_get_string_member(payload_of(alice), "room"),
+                    ==, "dm:alice:user");
+
+    g_signal_handlers_disconnect_by_data(
+        clawt_daemon_get_event_bus(fixture.daemon), seen);
+
+    g_assert_cmpuint(seen->len, ==, 2);
+    g_assert_cmpstr(g_ptr_array_index(seen, 0), ==, "dm:user:zed=0");
+    g_assert_cmpstr(g_ptr_array_index(seen, 1), ==, "dm:alice:user=0");
+    g_assert_cmpint(room_unread(&fixture, "dm:user:zed"), ==, 0);
+    g_assert_cmpint(room_unread(&fixture, "dm:alice:user"), ==, 0);
+
+    /* one more after the mark, in one room only */
+    room_say(zed_room, "zed");
+    g_assert_cmpint(room_unread(&fixture, "dm:user:zed"), ==, 1);
+    g_assert_cmpint(room_unread(&fixture, "dm:alice:user"), ==, 0);
+
+    /* and a restart in the same state directory forgets none of it */
+    clawt_daemon_stop(fixture.daemon);
+    g_clear_object(&fixture.daemon);
+
+    while (g_main_context_iteration(fixture.context, FALSE))
+        ;
+
+    fixture.daemon = clawt_daemon_new(fixture.config_path, fixture.context);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+    g_assert_cmpint(room_unread(&fixture, "dm:user:zed"), ==, 1);
+    g_assert_cmpint(room_unread(&fixture, "dm:alice:user"), ==, 0);
+
+    {
+        g_autoptr(JsonNode) history = request(
+            &fixture, "room.history", "{\"room\":\"zed\",\"as\":\"user\"}");
+
+        g_assert_true(json_object_has_member(payload_of(history),
+                                             "read_upto"));
+    }
+
+    /* an agent that does not exist is refused, not given a room */
+    {
+        g_autoptr(JsonNode) nobody = request(&fixture, "room.read",
+                                             "{\"agent\":\"nobody\"}");
+
+        g_assert_true(clawt_ipc_frame_is_error(nobody));
+    }
+
+    fixture_teardown(&fixture);
+}
+
 /* ── Live client over the socket ─────────────────────────────────── */
 
 static void
@@ -3560,6 +3702,135 @@ test_an_attachment_is_kept_by_id(void)
     g_assert_cmpint(memcmp(bytes, "\x89PNG pixels", 11), ==, 0);
 
     clawt_test_remove_tree("/tmp/clawt-test-exchange-id");
+    fixture_teardown(&fixture);
+}
+
+/* attachment.put one file for alpha; the reply's id. */
+static gchar *
+put_attachment(Fixture *fixture, const gchar *name, const gchar *bytes)
+{
+    g_autofree gchar *encoded = g_base64_encode((const guchar *)bytes,
+                                                strlen(bytes));
+    g_autofree gchar *payload = g_strdup_printf(
+        "{\"agent\":\"alpha\",\"name\":\"%s\",\"data\":\"%s\"}", name,
+        encoded);
+    g_autoptr(JsonNode) reply = request(fixture, "attachment.put", payload);
+
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+
+    return g_strdup(json_object_get_string_member(payload_of(reply), "id"));
+}
+
+/*
+ * A conversation's files, through the daemon: the operator sends two
+ * files in one message the way every client builds it, and
+ * attachment.list -- asked by agent, and by the agent id as a `room` --
+ * answers both in block order, with their kinds; attachment.thumbnail
+ * gives a text file's first lines and refuses a hostile id.
+ *
+ * What breaks without it: the Files gallery in all three clients and
+ * `clawtilla attachment list`.  An agent argument that did not resolve
+ * to the operator's direct room (dm:user:<agent>, named by the room
+ * manager) would list nothing for every agent.
+ */
+static void
+test_a_conversation_lists_its_files(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *exchange = g_dir_make_tmp("clawt-files-XXXXXX", NULL);
+    g_autofree gchar *yaml = g_strdup_printf("  exchange_dir: \"%s\"\n"
+                                             "agents:\n  - id: alpha\n",
+                                             exchange);
+    g_autofree gchar *text_id = NULL;
+    g_autofree gchar *pdf_id = NULL;
+    g_autofree gchar *body = NULL;
+    g_autofree gchar *send = NULL;
+    g_autofree gchar *thumb = NULL;
+    g_autofree gchar *direct = NULL;
+    g_autoptr(JsonNode) sent = NULL;
+    g_autoptr(JsonNode) by_agent = NULL;
+    g_autoptr(JsonNode) by_room = NULL;
+    g_autoptr(JsonNode) lines = NULL;
+    g_autoptr(JsonNode) hostile = NULL;
+    g_autoptr(JsonNode) nobody = NULL;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonGenerator) generator = json_generator_new();
+    GString *block;
+    JsonArray *items;
+
+    fixture_setup(&fixture, yaml);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    text_id = put_attachment(&fixture, "build.log", "line one\nline two\n");
+    pdf_id = put_attachment(&fixture, "paper.pdf", "%PDF-1.4 not really");
+    g_assert_nonnull(text_id);
+    g_assert_nonnull(pdf_id);
+
+    block = clawt_attachment_block_new("two files");
+    clawt_attachment_block_add(block, "build.log", "/h/build.log", NULL,
+                               text_id);
+    clawt_attachment_block_add(block, "paper.pdf", "/h/paper.pdf", NULL,
+                               pdf_id);
+    body = g_string_free(block, FALSE);
+
+    /* the body JSON-escaped, newlines and all */
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "target");
+    json_builder_add_string_value(builder, "alpha");
+    json_builder_set_member_name(builder, "body");
+    json_builder_add_string_value(builder, body);
+    json_builder_set_member_name(builder, "from");
+    json_builder_add_string_value(builder, "user");
+    json_builder_end_object(builder);
+    json_generator_take_root(generator, json_builder_get_root(builder));
+    send = json_generator_to_data(generator, NULL);
+
+    sent = request(&fixture, "msg.send", send);
+    g_assert_false(clawt_ipc_frame_is_error(sent));
+
+    by_agent = request(&fixture, "attachment.list", "{\"agent\":\"alpha\"}");
+    g_assert_false(clawt_ipc_frame_is_error(by_agent));
+
+    direct = clawt_room_manager_direct_id("user", "alpha");
+    g_assert_cmpstr(json_object_get_string_member(payload_of(by_agent),
+                                                  "room"), ==, direct);
+
+    items = json_object_get_array_member(payload_of(by_agent), "items");
+    g_assert_cmpuint(json_array_get_length(items), ==, 2);
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(items, 0), "id"),
+                    ==, text_id);
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(items, 0), "kind"),
+                    ==, "text");
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(items, 1), "kind"),
+                    ==, "pdf");
+    g_assert_true(json_object_get_boolean_member(
+                      json_array_get_object_element(items, 1), "exists"));
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(items, 1), "sender"),
+                    ==, "user");
+
+    /* an agent id given as the room, as room.history takes it */
+    by_room = request(&fixture, "attachment.list", "{\"room\":\"alpha\"}");
+    g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+                         payload_of(by_room), "items")), ==, 2);
+
+    thumb = g_strdup_printf("{\"id\":\"%s\"}", text_id);
+    lines = request(&fixture, "attachment.thumbnail", thumb);
+    g_assert_false(clawt_ipc_frame_is_error(lines));
+    g_assert_cmpstr(json_object_get_string_member(payload_of(lines), "text"),
+                    ==, "line one\nline two\n");
+
+    hostile = request(&fixture, "attachment.thumbnail",
+                      "{\"id\":\"../x.pdf\"}");
+    g_assert_true(clawt_ipc_frame_is_error(hostile));
+
+    nobody = request(&fixture, "attachment.list", "{\"agent\":\"nobody\"}");
+    g_assert_true(clawt_ipc_frame_is_error(nobody));
+
+    clawt_test_remove_tree(exchange);
     fixture_teardown(&fixture);
 }
 
@@ -12299,6 +12570,8 @@ main(int argc, char *argv[])
                     test_message_to_nobody_is_refused);
     g_test_add_func("/daemon/room-fanout",
                     test_room_post_reaches_every_member);
+    g_test_add_func("/daemon/room-read-shared-and-durable",
+                    test_room_read_is_shared_and_survives_a_restart);
 
     g_test_add_func("/daemon/client-over-socket",
                     test_a_client_can_talk_over_the_socket);
@@ -12385,6 +12658,8 @@ main(int argc, char *argv[])
                     test_an_attachment_cannot_escape_its_directory);
     g_test_add_func("/daemon/attachment/kept-by-id",
                     test_an_attachment_is_kept_by_id);
+    g_test_add_func("/daemon/attachment/conversation-files",
+                    test_a_conversation_lists_its_files);
     g_test_add_func("/daemon/vm-agent-needs-a-disk",
                     test_creating_a_vm_agent_without_a_disk_is_refused);
     g_test_add_func("/daemon/image-in-use",

@@ -271,6 +271,51 @@ same way ~attachment.put~ does, so a client asking to delete
 ~../../../etc/passwd~ gets a refusal about a file in its own drop-box
 that does not exist.
 
+**** attachment.list and attachment.thumbnail: a conversation's files
+
+Since 0.52.0 the clients draw a *Files* gallery for each conversation from two frames.
+
+~attachment.list~ takes ~room~ (a room id, or an agent id, which resolves to the operator's direct room with that agent as ~room.history~ resolves it) or ~agent~ (an agent id only).  It reads the room's whole history -- every room keeps all of its messages in memory -- for attachment blocks, with the same parser every client previews from (=clawt_attachment_refs_parse()=), and answers the room it read and ~items~, newest message first and in block order within a message:
+
+| Member    | What it is |
+|-----------+------------|
+| ~id~      | the daemon's copy (=clawt:<id>=), when the block named one; absent otherwise |
+| ~path~    | the host path, when the block named no id (a message from before 0.51.5) |
+| ~name~    | the item's name |
+| ~kind~    | ~image~, ~pdf~, ~text~ or ~other~, from the name (=clawt_attachment_kind()=) |
+| ~bytes~   | the size now, or 0 when it is gone |
+| ~exists~  | whether the file is still there |
+| ~message~ | the id of the message that carried it |
+| ~sender~  | who sent that message (~user~ for the operator) |
+| ~ts~      | when, in seconds |
+
+#+begin_example
+→ {"type":"request","id":"7","kind":"attachment.list","payload":{"agent":"scout"}}
+← {"type":"response","id":"7","payload":{"room":"dm:user:scout","items":[
+     {"id":"0f3c9a1b2c3d-report.pdf","name":"report.pdf","kind":"pdf","bytes":48211,
+      "exists":true,"message":"0f3c9a1b2c40","sender":"scout","ts":1763475600},
+     {"path":"/home/you/.local/share/clawtilla/exchange/scout/old.png","name":"old.png",
+      "kind":"image","bytes":0,"exists":false,"message":"0f3c8e7d6a10","sender":"user",
+      "ts":1763389200}]}}
+#+end_example
+
+The list is built from the transcript rather than from the attachment directory because that directory is shared by every conversation and records nothing about which one a file came from.  An id in a message body -- text any agent can write -- is resolved through =clawt_attachment_path()=, so one that is not ours is listed as gone rather than turned into a path.  Neither ~room~ nor ~agent~ is ~INVALID_ARGUMENT~; one that names nothing is ~NOT_FOUND~.
+
+~attachment.thumbnail~ takes ~id~ and an optional integer ~size~ (the longer edge in pixels, clamped to 16..512, default 256) and answers ~id~, ~kind~ and, by kind:
+
+- *pdf*: ~mime~ (~image/png~), ~width~, ~height~ and ~base64~ -- page 1 only, drawn with poppler-glib onto white so its longer edge is ~size~.  Cached as ~<state_dir>/attachments/.thumbs/<id>.<size>.png~; an id names bytes that never change, so the cache never goes stale.  A build without poppler (~POPPLER=0~, or no ~poppler-glib-devel~) answers ~NOT_SUPPORTED~, "no PDF renderer in this build".
+- *text*: ~text~, the first twelve lines (at most 8 KiB read, each line cut at 160 characters, always valid UTF-8).  Not cached; it is cheaper to read than to look up.
+- *image*: ~NOT_SUPPORTED~ -- a picture is its own thumbnail, and every client already decodes images at thumbnail size from ~attachment.get~.
+- *other*: ~NOT_SUPPORTED~.
+
+#+begin_example
+→ {"type":"request","id":"8","kind":"attachment.thumbnail","payload":{"id":"0f3c9a1b2c3d-report.pdf","size":160}}
+← {"type":"response","id":"8","payload":{"id":"0f3c9a1b2c3d-report.pdf","kind":"pdf",
+     "mime":"image/png","width":124,"height":160,"base64":"iVBORw0KGgo..."}}
+#+end_example
+
+The id is checked by =clawt_attachment_path()= before any file is opened: ~../x.pdf~ is ~INVALID_ARGUMENT~, an id with no file behind it ~NOT_FOUND~.
+
 *** decision.*
 
 ~decision.list~ takes ~open~ (default true) and answers with
@@ -855,7 +900,7 @@ A room has one state per member, so there is no single honest answer and
 the key is omitted rather than guessed at.
 
 ~room.list~, ~room.create~, ~room.set~, ~room.add~, ~room.remove~,
-~room.history~, ~room.steps~.
+~room.history~, ~room.steps~, ~room.read~.
 
 Each room in ~room.list~ carries ~declared~ (somebody made it) and, since incidents, ~incidents~ (a JSON boolean: it is a team's *Problems to look at* room, ~incidents:<team>~ or ~incidents:+fleet~).  Which rooms get a sidebar row is =clawt_room_is_listed()=, the same in every client: the declared ones and the incidents ones.
 
@@ -899,6 +944,43 @@ read and post into the operator's private conversation with another.
 means the direct room with that agent, the same way it does for
 ~msg.send~.  Pass ~as~ to say who is asking; it defaults to ~user~.
 
+**** Read marks: ~room.read~, and ~unread~ / ~read_upto~ (since 0.52.0)
+
+The daemon holds one *read mark* per room -- the last message the operator has read in it -- in ~<state_dir>/reads.db~, and every unread count is derived from the room's history and that mark when it is asked for.  The counts every client draws come from here, so reading in one client clears the count in all of them and a restart forgets nothing.  See "Unread" in [[file:clients.org][clients.org]].
+
+Each ~room.list~ entry gains:
+
+| member | what it is |
+|--------+------------|
+| ~unread~ | messages after the mark sent by anybody but ~user~ (an integer) |
+| ~read_upto~ | the id of the last message read, or ~""~ for a room nobody has read |
+
+~room.history~ gains ~read_upto~, the same value, read *before* the client marks the room read on opening it -- it is where the "New messages" rule goes (=clawt_unread_rule_index()=).  Both members are absent when the store could not be opened; a client takes that as "keep counting from events", which is what every client did before 0.52.0.
+
+~room.read~ moves a mark:
+
+#+begin_src json
+{"v":1,"id":"7","kind":"room.read","payload":{"agent":"zed"}}
+{"v":1,"id":"7","kind":"response","payload":{"room":"dm:user:zed","read_upto":"01jc8w4m5ae7qz3t9hxk","unread":0}}
+
+{"v":1,"id":"8","kind":"room.read","payload":{"room":"standup","upto":"01jc8w4m5ae7qz3t9hxk"}}
+{"v":1,"id":"9","kind":"room.read","payload":{"all":true}}
+{"v":1,"id":"9","kind":"response","payload":{"marked":3}}
+#+end_src
+
+- ~room~ names a room, or an agent id meaning the operator's direct room with it (the ~room.history~ resolver).  ~agent~ names an agent explicitly; its direct room is named by =clawt_room_manager_direct_id()= -- ~dm:user:zed~ for an agent ~zed~, ~dm:alice:user~ for ~alice~, because the two ids are sorted -- so no client ever spells one.  An unknown agent is ~not_found~.
+- ~upto~ is the id of the last message read; without it, the newest message.  It must be a message the room holds, or the request is ~not_found~: a mark that named nothing would fall back to a timestamp a client could set to any second, swallowing every message until then.
+- *A mark never moves backwards.*  Two clients reading the same room can report in either order; a mark behind the one held -- by position in the history, or by timestamp when the held message is gone -- is not written.  The reply and the event still go out, carrying the room's real count.  Not by id: ids sort by time only to the millisecond.
+- ~all: true~ marks every room that has anything unread, up to its newest message, and answers ~marked~, how many it touched.
+- An empty room has nothing to mark; the request succeeds and nothing is written.
+- ~not_supported~ when the store could not be opened.
+
+The reply carries ~room~ (what was resolved), ~read_upto~ and ~unread~ (what is left after the mark, 0 unless ~upto~ stopped short of the newest message).
+
+Every room marked publishes a ~room.read~ event whose subject is the room, with ~room~, ~upto~ (the mark as it now stands) and ~unread~ (an integer).  Every client zeroes -- or sets -- that room's pill on it, which is how a read in one client clears the badge in every other one.
+
+The count itself (=clawt_room_count_unread()=): walk back from the newest message to the marked one and count the messages not sent by ~user~; when the marked message is no longer in the history, count those stamped after the mark's second.  A room with no mark counts all of them.  The first time ~reads.db~ is created the daemon marks every existing room read at its newest message, so an upgrade does not light up the fleet's whole history.
+
 ~room.steps~ takes the same ~room~ and ~as~ pair, through the same
 resolver, and answers with the steps that room has seen: an array of
 ~steps~, oldest first, plus the ~room~ it resolved.  Pass ~live: true~
@@ -933,6 +1015,54 @@ It is *not* the transcript, though --- steps are never messages, because
 the last thing in a thread is what a finished turn's task result is
 inferred from.  It is held in memory, bounded per room, and gone when
 the daemon stops.
+
+*** notice.* (since 0.52.0)
+
+The fleet's notification list, held by the daemon (=src/core/daemon-notice.c=, =core/clawt-notice-store.h=) in ~<state_dir>/notices.db~, which every client draws its bell and its notifications panel from.  The daemon listens to its own bus: each event ~clawt_alert_tier_for_event()~ rates an error or a notice becomes a row, worded by ~clawt_alert_text_for_event()~.  Routine events are not recorded -- they are the event log's (~event.list~).  See docs/clients.org, "Notifications".
+
+| kind | payload | reply |
+|------+---------+-------|
+| ~notice.list~ | ~agent~?, ~include_dismissed~? (false), ~limit~? (200) | the list, below |
+| ~notice.read~ | ~id~, or ~all: true~ | ~read~: how many changed |
+| ~notice.dismiss~ | ~id~ | ~dismissed: 1~; ~not-found~ for an id not showing |
+| ~notice.clear~ | ~agent~? | ~cleared~: how many were dismissed |
+| ~notice.mute~ | ~agent~, ~until~? (Unix seconds; absent or 0 for "until unmuted") | ~agent~, ~muted~ |
+| ~notice.unmute~ | ~agent~ | ~agent~, ~muted~ |
+
+An ~id~ or ~until~ may be a JSON number or a numeric string: the GTK and libregnum clients build payloads of strings.  ~notice.mute~ refuses an agent the config does not have (~not-found~) and an ~until~ already past (~invalid-argument~).  A daemon whose ~notices.db~ would not open answers every verb but ~notice.list~ with ~not-supported~, and ~notice.list~ with ~kept: false~.
+
+#+begin_src json
+{"v":1,"id":"4","kind":"notice.list","payload":{}}
+{"v":1,"id":"4","kind":"response","payload":{
+  "kept":true,
+  "notices":[{"id":42,"agent":"scout","tier":"error","kind":"turn.timed_out",
+              "source":"turn.timed_out","subject":"scout",
+              "title":"turn.timed_out · scout","created_at":1763532000,
+              "read":false,"dismissed":false,"muted":false}],
+  "mutes":[{"agent":"zed","until":1763539200}],
+  "chats":[{"room":"dm:scout:user","agent":"scout","name":null,"unread":2}],
+  "decisions":[{"id":"8c1e…","agent":"lead","question":"Ship it tonight?"}],
+  "grok":[{"id":"job-3","agent":"scout","bot":"research","state":"Failed",
+           "note":"the page would not load","remove_question":"…"}],
+  "sources":{"chats_unread":2,"decisions_pending":1,"grok_attention":1},
+  "unread":1,"total":5}}
+{"v":1,"id":"5","kind":"notice.mute","payload":{"agent":"zed","until":"1763539200"}}
+{"v":1,"id":"6","kind":"notice.read","payload":{"all":true}}
+{"v":1,"id":"7","kind":"notice.dismiss","payload":{"id":42}}
+#+end_src
+
+The reply's members:
+
+- ~notices~: newest first; ~tier~ is ~error~ or ~notice~; ~source~ is where to look (the event kind, or ~download~ / ~message~ for the two said in a sentence of their own); ~agent~ is who a row narrows to and is muted by; ~created_at~ is when the event happened, in seconds.  Narrowed by ~agent~ when one is given.
+- ~mutes~: every mute in force -- a timed one whose ~until~ has passed is gone from here at once, whether or not a prune has removed it.
+- ~chats~, ~decisions~, ~grok~: the three other things that want somebody -- the operator's conversations and group rooms with unread messages (from the read marks), open decisions, and Grok jobs needing attention by the rule the Grok badge uses (=grok.attention_days=).  A muted agent's are left out of all three; ~grok~ entries carry ~remove_question~, the confirmation to ask before ~grok.remove~ (=clawt_grok_job_remove_question()=).
+- ~sources~: the three counts; ~unread~: alerts neither read nor dismissed, less the muted agents'; ~total~: their sum, which is the bell (=clawt_notice_list_badge()= adds the same four).
+
+Every verb that changes something publishes ~notice.changed~ (subject the agent, when there is one; details ~reason~ -- ~added~, ~read~, ~dismissed~, ~cleared~, ~muted~ or ~unmuted~ -- and ~id~).  A recorded notice publishes it too (~added~), and so does a timed mute lapsing (~unmuted~, from a timer the daemon arms for the soonest ~until~).  Every client asks for ~notice.list~ again on it.
+
+A mute also stops the push and desktop notifiers for that agent: every notification the daemon raises goes through ~clawt_daemon_notify()~, which skips a muted agent.
+
+Pruned at start and hourly to =notices.keep= (500 newest) and =notices.keep_days= (30), and lapsed mutes dropped.
 
 *** mailbox.*
 
@@ -1663,7 +1793,7 @@ and =posted=.
 
 ~grok.bots~ takes nothing and returns ~bots~ -- each bot once, by ~name~, with ~description~, ~key_configured~ (the integration names a routine key), ~mcp_key~ (a key has been minted for the MCP endpoint) and ~agents~ (who it is shared with, walked from each agent's resolved bindings) -- and ~reachable~: whether a job could be sent right now.  When it could, ~callback_host~ names where bots report; when it could not, ~unreachable_reason~ says why, in the same words a send's refusal uses.  ~mcp_url~ is present when the endpoint can be reached.
 
-~grok.jobs~ takes optional ~bot~, ~agent~, ~open~ (unsettled only) and ~limit~ (50, at most 500), and returns ~jobs~ newest first -- each with ~id~, ~bot~, ~agent~, ~room~, ~task~, ~run_uuid~, ~instructions~, ~result~, ~note~, ~state~ (a =ClawtGrokJobState= nick), ~settled~, ~needs_attention~ and ~created_at~, ~updated_at~, ~expires_at~ in microseconds -- and ~attention~, the number of listed jobs that need somebody, which is the page badge.  Never a token.  A job counts toward ~attention~ for three days after it last changed (=GROK_ATTENTION_DAYS=); it stays listed until the 30-day prune.
+~grok.jobs~ takes optional ~bot~, ~agent~, ~open~ (unsettled only) and ~limit~ (50, at most 500), and returns ~jobs~ newest first -- each with ~id~, ~bot~, ~agent~, ~room~, ~task~, ~run_uuid~, ~instructions~, ~result~, ~note~, ~state~ (a =ClawtGrokJobState= nick), ~settled~, ~needs_attention~ and ~created_at~, ~updated_at~, ~expires_at~ in microseconds -- and ~attention~, the number of listed jobs that need somebody, which is the page badge.  Never a token.  A job counts toward ~attention~ for =grok.attention_days= (3) after it last changed -- for ever, until removed, when that is 0 -- and stays listed until it is pruned =grok.retention_days= (30) after it settled; the prune runs at start and then hourly (since 0.52.0; the windows were fixed at three and thirty days before).
 
 ~grok.remove~ takes ~job~ (its id) and answers ~job~, ~removed~ and ~cancelled~.  A settled job is deleted and nobody is told.  An open one is first settled as ~expired~ -- the same one-statement settle a report races, so the bot's late report is refused -- and its agent is sent a message from ~grok:<bot>~ saying the operator cancelled it and it should stop waiting; then it is deleted.  ~cancelled~ says which happened.  Publishes ~grok.job_updated~.  An unknown id is ~not_found~.
 
@@ -2105,7 +2235,7 @@ Every kind published, by subject:
 |---------+-------|
 | the daemon | ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~, ~config.changed~, ~hold.changed~ |
 | an agent | ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~, ~agent.stopped~, ~agent.interrupted~, ~agent.state~, ~agent.connected~, ~agent.disconnected~, ~agent.typing~, ~agent.identity~, ~agent.contested~ (~evictions~), ~agent.failover~ (~state~, ~provider~, ~model~, ~primary_provider~, ~primary_model~, ~reason~, ~reset_at~, ~retry_at~, ~context_lost~, ~message~) |
-| a room | ~message~, ~message.refused~, ~exchange.stalled~, ~room.created~, ~room.changed~ |
+| a room | ~message~, ~message.refused~, ~exchange.stalled~, ~room.created~, ~room.changed~, ~room.read~ (~room~, ~upto~, ~unread~) |
 | an agent's mailbox | ~mailbox.queued~, ~mailbox.delivered~ |
 | a team | ~team.changed~ |
 | an agent | ~decision.asked~ (~decision~, ~room~), ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~, ~defaulted~ or ~deleted~, ~room~, ~answer~, ~via~), ~decision.deleted~ (~decision~, ~room~) |
@@ -2117,6 +2247,7 @@ Every kind published, by subject:
 | an agent | ~turn.cost~ (~cost_micros~, ~task~): what a turn just cost, for the sentinel |
 | an agent | ~memory.changed~ (a memory tool call or an undo changed what it remembers) |
 | a trigger | ~trigger.fired~, ~trigger.posted~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
+| the daemon, or an agent | ~notice.changed~ (~reason~, ~id~): the notification list moved -- ask ~notice.list~ again |
 | a Grok job | ~grok.job_updated~ (~bot~, ~agent~, ~state~) |
 | a Grok bot | ~grok.bots_changed~ |
 | a skill | ~skill.changed~ |
