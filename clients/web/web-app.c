@@ -147,6 +147,14 @@ struct _ClawtWebApp {
 
 G_DEFINE_FINAL_TYPE(ClawtWebApp, clawt_web_app, G_TYPE_OBJECT)
 
+/*
+ * The web client never starts on a daemon it chose from memory: it has
+ * no last-connection file, and serves whichever daemon its command line
+ * named.  What it passes as clawt_connection_notice_text()'s
+ * `remembered` (see clawt_web_app_connection_notice()).
+ */
+#define WEB_REMEMBERS_NO_CONNECTION (FALSE)
+
 /* ── Alerts ──────────────────────────────────────────────────────── */
 
 /*
@@ -675,10 +683,18 @@ clawt_web_app_connection_notice(ClawtWebApp *self)
      * and the GTK one cannot come to disagree about whether a connection
      * was lost or never made.  This used to be a second copy of the
      * wording, and it had only two of the three states.
+     *
+     * Never "remembered": the served client has no last-connection
+     * file.  It is started on the daemon its command line names, so the
+     * desktop clients' Use Local offer (for a daemon they chose from
+     * memory) has nothing here to answer.  Named rather than a bare
+     * FALSE, so the parity check's "remembered daemon fallback" row
+     * has a decision to point at in this client.
      */
     return clawt_connection_notice_text(
         clawt_daemon_link_state(self->client, self->reached_once),
-        self->connection, self->daemon_version, self->daemon_update);
+        self->connection, WEB_REMEMBERS_NO_CONNECTION, self->daemon_version,
+        self->daemon_update);
 }
 
 gboolean

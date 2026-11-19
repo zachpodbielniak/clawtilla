@@ -45,6 +45,19 @@ ClawtWindow *clawt_window_new(AdwApplication  *app,
                               ClawtConnection *connection);
 
 /**
+ * clawt_window_set_remembered:
+ * @self: a #ClawtWindow
+ * @remembered: whether the window's connection was chosen from the
+ *   last-connection file (clawt_connection_choose()'s @from_last)
+ *
+ * Tells the window its daemon was the one this client was last on
+ * rather than one named on the command line.  While that daemon has
+ * never answered, the banner says so and offers Use Local beside the
+ * connections (clawt_connection_offer_local()).  Any switch clears it.
+ */
+void clawt_window_set_remembered(ClawtWindow *self, gboolean remembered);
+
+/**
  * clawt_window_toast:
  * @self: a #ClawtWindow
  * @text: what to say

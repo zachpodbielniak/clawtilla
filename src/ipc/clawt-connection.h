@@ -289,9 +289,38 @@ ClawtDaemonLink clawt_daemon_link_state(ClawtClient *client,
                                         gboolean     reached_once);
 
 /**
+ * clawt_connection_offer_local:
+ * @link: what clawt_daemon_link_state() said
+ * @connection: (nullable): the daemon the client is pointed at
+ * @remembered: whether @connection came from the last-connection file
+ *   (the @from_last of clawt_connection_choose()) rather than a flag
+ *
+ * Whether a client should offer "Use Local" beside its connection
+ * banner: %TRUE only when the daemon has never answered this session,
+ * the client chose it from memory rather than from anything typed, and
+ * it is not the local daemon already.
+ *
+ * Pure, so the rule is tested once and both graphical clients draw
+ * their button from the same answer.  A lost connection is not offered
+ * the way out, because a daemon that answered a minute ago is a blip to
+ * wait out rather than a choice gone stale; an explicit `--host` or
+ * `--profile` is not either, because somebody asked for that machine.
+ *
+ * Returns: %TRUE to offer switching to the local daemon
+ */
+gboolean clawt_connection_offer_local(ClawtDaemonLink        link,
+                                      const ClawtConnection *connection,
+                                      gboolean               remembered);
+
+/**
  * clawt_connection_notice_text:
  * @link: what clawt_daemon_link_state() said
  * @connection: (nullable): which daemon, for the name and the address
+ * @remembered: whether @connection came from the last-connection file;
+ *   when clawt_connection_offer_local() agrees, the never-connected
+ *   sentence says it is the daemon this client was last on and points
+ *   at Use Local.  The web client, which remembers nothing, passes
+ *   %FALSE.
  * @daemon_version: (nullable): what `control.status` reported
  *
  * The one sentence a client shows about its connection, or %NULL when
@@ -326,6 +355,7 @@ ClawtDaemonLink clawt_daemon_link_state(ClawtClient *client,
  */
 gchar *clawt_connection_notice_text(ClawtDaemonLink        link,
                                     const ClawtConnection *connection,
+                                    gboolean               remembered,
                                     const gchar           *daemon_version,
                                     const gchar           *available_update);
 
@@ -583,6 +613,13 @@ gboolean clawt_connection_last_save(const gchar      *path,
  * @last_path: (nullable): the remembered-connection file, or %NULL for
  *   the default
  * @remembered: whether to fall back on the remembered connection
+ * @from_last: (out) (optional): set to %TRUE when the connection
+ *   returned came from the last-connection file, %FALSE otherwise; what
+ *   clawt_connection_offer_local() and clawt_connection_notice_text()
+ *   are given as their @remembered
+ * @notice: (out) (optional) (transfer full) (nullable): set to a
+ *   sentence for the caller to show when the remembered profile no
+ *   longer exists and the local daemon was chosen instead, or %NULL
  * @error: (out) (optional): return location for a #GError
  *
  * Which daemon a client opens on, in one place for every client:
@@ -591,7 +628,8 @@ gboolean clawt_connection_last_save(const gchar      *path,
  * flag beats the memory, so a script or a test that names its daemon
  * gets that daemon.  A remembered profile that no longer exists is not
  * an error -- it falls back to the local daemon -- where an unknown
- * `--profile` is.
+ * `--profile` is.  It is no longer quiet, though: @notice says so, for
+ * the client to show as a toast.
  *
  * Returns: (transfer full) (nullable): the connection, or %NULL with
  *   @error set
@@ -604,6 +642,8 @@ ClawtConnection *clawt_connection_choose(const gchar  *host,
                                          const gchar  *connections_path,
                                          const gchar  *last_path,
                                          gboolean      remembered,
+                                         gboolean     *from_last,
+                                         gchar       **notice,
                                          GError      **error);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtConnection, clawt_connection_free)

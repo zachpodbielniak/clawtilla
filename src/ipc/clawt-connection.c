@@ -891,9 +891,30 @@ clawt_daemon_link_state(ClawtClient *client, gboolean reached_once)
     return CLAWT_DAEMON_LINK_LOST;
 }
 
+gboolean
+clawt_connection_offer_local(ClawtDaemonLink        link,
+                             const ClawtConnection *connection,
+                             gboolean               remembered)
+{
+    /*
+     * All three, and each one rules out a case where the button would
+     * be wrong.  Never rather than lost: a daemon that answered once
+     * this session is a blip somebody is waiting out, not a choice that
+     * went stale.  Remembered rather than asked for: somebody who typed
+     * --host or --profile meant that machine and is not helped by an
+     * offer to undo what they typed.  Not local: Local cannot be offered
+     * as the way out of Local.
+     */
+    if (link != CLAWT_DAEMON_LINK_NEVER || !remembered || connection == NULL)
+        return FALSE;
+
+    return !clawt_connection_is_local((ClawtConnection *)connection);
+}
+
 gchar *
 clawt_connection_notice_text(ClawtDaemonLink        link,
                              const ClawtConnection *connection,
+                             gboolean               remembered,
                              const gchar           *daemon_version,
                              const gchar           *available_update)
 {
@@ -904,6 +925,24 @@ clawt_connection_notice_text(ClawtDaemonLink        link,
 
     switch (link) {
     case CLAWT_DAEMON_LINK_NEVER:
+        if (clawt_connection_offer_local(link, connection, remembered)) {
+            g_autofree gchar *where =
+                clawt_connection_describe((ClawtConnection *)connection);
+
+            /*
+             * Said, because nobody asked for this machine this time:
+             * the client chose it from what it was last switched to,
+             * and somebody who has forgotten that is looking at an
+             * empty window with no idea why it is pointed elsewhere.
+             * The clients draw the Use Local button beside it, from
+             * the same clawt_connection_offer_local().
+             */
+            return g_strdup_printf("Not connected to %s (%s), the daemon "
+                                   "this client was last on. Still trying; "
+                                   "use Local, or choose another "
+                                   "connection.", name, where);
+        }
+
         if (connection != NULL &&
             !clawt_connection_is_local((ClawtConnection *)connection)) {
             g_autofree gchar *where =
@@ -1031,9 +1070,18 @@ clawt_connection_choose(const gchar  *host,
                         const gchar  *connections_path,
                         const gchar  *last_path,
                         gboolean      remembered,
+                        gboolean     *from_last,
+                        gchar       **notice,
                         GError      **error)
 {
     g_autofree gchar *last = NULL;
+
+    /* nothing to report until the remembered file is what decided */
+    if (from_last != NULL)
+        *from_last = FALSE;
+
+    if (notice != NULL)
+        *notice = NULL;
 
     if (host != NULL)
         return clawt_connection_new_remote(
@@ -1071,13 +1119,26 @@ clawt_connection_choose(const gchar  *host,
         ClawtConnection *found = saved != NULL
             ? clawt_connection_list_find(saved, last) : NULL;
 
+        if (found != NULL) {
+            if (from_last != NULL)
+                *from_last = TRUE;
+
+            return clawt_connection_copy(found);
+        }
+
         /*
          * Gone since -- deleted, renamed, or the file unreadable: the
-         * local daemon, quietly, as an unknown --profile is not.  The
-         * name was remembered, not asked for.
+         * local daemon, as an unknown --profile is not an error.  The
+         * name was remembered, not asked for.  But no longer silently:
+         * somebody who was on the workstation yesterday and opens on
+         * Local today, with nothing said, reads it as the workstation's
+         * fleet having vanished.  The sentence is the caller's to show
+         * (a toast in both graphical clients).
          */
-        if (found != NULL)
-            return clawt_connection_copy(found);
+        if (notice != NULL)
+            *notice = g_strdup_printf(
+                "The connection you last used, “%s”, is no "
+                "longer saved; connected to Local.", last);
     }
 
     return clawt_connection_new_local("Local", NULL);

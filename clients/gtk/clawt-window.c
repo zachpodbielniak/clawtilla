@@ -3837,14 +3837,38 @@ update_connection_banner(ClawtWindow *self)
 {
     ClawtDaemonLink link;
     g_autofree gchar *text = NULL;
+    gboolean offer_local;
 
     if (self->connection_banner == NULL)
         return;
 
     link = clawt_daemon_link_state(self->client, self->connected_once);
     text = clawt_connection_notice_text(link, self->active_connection,
+                                        self->connection_remembered,
                                         self->daemon_version,
                                         self->daemon_update);
+
+    /*
+     * A remote daemon this client chose from memory, never reached:
+     * the bar with both ways out, in place of the banner.  The decision
+     * is the library's, so lrg draws its Use Local for the same cases.
+     */
+    offer_local = clawt_connection_offer_local(link, self->active_connection,
+                                               self->connection_remembered);
+
+    if (self->remembered_bar != NULL) {
+        if (offer_local && text != NULL)
+            gtk_label_set_text(GTK_LABEL(self->remembered_label), text);
+
+        gtk_revealer_set_reveal_child(GTK_REVEALER(self->remembered_bar),
+                                      offer_local);
+
+        if (offer_local) {
+            adw_banner_set_revealed(ADW_BANNER(self->connection_banner),
+                                    FALSE);
+            return;
+        }
+    }
 
     /*
      * Cleared unless this state wants it.  AdwBanner keeps a button
@@ -3932,6 +3956,43 @@ on_banner_button(AdwBanner *banner, gpointer user_data)
 
     if (self->connection_button != NULL)
         gtk_menu_button_popup(GTK_MENU_BUTTON(self->connection_button));
+}
+
+/*
+ * The remembered bar's way back: the local daemon, through the same
+ * switch_connection() the menu uses -- which connects before it lets go,
+ * toasts a local daemon that is not running either, and on success
+ * saves Local, which removes the last-connection file so the next start
+ * is not on the unreachable machine again.
+ */
+static void
+on_use_local(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(ClawtConnection) local =
+        clawt_connection_new_local("Local", self->local_socket);
+
+    (void)button;
+
+    switch_connection(self, local);
+}
+
+/* The remembered bar's other way out: the connection menu, as the banner. */
+static void
+on_remembered_connections(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+
+    on_banner_button(NULL, user_data);
+}
+
+void
+clawt_window_set_remembered(ClawtWindow *self, gboolean remembered)
+{
+    g_return_if_fail(CLAWT_IS_WINDOW(self));
+
+    self->connection_remembered = remembered;
+    update_connection_banner(self);
 }
 
 /*
@@ -4190,6 +4251,9 @@ switch_connection(ClawtWindow *self, ClawtConnection *connection)
     }
 
     self->client = g_steal_pointer(&client);
+
+    /* chosen now, by the person: no longer the memory's choice */
+    self->connection_remembered = FALSE;
 
     /*
      * Remembered for the next start, by name -- only now it has
@@ -6390,6 +6454,44 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     g_signal_connect(self->connection_banner, "button-clicked",
                      G_CALLBACK(on_banner_button), self);
     gtk_box_append(GTK_BOX(content), self->connection_banner);
+
+    /*
+     * The remembered daemon's bar, in the banner's place and shown
+     * instead of it (update_connection_banner()).  Use Local is the
+     * suggested action: the person did not choose the unreachable
+     * machine this time, the client did.
+     */
+    {
+        GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+        GtkWidget *use_local = gtk_button_new_with_label("Use Local");
+        GtkWidget *others = gtk_button_new_with_label("Connections…");
+
+        self->remembered_label = gtk_label_new("");
+        gtk_label_set_wrap(GTK_LABEL(self->remembered_label), TRUE);
+        gtk_label_set_xalign(GTK_LABEL(self->remembered_label), 0.0f);
+        gtk_widget_set_hexpand(self->remembered_label, TRUE);
+
+        gtk_widget_add_css_class(use_local, "suggested-action");
+        gtk_widget_set_valign(use_local, GTK_ALIGN_CENTER);
+        gtk_widget_set_valign(others, GTK_ALIGN_CENTER);
+        g_signal_connect(use_local, "clicked", G_CALLBACK(on_use_local),
+                         self);
+        g_signal_connect(others, "clicked",
+                         G_CALLBACK(on_remembered_connections), self);
+
+        gtk_widget_add_css_class(bar, "toolbar");
+        gtk_widget_set_margin_start(bar, 12);
+        gtk_widget_set_margin_end(bar, 12);
+        gtk_box_append(GTK_BOX(bar), self->remembered_label);
+        gtk_box_append(GTK_BOX(bar), others);
+        gtk_box_append(GTK_BOX(bar), use_local);
+
+        self->remembered_bar = gtk_revealer_new();
+        gtk_revealer_set_child(GTK_REVEALER(self->remembered_bar), bar);
+        gtk_revealer_set_reveal_child(GTK_REVEALER(self->remembered_bar),
+                                      FALSE);
+        gtk_box_append(GTK_BOX(content), self->remembered_bar);
+    }
 
     gtk_box_append(GTK_BOX(content), GTK_WIDGET(self->alerts_split));
     gtk_widget_set_vexpand(GTK_WIDGET(self->alerts_split), TRUE);
