@@ -46,7 +46,8 @@ typedef enum {
     REFRESH_ACTIVITY  = 1 << 2,
     REFRESH_DECISIONS = 1 << 3,
     REFRESH_USAGE     = 1 << 4,
-    REFRESH_GROK      = 1 << 5
+    REFRESH_GROK      = 1 << 5,
+    REFRESH_NOTICES   = 1 << 6
 } RefreshKind;
 
 typedef struct {
@@ -834,6 +835,7 @@ clawt_lrg_window_connection_changed(ClawtLrgApp *app)
     if (clawt_client_is_connected(app->client)) {
         clawt_lrg_refresh_fleet(app);
         clawt_lrg_show_page(app, app->page);
+        clawt_lrg_alerts_refresh(app);
     }
 }
 
@@ -866,6 +868,8 @@ on_refresh_due(gpointer user_data)
     if (due & REFRESH_GROK)
         clawt_lrg_request(app, "grok.jobs", NULL, CLAWT_LRG_QUIET,
                           on_grok_jobs, NULL, NULL);
+    if (due & REFRESH_NOTICES)
+        clawt_lrg_alerts_refresh(app);
 
     return G_SOURCE_REMOVE;
 }
@@ -899,8 +903,17 @@ clawt_lrg_window_event(ClawtLrgApp *app, ClawtEvent *event)
     if (kind == NULL)
         return;
 
-    /* every event is offered to the alerts drawer, which keeps what it should */
-    clawt_lrg_alerts_event(app, event);
+    /*
+     * The notifications drawer is the daemon's list, asked for again
+     * when anything it counts may have moved: the list itself, a
+     * conversation read or written to, a decision, a Grok job.
+     */
+    if (g_strcmp0(kind, "notice.changed") == 0 ||
+        g_strcmp0(kind, "room.read") == 0 ||
+        g_strcmp0(kind, "message") == 0 ||
+        g_str_has_prefix(kind, "decision.") ||
+        g_strcmp0(kind, "grok.job_updated") == 0)
+        refresh_soon(app, REFRESH_NOTICES);
 
     /* a settings page has no event hook of its own; Devices needs one */
     if (g_str_has_prefix(kind, "device."))

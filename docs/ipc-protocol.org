@@ -971,6 +971,54 @@ the last thing in a thread is what a finished turn's task result is
 inferred from.  It is held in memory, bounded per room, and gone when
 the daemon stops.
 
+*** notice.* (since 0.52.0)
+
+The fleet's notification list, held by the daemon (=src/core/daemon-notice.c=, =core/clawt-notice-store.h=) in ~<state_dir>/notices.db~, which every client draws its bell and its notifications panel from.  The daemon listens to its own bus: each event ~clawt_alert_tier_for_event()~ rates an error or a notice becomes a row, worded by ~clawt_alert_text_for_event()~.  Routine events are not recorded -- they are the event log's (~event.list~).  See docs/clients.org, "Notifications".
+
+| kind | payload | reply |
+|------+---------+-------|
+| ~notice.list~ | ~agent~?, ~include_dismissed~? (false), ~limit~? (200) | the list, below |
+| ~notice.read~ | ~id~, or ~all: true~ | ~read~: how many changed |
+| ~notice.dismiss~ | ~id~ | ~dismissed: 1~; ~not-found~ for an id not showing |
+| ~notice.clear~ | ~agent~? | ~cleared~: how many were dismissed |
+| ~notice.mute~ | ~agent~, ~until~? (Unix seconds; absent or 0 for "until unmuted") | ~agent~, ~muted~ |
+| ~notice.unmute~ | ~agent~ | ~agent~, ~muted~ |
+
+An ~id~ or ~until~ may be a JSON number or a numeric string: the GTK and libregnum clients build payloads of strings.  ~notice.mute~ refuses an agent the config does not have (~not-found~) and an ~until~ already past (~invalid-argument~).  A daemon whose ~notices.db~ would not open answers every verb but ~notice.list~ with ~not-supported~, and ~notice.list~ with ~kept: false~.
+
+#+begin_src json
+{"v":1,"id":"4","kind":"notice.list","payload":{}}
+{"v":1,"id":"4","kind":"response","payload":{
+  "kept":true,
+  "notices":[{"id":42,"agent":"scout","tier":"error","kind":"turn.timed_out",
+              "source":"turn.timed_out","subject":"scout",
+              "title":"turn.timed_out · scout","created_at":1763532000,
+              "read":false,"dismissed":false,"muted":false}],
+  "mutes":[{"agent":"zed","until":1763539200}],
+  "chats":[{"room":"dm:scout:user","agent":"scout","name":null,"unread":2}],
+  "decisions":[{"id":"8c1e…","agent":"lead","question":"Ship it tonight?"}],
+  "grok":[{"id":"job-3","agent":"scout","bot":"research","state":"Failed",
+           "note":"the page would not load","remove_question":"…"}],
+  "sources":{"chats_unread":2,"decisions_pending":1,"grok_attention":1},
+  "unread":1,"total":5}}
+{"v":1,"id":"5","kind":"notice.mute","payload":{"agent":"zed","until":"1763539200"}}
+{"v":1,"id":"6","kind":"notice.read","payload":{"all":true}}
+{"v":1,"id":"7","kind":"notice.dismiss","payload":{"id":42}}
+#+end_src
+
+The reply's members:
+
+- ~notices~: newest first; ~tier~ is ~error~ or ~notice~; ~source~ is where to look (the event kind, or ~download~ / ~message~ for the two said in a sentence of their own); ~agent~ is who a row narrows to and is muted by; ~created_at~ is when the event happened, in seconds.  Narrowed by ~agent~ when one is given.
+- ~mutes~: every mute in force -- a timed one whose ~until~ has passed is gone from here at once, whether or not a prune has removed it.
+- ~chats~, ~decisions~, ~grok~: the three other things that want somebody -- the operator's conversations and group rooms with unread messages (from the read marks), open decisions, and Grok jobs needing attention by the rule the Grok badge uses (=grok.attention_days=).  A muted agent's are left out of all three; ~grok~ entries carry ~remove_question~, the confirmation to ask before ~grok.remove~ (=clawt_grok_job_remove_question()=).
+- ~sources~: the three counts; ~unread~: alerts neither read nor dismissed, less the muted agents'; ~total~: their sum, which is the bell (=clawt_notice_list_badge()= adds the same four).
+
+Every verb that changes something publishes ~notice.changed~ (subject the agent, when there is one; details ~reason~ -- ~added~, ~read~, ~dismissed~, ~cleared~, ~muted~ or ~unmuted~ -- and ~id~).  A recorded notice publishes it too (~added~), and so does a timed mute lapsing (~unmuted~, from a timer the daemon arms for the soonest ~until~).  Every client asks for ~notice.list~ again on it.
+
+A mute also stops the push and desktop notifiers for that agent: every notification the daemon raises goes through ~clawt_daemon_notify()~, which skips a muted agent.
+
+Pruned at start and hourly to =notices.keep= (500 newest) and =notices.keep_days= (30), and lapsed mutes dropped.
+
 *** mailbox.*
 
 ~mailbox.list~, ~mailbox.dead~, ~mailbox.ack~, ~mailbox.requeue~,
@@ -2154,6 +2202,7 @@ Every kind published, by subject:
 | an agent | ~turn.cost~ (~cost_micros~, ~task~): what a turn just cost, for the sentinel |
 | an agent | ~memory.changed~ (a memory tool call or an undo changed what it remembers) |
 | a trigger | ~trigger.fired~, ~trigger.posted~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
+| the daemon, or an agent | ~notice.changed~ (~reason~, ~id~): the notification list moved -- ask ~notice.list~ again |
 | a Grok job | ~grok.job_updated~ (~bot~, ~agent~, ~state~) |
 | a Grok bot | ~grok.bots_changed~ |
 | a skill | ~skill.changed~ |

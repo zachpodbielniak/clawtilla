@@ -379,18 +379,28 @@ Each page mirrors the GTK file of the same name, feature for feature; what follo
 :CUSTOM_ID: lrg-alerts
 :END:
 
-The *Alerts* button in the header opens a drawer on the right of the window: what happened, and what needed you.  Mirrors GTK's alerts panel (=clients/lrg/lrg-alerts.c=, with its rules in =clients/lrg/lrg-alerts-model.c=).
+The *Alerts* button in the header opens a drawer on the right of the window: everything that wants you, and what happened.  It is a view of the daemon's notification list (~notice.list~, since 0.52.0; see "Notifications" in [[file:clients.org][clients.org]]) and mirrors GTK's panel (=clients/lrg/lrg-alerts.c=; the two decisions it still makes -- which rows a narrowed drawer shows (=clawt_lrg_notice_in_scope()=) and whether the muted set moved (=clawt_lrg_muted_take()=) -- are in =clients/lrg/lrg-alerts-model.c=, tested by =tests/test-lrg-models-chat.c=).
 
-A condition that arrived on its own goes here rather than in a toast, because a toast vanishes after a few seconds and leaves no trace if nobody was looking.  A refused message (~message.refused~: "alice to bob was stopped: max_hops"), a failed cloud-image download and a routine turned off because its computer did not start (~routine.turned_off~, worded by ~clawt_routine_turned_off_alert()~) are errors, said in a sentence.  Everything else ~clawt_alert_tier_for_event()~ calls a notice or routine is recorded quietly as "kind · subject" ("alice is error" for an agent's state), or in the event's own =message= when it carries one (~agent.failover~: "Scout is running on fallback codex-cli gpt-5.5 because ...").  The newest 200 are kept, newest first.
+Nothing is kept here but the last reply.  The list is asked for on connect and again, gathered over 250ms with the shell's other refreshes (=REFRESH_NOTICES= in =lrg-window.c=), on ~notice.changed~, ~room.read~, ~message~, any ~decision.~ event and ~grok.job_updated~.  So reading, dismissing or muting in the GTK or web client -- or with =clawtilla notices= -- shows here at once, and a restart forgets nothing.
 
-| Control | What it does |
-|---------+--------------|
-| *Alerts N* | opens and closes the drawer; N counts unread errors and notices, never routine entries |
-| *Show everything* | adds the routine stream to the list (it is hidden by default) |
-| an agent's name on a row | narrows the drawer to that agent; *Only NAME ×* widens it again |
-| *Earlier, from the daemon's log* | reads the 50 most recent events from the daemon's own log (~event.list~, narrowed to the agent when the drawer is) |
+Four sections, each drawn only when it has rows: *Chats* (conversations with unread messages), *Decisions waiting*, *Grok jobs needing attention*, and *Alerts* -- the errors and notices the daemon recorded, worded once by ~clawt_alert_text_for_event()~ (a refused message: "alice to bob was stopped: max_hops"; ~agent.failover~ in its own sentence).  An alert is a card with an *error* or *notice* badge, and *new* while unread.
 
-Opening the drawer marks everything read, and an alert that lands while it is open arrives read (~clawt_alert_arrives_read()~), so the count never points at a row somebody watched appear.
+| Control | What it does | Sends |
+|---------+--------------+-------|
+| *Alerts N* | opens and closes the drawer; N is the bell, =clawt_notice_list_badge()= -- unread chats + decisions waiting + Grok jobs needing attention + unread alerts, less the muted agents' | -- |
+| *Mark all read* | every alert and every conversation | ~notice.read~ (=all=), ~room.read~ (=all=) |
+| *Clear* | dismisses every alert showing, or only the narrowed agent's | ~notice.clear~ |
+| *Dismiss* on an alert | hides it | ~notice.dismiss~ |
+| an agent's name on an alert | narrows the drawer to that agent; *Only NAME ×* widens it again | -- |
+| Right-click a chat | Open, Mark as read (N), Mute notifications | ~room.read~, ~notice.mute~ |
+| Right-click a decision | Open Decisions | -- |
+| Right-click a Grok job | Open Grok, Remove… (confirmed in the daemon's =remove_question=) | ~grok.remove~ |
+| Right-click an alert | Mark read (when unread), Dismiss, Mute notifications | ~notice.read~, ~notice.dismiss~, ~notice.mute~ |
+| *Earlier, from the daemon's log* | reads the 50 most recent events from the daemon's own log (~event.list~, narrowed to the agent when the drawer is) -- the routine stream, which the drawer no longer keeps | ~event.list~ |
+
+Each row's menu is its own =lrg_widget_set_context_menu()= with an action group ("notice") whose verbs carry their target as a string parameter, so the menu acts on the row it was opened on however the drawer has been rebuilt since.
+
+Opening the drawer reads every alert (~notice.read~ =all=), and an alert that lands while it is open is read at once, so the count never points at a row somebody watched appear.  The *Show everything* switch is gone: the routine stream is the event log's, behind the expander.
 
 ** Fleet sidebar
 :PROPERTIES:
@@ -420,6 +430,7 @@ The sidebar is drawn in the =clawt-chrome= material at the left of the window. T
 | Right-click: Computer (<type>) ▸ Start / Stop / Restart | only for an agent whose computer has a machine (=computer_machine=, from =clawt_computer_type_has_machine()= in the daemon); Stop and Restart of a machine that does not survive a stop (=computer_stop_removes=) are confirmed first, and sent with =remove: true= as a JSON boolean | ~computer.start~, ~computer.stop~, ~computer.restart~ |
 | Right-click an agent: Mark as read (N) | the operator's conversation with it, read up to its newest message; the label is =clawt_agent_menu_read_label()= and the item is greyed out with nothing unread | ~room.read~ (=room=, the agent's =dm_room=) |
 | Right-click: Mark all as read | every conversation at once (=clawt_lrg_mark_all_read()=); greyed out when nothing is unread | ~room.read~ (=all: true=) |
+| Right-click: Mute notifications / Unmute | silences the agent everywhere -- its alerts arrive read, it leaves every total, its pill dims, the push and desktop notifiers skip it -- or lets it through again; the label flips (=clawt_agent_menu_mute_label()=) | ~notice.mute~, ~notice.unmute~ |
 | Right-click: Delete… | asked twice; the second dialog offers "Also delete its container/virtual machine" (for those types) and "Also delete everything it owns", both off | ~agent.remove~ |
 | Drag a row onto a row | reorders: the whole order is sent, the dragged row placed above or below by which half was dropped on; dropped among another team's rows, it joins that team first and the order is sent only if that was accepted | ~fleet.reorder~ (after ~agent.set~ / ~room.set~) |
 | Drag a row onto a team heading | puts it on that team (the team only; a heading names no position). Already there is accepted, not refused | ~agent.set~, ~room.set~ |
@@ -429,7 +440,9 @@ The sidebar is drawn in the =clawt-chrome= material at the left of the window. T
 *** Unread
 The Chat tab's number is =clawt_lrg_unread_badge()=: the total of =app->unread=, hidden while the Chat page is showing (the sidebar beside it says which conversation, which is strictly more). It is recomputed whenever the sidebar redraws, and a zero-size ticker in the sidebar notices page changes. Counts against rooms the sidebar no longer draws are pruned (=clawt_lrg_unread_prune()=) so a removed agent's number cannot stay in the total for ever. Clicking the agent already on screen calls =clawt_lrg_chat_reopen()=: its conversation with you, a peer conversation dropped, that count cleared, and ~room.read~ sent so every other client clears it too.
 
-The counts are the daemon's since 0.52.0 (see "Unread" in [[file:clients.org][clients.org]]).  Every ~room.list~ reply goes through =clawt_lrg_unread_seed()= (=clawt_unread_seed()= over =clawt_lrg_chat_row_rooms()=), which sets each row's count to the daemon's =unread= -- 0 for the room on screen.  A ~room.read~ event, handled before the chat page's own check so it applies even before the page is built, goes through =clawt_lrg_unread_apply_read()=.  Live =message= events still count between listings, as before.  The right-click menu's first section is *Mark as read (N)* and *Mark all as read* (=append_read_section()= in =lrg-sidebar.c=, the place further notice actions join).
+The counts are the daemon's since 0.52.0 (see "Unread" in [[file:clients.org][clients.org]]).  Every ~room.list~ reply goes through =clawt_lrg_unread_seed()= (=clawt_unread_seed()= over =clawt_lrg_chat_row_rooms()=), which sets each row's count to the daemon's =unread= -- 0 for the room on screen.  A ~room.read~ event, handled before the chat page's own check so it applies even before the page is built, goes through =clawt_lrg_unread_apply_read()=.  Live =message= events still count between listings, as before.  The right-click menu's first section is *Mark as read (N)*, *Mark all as read* and *Mute notifications* / *Unmute* (=append_read_section()= in =lrg-sidebar.c=; the mute label is =clawt_agent_menu_mute_label()=, and the item sends ~notice.mute~ or ~notice.unmute~ through =clawt_lrg_set_agent_muted()=).
+
+*A muted agent* (=app->muted=, the set the last ~notice.list~ named) keeps its pill on its row, drawn with the =muted= class instead of =clawt-unread=, and its name is not bolded.  It is in no total: =clawt_lrg_unread_badge(unread, muted, on_chat)= goes through =clawt_unread_total()=, the rule every client uses.  The sidebar redraws when the muted set moves, and only then.
 
 *** libregnum widgets used, and why
 - =LrgScrollBox= (vertical only, kinetic) holding an =LrgVBox= of rows.
@@ -439,7 +452,7 @@ The counts are the daemon's since 0.52.0 (see "Unread" in [[file:clients.org][cl
 
 *** Differences from GTK
 - No hover tooltips: the description is in the subtitle, and when descriptions are turned off it is not shown at all (GTK moves it to a tooltip). libregnum's tooltip is a game-style panel, not a widget hint.
-- A right-click acts on the row clicked without selecting it; GTK selects first because its actions read the selection. The effect -- acting on what was clicked -- is the same.
+- A right-click acts on the row clicked without selecting it -- as GTK's does too since 0.52.0 (its menu reads =menu_agent=, copied off the row, rather than the selection).
 - No touch long-press binding of its own: libregnum's canvas already turns a touch long press into a right click.
 - New room is a dialog in =lrg-dialogs.c= rather than in this file.
 
@@ -550,7 +563,7 @@ A command about one agent typed in a room says it is about one agent; an unknown
 - *Pictures open in a dialog*, not a second window: the canvas is the only window.
 - */recall* shows the Memory page and hands it the query through =clawt_lrg_recall_search()= when that page provides it.
 - *Ctrl+V on Wayland* reads the clipboard through =wl-paste=; raylib's GLFW backend cannot read a Wayland clipboard image.
-- *Refusals elsewhere* are toasted; GTK records them in its alerts panel, which this client's shell does not have yet.
+- *Refusals elsewhere* are toasted; the daemon records them in the notification list, which the alerts drawer shows.
 - */reset* reads =restarted= as the JSON boolean the daemon sends, so it says when the agent was restarted (GTK reads it as an integer and never does).
 
 ** Overview (the agent inspector)
@@ -942,7 +955,7 @@ Every sentence a row says and every payload a form sends is decided in =clients/
 *** Cloud images
 What VM agents boot from. "On this machine" lists ~image.vm_list~: a downloaded image shows its size and source URL with a Delete button (~image.vm_remove~, asked first -- GTK deletes at once, but an overlay built on that image cannot boot without it); one still downloading shows an =LrgProgressBar= and "16 kB of 557 MB", with Stop (~image.vm_cancel~). "Fetch another" offers the ~image.vm_catalog~ sources in a combo with Download, and a URL entry with its own Download (both ~image.vm_download~; the catalogue sends its id, so the daemon resolves the newest compose).
 
-Progress arrives as ~image.progress~ / ~image.finished~ events.  Settings pages are not =ClawtLrgPage= entries and the shell does not hand them events, so this page listens on =app->client='s =event= signal itself, re-hooking whenever it is shown on a client it has not heard from (a connection switch replaces the client).  A progress event moves its row's bar and subtitle in place and rebuilds nothing; one for a download this page has no row for (started from the CLI) reads the list once. A failed download is a toast with the daemon's reason -- GTK files it in the alerts panel, which belongs to the shell.
+Progress arrives as ~image.progress~ / ~image.finished~ events.  Settings pages are not =ClawtLrgPage= entries and the shell does not hand them events, so this page listens on =app->client='s =event= signal itself, re-hooking whenever it is shown on a client it has not heard from (a connection switch replaces the client).  A progress event moves its row's bar and subtitle in place and rebuilds nothing; one for a download this page has no row for (started from the CLI) reads the list once. A failed download is a toast with the daemon's reason; the daemon also lists it in the notification list, which the shell's alerts drawer shows.
 
 *** Teams
 ~team.list~ as rows: the name, "what it handles — N of M running, lead: X" (a blank description is said as "nothing will be sent here", since the chief of staff routes by it), a live badge while any member runs, and Edit…, which opens the team: Name and What it handles, Save changes (two ~team.set~ frames, reported once both land), and Remove this team (asked first, ~team.remove~, then a toast counting the agents still naming it). "Add a team" asks for an id (~team.create~). Fleet warnings (two leads, an undeclared team) are drawn under the list. Any change re-reads the fleet too, so the sidebar's team headings follow.
@@ -964,7 +977,7 @@ One combo, *Acknowledgement check*, walked from =clawt_ack_check_model_count()= 
 
 Two more cards.  *Message budget per task tree*: an entry and *Save*, filled from ~orchestration.get~'s ~tree_message_budget~ on every read and saved with ~orchestration.set~ as an integer.  *Rounds in group rooms*: one line per group room in the reply's ~rooms~, its name and current round, an entry for =rooms.max_chain= and *Save*, which sends ~room.set~; the lines are rebuilt from each reply, so a room removed elsewhere does not keep a row that saves into nothing.  Both refuse a value that is not a whole number in range with a toast, before sending.
 
-The chat draws a *Round N* divider where a group room's round changes and a muted line under a message whose mention was withheld, with =clawt_round_skip_note()='s sentence; no tooltips, so the sentence is the whole of it.  The alerts panel words ~task.tree_budget~ with =clawt_loop_guard_tree_alert_text()=.
+The chat draws a *Round N* divider where a group room's round changes and a muted line under a message whose mention was withheld, with =clawt_round_skip_note()='s sentence; no tooltips, so the sentence is the whole of it.  The alerts drawer shows ~task.tree_budget~ as the daemon worded it, with =clawt_loop_guard_tree_alert_text()= (through =clawt_alert_text_for_event()=).
 
 *** Integrations
 ~integration.list~ rows: an on/off badge, the name, "Matrix — every agent (3)" (with "(off)" when disabled), and Edit…. "Add an integration" reads ~integration.types~ into a combo of type names (=clawt_integration_type_label()=, never the config value) with what the chosen one does and needs under it (=clawt_integration_needs_summary()=), then ~integration.add~ and straight into the editor -- one with only a name and a type reaches nobody.
@@ -1021,7 +1034,7 @@ Id, Name (the id when empty), and a switch per agent from the window's last ~age
 - Deleting a cloud image, stopping sharing a folder, removing an integration and revoking or removing a connector are asked first; GTK does them on the click.
 - Shared folders offers the relabel, which GTK's form does not.
 - Fonts are typed family names, not a font chooser: libregnum has none.
-- A failed image download is a toast, not an alerts-panel entry: the panel belongs to the shell.
+- A failed image download is a toast here as well as a row in the notification list (the daemon's, drawn by the shell's drawer).
 - Lists arrive into their slots asynchronously instead of the dialog waiting for every one before it draws.
 
 * Architecture
@@ -1239,7 +1252,7 @@ A colour this client reads but the palette leaves out falls back to libadwaita's
 | ~lrg-theme-model.c~ | palette → theme document, the style rules | ~gtk-prefs-appearance.c~ (CSS) |
 | ~lrg-island-model.c~ | the island's sentence | -- |
 | ~lrg-text-model.c~ | plain text through a markdown label | -- |
-| ~lrg-alerts.c~, ~lrg-alerts-model.c~ | the alerts drawer, and what it records and counts | ~clawt-window.c~ (alerts panel) |
+| ~lrg-alerts.c~, ~lrg-alerts-model.c~ | the notifications drawer (the daemon's ~notice.list~), its scope and the muted set | ~clawt-window.c~ (notifications panel) |
 | ~lrg-sidebar.c~ | the fleet: teams, agents, rooms, menus, reordering | ~gtk-sidebar.c~ |
 | ~lrg-chat.c~ | the transcript, composer, slash commands, attachments | ~gtk-chat.c~, ~gtk-follow.c~ |
 | ~lrg-chat-model.c~, ~clawt-lrg-chat-model.h~ | the sidebar's and chat's decisions | -- |

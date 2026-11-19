@@ -184,7 +184,7 @@ notify_limit(ClawtDaemon *self, ClawtEvent *event, const gchar *subject)
     notification = clawt_notification_new(CLAWT_NOTIFY_EVENTS_BUDGET, agent_id,
                                           NULL, "Daily spending cap reached",
                                           body);
-    clawt_notifier_notify(self->notifier, notification);
+    clawt_daemon_notify(self, notification);
 }
 
 /*

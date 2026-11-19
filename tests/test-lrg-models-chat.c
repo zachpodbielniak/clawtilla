@@ -6,7 +6,8 @@
  *
  * This file is part of clawtilla.
  *
- * clients/lrg/lrg-chat-model.c, without libregnum.  Keyed state is
+ * clients/lrg/lrg-chat-model.c (and the notifications drawer's two
+ * decisions in lrg-alerts-model.c), without libregnum.  Keyed state is
  * tested with two keys -- two rooms, two agents -- because a test with
  * one key cannot see a shared-scalar bug (AGENTS.md).
  */
@@ -18,6 +19,7 @@
 
 #include "../clients/lrg/lrg-chat-model.c"
 #include "../clients/lrg/lrg-agent-model.c"
+#include "../clients/lrg/lrg-alerts-model.c"
 
 /* ── Fixtures ─────────────────────────────────────────────────────── */
 
@@ -148,8 +150,8 @@ test_unread_two_rooms(void)
     g_assert_cmpuint(clawt_lrg_unread_total(unread), ==, 1);
 
     /* the tab hides the number while the chat page is the one showing */
-    g_assert_cmpuint(clawt_lrg_unread_badge(unread, TRUE), ==, 0);
-    g_assert_cmpuint(clawt_lrg_unread_badge(unread, FALSE), ==, 1);
+    g_assert_cmpuint(clawt_lrg_unread_badge(unread, NULL, TRUE), ==, 0);
+    g_assert_cmpuint(clawt_lrg_unread_badge(unread, NULL, FALSE), ==, 1);
 }
 
 /*
@@ -1334,6 +1336,55 @@ test_inline_decision_follows_the_inbox(void)
                     ==, CLAWT_LRG_INLINE_NONE);
 }
 
+/*
+ * A muted agent's pill is drawn (dimmed) but counted nowhere: the Chat
+ * tab's number leaves its conversation out, a group room and an unmuted
+ * agent still count, and the number still hides on the Chat page.  The
+ * muted set is taken from each notice.list and reports whether it moved,
+ * which is when the sidebar redraws.  Regressing it is a mute that
+ * leaves the tab lit, or a sidebar redrawn on every message.
+ */
+static void
+test_a_muted_pill_is_not_in_the_total(void)
+{
+    g_autoptr(GHashTable) unread = g_hash_table_new_full(g_str_hash,
+                                                         g_str_equal,
+                                                         g_free, NULL);
+    g_autoptr(GHashTable) muted = g_hash_table_new_full(g_str_hash,
+                                                        g_str_equal,
+                                                        g_free, NULL);
+    g_autoptr(GHashTable) from = g_hash_table_new_full(g_str_hash,
+                                                       g_str_equal, g_free,
+                                                       NULL);
+
+    g_hash_table_insert(unread, g_strdup("dm:scout:user"),
+                        GUINT_TO_POINTER(2));
+    g_hash_table_insert(unread, g_strdup("dm:lead:user"),
+                        GUINT_TO_POINTER(5));
+    g_hash_table_insert(unread, g_strdup("standup"), GUINT_TO_POINTER(1));
+
+    g_assert_cmpuint(clawt_lrg_unread_badge(unread, muted, FALSE), ==, 8);
+
+    g_hash_table_add(from, g_strdup("lead"));
+    g_assert_true(clawt_lrg_muted_take(muted, from));
+    g_assert_false(clawt_lrg_muted_take(muted, from));
+    g_assert_cmpuint(clawt_lrg_unread_badge(unread, muted, FALSE), ==, 3);
+    g_assert_cmpuint(clawt_lrg_unread_badge(unread, muted, TRUE), ==, 0);
+
+    /* the row itself still has its count, for the dimmed pill */
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "dm:lead:user"), ==, 5);
+
+    /* unmuted by the next list: counted again */
+    g_assert_true(clawt_lrg_muted_take(muted, NULL));
+    g_assert_cmpuint(clawt_lrg_unread_badge(unread, muted, FALSE), ==, 8);
+
+    /* a narrowed drawer shows one agent's rows; an open one shows all */
+    g_assert_true(clawt_lrg_notice_in_scope("lead", NULL));
+    g_assert_true(clawt_lrg_notice_in_scope("lead", "lead"));
+    g_assert_false(clawt_lrg_notice_in_scope("scout", "lead"));
+    g_assert_false(clawt_lrg_notice_in_scope(NULL, "lead"));
+}
+
 gint
 main(gint argc, gchar **argv)
 {
@@ -1382,6 +1433,9 @@ main(gint argc, gchar **argv)
                     test_inline_decisions_are_placed);
     g_test_add_func("/lrg/chat/inline-decisions/follow-the-inbox",
                     test_inline_decision_follows_the_inbox);
+
+    g_test_add_func("/lrg-models/chat/muted-pill-not-in-total",
+                    test_a_muted_pill_is_not_in_the_total);
 
     return g_test_run();
 }

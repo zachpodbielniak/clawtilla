@@ -497,6 +497,7 @@ clawt_lrg_app_new(ClawtClient *client, ClawtConnection *connection)
     app->connection = clawt_connection_copy(connection);
     app->context = g_main_context_ref(g_main_context_default());
     app->unread = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    app->muted = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     app->typing = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                         (GDestroyNotify)g_hash_table_unref);
     app->page = CLAWT_PAGE_CHAT;
@@ -567,6 +568,7 @@ clawt_lrg_app_free(ClawtLrgApp *app)
     g_clear_pointer(&app->agents, json_node_unref);
     g_clear_pointer(&app->rooms, json_node_unref);
     g_clear_pointer(&app->unread, g_hash_table_unref);
+    g_clear_pointer(&app->muted, g_hash_table_unref);
     g_clear_pointer(&app->typing, g_hash_table_unref);
     g_clear_pointer(&app->context, g_main_context_unref);
     g_free(app->open_target);

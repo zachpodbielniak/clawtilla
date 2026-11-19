@@ -2606,6 +2606,30 @@ static const ClawtSchemaEntry schema[] = {
   "it expires through grok.job_ttl_minutes first, and its agent is\n"
   "told. Clamped to 1..3650.", "0.52.0" },
 
+{ "notices", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The notification list the daemon keeps for every client.\n"
+  "\n"
+  "Errors and notices -- a refused message, a turn that timed out, an\n"
+  "agent that stopped -- are recorded in <state_dir>/notices.db, read\n"
+  "and dismissed there, and drawn by every client from notice.list. Each\n"
+  "agent can be muted. These keys say how much of it is kept. See\n"
+  "docs/clients.org, \"Notifications\".", "0.52.0" },
+
+{ "notices.keep", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "500", NULL,
+  "How many notices are kept, newest first.\n"
+  "\n"
+  "Read and dismissed ones count too: the list is a record, and a\n"
+  "dismissed row is still there with include_dismissed. Pruned at start\n"
+  "and then hourly. 0 keeps every one, until notices.keep_days.", "0.52.0" },
+
+{ "notices.keep_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "30", NULL,
+  "Days a notice is kept.\n"
+  "\n"
+  "Pruned at start and then hourly, whichever of this and notices.keep\n"
+  "drops a notice first. 0 keeps them until notices.keep.", "0.52.0" },
+
 { "routines", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing work: a prompt, an agent, and when to run it.\n"
   "\n"

@@ -849,125 +849,228 @@ clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
     }
 }
 
-/* ── Alerts ──────────────────────────────────────────────────────── */
+/* ── Notifications ───────────────────────────────────────────────── */
 
 /*
- * An alert is an event that demanded attention; a routine entry is one
- * that did not.  Same stream, different weight -- so one list with a
- * filter rather than two tabs: deciding at write time which tab a thing
- * belongs in means guessing before the interesting case, and a filter
- * lets you widen after it.
+ * The panel is a view of the daemon's notification list (`notice.list`,
+ * docs/clients.org "Notifications"): conversations with something
+ * unread, decisions waiting, Grok jobs that need somebody, and the
+ * alerts -- the errors and notices the daemon recorded from its own
+ * events.  Nothing is kept here but the last reply, so reading,
+ * dismissing or muting in any client -- or the CLI -- shows here on the
+ * next `notice.changed`.
+ *
+ * The routine stream is not in it: that is the daemon's event log, and
+ * the "Earlier, from the daemon's log" expander at the foot of the panel
+ * reads it on request.
  */
-typedef struct {
-    ClawtAlertTier tier;
-    gchar     *text;
-    gchar     *source;   /* the event kind, so a row says where to look */
-    gchar     *agent;    /* the event's subject */
-    gint64     ts;
-    gboolean   read;
-} Alert;
-
-/*
- * The most recent 200 are held, matching the limit `agent.logs` already
- * defaults to so the two surfaces agree on what "recent" means.  Older
- * than that is the event log's, through `event.list`.
- */
-#define ALERTS_KEPT 200
 
 static void refresh_alerts(ClawtWindow *self);
 static void update_alert_badge(ClawtWindow *self);
-static guint unread_alerts(ClawtWindow *self);
+static void notice_verb(ClawtWindow *self, const gchar *kind,
+                        JsonNode *payload);
+static JsonNode *all_payload(void);
 
-static void
-alert_free(gpointer data)
+/* How long a burst of events is gathered before the list is asked for. */
+#define NOTICES_REFRESH_MS (150)
+
+/* The last reply's payload, or NULL before the first. */
+static JsonObject *
+notices_payload(ClawtWindow *self)
 {
-    Alert *alert = data;
-
-    g_free(alert->text);
-    g_free(alert->source);
-    g_free(alert->agent);
-    g_free(alert);
+    return (self->notices != NULL) ? clawt_payload_of(self->notices) : NULL;
 }
 
-/*
- * @ts is when it happened (clawt_event_happened_at()), so the events
- * replayed on reconnect are not all "just now".
- */
-static void
-clawt_window_alert(ClawtWindow *self, ClawtAlertTier tier, const gchar *source,
-                   const gchar *agent, const gchar *text, gint64 ts)
+/* A member array of the last reply, or NULL. */
+static JsonArray *
+notices_array(ClawtWindow *self, const gchar *member)
 {
-    Alert *alert;
+    JsonObject *payload = notices_payload(self);
 
-    if (self->alerts == NULL || text == NULL)
-        return;
+    if (payload == NULL || !json_object_has_member(payload, member) ||
+        !JSON_NODE_HOLDS_ARRAY(json_object_get_member(payload, member)))
+        return NULL;
 
-    alert = g_new0(Alert, 1);
-    alert->tier = tier;
-    alert->text = g_strdup(text);
-    alert->source = g_strdup(source != NULL ? source : "");
-    alert->agent = g_strdup(agent != NULL ? agent : "");
-    alert->ts = ts;
+    return json_object_get_array_member(payload, member);
+}
+
+/* Whether two sets of agent ids hold the same agents. */
+static gboolean
+same_set(GHashTable *a, GHashTable *b)
+{
+    GHashTableIter iter;
+    gpointer key;
+
+    if (g_hash_table_size(a) != g_hash_table_size(b))
+        return FALSE;
+
+    g_hash_table_iter_init(&iter, a);
+
+    while (g_hash_table_iter_next(&iter, &key, NULL)) {
+        if (!g_hash_table_contains(b, key))
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+static void
+on_notices_reply(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) reply = clawt_client_request_finish(
+        CLAWT_CLIENT(source), result, &error);
+    g_autoptr(GHashTable) muted = NULL;
 
     /*
-     * An alert that lands while the panel is open has been seen as it
-     * arrived, so it arrives read.
-     *
-     * on_alerts_shown() only fires on a show *transition*, so without
-     * this the badge counts something the operator is looking straight
-     * at, and keeps counting it until they close the panel and open it
-     * again.  This is the same rule that already decides whether the
-     * list is worth rebuilding a few lines below, applied one step
-     * earlier.
+     * A daemon too old to keep the list answers an error: the panel then
+     * shows nothing but the history expander, which is still true.
      */
-    alert->read = clawt_alert_arrives_read(
-        self->alerts_split != NULL &&
-            adw_overlay_split_view_get_show_sidebar(self->alerts_split),
-        alert->tier);
+    if (reply == NULL || clawt_ipc_frame_is_error(reply)) {
+        g_object_unref(self);
+        return;
+    }
 
-    /* Newest first: the list is read from the top and never scrolled to
-     * the bottom, which is the opposite of a transcript. */
-    g_ptr_array_insert(self->alerts, 0, alert);
+    g_clear_pointer(&self->notices, json_node_unref);
+    self->notices = g_steal_pointer(&reply);
 
-    while (self->alerts->len > ALERTS_KEPT)
-        g_ptr_array_remove_index(self->alerts, self->alerts->len - 1);
+    /*
+     * The muted set drives the sidebar: a muted agent's pill is drawn
+     * dimmed and leaves every total.  Redrawn only when the set moved,
+     * because every message lands here.
+     */
+    muted = clawt_notice_list_mutes(notices_payload(self));
+
+    if (!same_set(muted, self->muted)) {
+        g_hash_table_remove_all(self->muted);
+
+        {
+            GHashTableIter iter;
+            gpointer key;
+
+            g_hash_table_iter_init(&iter, muted);
+
+            while (g_hash_table_iter_next(&iter, &key, NULL))
+                g_hash_table_add(self->muted, g_strdup(key));
+        }
+
+        clawt_gtk_refresh_agents(self);
+        clawt_gtk_update_unread_tab(self);
+    }
 
     update_alert_badge(self);
 
     /*
-     * The list is only rebuilt when somebody can see it.  Every event in
-     * the fleet lands here, and rebuilding two hundred rows per message
-     * would be work done for nobody.
+     * The list is only rebuilt when somebody can see it -- and an alert
+     * that lands in front of somebody has been seen as it arrived, so it
+     * is read at once (clawt_alert_arrives_read()'s rule, applied to the
+     * daemon's list): otherwise the bell counts a row the operator
+     * watched appear until they close the panel and open it again.
      */
     if (self->alerts_split != NULL &&
-        adw_overlay_split_view_get_show_sidebar(self->alerts_split))
+        adw_overlay_split_view_get_show_sidebar(self->alerts_split)) {
+        if (clawt_json_int(notices_payload(self), "unread", 0) > 0)
+            notice_verb(self, "notice.read", all_payload());
+
         refresh_alerts(self);
+    }
+
+    g_object_unref(self);
+}
+
+static gboolean
+notices_fetch(gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    g_clear_pointer(&self->notices_refresh, g_source_unref);
+
+    if (self->client == NULL)
+        return G_SOURCE_REMOVE;
+
+    /*
+     * Unscoped, always: the bell counts the whole fleet whatever the
+     * panel is narrowed to, and the narrowing is applied when drawing.
+     * A reference rides with the request so a window closed while it is
+     * in flight is not the one the reply lands on.
+     */
+    clawt_client_request_async(self->client, "notice.list", NULL, NULL,
+                               on_notices_reply, g_object_ref(self));
+
+    return G_SOURCE_REMOVE;
 }
 
 /*
- * How many *alerts* are unread -- never routine entries.
- *
- * A badge that counted the routine stream would be permanently non-zero
- * and would stop being read, and widening the filter is a thing the
- * operator chooses rather than something that should change the number
- * on the bell.
+ * Asks for the list again, soon.  Gathered over a short window because
+ * a reply that lands with ten messages behind it would otherwise be ten
+ * round trips for one redraw.
  */
-static guint
-unread_alerts(ClawtWindow *self)
+void
+clawt_gtk_refresh_notices(ClawtWindow *self)
 {
-    guint count = 0;
-    guint i;
+    if (self->notices_refresh != NULL)
+        return;
 
-    for (i = 0; self->alerts != NULL && i < self->alerts->len; i++) {
-        Alert *alert = g_ptr_array_index(self->alerts, i);
-
-        if (!alert->read && alert->tier != CLAWT_ALERT_ROUTINE)
-            count++;
-    }
-
-    return count;
+    self->notices_refresh = g_timeout_source_new(NOTICES_REFRESH_MS);
+    g_source_set_callback(self->notices_refresh, notices_fetch, self, NULL);
+    g_source_attach(self->notices_refresh, NULL);
 }
 
+gboolean
+clawt_gtk_agent_muted(ClawtWindow *self, const gchar *agent_id)
+{
+    return agent_id != NULL && self->muted != NULL &&
+           g_hash_table_contains(self->muted, agent_id);
+}
+
+/*
+ * Sends one of the notice verbs and lets `notice.changed` redraw.  Fire
+ * and forget, as clawt_gtk_mark_room_read() is: the event comes back to
+ * every client, this one included.
+ */
+static void
+notice_verb(ClawtWindow *self, const gchar *kind, JsonNode *payload)
+{
+    if (self->client == NULL) {
+        if (payload != NULL)
+            json_node_unref(payload);
+        return;
+    }
+
+    clawt_client_request_async(self->client, kind, payload, NULL, NULL,
+                               NULL);
+}
+
+/* {"all": true}, which notice.read and room.read both take. */
+static JsonNode *
+all_payload(void)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "all");
+    json_builder_add_boolean_value(builder, TRUE);
+    json_builder_end_object(builder);
+
+    return json_builder_get_root(builder);
+}
+
+void
+clawt_gtk_set_agent_muted(ClawtWindow *self, const gchar *agent_id,
+                          gboolean muted)
+{
+    if (agent_id == NULL)
+        return;
+
+    notice_verb(self, muted ? "notice.mute" : "notice.unmute",
+                clawt_build_payload("agent", agent_id, NULL));
+}
+
+/*
+ * The bell: everything that wants somebody, from the daemon's own counts
+ * (clawt_notice_list_badge()), so every client shows the same number.
+ */
 static void
 update_alert_badge(ClawtWindow *self)
 {
@@ -976,7 +1079,7 @@ update_alert_badge(ClawtWindow *self)
     if (self->alerts_badge == NULL)
         return;
 
-    count = unread_alerts(self);
+    count = clawt_notice_list_badge(notices_payload(self));
 
     if (count == 0) {
         gtk_widget_set_visible(self->alerts_badge, FALSE);
@@ -998,24 +1101,24 @@ update_alert_badge(ClawtWindow *self)
 }
 
 static gchar *
-alert_when(gint64 ts)
+alert_when(gint64 seconds)
 {
-    return clawt_time_ago_label(ts, g_get_real_time());
+    return clawt_time_ago_label(seconds * G_USEC_PER_SEC, g_get_real_time());
 }
 
+/* "Mark all read": every alert, and every conversation. */
 static void
-on_alert_dismissed(GtkButton *button, gpointer user_data)
+on_alerts_read_all(GtkButton *button, gpointer user_data)
 {
     ClawtWindow *self = user_data;
-    Alert *alert = g_object_get_data(G_OBJECT(button), "alert");
 
-    if (alert != NULL)
-        g_ptr_array_remove(self->alerts, alert);
+    (void)button;
 
-    update_alert_badge(self);
-    refresh_alerts(self);
+    notice_verb(self, "notice.read", all_payload());
+    notice_verb(self, "room.read", all_payload());
 }
 
+/* "Clear": every alert showing -- or only the scoped agent's. */
 static void
 on_alerts_cleared(GtkButton *button, gpointer user_data)
 {
@@ -1023,9 +1126,19 @@ on_alerts_cleared(GtkButton *button, gpointer user_data)
 
     (void)button;
 
-    g_ptr_array_set_size(self->alerts, 0);
-    update_alert_badge(self);
-    refresh_alerts(self);
+    notice_verb(self, "notice.clear",
+                clawt_build_payload("agent", self->alerts_agent, NULL));
+}
+
+static void
+on_alert_dismissed(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    notice_verb(self, "notice.dismiss",
+                clawt_build_payload("id",
+                                    g_object_get_data(G_OBJECT(button), "id"),
+                                    NULL));
 }
 
 static void
@@ -1047,18 +1160,6 @@ on_alert_scoped(GtkButton *button, gpointer user_data)
 
     g_free(self->alerts_agent);
     self->alerts_agent = g_strdup(agent);
-    refresh_alerts(self);
-}
-
-static void
-on_alert_filter_changed(AdwToggleGroup *group, GParamSpec *pspec,
-                        gpointer user_data)
-{
-    ClawtWindow *self = user_data;
-
-    (void)pspec;
-
-    self->alerts_show_all = (adw_toggle_group_get_active(group) == 1);
     refresh_alerts(self);
 }
 
@@ -1101,7 +1202,7 @@ on_alert_history_expanded(GObject *object, GParamSpec *pspec,
 
     events = json_object_get_array_member(clawt_payload_of(reply), "events");
 
-    /* Newest first, like the live list above it. */
+    /* Newest first, like the list above it. */
     for (i = json_array_get_length(events); i > 0; i--) {
         JsonObject *one = json_array_get_object_element(events, i - 1);
         g_autofree gchar *text = g_strdup_printf(
@@ -1117,83 +1218,367 @@ on_alert_history_expanded(GObject *object, GParamSpec *pspec,
     }
 }
 
+/* ── Rows, and their menus ───────────────────────────────────────── */
+
 /*
- * A row.
- *
- * Error and Notice get a card and a tinted disc; Routine gets neither --
- * a dim dot, caption text, one line.  If everything carries a colour,
- * colour stops meaning anything, and routine entries are the majority
- * the moment the filter widens.  Making them quiet is what keeps the
- * loud ones loud, and severity is carried by weight and container as
- * much as by hue, so it survives a colourblind reader and a Catppuccin
- * palette alike.
+ * Every row carries the menu its right-click (or long press) opens, as a
+ * GMenuModel on the row.  One popover serves them all, parented to the
+ * scroller rather than to a row -- the list is rebuilt on every
+ * `notice.changed`, and a popover parented to a row would be freed with
+ * it while open.  The actions take their target as a string parameter,
+ * so the menu says which row it is about without the window remembering
+ * a "current row".
+ */
+static void
+row_set_menu(GtkWidget *row, GMenu *menu)
+{
+    g_object_set_data_full(G_OBJECT(row), "notice-menu", g_object_ref(menu),
+                           g_object_unref);
+}
+
+static void
+menu_add(GMenu *menu, const gchar *label, const gchar *action,
+         const gchar *target)
+{
+    g_autoptr(GMenuItem) item = g_menu_item_new(label, NULL);
+
+    if (target != NULL)
+        g_menu_item_set_action_and_target_value(item, action,
+                                                g_variant_new_string(target));
+    else
+        g_menu_item_set_detailed_action(item, action);
+
+    g_menu_append_item(menu, item);
+}
+
+static void
+popup_notice_menu(ClawtWindow *self, gdouble x, gdouble y)
+{
+    GtkListBoxRow *row = gtk_list_box_get_row_at_y(self->alerts_list,
+                                                   (gint)y);
+    GMenuModel *model;
+    graphene_point_t clicked;
+    graphene_point_t at;
+    GdkRectangle rect;
+    GtkWidget *scroller;
+
+    if (row == NULL || self->notice_menu == NULL)
+        return;
+
+    model = g_object_get_data(G_OBJECT(row), "notice-menu");
+
+    if (model == NULL)
+        return;
+
+    gtk_popover_menu_set_menu_model(GTK_POPOVER_MENU(self->notice_menu),
+                                    model);
+
+    clicked.x = (gfloat)x;
+    clicked.y = (gfloat)y;
+    at = clicked;
+    scroller = gtk_widget_get_parent(self->notice_menu);
+
+    if (scroller != NULL &&
+        !gtk_widget_compute_point(GTK_WIDGET(self->alerts_list), scroller,
+                                  &clicked, &at))
+        at = clicked;
+
+    rect.x = (gint)at.x;
+    rect.y = (gint)at.y;
+    rect.width = 1;
+    rect.height = 1;
+
+    gtk_popover_set_pointing_to(GTK_POPOVER(self->notice_menu), &rect);
+    gtk_popover_popup(GTK_POPOVER(self->notice_menu));
+}
+
+static void
+on_notice_secondary_click(GtkGestureClick *gesture, gint n_press,
+                          gdouble x, gdouble y, gpointer user_data)
+{
+    (void)gesture;
+    (void)n_press;
+
+    popup_notice_menu(user_data, x, y);
+}
+
+static void
+on_notice_long_press(GtkGestureLongPress *gesture, gdouble x, gdouble y,
+                     gpointer user_data)
+{
+    (void)gesture;
+
+    popup_notice_menu(user_data, x, y);
+}
+
+static void
+on_notice_action(GSimpleAction *action, GVariant *parameter,
+                 gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *name = g_action_get_name(G_ACTION(action));
+    const gchar *target = (parameter != NULL)
+        ? g_variant_get_string(parameter, NULL) : NULL;
+
+    /* A conversation read, for every client, as the sidebar's menu does. */
+    if (g_strcmp0(name, "chat-read") == 0) {
+        clawt_gtk_mark_room_read(self, target, NULL);
+        return;
+    }
+
+    if (g_strcmp0(name, "read") == 0) {
+        notice_verb(self, "notice.read",
+                    clawt_build_payload("id", target, NULL));
+        return;
+    }
+
+    if (g_strcmp0(name, "dismiss") == 0) {
+        notice_verb(self, "notice.dismiss",
+                    clawt_build_payload("id", target, NULL));
+        return;
+    }
+
+    if (g_strcmp0(name, "mute") == 0) {
+        clawt_gtk_set_agent_muted(self, target, TRUE);
+        return;
+    }
+
+    if (g_strcmp0(name, "decisions") == 0) {
+        clawt_gtk_show_page(self, CLAWT_PAGE_DECISIONS);
+        return;
+    }
+
+    if (g_strcmp0(name, "grok") == 0) {
+        clawt_gtk_show_page(self, CLAWT_PAGE_GROK);
+        return;
+    }
+}
+
+typedef struct {
+    ClawtWindow *window;
+    gchar       *job;
+} GrokRemove;
+
+static void
+on_grok_remove_answered(AdwAlertDialog *dialog, const gchar *response,
+                        gpointer user_data)
+{
+    GrokRemove *remove = user_data;
+
+    (void)dialog;
+
+    if (g_strcmp0(response, "remove") == 0) {
+        g_autoptr(JsonNode) reply = clawt_window_request(
+            remove->window, "grok.remove",
+            clawt_build_payload("job", remove->job, NULL));
+
+        (void)reply;
+        clawt_gtk_refresh_grok_badge(remove->window);
+        clawt_gtk_refresh_notices(remove->window);
+    }
+
+    g_free(remove->job);
+    g_free(remove);
+}
+
+/*
+ * Removing a Grok job asks first, in the daemon's words for that job's
+ * state (clawt_grok_job_remove_question(), sent with the list), exactly
+ * as the Grok page does -- an open job has an agent waiting on it.
+ */
+static void
+on_grok_remove(GSimpleAction *action, GVariant *parameter,
+               gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *job = g_variant_get_string(parameter, NULL);
+    JsonArray *jobs = notices_array(self, "grok");
+    const gchar *question = NULL;
+    AdwAlertDialog *ask;
+    GrokRemove *remove;
+    guint i;
+
+    (void)action;
+
+    for (i = 0; jobs != NULL && i < json_array_get_length(jobs); i++) {
+        JsonObject *one = json_array_get_object_element(jobs, i);
+
+        if (g_strcmp0(clawt_json_string(one, "id", NULL), job) == 0)
+            question = clawt_json_string(one, "remove_question", NULL);
+    }
+
+    ask = ADW_ALERT_DIALOG(adw_alert_dialog_new(
+        "Remove this job?",
+        question != NULL ? question : "It goes from the Grok page."));
+    adw_alert_dialog_add_responses(ask, "cancel", "Cancel", "remove",
+                                   "Remove", NULL);
+    adw_alert_dialog_set_response_appearance(ask, "remove",
+                                             ADW_RESPONSE_DESTRUCTIVE);
+    adw_alert_dialog_set_default_response(ask, "cancel");
+    adw_alert_dialog_set_close_response(ask, "cancel");
+
+    remove = g_new0(GrokRemove, 1);
+    remove->window = self;
+    remove->job = g_strdup(job);
+
+    g_signal_connect(ask, "response", G_CALLBACK(on_grok_remove_answered),
+                     remove);
+    adw_dialog_present(ADW_DIALOG(ask), GTK_WIDGET(self));
+}
+
+/* A section heading: what the rows under it are, and how many. */
+static GtkWidget *
+section_row(const gchar *title, guint count)
+{
+    GtkWidget *row = gtk_list_box_row_new();
+    g_autofree gchar *text = g_strdup_printf("%s (%u)", title, count);
+    GtkWidget *label = gtk_label_new(text);
+
+    gtk_widget_add_css_class(label, "heading");
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_widget_set_margin_start(label, 12);
+    gtk_widget_set_margin_top(label, 12);
+    gtk_widget_set_margin_bottom(label, 4);
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
+
+    return row;
+}
+
+/*
+ * A plain row: a line and a caption.  Activatable, because each one goes
+ * somewhere -- the conversation, the Decisions page, the Grok page --
+ * and `activate-on-single-click` on the list does the rest.
  */
 static GtkWidget *
-alert_row(ClawtWindow *self, Alert *alert)
+plain_row(const gchar *line, const gchar *caption)
+{
+    GtkWidget *row = gtk_list_box_row_new();
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    GtkWidget *text = gtk_label_new(line);
+
+    gtk_label_set_xalign(GTK_LABEL(text), 0.0f);
+    gtk_label_set_wrap(GTK_LABEL(text), TRUE);
+    gtk_box_append(GTK_BOX(box), text);
+
+    if (caption != NULL && *caption != '\0') {
+        GtkWidget *meta = gtk_label_new(caption);
+
+        gtk_widget_add_css_class(meta, "caption");
+        gtk_widget_add_css_class(meta, "dim-label");
+        gtk_label_set_xalign(GTK_LABEL(meta), 0.0f);
+        gtk_label_set_ellipsize(GTK_LABEL(meta), PANGO_ELLIPSIZE_END);
+        gtk_box_append(GTK_BOX(box), meta);
+    }
+
+    gtk_widget_set_margin_start(box, 12);
+    gtk_widget_set_margin_end(box, 12);
+    gtk_widget_set_margin_top(box, 6);
+    gtk_widget_set_margin_bottom(box, 6);
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), box);
+
+    return row;
+}
+
+/* Clicking a row: wherever it goes. */
+static void
+on_notice_row_activated(GtkListBox *list, GtkListBoxRow *row,
+                        gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *agent = g_object_get_data(G_OBJECT(row), "open-agent");
+    const gchar *room = g_object_get_data(G_OBJECT(row), "open-room");
+    const gchar *page = g_object_get_data(G_OBJECT(row), "open-page");
+
+    (void)list;
+
+    if (agent != NULL) {
+        clawt_gtk_select_agent(self, agent);
+        clawt_gtk_show_page(self, CLAWT_PAGE_CHAT);
+    } else if (room != NULL) {
+        clawt_gtk_select_room(self, room);
+        clawt_gtk_show_page(self, CLAWT_PAGE_CHAT);
+    } else if (g_strcmp0(page, "decisions") == 0) {
+        clawt_gtk_show_page(self, CLAWT_PAGE_DECISIONS);
+    } else if (g_strcmp0(page, "grok") == 0) {
+        clawt_gtk_show_page(self, CLAWT_PAGE_GROK);
+    }
+}
+
+/* Whether a row about @agent belongs in a panel narrowed to one agent. */
+static gboolean
+in_scope(ClawtWindow *self, const gchar *agent)
+{
+    return self->alerts_agent == NULL ||
+           g_strcmp0(self->alerts_agent, agent) == 0;
+}
+
+/*
+ * An alert row.
+ *
+ * Errors and notices get a card and a tinted disc, and an unread one is
+ * marked.  Severity is carried by weight and container as much as by
+ * hue, so it survives a colourblind reader and a Catppuccin palette
+ * alike.
+ */
+static GtkWidget *
+alert_row(ClawtWindow *self, JsonObject *notice)
 {
     GtkWidget *row = gtk_list_box_row_new();
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     GtkWidget *middle = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    GtkWidget *text = gtk_label_new(alert->text);
+    GtkWidget *text = gtk_label_new(clawt_json_string(notice, "title", ""));
     GtkWidget *meta;
-    g_autofree gchar *when = alert_when(alert->ts);
+    GtkWidget *icon;
+    const gchar *tier = clawt_json_string(notice, "tier", "notice");
+    const gchar *agent = clawt_json_string(notice, "agent", NULL);
+    gboolean error = g_strcmp0(tier, "error") == 0;
+    gboolean read = clawt_json_boolean(notice, "read", TRUE);
+    g_autofree gchar *id = g_strdup_printf(
+        "%" G_GINT64_FORMAT, clawt_json_int(notice, "id", 0));
+    g_autofree gchar *when = alert_when(clawt_json_int(notice, "created_at",
+                                                       0));
     g_autofree gchar *line = NULL;
+    g_autoptr(GMenu) menu = g_menu_new();
 
     gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
     gtk_label_set_xalign(GTK_LABEL(text), 0.0f);
     gtk_label_set_wrap(GTK_LABEL(text), TRUE);
     gtk_label_set_selectable(GTK_LABEL(text), TRUE);
 
-    if (alert->tier == CLAWT_ALERT_ROUTINE) {
-        GtkWidget *dot = gtk_label_new("\342\200\242");
+    icon = gtk_image_new_from_icon_name(error ? "dialog-error-symbolic"
+                                              : "dialog-information-symbolic");
+    gtk_widget_add_css_class(icon, error ? "error" : "accent");
+    gtk_widget_set_valign(icon, GTK_ALIGN_START);
+    gtk_widget_add_css_class(row, "clawt-alert-card");
 
-        gtk_widget_add_css_class(dot, "dim-label");
-        gtk_widget_set_valign(dot, GTK_ALIGN_START);
-        gtk_widget_add_css_class(text, "caption");
-        gtk_widget_add_css_class(text, "dim-label");
-        gtk_label_set_lines(GTK_LABEL(text), 2);
-        gtk_label_set_ellipsize(GTK_LABEL(text), PANGO_ELLIPSIZE_END);
-        gtk_box_append(GTK_BOX(box), dot);
-    } else {
-        GtkWidget *icon = gtk_image_new_from_icon_name(
-            alert->tier == CLAWT_ALERT_ERROR ? "dialog-error-symbolic"
-                                       : "dialog-information-symbolic");
+    if (!read)
+        gtk_widget_add_css_class(row, "clawt-alert-unread");
 
-        gtk_widget_add_css_class(icon, alert->tier == CLAWT_ALERT_ERROR
-                                           ? "error" : "accent");
-        gtk_widget_set_valign(icon, GTK_ALIGN_START);
-        gtk_widget_add_css_class(row, "clawt-alert-card");
-
-        if (!alert->read)
-            gtk_widget_add_css_class(row, "clawt-alert-unread");
-
-        gtk_box_append(GTK_BOX(box), icon);
-    }
-
+    gtk_box_append(GTK_BOX(box), icon);
     gtk_box_append(GTK_BOX(middle), text);
 
     /*
      * Relative time and the source, so a row says where to go and look
      * without a second click.  The agent's name is a button: clicking it
-     * narrows the panel to that agent, which is the one control the
-     * scope needs -- a dropdown would be a second answer to the same
-     * question.
+     * narrows the panel to that agent.
      */
     meta = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
 
-    if (alert->agent != NULL && *alert->agent != '\0') {
-        GtkWidget *who = gtk_button_new_with_label(alert->agent);
+    if (agent != NULL && *agent != '\0') {
+        GtkWidget *who = gtk_button_new_with_label(agent);
 
         gtk_widget_add_css_class(who, "flat");
         gtk_widget_add_css_class(who, "caption");
         gtk_widget_set_tooltip_text(who, "Show only this agent");
-        g_object_set_data_full(G_OBJECT(who), "agent",
-                               g_strdup(alert->agent), g_free);
+        g_object_set_data_full(G_OBJECT(who), "agent", g_strdup(agent),
+                               g_free);
         g_signal_connect(who, "clicked", G_CALLBACK(on_alert_scoped), self);
         gtk_box_append(GTK_BOX(meta), who);
     }
 
-    line = g_strdup_printf("%s \302\267 %s", when, alert->source);
+    line = g_strdup_printf("%s \302\267 %s", when,
+                           clawt_json_string(notice, "source", ""));
     {
         GtkWidget *label = gtk_label_new(line);
 
@@ -1211,19 +1596,33 @@ alert_row(ClawtWindow *self, Alert *alert)
         /*
          * Always visible rather than on hover: a control that is
          * invisible until you already know it exists is a control nobody
-         * finds.
+         * finds.  The menu has it too, beside Mark read.
          */
-        GtkWidget *close = gtk_button_new_from_icon_name("window-close-symbolic");
+        GtkWidget *close = gtk_button_new_from_icon_name(
+            "window-close-symbolic");
 
         gtk_widget_add_css_class(close, "flat");
         gtk_widget_add_css_class(close, "circular");
         gtk_widget_set_valign(close, GTK_ALIGN_START);
         gtk_widget_set_tooltip_text(close, "Dismiss");
-        g_object_set_data(G_OBJECT(close), "alert", alert);
+        g_object_set_data_full(G_OBJECT(close), "id", g_strdup(id), g_free);
         g_signal_connect(close, "clicked", G_CALLBACK(on_alert_dismissed),
                          self);
         gtk_box_append(GTK_BOX(box), close);
     }
+
+    if (!read)
+        menu_add(menu, "Mark read", "notices.read", id);
+
+    menu_add(menu, "Dismiss", "notices.dismiss", id);
+
+    if (agent != NULL && !clawt_gtk_agent_muted(self, agent)) {
+        g_autofree gchar *label = clawt_agent_menu_mute_label(FALSE);
+
+        menu_add(menu, label, "notices.mute", agent);
+    }
+
+    row_set_menu(row, menu);
 
     gtk_widget_set_margin_start(box, 12);
     gtk_widget_set_margin_end(box, 12);
@@ -1234,11 +1633,176 @@ alert_row(ClawtWindow *self, Alert *alert)
     return row;
 }
 
+/* The Chats section: one row per conversation with something unread. */
+static guint
+append_chats(ClawtWindow *self)
+{
+    JsonArray *chats = notices_array(self, "chats");
+    g_autoptr(GPtrArray) rows = g_ptr_array_new();
+    guint i;
+
+    for (i = 0; chats != NULL && i < json_array_get_length(chats); i++) {
+        JsonObject *chat = json_array_get_object_element(chats, i);
+        const gchar *agent = clawt_json_string(chat, "agent", NULL);
+        const gchar *room = clawt_json_string(chat, "room", NULL);
+        gint64 unread = clawt_json_int(chat, "unread", 0);
+        g_autofree gchar *line = NULL;
+        g_autofree gchar *label = NULL;
+        g_autoptr(GMenu) menu = g_menu_new();
+        GtkWidget *row;
+
+        if (room == NULL || !in_scope(self, agent))
+            continue;
+
+        line = g_strdup_printf("%s \302\267 %" G_GINT64_FORMAT " unread",
+                               agent != NULL ? agent
+                                   : clawt_json_string(chat, "name", room),
+                               unread);
+        row = plain_row(line, NULL);
+
+        if (agent != NULL)
+            g_object_set_data_full(G_OBJECT(row), "open-agent",
+                                   g_strdup(agent), g_free);
+        else
+            g_object_set_data_full(G_OBJECT(row), "open-room",
+                                   g_strdup(room), g_free);
+
+        label = clawt_agent_menu_read_label((guint)unread);
+        menu_add(menu, label, "notices.chat-read", room);
+
+        if (agent != NULL) {
+            g_autofree gchar *mute = clawt_agent_menu_mute_label(FALSE);
+
+            menu_add(menu, mute, "notices.mute", agent);
+        }
+
+        row_set_menu(row, menu);
+        g_ptr_array_add(rows, row);
+    }
+
+    if (rows->len == 0)
+        return 0;
+
+    gtk_list_box_append(self->alerts_list, section_row("Chats", rows->len));
+
+    for (i = 0; i < rows->len; i++)
+        gtk_list_box_append(self->alerts_list, g_ptr_array_index(rows, i));
+
+    return rows->len;
+}
+
+/* Decisions waiting: each opens the Decisions page, where it is answered. */
+static guint
+append_decisions(ClawtWindow *self)
+{
+    JsonArray *decisions = notices_array(self, "decisions");
+    g_autoptr(GPtrArray) rows = g_ptr_array_new();
+    guint i;
+
+    for (i = 0; decisions != NULL && i < json_array_get_length(decisions);
+         i++) {
+        JsonObject *decision = json_array_get_object_element(decisions, i);
+        const gchar *agent = clawt_json_string(decision, "agent", NULL);
+        g_autoptr(GMenu) menu = g_menu_new();
+        GtkWidget *row;
+
+        if (!in_scope(self, agent))
+            continue;
+
+        row = plain_row(clawt_json_string(decision, "question", ""), agent);
+        g_object_set_data(G_OBJECT(row), "open-page", (gpointer)"decisions");
+        menu_add(menu, "Open Decisions", "notices.decisions", NULL);
+        row_set_menu(row, menu);
+        g_ptr_array_add(rows, row);
+    }
+
+    if (rows->len == 0)
+        return 0;
+
+    gtk_list_box_append(self->alerts_list,
+                        section_row("Decisions waiting", rows->len));
+
+    for (i = 0; i < rows->len; i++)
+        gtk_list_box_append(self->alerts_list, g_ptr_array_index(rows, i));
+
+    return rows->len;
+}
+
+/* Grok jobs that need somebody: Remove from the menu, after asking. */
+static guint
+append_grok(ClawtWindow *self)
+{
+    JsonArray *jobs = notices_array(self, "grok");
+    g_autoptr(GPtrArray) rows = g_ptr_array_new();
+    guint i;
+
+    for (i = 0; jobs != NULL && i < json_array_get_length(jobs); i++) {
+        JsonObject *job = json_array_get_object_element(jobs, i);
+        const gchar *agent = clawt_json_string(job, "agent", NULL);
+        const gchar *note = clawt_json_string(job, "note", NULL);
+        g_autofree gchar *line = NULL;
+        g_autoptr(GMenu) menu = g_menu_new();
+        GtkWidget *row;
+
+        if (!in_scope(self, agent))
+            continue;
+
+        line = g_strdup_printf("%s \302\267 %s",
+                               clawt_json_string(job, "bot", "?"),
+                               clawt_json_string(job, "state", "?"));
+        row = plain_row(line, note != NULL ? note : agent);
+        g_object_set_data(G_OBJECT(row), "open-page", (gpointer)"grok");
+        menu_add(menu, "Open Grok", "notices.grok", NULL);
+        menu_add(menu, "Remove\342\200\246", "notices.grok-remove",
+                 clawt_json_string(job, "id", ""));
+        row_set_menu(row, menu);
+        g_ptr_array_add(rows, row);
+    }
+
+    if (rows->len == 0)
+        return 0;
+
+    gtk_list_box_append(self->alerts_list,
+                        section_row("Grok jobs needing attention",
+                                    rows->len));
+
+    for (i = 0; i < rows->len; i++)
+        gtk_list_box_append(self->alerts_list, g_ptr_array_index(rows, i));
+
+    return rows->len;
+}
+
+static guint
+append_alerts(ClawtWindow *self)
+{
+    JsonArray *notices = notices_array(self, "notices");
+    g_autoptr(GPtrArray) rows = g_ptr_array_new();
+    guint i;
+
+    for (i = 0; notices != NULL && i < json_array_get_length(notices); i++) {
+        JsonObject *notice = json_array_get_object_element(notices, i);
+
+        if (!in_scope(self, clawt_json_string(notice, "agent", NULL)))
+            continue;
+
+        g_ptr_array_add(rows, alert_row(self, notice));
+    }
+
+    if (rows->len == 0)
+        return 0;
+
+    gtk_list_box_append(self->alerts_list, section_row("Alerts", rows->len));
+
+    for (i = 0; i < rows->len; i++)
+        gtk_list_box_append(self->alerts_list, g_ptr_array_index(rows, i));
+
+    return rows->len;
+}
+
 static void
 refresh_alerts(ClawtWindow *self)
 {
     guint shown = 0;
-    guint i;
 
     if (self->alerts_list == NULL)
         return;
@@ -1267,34 +1831,48 @@ refresh_alerts(ClawtWindow *self)
         gtk_list_box_append(self->alerts_list, row);
     }
 
-    for (i = 0; self->alerts != NULL && i < self->alerts->len; i++) {
-        Alert *alert = g_ptr_array_index(self->alerts, i);
+    /*
+     * Top to bottom by how much they want somebody: a conversation is
+     * somebody waiting to be read, a decision is an agent waiting for an
+     * answer, a Grok job is work stuck, and an alert is something that
+     * happened.
+     */
+    shown += append_chats(self);
+    shown += append_decisions(self);
+    shown += append_grok(self);
+    shown += append_alerts(self);
 
-        if (!self->alerts_show_all && alert->tier == CLAWT_ALERT_ROUTINE)
-            continue;
+    if (shown == 0) {
+        /*
+         * Not an AdwStatusPage: in a 320px column that is more furniture
+         * than the message needs.
+         */
+        GtkWidget *row = gtk_list_box_row_new();
+        GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+        GtkWidget *bell = gtk_image_new_from_icon_name(
+            "preferences-system-notifications-symbolic");
+        GtkWidget *label = gtk_label_new("Nothing has needed you.");
 
-        if (self->alerts_agent != NULL &&
-            g_strcmp0(self->alerts_agent, alert->agent) != 0)
-            continue;
-
-        gtk_list_box_append(self->alerts_list, alert_row(self, alert));
-        shown++;
+        gtk_image_set_pixel_size(GTK_IMAGE(bell), 32);
+        gtk_widget_add_css_class(bell, "dim-label");
+        gtk_widget_add_css_class(label, "caption");
+        gtk_widget_add_css_class(label, "dim-label");
+        gtk_widget_set_margin_top(box, 48);
+        gtk_box_append(GTK_BOX(box), bell);
+        gtk_box_append(GTK_BOX(box), label);
+        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), box);
+        gtk_list_box_append(self->alerts_list, row);
     }
 
     /*
-     * And the durable copy, from the daemon's own event log.
+     * And the routine stream, from the daemon's own event log.
      *
      * ClawtEventLog has recorded every published event since the daemon
-     * was written, sweeps on `daemon.event_log_days`, and was read back
-     * by nobody -- which is why diagnosing a message loop meant running
-     * sqlite3 and grep on the host.  The panel holds the recent ones in
-     * memory and reads the rest through `event.list`, so it stays a view
-     * onto a store that already exists and already has a retention
-     * policy rather than becoming one.
-     *
-     * Behind an expander: it is a round trip to the daemon and a reader
-     * looking at what just happened does not want fifty older lines
-     * above it.
+     * was written and sweeps on `daemon.event_log_days`; the panel reads
+     * it through `event.list` rather than keeping a copy.  Behind an
+     * expander: it is a round trip, and a reader looking at what needs
+     * them does not want fifty older lines above it.
      */
     {
         GtkWidget *row = gtk_list_box_row_new();
@@ -1313,31 +1891,6 @@ refresh_alerts(ClawtWindow *self)
         gtk_widget_set_margin_top(expander, 12);
         gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
         gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), expander);
-        gtk_list_box_append(self->alerts_list, row);
-    }
-
-    if (shown == 0) {
-        /*
-         * Not an AdwStatusPage: in a 320px column that is more furniture
-         * than the message needs.
-         */
-        GtkWidget *row = gtk_list_box_row_new();
-        GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-        GtkWidget *bell = gtk_image_new_from_icon_name(
-            "preferences-system-notifications-symbolic");
-        GtkWidget *label = gtk_label_new(
-            self->alerts_show_all ? "Nothing has happened."
-                                  : "Nothing has needed you.");
-
-        gtk_image_set_pixel_size(GTK_IMAGE(bell), 32);
-        gtk_widget_add_css_class(bell, "dim-label");
-        gtk_widget_add_css_class(label, "caption");
-        gtk_widget_add_css_class(label, "dim-label");
-        gtk_widget_set_margin_top(box, 48);
-        gtk_box_append(GTK_BOX(box), bell);
-        gtk_box_append(GTK_BOX(box), label);
-        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
-        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), box);
         gtk_list_box_append(self->alerts_list, row);
     }
 }
@@ -1418,17 +1971,19 @@ on_sidebar_shown(GObject *object, GParamSpec *pspec, gpointer user_data)
 }
 
 /*
- * Opening the panel marks everything read.
+ * Opening the panel reads every alert.
  *
- * The badge is "how much have you not seen", and you have now seen it.
- * Rows stay until they are dismissed, so nothing is lost by the count
- * going to zero.
+ * The badge is "how much have you not seen", and you have now seen it --
+ * in every client, since the read is the daemon's.  Rows stay until they
+ * are dismissed, so nothing is lost by the count going down.  The other
+ * three sources are not read by looking: a conversation is read by
+ * opening it, a decision by answering it, a Grok job by dealing with it.
  */
 static void
 on_alerts_shown(GObject *object, GParamSpec *pspec, gpointer user_data)
 {
     ClawtWindow *self = user_data;
-    guint i;
+    JsonObject *payload;
 
     (void)pspec;
 
@@ -1444,21 +1999,29 @@ on_alerts_shown(GObject *object, GParamSpec *pspec, gpointer user_data)
     if (!self->alerts_open)
         return;
 
-    for (i = 0; self->alerts != NULL && i < self->alerts->len; i++)
-        ((Alert *)g_ptr_array_index(self->alerts, i))->read = TRUE;
+    payload = notices_payload(self);
 
-    update_alert_badge(self);
+    if (payload != NULL && clawt_json_int(payload, "unread", 0) > 0)
+        notice_verb(self, "notice.read", all_payload());
+
     refresh_alerts(self);
 }
 
 static GtkWidget *
 build_alerts_panel(ClawtWindow *self)
 {
+    static const gchar *const plain[] = { "decisions", "grok" };
+    static const gchar *const targeted[] = { "chat-read", "read", "dismiss",
+                                             "mute" };
     GtkWidget *view = adw_toolbar_view_new();
     GtkWidget *header = adw_header_bar_new();
     GtkWidget *scroll = gtk_scrolled_window_new();
-    GtkWidget *filter = adw_toggle_group_new();
     GtkWidget *body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget *buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    g_autoptr(GSimpleActionGroup) actions = g_simple_action_group_new();
+    GtkGesture *click;
+    GtkGesture *press;
+    guint i;
 
     gtk_widget_set_name(view, "clawt-alerts-panel");
 
@@ -1466,49 +2029,102 @@ build_alerts_panel(ClawtWindow *self)
                                                 FALSE);
     adw_header_bar_set_show_end_title_buttons(ADW_HEADER_BAR(header), FALSE);
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(header),
-                                    gtk_label_new("Alerts"));
-
-    {
-        GtkWidget *clear = gtk_button_new_with_label("Clear all");
-
-        gtk_widget_add_css_class(clear, "flat");
-        g_signal_connect(clear, "clicked", G_CALLBACK(on_alerts_cleared),
-                         self);
-        adw_header_bar_pack_end(ADW_HEADER_BAR(header), clear);
-    }
+                                    gtk_label_new("Notifications"));
 
     /*
-     * Two options, not five.  A panel that opens onto every routine
-     * event is noise; one that opens onto only errors hides what you
-     * came for.
+     * The row menus' verbs, each taking its row as a string parameter.
+     * Inserted on the panel, which every row and the shared popover sit
+     * inside.
+     */
+    for (i = 0; i < G_N_ELEMENTS(plain); i++) {
+        g_autoptr(GSimpleAction) action = g_simple_action_new(plain[i], NULL);
+
+        g_signal_connect(action, "activate", G_CALLBACK(on_notice_action),
+                         self);
+        g_action_map_add_action(G_ACTION_MAP(actions), G_ACTION(action));
+    }
+
+    for (i = 0; i < G_N_ELEMENTS(targeted); i++) {
+        g_autoptr(GSimpleAction) action =
+            g_simple_action_new(targeted[i], G_VARIANT_TYPE_STRING);
+
+        g_signal_connect(action, "activate", G_CALLBACK(on_notice_action),
+                         self);
+        g_action_map_add_action(G_ACTION_MAP(actions), G_ACTION(action));
+    }
+
+    {
+        g_autoptr(GSimpleAction) action =
+            g_simple_action_new("grok-remove", G_VARIANT_TYPE_STRING);
+
+        g_signal_connect(action, "activate", G_CALLBACK(on_grok_remove),
+                         self);
+        g_action_map_add_action(G_ACTION_MAP(actions), G_ACTION(action));
+    }
+
+    gtk_widget_insert_action_group(view, "notices", G_ACTION_GROUP(actions));
+
+    /*
+     * Two verbs for the whole list.  "Mark all read" reads the alerts and
+     * every conversation; "Clear" dismisses the alerts -- only the
+     * scoped agent's when the panel is narrowed.
      */
     {
-        AdwToggle *alerts_only = adw_toggle_new();
-        AdwToggle *everything = adw_toggle_new();
+        GtkWidget *read = gtk_button_new_with_label("Mark all read");
+        GtkWidget *clear = gtk_button_new_with_label("Clear");
 
-        adw_toggle_set_label(alerts_only, "Alerts");
-        adw_toggle_set_label(everything, "Everything");
-        adw_toggle_group_add(ADW_TOGGLE_GROUP(filter), alerts_only);
-        adw_toggle_group_add(ADW_TOGGLE_GROUP(filter), everything);
+        gtk_widget_add_css_class(read, "flat");
+        gtk_widget_add_css_class(clear, "flat");
+        g_signal_connect(read, "clicked", G_CALLBACK(on_alerts_read_all),
+                         self);
+        g_signal_connect(clear, "clicked", G_CALLBACK(on_alerts_cleared),
+                         self);
+        gtk_box_append(GTK_BOX(buttons), read);
+        gtk_box_append(GTK_BOX(buttons), clear);
+        gtk_widget_set_halign(buttons, GTK_ALIGN_END);
+        gtk_widget_set_margin_start(buttons, 12);
+        gtk_widget_set_margin_end(buttons, 12);
+        gtk_widget_set_margin_top(buttons, 6);
     }
-    adw_toggle_group_set_active(ADW_TOGGLE_GROUP(filter), 0);
-    gtk_widget_set_margin_start(filter, 12);
-    gtk_widget_set_margin_end(filter, 12);
-    gtk_widget_set_margin_top(filter, 8);
-    gtk_widget_set_margin_bottom(filter, 4);
-    g_signal_connect(filter, "notify::active",
-                     G_CALLBACK(on_alert_filter_changed), self);
-    self->alerts_filter = filter;
 
     self->alerts_list = GTK_LIST_BOX(gtk_list_box_new());
     gtk_list_box_set_selection_mode(self->alerts_list, GTK_SELECTION_NONE);
-    gtk_widget_add_css_class(GTK_WIDGET(self->alerts_list), "navigation-sidebar");
+    gtk_list_box_set_activate_on_single_click(self->alerts_list, TRUE);
+    gtk_widget_add_css_class(GTK_WIDGET(self->alerts_list),
+                             "navigation-sidebar");
+    g_signal_connect(self->alerts_list, "row-activated",
+                     G_CALLBACK(on_notice_row_activated), self);
 
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll),
                                   GTK_WIDGET(self->alerts_list));
     gtk_widget_set_vexpand(scroll, TRUE);
 
-    gtk_box_append(GTK_BOX(body), filter);
+    /*
+     * One popover for every row's menu, parented to the scroller: see
+     * row_set_menu() for why not to a row.
+     */
+    self->notice_menu = gtk_popover_menu_new_from_model(NULL);
+    gtk_popover_set_has_arrow(GTK_POPOVER(self->notice_menu), FALSE);
+    gtk_widget_set_halign(self->notice_menu, GTK_ALIGN_START);
+    gtk_widget_set_parent(self->notice_menu, scroll);
+
+    click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click),
+                                  GDK_BUTTON_SECONDARY);
+    g_signal_connect(click, "pressed", G_CALLBACK(on_notice_secondary_click),
+                     self);
+    gtk_widget_add_controller(GTK_WIDGET(self->alerts_list),
+                              GTK_EVENT_CONTROLLER(click));
+
+    /* Touch has no second button; a long press is the same gesture. */
+    press = gtk_gesture_long_press_new();
+    gtk_gesture_single_set_touch_only(GTK_GESTURE_SINGLE(press), TRUE);
+    g_signal_connect(press, "pressed", G_CALLBACK(on_notice_long_press),
+                     self);
+    gtk_widget_add_controller(GTK_WIDGET(self->alerts_list),
+                              GTK_EVENT_CONTROLLER(press));
+
+    gtk_box_append(GTK_BOX(body), buttons);
     gtk_box_append(GTK_BOX(body), scroll);
 
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(view), header);
@@ -1530,67 +2146,33 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
     (void)client;
 
     /*
-     * The routine stream.
-     *
-     * The client already receives every event the daemon publishes and
-     * acted on five kinds, dropping the rest -- so an agent stopping, or
-     * erroring, produced nothing anywhere.  Recorded here, quietly, so
-     * the panel can answer "what has the fleet been doing" as well as
-     * "what needed me".  It is one branch rather than a new surface,
-     * which is the argument for a panel over relocating a toast.
-     *
-     * `image.progress` is excluded: a download emits one per percent and
-     * would fill the whole list with one file.
+     * The notification list is the daemon's (docs/clients.org,
+     * "Notifications"), so nothing is recorded here: the panel and the
+     * bell are asked for again when anything they count may have moved
+     * -- the list itself, a conversation read or written to, a decision,
+     * a Grok job.  clawt_gtk_refresh_notices() gathers a burst into one
+     * request.
      */
-    if (self->alerts != NULL) {
-        ClawtAlertTier tier = clawt_alert_tier_for_event(event);
+    if (g_strcmp0(kind, "notice.changed") == 0 ||
+        g_strcmp0(kind, "room.read") == 0 ||
+        g_strcmp0(kind, "message") == 0 ||
+        g_str_has_prefix(kind != NULL ? kind : "", "decision.") ||
+        g_strcmp0(kind, "grok.job_updated") == 0)
+        clawt_gtk_refresh_notices(self);
 
-        /*
-         * The two loud kinds have branches of their own further down,
-         * which say what happened in words rather than naming the kind.
-         * Everything the classifier calls routine or a notice is
-         * recorded here, quietly.
-         */
-        if (tier == CLAWT_ALERT_ROUTINE || tier == CLAWT_ALERT_NOTICE) {
-            const gchar *subject = clawt_event_get_subject(event);
-            g_autofree gchar *line = NULL;
+    /*
+     * A task tree out of messages is toasted as well as listed: its
+     * agents have just gone quiet, and the panel alone would leave
+     * somebody watching them wondering why.  Worded by libclawt, as the
+     * list's row is.
+     */
+    if (g_strcmp0(kind, "task.tree_budget") == 0) {
+        g_autofree gchar *line = clawt_loop_guard_tree_alert_text(
+            clawt_event_get_detail(event, "tree"),
+            (guint)clawt_event_get_detail_int(event, "count"),
+            (guint)clawt_event_get_detail_int(event, "limit"));
 
-            if (g_strcmp0(kind, "agent.state") == 0) {
-                const gchar *state = clawt_event_get_detail(event, "state");
-
-                line = g_strdup_printf("%s is %s",
-                                       subject != NULL ? subject : "?",
-                                       state != NULL ? state : "?");
-            } else if (g_strcmp0(kind, "task.tree_budget") == 0) {
-                /*
-                 * A task tree out of messages, named by what its root
-                 * task was -- worded by libclawt so the three clients
-                 * say the same sentence -- and toasted as well: its
-                 * agents have just gone quiet, and the panel alone would
-                 * leave somebody watching them wondering why.
-                 */
-                line = clawt_loop_guard_tree_alert_text(
-                    clawt_event_get_detail(event, "tree"),
-                    (guint)clawt_event_get_detail_int(event, "count"),
-                    (guint)clawt_event_get_detail_int(event, "limit"));
-                clawt_window_toast(self, line);
-            } else if (clawt_event_get_detail(event, "message") != NULL) {
-                /*
-                 * An event that carries its own sentence -- agent.failover
-                 * does: who, on what, why and until when -- says it,
-                 * rather than "agent.failover · scout".
-                 */
-                line = g_strdup(clawt_event_get_detail(event, "message"));
-            } else {
-                line = g_strdup_printf("%s \302\267 %s",
-                                       kind != NULL ? kind : "?",
-                                       subject != NULL ? subject
-                                                       : "the fleet");
-            }
-
-            clawt_window_alert(self, tier, kind, subject, line,
-                           clawt_event_happened_at(event, g_get_real_time()));
-        }
+        clawt_window_toast(self, line);
     }
 
     /*
@@ -1808,45 +2390,22 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
     }
 
     if (g_strcmp0(kind, "image.finished") == 0) {
-        const gchar *failure = clawt_event_get_detail(event, "error");
-
-        if (failure != NULL) {
-            g_autofree gchar *message = g_strdup_printf(
-                "%s could not be downloaded: %s",
-                clawt_event_get_subject(event), failure);
-
-            /*
-             * Into the panel rather than a toast.  A download runs in the
-             * daemon and outlives the window that started it, so the
-             * failure arrives on its own -- and a toast about something
-             * that arrived on its own vanishes after a few seconds and
-             * leaves no trace anywhere if nobody was looking.
-             */
-            clawt_window_alert(self, CLAWT_ALERT_ERROR, "download",
-                               clawt_event_get_subject(event), message,
-                               clawt_event_happened_at(event,
-                                                       g_get_real_time()));
-        }
-
+        /*
+         * A failure is not toasted: a download runs in the daemon and
+         * outlives the window that started it, so the failure arrives on
+         * its own -- and the daemon lists it (notice.list), where it
+         * stays until dismissed.
+         */
         refresh_settings_images(self);
         return;
     }
 
     /*
-     * A routine turned off because its computer would not start.  Into
-     * the panel, worded by libclawt so all three clients say the same
-     * thing; the Routines page refreshes on it below like any other
-     * `routine.` event, which is where it is turned back on.
+     * A routine turned off because its computer would not start.  The
+     * daemon lists it, worded by libclawt (notice.list); the Routines
+     * page refreshes, which is where it is turned back on.
      */
     if (g_strcmp0(kind, "routine.turned_off") == 0) {
-        g_autofree gchar *message = clawt_routine_turned_off_alert(
-            clawt_event_get_subject(event),
-            (guint)clawt_event_get_detail_int(event, "failures"),
-            clawt_event_get_detail(event, "error"));
-
-        clawt_window_alert(self, CLAWT_ALERT_ERROR, kind,
-                           clawt_event_get_detail(event, "agent"), message,
-                           clawt_event_happened_at(event, g_get_real_time()));
         clawt_gtk_refresh_routines(self);
         return;
     }
@@ -1864,23 +2423,11 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         return;
     }
 
+    /*
+     * A refusal on the link path: the daemon lists it (notice.list), and
+     * the flow page redraws, since the exchange it shows has stopped.
+     */
     if (g_strcmp0(kind, "message.refused") == 0) {
-        const gchar *from = clawt_event_get_detail(event, "from");
-        const gchar *to = clawt_event_get_detail(event, "to");
-        const gchar *reason = clawt_event_get_detail(event, "reason");
-        g_autofree gchar *message = g_strdup_printf(
-            "%s to %s was stopped: %s", from != NULL ? from : "?",
-            to != NULL ? to : "?", reason != NULL ? reason : "a limit");
-
-        /*
-         * The other of the two.  A refusal on the link path is invisible
-         * otherwise: the two agents just stop, and the conversation
-         * appears to trail off for no reason.  It is also the one an
-         * operator most wants to find again an hour later, which a toast
-         * cannot offer.
-         */
-        clawt_window_alert(self, CLAWT_ALERT_ERROR, "message", from, message,
-                           clawt_event_happened_at(event, g_get_real_time()));
         clawt_gtk_refresh_flow(self);
         return;
     }
@@ -3994,6 +4541,7 @@ reload_after_connect(gpointer user_data)
     clawt_gtk_refresh_tasks(self);
     clawt_gtk_refresh_decisions(self);
     clawt_gtk_refresh_grok_badge(self);
+    clawt_gtk_refresh_notices(self);
     clawt_gtk_refresh_routines(self);
     clawt_gtk_refresh_skills(self);
     clawt_gtk_load_history(self);
@@ -4157,9 +4705,8 @@ forget_daemon_state(ClawtWindow *self)
      * Alerts belong to the daemon that raised them: an agent id in one
      * of them names something the next daemon may not have.
      */
-    if (self->alerts != NULL)
-        g_ptr_array_set_size(self->alerts, 0);
-
+    g_clear_pointer(&self->notices, json_node_unref);
+    g_hash_table_remove_all(self->muted);
     g_clear_pointer(&self->alerts_agent, g_free);
     update_alert_badge(self);
     refresh_alerts(self);
@@ -4273,6 +4820,7 @@ switch_connection(ClawtWindow *self, ClawtConnection *connection)
     clawt_gtk_refresh_tasks(self);
     clawt_gtk_refresh_decisions(self);
     clawt_gtk_refresh_grok_badge(self);
+    clawt_gtk_refresh_notices(self);
     clawt_gtk_refresh_routines(self);
 
     {
@@ -6653,6 +7201,7 @@ clawt_window_dispose(GObject *object)
     g_clear_object(&self->agent_menu_computer);
     g_clear_object(&self->agent_menu_read);
     g_clear_pointer(&self->menu_read_room, g_free);
+    g_clear_pointer(&self->menu_agent, g_free);
     g_clear_pointer(&self->teams_seen, json_node_unref);
 
     g_clear_pointer(&self->appearance, clawt_appearance_free);
@@ -6688,7 +7237,13 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->dm_rooms, g_hash_table_unref);
     g_clear_pointer(&self->sidebar_rooms, g_hash_table_unref);
     g_clear_pointer(&self->room_rosters, g_hash_table_unref);
-    g_clear_pointer(&self->alerts, g_ptr_array_unref);
+    if (self->notices_refresh != NULL) {
+        g_source_destroy(self->notices_refresh);
+        g_clear_pointer(&self->notices_refresh, g_source_unref);
+    }
+
+    g_clear_pointer(&self->notices, json_node_unref);
+    g_clear_pointer(&self->muted, g_hash_table_unref);
     g_clear_pointer(&self->alerts_agent, g_free);
     g_clear_pointer(&self->pending, g_ptr_array_unref);
 
@@ -6773,7 +7328,8 @@ clawt_window_init(ClawtWindow *self)
     self->unread = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                          NULL);
     self->connected_at = g_get_real_time();
-    self->alerts = g_ptr_array_new_with_free_func(alert_free);
+    self->muted = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                        NULL);
     self->dm_rooms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                            g_free);
     /*

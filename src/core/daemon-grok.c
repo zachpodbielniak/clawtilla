@@ -2098,6 +2098,36 @@ clawt_daemon_grok_attention(ClawtDaemon *daemon, gint64 now)
     return count;
 }
 
+GPtrArray *
+clawt_daemon_grok_attention_jobs(ClawtDaemon *daemon, gint64 now)
+{
+    GPtrArray *jobs;
+    gint64 days;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_DAEMON(daemon), NULL);
+
+    if (daemon->grok == NULL || daemon->grok->store == NULL)
+        return g_ptr_array_new();
+
+    days = clawt_daemon_grok_attention_days(daemon);
+
+    /*
+     * Every job, filtered in place with job_asks() -- the predicate the
+     * badge counts with -- so the list notice.list draws and the number
+     * on the Grok tab cannot disagree.
+     */
+    jobs = clawt_grok_store_list(daemon->grok->store, NULL, NULL, FALSE,
+                                 (guint)G_MAXINT);
+
+    for (i = jobs->len; i > 0; i--) {
+        if (!job_asks(g_ptr_array_index(jobs, i - 1), days, now))
+            g_ptr_array_remove_index(jobs, i - 1);
+    }
+
+    return jobs;
+}
+
 /*
  * Drops settled jobs older than grok.retention_days.  Open jobs are
  * never pruned -- the store's own rule -- because a job still waiting

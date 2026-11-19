@@ -1552,6 +1552,12 @@ on_task_prune_tick(
 			          G_GINT64_FORMAT " days ago", removed, days);
 	}
 
+	/*
+	 * The notification list on the same hourly tick: notices.keep and
+	 * notices.keep_days, and any mute that has lapsed.
+	 */
+	clawt_daemon_notices_prune(self, now);
+
 	return G_SOURCE_CONTINUE;
 }
 

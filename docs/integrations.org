@@ -598,6 +598,10 @@ instances -- one with quiet hours and one without, each with its own
 A range that cannot be parsed does *not* silence anything: the failure
 nobody would ever find is a typo turning a notifier off for good.
 
+*** A muted agent is not notified about
+
+Since 0.52.0 an agent can be muted -- from any client's agent list, or with =clawtilla mute <agent> [--for 2h]= (see "Muting an agent" in [[file:clients.org][clients.org]]).  A muted agent is skipped by every notifier, whatever its =events= and quiet hours say: the daemon raises every notification through one function, ~clawt_daemon_notify()~, and that function does not pass one about a muted agent on.  The mute is per agent and for every notifier at once; quiet hours are per notifier and for every agent.  A test (below) is not about an agent, and is never muted.
+
 *** Credentials
 
 Resolved once when the configuration loads, not on every notification.  A

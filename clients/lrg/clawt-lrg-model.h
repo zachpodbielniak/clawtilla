@@ -227,97 +227,36 @@ gchar *clawt_lrg_image_template(const gchar *prefix, const gchar *mime);
  */
 gboolean clawt_lrg_reply_is_current(gboolean guarded, guint sent, guint now);
 
-/* ── Alerts (lrg-alerts-model.c) ──────────────────────────────────── */
+/* ── Notifications (lrg-alerts-model.c) ───────────────────────────── */
 
-/* How many alerts are kept, matching GTK's panel and `agent.logs`. */
-#define CLAWT_LRG_ALERTS_KEPT (200)
+/*
+ * The drawer is a view of the daemon's `notice.list`; nothing about an
+ * alert is decided here any more -- the tier, the words and what counts
+ * are the daemon's.  What is left is the two decisions the drawer and
+ * the sidebar make about a reply.
+ */
 
 /**
- * ClawtLrgAlert:
- * @tier: how loud it is (clawt_alert_tier_for_event())
- * @text: what happened, in words
- * @source: what kind of thing it came from (an event kind, "download")
- * @agent: the agent or room it concerns; "" for the fleet
- * @ts: when it arrived, microseconds
- * @read: whether it has been seen
+ * clawt_lrg_notice_in_scope:
+ * @agent: (nullable): the agent a row is about
+ * @scope: (nullable): the agent the drawer is narrowed to, or %NULL
+ *
+ * Returns: whether the drawer draws the row: always when it is not
+ *   narrowed, and only that agent's rows when it is
  */
-typedef struct {
-    ClawtAlertTier  tier;
-    gchar          *text;
-    gchar          *source;
-    gchar          *agent;
-    gint64          ts;
-    gboolean        read;
-} ClawtLrgAlert;
+gboolean clawt_lrg_notice_in_scope(const gchar *agent, const gchar *scope);
 
 /**
- * clawt_lrg_alerts_new:
+ * clawt_lrg_muted_take:
+ * @muted: (element-type utf8 gpointer): the app's muted set
+ * @from: (element-type utf8 gpointer): the set a `notice.list` names
+ *   (clawt_notice_list_mutes())
  *
- * Returns: (transfer full) (element-type ClawtLrgAlert): an empty store,
- *   newest first
+ * Makes @muted hold exactly @from.
+ *
+ * Returns: %TRUE if it changed -- the sidebar redraws only then, since
+ *   every message brings a new list
  */
-GPtrArray *clawt_lrg_alerts_new(void);
-
-/**
- * clawt_lrg_alerts_add:
- * @alerts: the store
- * @tier: the tier
- * @source: (nullable): where it came from
- * @agent: (nullable): who it concerns
- * @text: what happened
- * @now_us: the time, microseconds
- * @showing: whether the alerts panel is open, so it arrives read
- *   (clawt_alert_arrives_read())
- *
- * Adds one at the top, dropping the oldest past %CLAWT_LRG_ALERTS_KEPT.
- */
-void clawt_lrg_alerts_add(GPtrArray      *alerts,
-                          ClawtAlertTier  tier,
-                          const gchar    *source,
-                          const gchar    *agent,
-                          const gchar    *text,
-                          gint64          now_us,
-                          gboolean        showing);
-
-/**
- * clawt_lrg_alerts_add_event:
- * @alerts: the store
- * @event: a daemon event
- * @showing: whether the panel is open
- *
- * What GTK records for an event, worded as GTK words it: a refused
- * message and a failed download are errors, said in a sentence; anything
- * else the classifier calls routine or a notice is recorded quietly as
- * "kind · subject" ("x is state" for agent.state); the rest is skipped.
- *
- * Returns: %TRUE if an alert was added
- */
-gboolean clawt_lrg_alerts_add_event(GPtrArray  *alerts,
-                                    ClawtEvent *event,
-                                    gboolean    showing);
-
-/**
- * clawt_lrg_alerts_unread:
- * @alerts: the store
- *
- * Returns: how many errors and notices are unread; routine entries are
- *   never counted, or the bell would never read zero
- */
-guint clawt_lrg_alerts_unread(GPtrArray *alerts);
-
-/* Marks every alert read: the panel was opened. */
-void clawt_lrg_alerts_mark_read(GPtrArray *alerts);
-
-/**
- * clawt_lrg_alert_visible:
- * @alert: an alert
- * @show_all: whether routine entries are shown too
- * @agent: (nullable): show only this agent's, or %NULL for the fleet
- *
- * Returns: whether the panel draws @alert
- */
-gboolean clawt_lrg_alert_visible(const ClawtLrgAlert *alert,
-                                 gboolean             show_all,
-                                 const gchar         *agent);
+gboolean clawt_lrg_muted_take(GHashTable *muted, GHashTable *from);
 
 G_END_DECLS

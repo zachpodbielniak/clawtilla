@@ -379,7 +379,7 @@ on_turn_off(
 			(config != NULL) ? clawt_agent_config_get_string(config, "name")
 			                 : NULL,
 			title, alert);
-		clawt_notifier_notify(self->notifier, notification);
+		clawt_daemon_notify(self, notification);
 	}
 
 	return G_SOURCE_REMOVE;

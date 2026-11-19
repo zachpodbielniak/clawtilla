@@ -2830,22 +2830,28 @@ test_the_bridge_reads_a_views_message(void)
 }
 
 /*
- * An agent row's menu: a `<details class="row-menu">` carrying "Mark as
- * read" with the count -- the words every client uses -- posting to the
- * agent's /read route, and no menu at all with nothing unread, so a
- * right-click there keeps the browser's own.  The agent id is escaped in
- * the URL.  "Mark all as read" appears only with a total.  Regressing it
- * offers to mark nothing, or a menu the right-click handler cannot find.
+ * An agent row's menu: a `<details class="row-menu">` that always exists
+ * now that Mute is in it.  "Mark as read" carries the count -- the words
+ * every client uses -- and posts to the agent's /read route; with
+ * nothing unread it is still drawn, disabled, as GTK and lrg grey it.
+ * The mute item flips: "Mute notifications" posting to /mute, "Unmute"
+ * to /unmute.  The agent id is escaped in every URL.  "Mark all as read"
+ * appears only with a total.  Regressing it offers to mark nothing, a
+ * menu the right-click handler cannot find, or a mute nobody can undo.
  */
 static void
-test_the_row_menu_offers_mark_as_read_only_with_unread(void)
+test_the_row_menu_offers_read_and_mute(void)
 {
-    g_autoptr(HtmxElement) menu = clawt_web_agent_row_menu("alpha", 3);
-    g_autoptr(HtmxElement) none = clawt_web_agent_row_menu("alpha", 0);
-    g_autoptr(HtmxElement) hostile = clawt_web_agent_row_menu("a b", 1);
+    g_autoptr(HtmxElement) menu = clawt_web_agent_row_menu("alpha", 3,
+                                                           FALSE);
+    g_autoptr(HtmxElement) none = clawt_web_agent_row_menu("alpha", 0,
+                                                           TRUE);
+    g_autoptr(HtmxElement) hostile = clawt_web_agent_row_menu("a b", 1,
+                                                              FALSE);
     g_autoptr(HtmxElement) all = clawt_web_mark_all_read_button(5);
     g_autoptr(HtmxElement) no_all = clawt_web_mark_all_read_button(0);
     g_autofree gchar *html = NULL;
+    g_autofree gchar *none_html = NULL;
     g_autofree gchar *escaped = NULL;
     g_autofree gchar *all_html = NULL;
 
@@ -2855,12 +2861,25 @@ test_the_row_menu_offers_mark_as_read_only_with_unread(void)
     g_assert_nonnull(strstr(html, "row-menu"));
     g_assert_nonnull(strstr(html, "Mark as read (3)"));
     g_assert_nonnull(strstr(html, "/a/alpha/read"));
+    g_assert_nonnull(strstr(html, "Mute notifications"));
+    g_assert_nonnull(strstr(html, "/a/alpha/mute"));
+    g_assert_null(strstr(html, "disabled"));
 
-    g_assert_null(none);
+    /* nothing unread: the item stays, disabled; a muted agent unmutes */
+    g_assert_nonnull(none);
+    none_html = htmx_element_render(none);
+    g_assert_nonnull(strstr(none_html, "Mark as read"));
+    g_assert_nonnull(strstr(none_html, "disabled"));
+    g_assert_nonnull(strstr(none_html, "Unmute"));
+    g_assert_nonnull(strstr(none_html, "/a/alpha/unmute"));
+    g_assert_null(strstr(none_html, "Mute notifications"));
+
+    g_assert_null(clawt_web_agent_row_menu(NULL, 1, FALSE));
 
     g_assert_nonnull(hostile);
     escaped = htmx_element_render(hostile);
     g_assert_nonnull(strstr(escaped, "/a/a%20b/read"));
+    g_assert_nonnull(strstr(escaped, "/a/a%20b/mute"));
 
     g_assert_nonnull(all);
     all_html = htmx_element_render(all);
@@ -2869,13 +2888,94 @@ test_the_row_menu_offers_mark_as_read_only_with_unread(void)
     g_assert_null(no_all);
 }
 
+/*
+ * The Notifications page's four sections from a notice.list reply, in
+ * order -- Chats, Decisions waiting, Grok jobs needing attention, Alerts
+ * -- each row followed by its row menu with the verbs it offers, an empty
+ * section left out, and a narrowed page showing one agent's rows only.
+ * Regressing it is a page that drops a source the bell counts, or a row
+ * whose menu posts to nothing.
+ */
+static void
+test_the_notifications_page_draws_the_sections(void)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(HtmxElement) body = NULL;
+    g_autoptr(HtmxElement) narrowed = NULL;
+    g_autoptr(HtmxElement) empty = NULL;
+    g_autofree gchar *html = NULL;
+    g_autofree gchar *narrowed_html = NULL;
+    JsonObject *reply;
+    guint shown = 0;
+    const gchar *chats;
+    const gchar *decisions;
+    const gchar *grok;
+    const gchar *alerts;
+
+    g_assert_true(json_parser_load_from_data(
+        parser,
+        "{\"chats\":[{\"room\":\"dm:scout:user\",\"agent\":\"scout\","
+        "\"unread\":2}],"
+        "\"decisions\":[{\"id\":\"d1\",\"agent\":\"zed\","
+        "\"question\":\"Ship it?\"}],"
+        "\"grok\":[{\"id\":\"j1\",\"agent\":\"scout\",\"bot\":\"chief\","
+        "\"state\":\"failed\",\"remove_question\":\"Remove it?\"}],"
+        "\"notices\":[{\"id\":7,\"agent\":\"zed\",\"tier\":\"error\","
+        "\"title\":\"zed timed out\",\"source\":\"turn.timed_out\","
+        "\"created_at\":100,\"read\":false,\"muted\":false}]}",
+        -1, NULL));
+    reply = json_node_get_object(json_parser_get_root(parser));
+
+    body = clawt_web_notices_sections(reply, NULL, 200 * G_USEC_PER_SEC,
+                                      &shown);
+    g_assert_cmpuint(shown, ==, 4);
+    html = htmx_element_render(body);
+
+    chats = strstr(html, "Chats (1)");
+    decisions = strstr(html, "Decisions waiting (1)");
+    grok = strstr(html, "Grok jobs needing attention (1)");
+    alerts = strstr(html, "Alerts (1)");
+    g_assert_nonnull(chats);
+    g_assert_nonnull(decisions);
+    g_assert_nonnull(grok);
+    g_assert_nonnull(alerts);
+    g_assert_true(chats < decisions && decisions < grok && grok < alerts);
+
+    /* the rows' menus, and what each posts to */
+    g_assert_nonnull(strstr(html, "notice-row"));
+    g_assert_nonnull(strstr(html, "Mark as read (2)"));
+    g_assert_nonnull(strstr(html, "/alerts/chat-read?room=dm%3Ascout%3Auser"));
+    g_assert_nonnull(strstr(html, "/alerts/mute?agent=scout"));
+    g_assert_nonnull(strstr(html, "/decisions"));
+    g_assert_nonnull(strstr(html, "/grok/jobs/j1/remove"));
+    g_assert_nonnull(strstr(html, "Remove it?"));
+    g_assert_nonnull(strstr(html, "zed timed out"));
+    g_assert_nonnull(strstr(html, "/alerts/read?id=7"));
+    g_assert_nonnull(strstr(html, "/alerts/dismiss?id=7"));
+    g_assert_nonnull(strstr(html, "alert-unread"));
+
+    /* narrowed to zed: the decision and the alert, nothing of scout's */
+    narrowed = clawt_web_notices_sections(reply, "zed", 0, &shown);
+    g_assert_cmpuint(shown, ==, 2);
+    narrowed_html = htmx_element_render(narrowed);
+    g_assert_null(strstr(narrowed_html, "Chats"));
+    g_assert_null(strstr(narrowed_html, "Grok jobs"));
+    g_assert_nonnull(strstr(narrowed_html, "Ship it?"));
+
+    /* no reply at all: nothing drawn, and nothing claimed */
+    empty = clawt_web_notices_sections(NULL, NULL, 0, &shown);
+    g_assert_cmpuint(shown, ==, 0);
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/web/navigation-result", test_navigation_result);
-    g_test_add_func("/web/row-menu-mark-as-read",
-                    test_the_row_menu_offers_mark_as_read_only_with_unread);
+    g_test_add_func("/web/row-menu-read-and-mute",
+                    test_the_row_menu_offers_read_and_mute);
+    g_test_add_func("/web/notifications-sections",
+                    test_the_notifications_page_draws_the_sections);
     g_test_add_func("/web/the-failover-badge", test_the_failover_badge);
     g_test_add_func("/web/the-fallback-editor", test_the_fallback_editor);
     g_test_add_func("/web/the-fallback-editor-will-not-save-over-a-bad-list",

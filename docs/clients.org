@@ -71,6 +71,10 @@ licence, send nothing, and exit 0.
 | ~mailbox list/dead/ack/requeue/purge <agent> [item]~ | |
 | ~room list/create/add/history~ | |
 | ~room read <agent or room>~, ~room read --all~ | mark a conversation (or every one) read, in every client at once (0.52.0) |
+| ~notices [--agent A] [--all]~ | the notification list: unread chats, decisions waiting, Grok jobs needing attention, then the alerts (=*= unread, =x= dismissed with ~--all~) (0.52.0) |
+| ~notices read <id>~, ~notices read --all~ | mark one alert, or every one, read -- in every client |
+| ~notices dismiss <id>~, ~notices clear [--agent A]~ | hide one alert, or every one (an agent's) |
+| ~mute <agent> [--for 2h]~, ~unmute <agent>~ | silence an agent's notifications everywhere -- the bells, the totals, the push and desktop notifiers -- until unmuted, or for =90s=, =30m=, =2h=, =3d= (a bare number is minutes); =clawtilla mute= and =clawtilla unmute= (0.52.0) |
 | ~team list~ | teams, what each handles, who leads it, how many running |
 | ~team create <id> [DESCRIPTION]~ | |
 | ~team set <id> <key> <value>~ | ~name~, ~description~, ~color~, ~order~ |
@@ -865,7 +869,7 @@ What it does, in the words the page uses: when one agent answers another with on
 
 *Rounds in group rooms* lists every group room with an entry in ~rooms:~ (from ~orchestration.get~'s ~rooms~), one *Replies per thread* field each, showing the round the room is in, and saves =rooms.max_chain= with ~room.set~ (an integer, 0 to 100).  The group's description is the rule: a round starts at each message from you, a routine or a trigger; within one thread a member answers once; naming somebody who already has is kept in the room, marked as not delivered, with the reason; the hop count starts again each round.  A fleet with no group room sees "No group rooms yet".  See [[file:orchestration.org][orchestration.org]], "Rounds: once per thread, counted per round" and "tree_message_budget".
 
-The tree budget's alert, ~task.tree_budget~, is a notice in each client's alerts surface, worded by =clawt_loop_guard_tree_alert_text()= from the event's ~tree~, ~count~ and ~limit~ so the root task's brief, id and assignee are in the line; GTK also raises it as a toast, since the tree's agents have just gone quiet in front of whoever is watching them.
+The tree budget's alert, ~task.tree_budget~, is a notice in the daemon's notification list (see [[Notifications]]), worded by =clawt_loop_guard_tree_alert_text()= -- through ~clawt_alert_text_for_event()~ -- from the event's ~tree~, ~count~ and ~limit~ so the root task's brief, id and assignee are in the line; GTK also raises it as a toast, since the tree's agents have just gone quiet in front of whoever is watching them.
 
 The pair budget's alert, ~crosstalk.pair_budget~ (since 0.34.0), is a notice in the same surface: two agents have used =orchestration.pair_message_budget= and can ask each other nothing more until you write to either.  It needs no code of its own in a client --- each one draws an alert that carries a ~message~ with that sentence, and the daemon puts =clawt_loop_guard_pair_alert_text()= there.  The budget itself is set in the config file; no client has a row for it.
 
@@ -1675,148 +1679,109 @@ GNOME, KDE and COSMIC are not on the list. They can tile, but their windows floa
 - GTK :: ~gtk-decoration-layout~ on the display's ~GtkSettings~, set to ~:~ (nothing either side of the colon) when hidden and reset when shown, in ~clawt_gtk_apply_window_buttons()~. One setting reaches every header bar the client builds, in every page and dialog, because each bar's window controls already read it; a header bar added later cannot forget. Reset rather than written when shown, so the desktop's own layout applies (GNOME's ~appmenu:close~, or a left-handed one). It is the line a tiling user would have put in ~settings.ini~ by hand.
 - libregnum :: the window is created with ~FLAG_WINDOW_UNDECORATED~ when hidden, so no title bar appears for the first frame and then goes, and the settings page changes the live window with ~SetWindowState()~ / ~ClearWindowState()~. Undecorated drops the whole frame GLFW asked for: libdecor's on a Wayland compositor without server-side decorations, and the window manager's on X11.
 
-*** Alerts
+*** Notifications
 
-A collapsible panel on the right of the GTK client, bound to a bell in
-the header bar; an =/alerts= page in the web client, reached from the
-sidebar.  Both carry a count.
+One list of everything that wants you, held by the daemon (since 0.52.0) and drawn by every client: a collapsible panel on the right of the GTK client, bound to a bell in the header bar; a drawer behind the *Alerts* button in the libregnum client; and an =/alerts= page in the web client, reached from the *Alerts* tab beside Settings.  All three carry the same count.
 
-An event that carries its own sentence in a =message= detail is recorded
-in those words rather than as "kind · subject": ~agent.failover~'s says
-"Scout is running on fallback codex-cli gpt-5.5 because claude-code opus
-hit its usage limit, back at 18:50".  All three clients do this.
+**** What is in it
 
-An alert is dated by its event (=clawt_event_happened_at()=), not by
-when the window heard of it.  The events since the client's last cursor
-are replayed when it connects, and both desktop clients stamped each with
-the moment it arrived -- a routine turned off twenty minutes earlier read
-"6m ago" in a window opened six minutes earlier.
+Four sections, top to bottom by how much each wants somebody.  A section with nothing in it is not drawn.
 
-**** An alert that lands in front of you arrives read
+| section | what a row is | where it comes from | clicking it |
+|---------+---------------+---------------------+-------------|
+| *Chats* | a conversation with unread messages, and how many | the read marks (~reads.db~, see [[Unread]]) | opens the conversation |
+| *Decisions waiting* | an open question an agent asked you | the decision store (~decisions.db~) | the Decisions page |
+| *Grok jobs needing attention* | a job that failed, was refused, expired or asked for input within =grok.attention_days= | the Grok job store (~grok-jobs.db~), with the same rule as the Grok badge | the Grok page |
+| *Alerts* | something that happened on its own and needed you: an error or a notice | the notice store (~notices.db~) | -- |
 
-An unread count means "one you have not seen".  Both clients used to
-record every alert unread and clear the lot when the surface was
-*opened*, which is right for one that arrives while the panel is closed
-and wrong for one that lands in front of somebody: it was inserted
-unread, bumped the badge, and went on counting until the reader closed
-the panel and opened it again --- a number pointing at a row they had
-watched appear.
+The first three are views of stores that already existed; the daemon only counts them for you.  The fourth is new: the daemon listens to its own event bus, and every event ~clawt_alert_tier_for_event()~ rates an *error* or a *notice* becomes a row in ~<state_dir>/notices.db~, worded by ~clawt_alert_text_for_event()~.  A refused message, a failed download, a routine turned off, a turn that timed out, an exchange that stalled, an agent erroring or degraded, an agent on a fallback, a task tree out of messages -- each is one row, with the same sentence in every client.
 
-~clawt_alert_arrives_read()~ decides it for both clients.  The routine
-tier arrives read whatever is on screen, because neither badge counts
-it and a flag no badge reads is one a later widening of the filter
-would silently start believing.
+**Before 0.52.0 each client kept its own alert list** from the events it happened to receive, in memory, capped at 200.  A notice cleared in the GTK window stayed lit in the browser; a restart forgot everything; a client that connected after something went wrong never heard of it; and the three clients' wordings had drifted -- the web client called every error that was not a refused message or a turned-off routine "could not be downloaded", and GTK dropped the other errors on the floor.  The list, the read and dismissed state, and the words now live in the daemon, and a client holds nothing but its last ~notice.list~ reply.
 
-One visible consequence, worth knowing rather than discovering: a row's
-unread highlight follows the same flag, so an alert arriving into an
-open panel no longer draws it.  That is consistent --- the highlight
-means /not yet seen/, and it has been --- but keeping both the honest
-badge and an arrival highlight would need a third state, which is a
-larger decision than the fix.
+**** The bell
+
+The number on the bell is the sum of four counts, all from the daemon's ~notice.list~ (=clawt_notice_list_badge()=):
+
+#+begin_example
+bell = unread conversations + decisions waiting + Grok jobs needing attention + unread alerts
+#+end_example
+
+each one *less the muted agents'*.  GTK caps the badge at =9+= because it sits on a 34px round button; the others print the number.
+
+The unread-conversation part repeats what the Chat tab already says.  That is deliberate: the bell is "everything that wants you" in one place, and a conversation waiting is the most common thing that does.
+
+**** Reading, dismissing, clearing
+
+An alert can be *read* (it no longer counts on the bell) and *dismissed* (it no longer shows).  Neither deletes it; the daemon prunes by count and age (=notices.keep=, 500, and =notices.keep_days=, 30 -- at start and then hourly).
+
+| what you do | what is sent |
+|-------------+--------------|
+| open the panel, drawer or page | ~notice.read {all: true}~, when any alert is unread |
+| an alert arrives while the panel or drawer is open | the same: it was seen as it arrived |
+| *Mark read* on an alert's menu | ~notice.read {id}~ |
+| *Dismiss* (the ✕ on a GTK row, the button on an lrg row, or the menu) | ~notice.dismiss {id}~ |
+| *Mark all read* | ~notice.read {all: true}~ and ~room.read {all: true}~ |
+| *Clear* | ~notice.clear~, or ~notice.clear {agent}~ while the list is narrowed to one agent |
+| =clawtilla notices read 42= / =read --all= / =dismiss 42= / =clear [--agent A]= | the same, from the CLI |
+
+Every one publishes ~notice.changed~, and every client asks for the list again on it -- so reading in one client reads in all of them.  Opening the panel reads the alerts, not the other three sections: a conversation is read by opening it, a decision by answering it, a Grok job by dealing with it.  Nothing is lost by the count going down -- the rows stay until dismissed.
+
+**** Every row has a menu
+
+Right-click a row -- or long-press on touch -- for what it offers.  The GTK panel uses one popover for every row, parented to the scroller rather than to a row, because the list is rebuilt on every ~notice.changed~ and a popover parented to a row would be freed with it while open; the libregnum drawer gives each row its own context menu; the web page draws each row's =<details class="row-menu">= after it, opened by the same right-click script as the agent list's.
+
+| section | the menu |
+|---------+----------|
+| Chats | *Open* (lrg), *Mark as read (N)*, *Mute notifications* |
+| Decisions waiting | *Open Decisions* |
+| Grok jobs | *Open Grok*, *Remove…* -- asked first, in the daemon's words for that job's state (=remove_question=, from ~clawt_grok_job_remove_question()~), then ~grok.remove~ |
+| Alerts | *Mark read* (when unread), *Dismiss*, *Mute notifications* (when it names an agent that is not muted) |
+
+The agent's name on an alert narrows the list to that agent, with a chip that clears the scope again.  The bell is never narrowed: the panel asks for the whole fleet's list and narrows it when drawing.
+
+**** Muting an agent
+
+*Mute notifications* -- in the agent list's right-click menu (all three clients), on a chat or alert row's menu, or =clawtilla mute <agent> [--for 2h]= -- silences one agent everywhere until *Unmute* (or =clawtilla unmute <agent>=), or for as long as =--for= said.  The menu item flips: it reads *Unmute* on a muted agent, worded by ~clawt_agent_menu_mute_label()~ in every client.
+
+What a mute does:
+
+- *Its alerts arrive already read.*  They are still recorded -- the list is a record, and after an hour you may want to know what it was doing -- but they never reach the bell.
+- *It leaves every count.*  Its unread conversation, its open decisions and its Grok jobs are left out of ~notice.list~'s =sources= and sections, and out of the Chat tab's total (~clawt_unread_total()~, the one rule every client uses).
+- *Its pill stays on its sidebar row, dimmed*, so you can still see something is there.  The row's name is not made bold.
+- *It buzzes nobody.*  The push and desktop notifiers (=clawt-notify=, see [[file:integrations.org][integrations.org]]) are reached only through ~clawt_daemon_notify()~, which skips a muted agent -- an error, a finished task, a question to you, a pod's own notification.  A phone going off for an agent every client shows as quiet would make the quiet a lie.
+
+What it does not do: stop the agent, hold its messages, or hide its conversation.  Messages still arrive and the transcript still shows them.
+
+A timed mute lapses on its own: the daemon arms a timer for the soonest =until= and publishes ~notice.changed~ when it passes, so the pill brightens and the counts come back at once, rather than at the next hourly prune.  The mutes are in ~notices.db~'s ~mutes~ table, so they survive a restart.
 
 **** Why a surface, and not a toast
 
-Of the 89 places the GTK client raises a toast, **two** are
-notifications: a download that failed, and a message the loop guard
-refused.  Everything else --- /Saved./, /An agent needs an id./, /That is
-not a port./ --- answers a question the operator is holding right now, in
-a dialog, waiting to know why the button did nothing.
+Of the 89 places the GTK client raises a toast, **two** were notifications: a download that failed, and a message the loop guard refused.  Everything else --- /Saved./, /An agent needs an id./, /That is not a port./ --- answers a question the operator is holding right now, in a dialog, waiting to know why the button did nothing.
 
 So the split is by *origin*, not by severity:
 
 | where it came from | where it goes |
 |--------------------+---------------|
-| it arrived on its own | the panel, and no toast |
+| it arrived on its own | the list, and no toast |
 | it answers something you just did | it stays a toast |
 
-Filing the second kind into a drawer would be a serious regression, and a
-panel whose first twenty rows are /Saved./ buries the one line that
-matters.  ~clawt_window_toast()~ is unchanged and so are its other 87
-call sites.
+Filing the second kind into a drawer would be a serious regression, and a panel whose first twenty rows are /Saved./ buries the one line that matters.  One kind is both: a task tree out of messages is listed *and* toasted in GTK, because its agents have just gone quiet in front of whoever is watching them.
 
-**** One list, with a filter
+**** Two tiers, and the routine stream
 
-An alert is an event that demanded attention; a routine entry is one that
-did not.  Same stream, different weight --- so one list and a filter that
-widens it, rather than two tabs.  Two tabs would mean deciding at write
-time which tab a thing belongs in, and the interesting case is exactly
-the routine event that turns out to matter: a filter lets you widen after
-the fact, a tab makes you guess before.
+An alert is an *error* (a card with a red edge) or a *notice* (the same shape, accent instead of red), and an unread one is marked.  Severity is carried by weight and container as much as by hue, so it survives a colourblind reader and a Catppuccin palette alike.  Which tier an event lands in is ~clawt_alert_tier_for_event()~, which takes the *event* rather than a kind, because which detail decides the tier varies per kind (~agent.state~ reads =state=, ~image.finished= reads =error=).
 
-Three tiers, and **only two are coloured**:
+The *routine* stream -- every other event -- is not in the list.  Before 0.52.0 each client kept it beside the alerts behind an "Everything" filter; it is the daemon's event log's now (~event.list~, =ClawtEventLog=, swept on =daemon.event_log_days=), read by the *Earlier, from the daemon's log* expander at the foot of every client's list, on request.  Keeping a second copy in the notice store would be a second retention policy for the same rows.
 
-| tier | how it is drawn |
-|------+-----------------|
-| Error | a card with a red edge, body-size text |
-| Notice | the same shape, accent instead of red |
-| Routine | no card --- one line of quiet caption text |
-
-If everything carries a colour, colour stops meaning anything, and
-routine entries are the majority the moment the filter widens.  Making
-them quiet is what keeps the loud ones loud.  Severity is carried by
-weight and container as much as by hue, so it survives a colourblind
-reader and a Catppuccin palette alike.
-
-Which tier an event lands in is ~clawt_alert_tier_for_event()~, in
-libclawt, for the same reason: both clients classify the same stream, and
-two implementations of that rule differ exactly once --- on the kind
-somebody adds next.  It takes the *event* rather than a kind and a loose
-string, because which detail decides the tier varies per kind
-(~agent.state~ reads =state=, ~image.finished= reads =error=) and a
-caller passing the wrong one would classify silently and wrongly.  Only
-the wording of a row is decided in the client.
-
-**The count never includes routine entries.**  Otherwise it would be
-permanently non-zero and would stop being read, and widening the filter
-is a thing you choose rather than something that should change the
-number.
-
-**** Scope, and how far back
-
-Fleet-wide.  Alerts fire about agents other than the one being read ---
-that is the whole reason the surface exists --- so scoping to the
-selected agent by default would hide exactly the cross-agent case that is
-hardest to diagnose.  Every row names its agent, and clicking that name
-narrows to it and raises a chip that clears the scope again.  One control
-for scope, no second dropdown.
-
-The most recent 200 are held in memory, session-scoped.  For anything
-older there is ~event.list~, which reads the daemon's own
-~ClawtEventLog~ --- NDJSON under the state directory, written since the
-daemon was first built, swept on ~daemon.event_log_days~, and until now
-read back by nobody.  That is the honest answer to "does it survive a
-restart": the surface does not and does not need to, because the log
-does.
-
-**Opening it marks everything read.**  Rows stay until they are
-dismissed, or until *Clear all*, so nothing is lost by the count going to
-zero.
+An alert is dated by its event (=clawt_event_happened_at()=), not by when the daemon recorded it.
 
 **** Where it sits
 
-In the GTK client the panel is a second ~AdwOverlaySplitView~ *inside*
-the existing one's content, not wrapping it: opening alerts must not hide
-the agent list, because that is navigation, and losing your place while
-reading a notice about something else is the same failure as a toast
-covering the composer.
+In the GTK client the panel is a second ~AdwOverlaySplitView~ *inside* the existing one's content, not wrapping it: opening it must not hide the agent list, because that is navigation, and losing your place while reading a notice about something else is the same failure as a toast covering the composer.
 
-320px, which is load-bearing rather than conventional: 281 for the agent
-list plus 600 for the transcript's clamp plus 320 comes to 1201, so on an
-ordinary window all three fit and *the transcript does not move when the
-panel opens*.  Below 1200px it overlays instead --- the number is derived
-from those three widths, not chosen.
+320px, which is load-bearing rather than conventional: 281 for the agent list plus 600 for the transcript's clamp plus 320 comes to 1201, so on an ordinary window all three fit and *the transcript does not move when the panel opens*.  Below 1200px it overlays instead --- the number is derived from those three widths, not chosen.
 
-It carries libadwaita's ~.isolated~ class, and that is the whole reason
-the two edges of the window are the same colour.  libadwaita styles panes
-by where they sit in the widget tree: a ~.sidebar-pane~ inside a
-~.content-pane~ is a *nested* sidebar and is painted from
-~--secondary-sidebar-bg-color~, a deliberately different shade.  Nesting
-here is a layout decision --- it is what keeps the agent list on screen
---- and not a statement of hierarchy, but libadwaita cannot tell those
-apart.  Measured before the class was added: the agent sidebar ~#181825~
-and the alerts panel ~#28282c~ under Catppuccin, and ~#2e2e32~ against
-~#28282c~ on stock GNOME dark, so the mismatch was there under every
-scheme rather than only under a palette.
+It carries libadwaita's ~.isolated~ class, and that is the whole reason the two edges of the window are the same colour.  libadwaita styles panes by where they sit in the widget tree: a ~.sidebar-pane~ inside a ~.content-pane~ is a *nested* sidebar and is painted from ~--secondary-sidebar-bg-color~, a deliberately different shade.  Nesting here is a layout decision --- it is what keeps the agent list on screen --- and not a statement of hierarchy, but libadwaita cannot tell those apart.  Measured before the class was added: the agent sidebar ~#181825~ and the alerts panel ~#28282c~ under Catppuccin, and ~#2e2e32~ against ~#28282c~ on stock GNOME dark, so the mismatch was there under every scheme rather than only under a palette.
 
 *** Unread
 
@@ -1868,12 +1833,15 @@ One limit, stated rather than buried: *in the web client the live count belongs 
 
 *Right-click an agent* in the agent list and the first section of the menu is about its messages:
 
-- *Mark as read (N)* -- the operator's conversation with that agent, read up to its newest message.  The count is in the label; with nothing unread the item reads *Mark as read* and is greyed out (GTK, libregnum) or absent (web).
+- *Mark as read (N)* -- the operator's conversation with that agent, read up to its newest message.  The count is in the label; with nothing unread the item reads *Mark as read* and is greyed out (GTK, libregnum) or drawn disabled (web).
 - *Mark all as read* -- every conversation at once, greyed out when nothing anywhere is unread.
+- *Mute notifications*, or *Unmute* on a muted agent -- see [[Muting an agent]].  ~notice.mute~ / ~notice.unmute~, and the menu reads the state back as the thing it offers to undo.
 
-Both send ~room.read~, and the pill clears in every client when the daemon's ~room.read~ event comes back.  In GTK, right-clicking also selects the row (so the rest of the menu acts on it), and selecting opens the conversation, which reads it -- the count shown in the label is the one from before the click, and the item is mostly useful on the libregnum and web clients, which do not select on right-click, and for *Mark all as read*.
+The first two send ~room.read~, and the pill clears in every client when the daemon's ~room.read~ event comes back.
 
-The web client has no native context menu to add to: each agent row is followed by a =<details class="row-menu">= that its page script opens on a right-click of the row (a =contextmenu= handler, delegated on the document because the sidebar is redrawn on every fleet event).  A row with nothing to offer has no menu and keeps the browser's own.  *Mark all as read* sits at the head of the agent list.  See [[file:web-client.org][web-client.org]].
+**A right-click does not select the row** (since 0.52.0), in any client.  It used to in GTK, and selecting opens the conversation, which reads it: a right-click yanked the operator into that chat and cleared the very count *Mark as read* was offering.  The GTK sidebar now copies the clicked row's agent into the menu's target (=menu_agent=) and every item acts on it -- Start, Stop, Restart, Team, the Computer verbs, Mark as read, Mute -- without touching the selection or the conversation on screen, as the libregnum client's per-row action targets always did.  The one exception is *Delete…*: its confirmation is the inspector's, which reads the agent's machine from the agent on screen, so it selects the agent first; a "delete this?" about an agent you are not looking at is how the wrong one goes.
+
+The web client has no native context menu to add to: each agent row is followed by a =<details class="row-menu">= that its page script opens on a right-click of the row (a =contextmenu= handler, delegated on the document because the sidebar is redrawn on every fleet event).  The menu always exists now that Mute is in it; *Mark as read* is disabled in it when there is nothing to read, rather than coming and going and moving the item under it.  *Mark all as read* sits at the head of the agent list.  See [[file:web-client.org][web-client.org]].
 
 The number is not capped at =99+=.  The usual justification is width and
 it is measurably false: at the client's caption size =99+= is wider than
@@ -1971,7 +1939,7 @@ the operator's sentence ("This agent has no computer, so it cannot run
 commands...") when there is none, and the agent's own words under a
 caption saying whose they are when there is one.
 
-A routine whose computer did not start =routines.max_start_failures= runs in a row (three by default) is turned off by the daemon, and its row says so in libclawt's words -- "turned off after 3 failed starts: <the computer's error>" (~clawt_routine_turned_off_note()~) -- with a *Turn back on* button beside it that sends ~routine.update~ with =enabled: true=.  The alerts panel gets the same news as an error (~routine.turned_off~, worded by ~clawt_routine_turned_off_alert()~).  The editor has the limit as *Turn off after failed starts*, with ~clawt_routine_start_failures_hint()~ under it; GTK, web and lrg draw all four the same way, and ~make parity~ declares them.  See [[file:routines.org::#max-start-failures][routines.org]].
+A routine whose computer did not start =routines.max_start_failures= runs in a row (three by default) is turned off by the daemon, and its row says so in libclawt's words -- "turned off after 3 failed starts: <the computer's error>" (~clawt_routine_turned_off_note()~) -- with a *Turn back on* button beside it that sends ~routine.update~ with =enabled: true=.  The notification list gets the same news as an error (~routine.turned_off~, worded by ~clawt_routine_turned_off_alert()~ through ~clawt_alert_text_for_event()~, in the daemon).  The editor has the limit as *Turn off after failed starts*, with ~clawt_routine_start_failures_hint()~ under it; GTK, web and lrg draw all four the same way, and ~make parity~ declares them.  See [[file:routines.org::#max-start-failures][routines.org]].
 
 *** The Computer tab has five views
 
@@ -3410,7 +3378,8 @@ first, so the correction is already made before anything downstream
 reads the property.
 
 That ordering is the whole point rather than a detail.  ~show-sidebar~
-on the alerts split is what marks every alert read, and libadwaita's
+on the alerts split is what marks every alert read (~notice.read~, for
+every client since 0.52.0), and libadwaita's
 write satisfied that guard exactly --- so widening a window past the
 breakpoint silently zeroed the unread count for alerts nobody had
 looked at.  A panel appearing by itself is cosmetic; an unread count

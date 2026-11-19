@@ -234,9 +234,15 @@ clawt_lrg_unread_total(GHashTable *unread)
 }
 
 guint
-clawt_lrg_unread_badge(GHashTable *unread, gboolean on_chat)
+clawt_lrg_unread_badge(GHashTable *unread, GHashTable *muted,
+                       gboolean on_chat)
 {
-    return on_chat ? 0 : clawt_lrg_unread_total(unread);
+    /*
+     * Less the muted agents' conversations: their pills stay on their
+     * rows, dimmed, and a mute is the operator asking for no number
+     * anywhere else (clawt_unread_total(), every client's rule).
+     */
+    return on_chat ? 0 : clawt_unread_total(unread, muted);
 }
 
 /* ── Typing ───────────────────────────────────────────────────────── */

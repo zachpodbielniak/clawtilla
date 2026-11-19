@@ -186,6 +186,7 @@ struct _ClawtLrgApp {
     JsonNode        *agents;       /* agent.list reply, nullable */
     JsonNode        *rooms;        /* room.list reply, nullable */
     GHashTable      *unread;       /* room id -> GUINT count */
+    GHashTable      *muted;        /* agent ids muted (notice.list) */
     GHashTable      *typing;       /* agent id -> set of room ids */
     guint            decisions_open;
     gboolean         held;
@@ -420,7 +421,11 @@ void clawt_lrg_new_room_dialog(ClawtLrgApp *app);
 LrgWidget *build_alerts_panel(ClawtLrgApp *app);
 LrgWidget *clawt_lrg_alerts_bell(ClawtLrgApp *app);
 void       clawt_lrg_alerts_toggle(ClawtLrgApp *app);
-void       clawt_lrg_alerts_event(ClawtLrgApp *app, ClawtEvent *event);
+/* Asks the daemon for `notice.list` and redraws the drawer and the bell. */
+void       clawt_lrg_alerts_refresh(ClawtLrgApp *app);
+/* Mutes or unmutes an agent for every client (notice.mute / notice.unmute). */
+void       clawt_lrg_set_agent_muted(ClawtLrgApp *app, const gchar *agent_id,
+                                     gboolean muted);
 void       clawt_lrg_alerts_reset(void);
 
 /* Ctrl+K "Go to…" (lrg-navigation.c). */

@@ -132,7 +132,7 @@ clawt_web_find_agent(ClawtWebApp *app, const gchar *agent_id)
 
 static HtmxElement *
 agent_row(JsonObject *agent, const gchar *selected, ClawtPage view,
-          guint unread, gboolean show_description)
+          guint unread, gboolean muted, gboolean show_description)
 {
     const gchar *id = clawt_web_member(agent, "id", "?");
     const gchar *name = clawt_web_member(agent, "name", id);
@@ -215,10 +215,20 @@ agent_row(JsonObject *agent, const gchar *selected, ClawtPage view,
         g_autoptr(HtmxSpan) pill = htmx_span_new();
         g_autofree gchar *text = g_strdup_printf("%u", unread);
 
-        htmx_element_add_class(HTMX_ELEMENT(row), "is-unread");
+        /*
+         * A muted agent keeps its pill, dimmed, so something is still
+         * seen to be there -- without the bold name, which is the row
+         * asking for attention the mute said not to ask for.
+         */
+        if (!muted)
+            htmx_element_add_class(HTMX_ELEMENT(row), "is-unread");
+        else
+            htmx_element_add_class(HTMX_ELEMENT(pill), "is-muted");
+
         htmx_element_add_class(HTMX_ELEMENT(pill), "unread-badge");
         htmx_element_set_attribute(HTMX_ELEMENT(pill), "title",
-                                   unread == 1
+                                   muted ? "Muted: not counted anywhere else"
+                                   : unread == 1
                                        ? "1 message you have not read"
                                        : "messages you have not read");
         htmx_node_set_text_content(HTMX_NODE(pill), text);
@@ -799,7 +809,8 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
     }
 
     /*
-     * And what has happened, with a count.
+     * And what wants you, with the daemon's count (notice.list) -- the
+     * same number every client's bell shows.
      *
      * The GTK client's bell sits in the header bar; here it sits beside
      * Settings, which is where this client already puts the things that
@@ -807,7 +818,7 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
      */
     {
         g_autoptr(HtmxA) alerts = htmx_a_new_with_href("/alerts");
-        guint waiting = clawt_web_app_alert_count(app);
+        guint waiting = clawt_web_app_notice_count(app);
 
         htmx_element_add_class(HTMX_ELEMENT(alerts), "tab");
         htmx_node_set_text_content(HTMX_NODE(alerts), "Alerts");
@@ -943,10 +954,12 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
         {
             guint unread = clawt_web_app_unread(
                 app, clawt_web_member(agent, "dm_room", ""));
+            gboolean muted = clawt_web_app_agent_muted(
+                app, clawt_web_member(agent, "id", NULL));
             HtmxElement *menu = NULL;
 
             clawt_web_add(scroll, agent_row(agent, selected, view, unread,
-                                            show_description));
+                                            muted, show_description));
 
             /*
              * Its menu, as the row's next sibling rather than inside it:
@@ -956,7 +969,7 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
              */
             menu = clawt_web_agent_row_menu(clawt_web_member(agent, "id",
                                                              NULL),
-                                            unread);
+                                            unread, muted);
 
             if (menu != NULL)
                 clawt_web_add(scroll, menu);

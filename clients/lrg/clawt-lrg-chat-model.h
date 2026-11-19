@@ -127,15 +127,20 @@ guint clawt_lrg_unread_total(GHashTable *unread);
 /**
  * clawt_lrg_unread_badge:
  * @unread: the table
+ * @muted: (nullable): the muted agents, as a set; their conversations
+ *   are not counted (clawt_unread_total())
  * @on_chat: whether the Chat page is the one showing
  *
  * The number on the Chat tab.  Hidden while the Chat page is on screen:
  * the sidebar beside it says *which* conversation, which is strictly
- * more, and this client's sidebar never collapses.
+ * more, and this client's sidebar never collapses.  A muted agent's pill
+ * stays on its row, dimmed, and is not in this number.
  *
  * Returns: the count to draw, 0 for none
  */
-guint clawt_lrg_unread_badge(GHashTable *unread, gboolean on_chat);
+guint clawt_lrg_unread_badge(GHashTable *unread,
+                             GHashTable *muted,
+                             gboolean    on_chat);
 
 /* ── Typing ───────────────────────────────────────────────────────── */
 
@@ -232,6 +237,9 @@ gchar *clawt_lrg_typing_activity(gboolean typing_now, const gchar *peer);
  * @can_interrupt: whether it offers Stop-this-turn
  * @standing: chief, lead or neither
  * @unread: messages in @dm_room nobody has read
+ * @muted: whether the agent is muted (`notice.mute`): its pill is drawn
+ *   dimmed, and the row does not ask for attention; set by the caller,
+ *   which holds the muted set
  * @fallback: (nullable): "On fallback" while it runs on one of its
  *   model.fallbacks, from clawt_failover_sidebar_badge()
  * @fallback_message: (nullable): the sentence saying why and until when
@@ -258,6 +266,7 @@ typedef struct {
     gboolean        can_interrupt;
     ClawtTeamBadge  standing;
     guint           unread;
+    gboolean        muted;
     gchar          *fallback;
     gchar          *fallback_message;
 } ClawtLrgAgentRow;

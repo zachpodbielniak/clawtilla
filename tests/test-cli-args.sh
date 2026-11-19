@@ -80,6 +80,45 @@ else
     echo "test-cli-args: script(1) not found (util-linux); terminal UTF-8 check skipped"
 fi
 
+#
+# The notification verbs (docs/clients.org, "Notifications") read their
+# own arguments before they reach for a daemon, so these need none: help
+# is asked for with --help and exits 0, and a mute length that does not
+# parse is refused with the usage rather than sent -- regressing that
+# mutes for two minutes when somebody typed "2hours".
+#
+check_usage () {
+    if [[ $# -ne 3 ]]
+    then
+        echo "\`check_usage()\` requires 3 positional arguments"
+        echo 'check_usage <expected-rc> <expected-text> <args...as one string>'
+        exit 1
+    fi
+
+    local expected_rc="${1}"
+    local expected="${2}"
+    local args="${3}"
+    local output
+    local rc
+
+    # shellcheck disable=SC2086
+    output="$("${cli}" -s /nonexistent/d.sock ${args} 2>&1)"
+    rc=$?
+
+    if [[ ${rc} -ne ${expected_rc} || "${output}" != *"${expected}"* ]]
+    then
+        echo "test-cli-args: '${args}' should exit ${expected_rc} saying '${expected}', exited ${rc}: ${output}"
+        failures=$((failures + 1))
+    fi
+}
+
+check_usage 0 "--for DURATION" "mute --help"
+check_usage 1 "--for DURATION" "mute scout --for 2hours"
+check_usage 1 "--for DURATION" "mute scout --for"
+check_usage 1 "clawtilla unmute <agent>" "unmute"
+check_usage 0 "notices dismiss <ID>" "notices --help"
+check_usage 1 "notices dismiss <ID>" "notices dismiss"
+
 if [[ ${failures} -ne 0 ]]
 then
     exit 1

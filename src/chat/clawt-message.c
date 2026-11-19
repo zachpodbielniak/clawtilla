@@ -553,6 +553,66 @@ clawt_agent_menu_read_label(guint unread)
     return g_strdup_printf("Mark as read (%u)", unread);
 }
 
+gchar *
+clawt_agent_menu_mute_label(gboolean muted)
+{
+    return g_strdup(muted ? "Unmute" : "Mute notifications");
+}
+
+gchar *
+clawt_unread_room_agent(const gchar *room_id)
+{
+    g_auto(GStrv) parts = NULL;
+
+    if (room_id == NULL || !g_str_has_prefix(room_id, "dm:"))
+        return NULL;
+
+    /*
+     * Three parts exactly: "dm", then the sorted pair.  Anything else is
+     * not a name clawt_room_manager_direct_id() makes, and guessing at
+     * one would mute a room nobody asked about.
+     */
+    parts = g_strsplit(room_id, ":", -1);
+
+    if (g_strv_length(parts) != 3)
+        return NULL;
+
+    if (g_strcmp0(parts[1], "user") == 0 && g_strcmp0(parts[2], "user") != 0)
+        return g_strdup(parts[2]);
+
+    if (g_strcmp0(parts[2], "user") == 0 && g_strcmp0(parts[1], "user") != 0)
+        return g_strdup(parts[1]);
+
+    return NULL;
+}
+
+guint
+clawt_unread_total(GHashTable *unread, GHashTable *muted)
+{
+    GHashTableIter iter;
+    gpointer key;
+    gpointer value;
+    guint total = 0;
+
+    if (unread == NULL)
+        return 0;
+
+    g_hash_table_iter_init(&iter, unread);
+
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        if (muted != NULL && g_hash_table_size(muted) > 0) {
+            g_autofree gchar *agent = clawt_unread_room_agent(key);
+
+            if (agent != NULL && g_hash_table_contains(muted, agent))
+                continue;
+        }
+
+        total += GPOINTER_TO_UINT(value);
+    }
+
+    return total;
+}
+
 gboolean
 clawt_transcript_is_at_bottom(gdouble value, gdouble upper, gdouble page_size)
 {

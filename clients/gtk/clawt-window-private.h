@@ -714,15 +714,22 @@ struct _ClawtWindow {
     gboolean           menu_stop_removes;
 
     /*
-     * The notice section at the top of the menu -- "Mark as read" and
-     * "Mark all as read" -- filled per right-click like the two above,
-     * because the label carries the count.  It is the section a Mute
-     * item joins.  `menu_read_room` is the conversation the right-click
-     * was on, copied off the row, which a refresh may free while the
-     * menu is open.
+     * The notice section at the top of the menu -- "Mark as read", "Mark
+     * all as read" and "Mute notifications" / "Unmute" -- filled per
+     * right-click like the two above, because the labels carry the
+     * count and the mute state.
+     *
+     * `menu_agent` is the agent the right-click was on and every item in
+     * the menu acts on it; `menu_read_room` is its conversation with the
+     * operator.  Both copied off the row, which a refresh may free while
+     * the menu is open.  The row is *not* selected: selecting opens the
+     * conversation, opening it reads it, and a right-click that yanked
+     * the operator into a chat -- and cleared the count "Mark as read"
+     * was about to offer -- made the menu pointless.
      */
     GMenu             *agent_menu_read;
     gchar             *menu_read_room;
+    gchar             *menu_agent;
     JsonNode          *teams_seen;
 
     gboolean           refreshing[CLAWT_N_REFRESH];
@@ -914,29 +921,33 @@ struct _ClawtWindow {
     gchar             *selected_color;
 
     /*
-     * What has happened, for the panel on the right.
+     * The notifications panel on the right, and its bell.
      *
-     * Toasts answer something the operator just did -- "Saved.", "That
-     * is not a port." -- and there are 89 of those.  Exactly two call
-     * sites were notifications: a download that failed, and a message
-     * the loop guard refused.  Those two arrive on their own, disappear
-     * after a few seconds, and leave no trace anywhere if nobody was
-     * looking, which is what this is for.
-     *
-     * The routine stream goes in as well, quietly, so the panel can also
-     * answer "what is the fleet doing" -- the client already receives
-     * every event and acted on five kinds, dropping the rest.
-     *
-     * Session-scoped and capped: the daemon's own event log is the
-     * durable copy, and `event.list` reads it for anything older.
+     * Toasts answer something the operator just did; this is for what
+     * arrives on its own -- a refused message, a failed download, an
+     * agent erroring, a conversation waiting -- and would otherwise leave
+     * no trace if nobody was looking.  `alerts_agent` narrows the panel
+     * to one agent.
      */
-    GPtrArray            *alerts;
     AdwOverlaySplitView  *alerts_split;
     GtkListBox           *alerts_list;
     GtkWidget            *alerts_badge;
-    GtkWidget            *alerts_filter;
-    gboolean              alerts_show_all;
     gchar                *alerts_agent;
+
+    /*
+     * The daemon's notification list (`notice.list`): the last reply,
+     * which the panel and the bell are drawn from, and nothing else --
+     * every read, dismissal and mute is the daemon's, so another client
+     * changing it shows here on the next `notice.changed`.  `muted` is
+     * the agents muted in it, as a set, which dims their sidebar pills
+     * and takes them out of every total.  `notices_refresh` gathers a
+     * burst of events into one request; `notice_menu` is the one popover
+     * every row's right-click menu opens in.
+     */
+    JsonNode             *notices;
+    GHashTable           *muted;
+    GSource              *notices_refresh;
+    GtkWidget            *notice_menu;
 
     /* The flow page: who has been talking to whom, and about what. */
     GtkListBox        *flow_list;
@@ -1518,8 +1529,16 @@ clawt_gtk_open_flow_room(ClawtWindow *self, const gchar *room_id);
 void
 clawt_gtk_agent_action(ClawtWindow *self, const gchar *kind);
 
+void
+clawt_gtk_agent_action_for(ClawtWindow *self, const gchar *agent_id,
+                           const gchar *kind);
+
 gboolean
 clawt_gtk_apply_setting(ClawtWindow *self, const gchar *key, const gchar *value);
+
+gboolean
+clawt_gtk_apply_setting_for(ClawtWindow *self, const gchar *agent_id,
+                            const gchar *key, const gchar *value);
 
 void
 clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload);
@@ -1838,6 +1857,22 @@ clawt_gtk_update_unread_tab(ClawtWindow *self);
 void
 clawt_gtk_mark_room_read(ClawtWindow *self, const gchar *room_id,
                          const gchar *upto);
+
+/*
+ * The notification list (clawt-window.c): asks the daemon for it again,
+ * soon, gathering a burst of events into one request.
+ */
+void
+clawt_gtk_refresh_notices(ClawtWindow *self);
+
+/* Whether @agent_id is muted in the last notification list. */
+gboolean
+clawt_gtk_agent_muted(ClawtWindow *self, const gchar *agent_id);
+
+/* Mutes or unmutes an agent, for every client (notice.mute/unmute). */
+void
+clawt_gtk_set_agent_muted(ClawtWindow *self, const gchar *agent_id,
+                          gboolean muted);
 
 void
 clawt_gtk_apply_room_read(ClawtWindow *self, const gchar *room_id,

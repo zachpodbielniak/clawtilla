@@ -1009,6 +1009,64 @@ gboolean clawt_unread_seed(GHashTable  *unread,
 gchar *clawt_agent_menu_read_label(guint unread);
 
 /**
+ * clawt_agent_menu_mute_label:
+ * @muted: whether the agent is muted now
+ *
+ * The words on the agent list's mute item: "Mute notifications" for an
+ * agent that is not muted, "Unmute" for one that is.
+ *
+ * One item that flips rather than two of which one is always greyed: a
+ * mute is a state, and the menu reads it back as the thing it offers to
+ * undo.  Here rather than in each client so the GTK, lrg and web menus
+ * say the same words -- the same reason clawt_agent_menu_read_label()
+ * is.
+ *
+ * Returns: (transfer full): the label
+ *
+ * Since: 0.52.0
+ */
+gchar *clawt_agent_menu_mute_label(gboolean muted);
+
+/**
+ * clawt_unread_room_agent:
+ * @room_id: (nullable): a room id
+ *
+ * The agent whose conversation with the operator @room_id is, or %NULL
+ * for any other room -- a group room, a peer room between two agents,
+ * or no room at all.
+ *
+ * A direct room is `dm:<a>:<b>` with the pair sorted
+ * (clawt_room_manager_direct_id()), so the agent is whichever half is
+ * not `user`.
+ *
+ * Returns: (transfer full) (nullable): the agent id
+ *
+ * Since: 0.52.0
+ */
+gchar *clawt_unread_room_agent(const gchar *room_id);
+
+/**
+ * clawt_unread_total:
+ * @unread: (element-type utf8 guint): room id -> GUINT_TO_POINTER(count),
+ *   a client's pill table
+ * @muted: (nullable) (element-type utf8 gpointer): the muted agents, as
+ *   a set keyed on agent id
+ *
+ * Every pill added up, less the conversations of muted agents.
+ *
+ * A muted agent's row keeps its pill -- drawn dimmed -- so the operator
+ * can still see there is something there; what a mute takes away is the
+ * interruption, and a number on a tab or a bell is an interruption.  So
+ * every total a client draws goes through here, and the per-row pill
+ * does not.
+ *
+ * Returns: the total
+ *
+ * Since: 0.52.0
+ */
+guint clawt_unread_total(GHashTable *unread, GHashTable *muted);
+
+/**
  * CLAWT_TRANSCRIPT_FOLLOW_TOLERANCE:
  *
  * How near the bottom still counts as being at it, in pixels.

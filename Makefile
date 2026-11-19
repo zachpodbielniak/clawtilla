@@ -85,6 +85,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/config/clawt-appearance.h \
 	$(SRCDIR)/config/clawt-secret-ref.h \
 	$(SRCDIR)/core/clawt-event.h \
+	$(SRCDIR)/core/clawt-notice-store.h \
 	$(SRCDIR)/core/clawt-daemon.h \
 	$(SRCDIR)/core/clawt-update.h \
 	$(SRCDIR)/agent/clawt-hold.h \
@@ -272,6 +273,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/config/clawt-schema-render.c \
 	$(SRCDIR)/config/clawt-secret-ref.c \
 	$(SRCDIR)/core/clawt-event.c \
+	$(SRCDIR)/core/clawt-notice-store.c \
 	$(SRCDIR)/core/clawt-daemon.c \
 	$(SRCDIR)/core/daemon-control.c \
 	$(SRCDIR)/core/daemon-misc.c \
@@ -287,6 +289,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-image.c \
 	$(SRCDIR)/core/daemon-team.c \
 	$(SRCDIR)/core/daemon-room.c \
+	$(SRCDIR)/core/daemon-notice.c \
 	$(SRCDIR)/core/daemon-turn.c \
 	$(SRCDIR)/core/daemon-handoff.c \
 	$(SRCDIR)/core/daemon-search.c \

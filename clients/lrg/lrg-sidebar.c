@@ -183,7 +183,7 @@ update_unread_total(ClawtLrgApp *app)
         clawt_lrg_unread_prune(app->unread, rows);
     }
 
-    unread_total = clawt_lrg_unread_badge(app->unread,
+    unread_total = clawt_lrg_unread_badge(app->unread, app->muted,
                                           app->page == CLAWT_PAGE_CHAT);
     sidebar.page_seen = app->page;
     clawt_lrg_set_page_badge(app, CLAWT_PAGE_CHAT, unread_total, "info");
@@ -784,6 +784,7 @@ typedef struct {
     ClawtLrgApp *app;
     gchar       *agent_id;
     gchar       *dm_room;    /* the operator's conversation with it */
+    gboolean     muted;      /* when the menu was built */
 } MenuTarget;
 
 static void
@@ -813,6 +814,13 @@ on_menu_read(GSimpleAction *action, GVariant *parameter, gpointer user_data)
         return;
     }
 
+    /* silenced, or let through again, for every client */
+    if (g_strcmp0(name, "mute") == 0) {
+        clawt_lrg_set_agent_muted(target->app, target->agent_id,
+                                  !target->muted);
+        return;
+    }
+
     if (target->dm_room == NULL)
         return;
 
@@ -826,17 +834,19 @@ on_menu_read(GSimpleAction *action, GVariant *parameter, gpointer user_data)
  * The notice section, first in the menu: reading what an agent said is
  * the most common thing done to it from here.  The label carries the
  * count (clawt_agent_menu_read_label(), the words every client uses) and
- * each item is greyed when there is nothing for it to clear.  New notice
- * actions -- muting, say -- are appended here, so the section stays one
- * place.
+ * each item is greyed when there is nothing for it to clear.  Mute
+ * notifications / Unmute is the last item, so every notice action is in
+ * one section.
  */
 static void
 append_read_section(GMenu *menu, GSimpleActionGroup *group,
                     MenuTarget *target, guint unread, guint total)
 {
-    static const gchar *const verbs[] = { "mark-read", "mark-all-read" };
+    static const gchar *const verbs[] = { "mark-read", "mark-all-read",
+                                          "mute" };
     g_autoptr(GMenu) section = g_menu_new();
     g_autofree gchar *label = clawt_agent_menu_read_label(unread);
+    g_autofree gchar *mute = clawt_agent_menu_mute_label(target->muted);
     gsize i;
 
     for (i = 0; i < G_N_ELEMENTS(verbs); i++) {
@@ -844,12 +854,22 @@ append_read_section(GMenu *menu, GSimpleActionGroup *group,
 
         g_signal_connect(action, "activate", G_CALLBACK(on_menu_read),
                          target);
-        g_simple_action_set_enabled(action, i == 0 ? unread > 0 : total > 0);
+
+        if (i < 2)
+            g_simple_action_set_enabled(action,
+                                        i == 0 ? unread > 0 : total > 0);
+
         g_action_map_add_action(G_ACTION_MAP(group), G_ACTION(action));
     }
 
     g_menu_append(section, label, "agent.mark-read");
     g_menu_append(section, "Mark all as read", "agent.mark-all-read");
+
+    /*
+     * One item that flips, worded by clawt_agent_menu_mute_label() as
+     * every client words it.
+     */
+    g_menu_append(section, mute, "agent.mute");
     g_menu_append_section(menu, NULL, G_MENU_MODEL(section));
 }
 
@@ -924,6 +944,7 @@ attach_agent_menu(ClawtLrgApp *app, LrgWidget *row,
     target->app = app;
     target->agent_id = g_strdup(agent->id);
     target->dm_room = g_strdup(agent->dm_room);
+    target->muted = g_hash_table_contains(app->muted, agent->id);
     g_object_set_data_full(G_OBJECT(row), "clawt-menu-target", target,
                            menu_target_free);
 
@@ -1133,8 +1154,23 @@ agent_row(ClawtLrgApp *app, const ClawtLrgSidebarEntry *entry)
      * waiting for the agent, close to the opposite of word waiting for
      * you -- which is in the subtitle instead.
      */
-    if (agent->unread > 0)
-        clawt_lrg_take(badges, unread_pill(agent->unread));
+    agent->muted = g_hash_table_contains(app->muted, agent->id);
+
+    if (agent->unread > 0) {
+        LrgWidget *pill = unread_pill(agent->unread);
+
+        /*
+         * A muted agent keeps its pill, dimmed, so something is still
+         * seen to be there -- but nothing else on the row asks for
+         * attention, and it is in no total.
+         */
+        if (agent->muted) {
+            lrg_widget_remove_class(pill, "clawt-unread");
+            lrg_widget_add_class(pill, "muted");
+        }
+
+        clawt_lrg_take(badges, pill);
+    }
 
     /*
      * Running on one of its fallbacks: the answers come from a model
@@ -1192,7 +1228,7 @@ agent_row(ClawtLrgApp *app, const ClawtLrgSidebarEntry *entry)
     g_object_set_data_full(G_OBJECT(row), "clawt-team", g_strdup(agent->team),
                            g_free);
 
-    if (agent->unread > 0)
+    if (agent->unread > 0 && !agent->muted)
         lrg_widget_add_class(row, "heading");
 
     /* a turn running: movement, which nobody has to learn */

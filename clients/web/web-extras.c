@@ -1517,6 +1517,49 @@ on_mark_read(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                   NULL);
 }
 
+/*
+ * "Mute notifications" / "Unmute" from an agent row's menu, for every
+ * client: the agent's notices arrive read, its counts leave every total,
+ * and the push and desktop notifiers skip it.  Back to the page being
+ * read, as Mark as read does.
+ */
+static HtmxResponse *
+on_mute(HtmxRequest *request, GHashTable *params, gpointer user_data,
+        gboolean mute)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autofree gchar *viewing = g_strdup(clawt_web_app_get_viewing(app));
+    ClawtWebPayload *payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+    reply = clawt_web_app_call(app, mute ? "notice.mute" : "notice.unmute",
+                               clawt_web_payload_take(payload));
+
+    /* the sidebar drawn next reads the new mute, not the old list */
+    clawt_web_app_notices_changed(app);
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, viewing, CLAWT_PAGE_CHAT,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(app, request, viewing, CLAWT_PAGE_CHAT,
+                                  NULL);
+}
+
+static HtmxResponse *
+on_mute_agent(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    return on_mute(request, params, user_data, TRUE);
+}
+
+static HtmxResponse *
+on_unmute_agent(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    return on_mute(request, params, user_data, FALSE);
+}
+
 /* "Mark all as read" from the head of the list: every conversation. */
 static HtmxResponse *
 on_mark_all_read(HtmxRequest *request, GHashTable *params,
@@ -1546,6 +1589,8 @@ clawt_web_register_extras(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_post(router, "/a/:id/reorder", on_reorder, app);
     htmx_router_post(router, "/a/:id/read", on_mark_read, app);
+    htmx_router_post(router, "/a/:id/mute", on_mute_agent, app);
+    htmx_router_post(router, "/a/:id/unmute", on_unmute_agent, app);
     htmx_router_post(router, "/read-all", on_mark_all_read, app);
     htmx_router_post(router, "/a/:id/team", on_set_team, app);
     htmx_router_post(router, "/a/:id/attach", on_attach, app);

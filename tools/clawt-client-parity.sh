@@ -150,7 +150,16 @@ declare -A AFFORDANCES=(
     ["sender avatars"]="adw_avatar_new|msg-avatar|sender_avatar"
     ["own-turn bubbles"]="clawt-bubble|msg-self|own_bubble_new"
     ["alerts surface"]="build_alerts_panel|alert-row|build_alerts_panel"
-    ["alert severity tiers"]="clawt_alert_tier_for_event|clawt_alert_tier_for_event|clawt_alert_tier_for_event"
+    #
+    # The notification list is the daemon's (docs/clients.org,
+    # "Notifications"): which events are alerts, their tier and their
+    # words are decided once, in libclawt, by the daemon -- so the rows
+    # that used to check each client classified and worded the stream the
+    # same way are gone, and these check that each client draws the one
+    # list: its bell from the same sum, the four sections, a menu on
+    # every row.  The notice.* kinds themselves are layer 1's.
+    #
+    ["bell from the daemon's list"]="clawt_notice_list_badge|clawt_notice_list_badge|clawt_notice_list_badge"
     ["unread rule"]="clawt_unread_should_count|clawt_unread_should_count|clawt_unread_should_count"
     #
     # Unread held by the daemon (docs/clients.org, "Unread"): each client
@@ -161,19 +170,24 @@ declare -A AFFORDANCES=(
     ["unread from the daemon"]="clawt_unread_seed|clawt_unread_seed|clawt_lrg_unread_seed"
     ["new messages from the read mark"]="clawt_unread_rule_index|clawt_unread_rule_index|clawt_unread_rule_index"
     ["agent list mark as read"]="clawt_agent_menu_read_label|clawt_agent_menu_read_label|clawt_agent_menu_read_label"
+    # Mute notifications / Unmute in the same menu, in libclawt's words;
+    # notice.mute itself is layer 1's.  A muted agent's pill stays,
+    # dimmed, and leaves every total through the one rule.
+    ["agent list mute"]="clawt_agent_menu_mute_label|clawt_agent_menu_mute_label|clawt_agent_menu_mute_label"
+    ["muted agents out of every total"]="clawt_unread_total|clawt_unread_total|clawt_unread_total"
     ["agent list mark all as read"]="mark-all-read|clawt_web_mark_all_read_button|clawt_lrg_mark_all_read"
     ["team tally"]="clawt_team_tally|clawt_team_tally|clawt_team_tally"
     ["fleet warnings"]="append_warning_rows|clawt_web_warnings|append_warning_rows"
     ["peer conversations"]="fill_conversation_menu|conversation_switcher|conversation_picker"
     ["team busy marker"]="clawt-team-busy|clawt-team-busy|clawt-team-busy"
     ["follow the live edge"]="clawt_transcript_is_at_bottom|transcript-end|clawt_transcript_is_at_bottom"
-    ["alert filter"]="alerts_show_all|show_all|alerts_show_all"
+    ["notification sections"]="append_chats|clawt_web_notices_sections|append_chats"
     ["agent attachments"]="fetch_attachment|attachment_element|fetch_agent_attachment"
     ["fleet activity ages"]="clawt_activity_elapsed_label|clawt_activity_elapsed_label|clawt_activity_elapsed_label"
     ["stop is agent-wide"]="clawt_activity_stop_prompt|clawt_activity_stop_prompt|clawt_activity_stop_prompt"
     ["steer only where it reaches"]="\"steerable\"|\"steerable\"|\"steerable\""
     ["flow groups by sender"]="flow_run_sender|flow_run_sender|flow_run_sender"
-    ["alert arrives read"]="clawt_alert_arrives_read|clawt_alert_arrives_read|clawt_alert_arrives_read"
+    ["notification row menus"]="popup_notice_menu|notice-row|\"notice.grok-remove\""
     ["composer on the message column"]="CHAT_BODY_INSET|chat-gutter|CHAT_BODY_INSET"
     ["reading measurements"]="build_reading_group|clawt_run_gap|build_reading_card"
     ["measure units"]="clawt_measure_unit_count|clawt_measure_unit_count|clawt_measure_unit_count"
@@ -350,14 +364,14 @@ declare -A AFFORDANCES=(
     # where each round starts and the note under a withheld mention,
     # both worded by libclawt; the two settings on the Orchestration
     # page (the budget through orchestration.set, each room's cap
-    # through room.set, neither a frame of its own); and the alert that
-    # names an exhausted tree.
+    # through room.set, neither a frame of its own).  The alert naming an
+    # exhausted tree is the daemon's notification list's now, worded by
+    # clawt_alert_text_for_event().
     #
     ["round dividers"]="clawt_round_label|clawt_round_label|clawt_round_label"
     ["withheld mentions say why"]="clawt_round_skip_note|clawt_round_skip_note|clawt_round_skip_note"
     ["tree budget setting"]="\"tree_message_budget\"|\"tree_message_budget\"|\"tree_message_budget\""
     ["thread cap per room"]="\"max_chain\"|\"max_chain\"|\"max_chain\""
-    ["tree budget alert names the tree"]="clawt_loop_guard_tree_alert_text|clawt_loop_guard_tree_alert_text|clawt_loop_guard_tree_alert_text"
     #
     # The Grok page: the bots and who may reach them, handing one a job on
     # an agent's behalf, the jobs in libclawt's tones, the routine prompt
@@ -514,15 +528,15 @@ declare -A AFFORDANCES=(
     ["a broken routine says why"]="will never run|routine, \"problem\"|will never run"
     #
     # routines.max_start_failures: the limit in the editor with libclawt's
-    # explanation, a routine turned off for it saying why, the one click
-    # that turns it back on, and the alert.  The frame is routine.update
+    # explanation, a routine turned off for it saying why, and the one
+    # click that turns it back on; the alert is the daemon's notification
+    # list's (clawt_alert_text_for_event()).  The frame is routine.update
     # in every client -- which each already sends for Save -- and the
     # wording is a library call, so layers 1 to 4 see none of it.
     #
     ["routine start-failure limit"]="clawt_routine_start_failures_hint|clawt_routine_start_failures_hint|clawt_routine_start_failures_hint"
     ["a routine turned off says why"]="clawt_routine_turned_off_note|clawt_routine_turned_off_note|clawt_routine_turned_off_note"
     ["turn a routine back on"]="on_routine_turn_on|/routines/%s/enable|on_routine_turn_on"
-    ["routine turned-off alert"]="clawt_routine_turned_off_alert|clawt_routine_turned_off_alert|clawt_routine_turned_off_alert"
     #
     # An update the daemon found.
     #
@@ -701,8 +715,9 @@ declare -A AFFORDANCES=(
     # call into the library's encoder.
     ["pairing QR code"]="clawt_gtk_qr_texture|clawt_qr_render_svg|clawt_qr_encode"
     #
-    # model.fallbacks: the ordered editor, the badge on an agent running
-    # on one, and the alert that says why in the daemon's own sentence.
+    # model.fallbacks: the ordered editor and the badge on an agent
+    # running on one.  The alert that says why, in the daemon's own
+    # sentence, is the notification list's (clawt_alert_text_for_event()).
     # A list editable in one client and a three-field text box in another
     # is the drift this table exists for; so is an agent marked as away in
     # one sidebar and not the next.
@@ -711,7 +726,6 @@ declare -A AFFORDANCES=(
     ["on fallback badge"]="clawt_gtk_failover_badge|clawt_web_failover_badge|clawt_lrg_badge(agent->fallback"
     # The same badge on the Fleet page, from usage.summary's `failover`.
     ["on fallback badge on the Fleet page"]="fleet_fallback|fleet_fallback|fleet_fallback"
-    ["alert in the event's words"]="clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")"
     #
     # Connector sign-in and several accounts: a remote server added by its
     # URL alone (the name proposed from the host), a Sign in that names

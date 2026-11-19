@@ -373,6 +373,28 @@ struct _ClawtDaemon {
     ClawtReadStore    *reads;
 
     /*
+     * The fleet's notification list, and the mutes (daemon-notice.c,
+     * core/clawt-notice-store.h): <state_dir>/notices.db, fed from this
+     * daemon's own bus.  NULL when it would not open.  `notices_lapse`
+     * fires when the soonest timed mute runs out; `notices_clock` is a
+     * test's "now", in seconds, and 0 means the real clock.
+     */
+    ClawtNoticeStore  *notices;
+    gulong             notices_bus_handler;
+    GSource           *notices_lapse;
+    gint64             notices_clock;
+
+    /*
+     * Where clawt_daemon_notify() sends a notification instead of the
+     * notifiers: a test's recorder, since a hermetic suite has nobody to
+     * buzz.  NULL is the operator's path.
+     */
+    void             (*notify_sink)(ClawtDaemon       *self,
+                                    ClawtNotification *notification,
+                                    gpointer           user_data);
+    gpointer           notify_sink_data;
+
+    /*
      * Conditions agents asked to be told about, checked by code rather
      * than by waking the model.  One record per wait under
      * <state_dir>/waits, so they survive a restart.  See daemon-wait.c.
@@ -1264,6 +1286,18 @@ void clawt_daemon_grok_sweep(ClawtDaemon *self, gint64 now);
 guint clawt_daemon_grok_attention(ClawtDaemon *self, gint64 now);
 
 /*
+ * clawt_daemon_grok_attention_jobs:
+ * @self: the daemon
+ * @now: microseconds
+ *
+ * The jobs clawt_daemon_grok_attention() counts, for a list that names
+ * them -- notice.list's Grok section.
+ *
+ * Returns: (transfer full) (element-type ClawtGrokJob): the jobs
+ */
+GPtrArray *clawt_daemon_grok_attention_jobs(ClawtDaemon *self, gint64 now);
+
+/*
  * grok.attention_days and grok.retention_days as the daemon uses them:
  * read from the config and clamped (0..365 and 1..3650).
  */
@@ -1607,6 +1641,77 @@ clawt_daemon_handle_room(
     JsonObject   *payload,
     gboolean     *handled
 );
+
+/*
+ * The notification list (daemon-notice.c): notice.list, notice.read,
+ * notice.dismiss, notice.clear, notice.mute and notice.unmute.
+ */
+JsonNode *
+clawt_daemon_handle_notice(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+/*
+ * Opens notices.db, prunes it, and starts listening to the bus; and the
+ * reverse.  Both are safe to repeat.
+ */
+void clawt_daemon_notices_setup(ClawtDaemon *self);
+void clawt_daemon_notices_teardown(ClawtDaemon *self);
+
+/*
+ * clawt_daemon_notices_now:
+ *
+ * Returns: now in seconds -- the test's clock when `notices_clock` is set
+ */
+gint64 clawt_daemon_notices_now(ClawtDaemon *self);
+
+/*
+ * clawt_daemon_notices_record:
+ * @self: the daemon
+ * @event: an event from the bus
+ * @now: seconds; the mute in force at this time decides whether the
+ *   notice arrives read
+ *
+ * Records @event if it is an error or a notice.  What the bus handler
+ * runs, callable directly so a test can choose the clock.
+ *
+ * Returns: the new notice's id, or 0 when nothing was recorded
+ */
+gint64 clawt_daemon_notices_record(ClawtDaemon *self, ClawtEvent *event,
+                                   gint64 now);
+
+/*
+ * clawt_daemon_notices_prune:
+ *
+ * Applies notices.keep and notices.keep_days at @now (seconds), and
+ * drops lapsed mutes.  Run at start and from the hourly task prune.
+ *
+ * Returns: how many notices were dropped
+ */
+guint clawt_daemon_notices_prune(ClawtDaemon *self, gint64 now);
+
+/*
+ * clawt_daemon_notices_is_muted:
+ *
+ * Returns: %TRUE if @agent is muted at @now (seconds)
+ */
+gboolean clawt_daemon_notices_is_muted(ClawtDaemon *self, const gchar *agent,
+                                       gint64 now);
+
+/*
+ * clawt_daemon_notify:
+ * @self: the daemon
+ * @notification: what happened
+ *
+ * The one door to the push and desktop notifiers: every call site that
+ * used to call clawt_notifier_notify() comes through here, so a muted
+ * agent is skipped in one place.
+ */
+void clawt_daemon_notify(ClawtDaemon *self, ClawtNotification *notification);
 
 JsonNode *
 clawt_daemon_handle_mailbox(

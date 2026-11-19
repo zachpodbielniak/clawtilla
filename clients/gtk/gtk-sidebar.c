@@ -81,18 +81,18 @@ unread_for(ClawtWindow *self, const gchar *room_id)
 void
 clawt_gtk_update_unread_tab(ClawtWindow *self)
 {
-    GHashTableIter iter;
-    gpointer value;
-    guint total = 0;
+    guint total;
     gboolean hide;
 
     if (self->unread == NULL)
         return;
 
-    g_hash_table_iter_init(&iter, self->unread);
-
-    while (g_hash_table_iter_next(&iter, NULL, &value))
-        total += GPOINTER_TO_UINT(value);
+    /*
+     * Less the muted agents' conversations (clawt_unread_total()): their
+     * pills stay on their rows, dimmed, and a mute is exactly the
+     * operator asking for no number anywhere else.
+     */
+    total = clawt_unread_total(self->unread, self->muted);
 
     hide = clawt_gtk_current_page(self) == CLAWT_PAGE_CHAT &&
            self->split != NULL &&
@@ -380,7 +380,19 @@ agent_row(ClawtWindow *self, JsonObject *agent, guint unread)
      * showed nothing, while one buried in peer traffic showed a large
      * number and had said nothing to you at all.
      */
-    if (unread > 0) {
+    if (unread > 0 && clawt_gtk_agent_muted(self, agent_id)) {
+        /*
+         * A muted agent keeps its pill, dimmed, so the operator can still
+         * see something is there -- but not the bold title, which is the
+         * row asking for attention the mute said not to ask for.
+         */
+        GtkWidget *pill = unread_badge(unread);
+
+        gtk_widget_add_css_class(pill, "dim-label");
+        gtk_widget_add_css_class(pill, "clawt-unread-muted");
+        gtk_widget_set_tooltip_text(pill, "Muted: not counted anywhere else");
+        gtk_box_append(GTK_BOX(box), pill);
+    } else if (unread > 0) {
         gtk_box_append(GTK_BOX(box), unread_badge(unread));
 
         /*
@@ -2208,8 +2220,26 @@ on_menu_action(GSimpleAction *action, GVariant *parameter, gpointer user_data)
 
     (void)parameter;
 
+    /*
+     * Delete is the one item that does open the agent: its dialog is the
+     * inspector's, which reads the machine it may also delete from the
+     * agent on screen, and asking "delete this?" about an agent you are
+     * not looking at is how the wrong one goes.
+     */
     if (g_strcmp0(name, "delete") == 0) {
+        if (self->menu_agent != NULL &&
+            g_strcmp0(self->menu_agent, self->selected_agent) != 0)
+            clawt_gtk_select_agent(self, self->menu_agent);
+
         clawt_gtk_delete_agent(self);
+        return;
+    }
+
+    /* Silenced, or let through again, for every client. */
+    if (g_strcmp0(name, "mute") == 0) {
+        clawt_gtk_set_agent_muted(self, self->menu_agent,
+                                  !clawt_gtk_agent_muted(self,
+                                                         self->menu_agent));
         return;
     }
 
@@ -2250,7 +2280,7 @@ on_menu_action(GSimpleAction *action, GVariant *parameter, gpointer user_data)
     {
         g_autofree gchar *kind = g_strconcat("agent.", name, NULL);
 
-        clawt_gtk_agent_action(self, kind);
+        clawt_gtk_agent_action_for(self, self->menu_agent, kind);
     }
 }
 
@@ -2371,7 +2401,7 @@ on_menu_team(GSimpleAction *action, GVariant *parameter, gpointer user_data)
     g_autoptr(GVariant) state = g_action_get_state(G_ACTION(action));
     g_autofree gchar *message = NULL;
 
-    if (self->selected_agent == NULL)
+    if (self->menu_agent == NULL)
         return;
 
     /*
@@ -2383,15 +2413,15 @@ on_menu_team(GSimpleAction *action, GVariant *parameter, gpointer user_data)
         g_strcmp0(g_variant_get_string(state, NULL), team) == 0)
         return;
 
-    if (!clawt_gtk_apply_setting(self, "team", team))
+    if (!clawt_gtk_apply_setting_for(self, self->menu_agent, "team", team))
         return;
 
     g_simple_action_set_state(action, g_variant_new_string(team));
 
     message = (*team != '\0')
-              ? g_strdup_printf("%s moved to %s.", self->selected_agent, team)
+              ? g_strdup_printf("%s moved to %s.", self->menu_agent, team)
               : g_strdup_printf("%s taken off its team.",
-                                self->selected_agent);
+                                self->menu_agent);
 
     clawt_window_toast(self, message);
 
@@ -2419,7 +2449,7 @@ on_menu_computer(GSimpleAction *action, GVariant *parameter,
 
     (void)parameter;
 
-    if (self->selected_agent == NULL)
+    if (self->menu_agent == NULL)
         return;
 
     /*
@@ -2447,7 +2477,7 @@ on_menu_computer(GSimpleAction *action, GVariant *parameter,
      */
     json_builder_begin_object(payload);
     json_builder_set_member_name(payload, "agent");
-    json_builder_add_string_value(payload, self->selected_agent);
+    json_builder_add_string_value(payload, self->menu_agent);
     json_builder_set_member_name(payload, "remove");
     json_builder_add_boolean_value(payload, TRUE);
     json_builder_end_object(payload);
@@ -2465,9 +2495,9 @@ on_menu_computer(GSimpleAction *action, GVariant *parameter,
                   ? g_strdup_printf(
                         "%s: the machine is %s. It does not survive a stop, "
                         "so starting it builds a fresh one.",
-                        self->selected_agent, state)
+                        self->menu_agent, state)
                   : g_strdup_printf("%s: the machine is %s.",
-                                    self->selected_agent, state);
+                                    self->menu_agent, state);
 
         clawt_window_toast(self, message);
     }
@@ -2533,7 +2563,7 @@ on_menu_computer_maybe_confirm(GSimpleAction *action, GVariant *parameter,
         "it goes -- anything the agent installed, and anything it wrote "
         "outside a shared folder.\n\n"
         "Set computer.container.keep to keep it instead.",
-        self->selected_agent != NULL ? self->selected_agent : "This agent");
+        self->menu_agent != NULL ? self->menu_agent : "This agent");
 
     ask = ADW_ALERT_DIALOG(adw_alert_dialog_new(
         g_strcmp0(name, "computer-stop") == 0
@@ -2607,14 +2637,15 @@ fill_computer_menu(ClawtWindow *self, gboolean machine, const gchar *type)
  * Refilled per right-click because the label carries the count
  * (clawt_agent_menu_read_label(), the same words every client uses), and
  * each item is greyed out when there is nothing for it to clear -- a
- * menu that offers to do nothing is one people stop reading.  New
- * notice actions (muting, say) are appended here, so the whole section
- * stays one place.
+ * menu that offers to do nothing is one people stop reading.  Mute
+ * notifications / Unmute is the last item, so every notice action is in
+ * one section.
  */
 static void
-fill_read_menu(ClawtWindow *self, guint unread)
+fill_read_menu(ClawtWindow *self, guint unread, gboolean muted)
 {
     g_autofree gchar *label = NULL;
+    g_autofree gchar *mute = clawt_agent_menu_mute_label(muted);
     GHashTableIter iter;
     gpointer value;
     guint total = 0;
@@ -2633,6 +2664,13 @@ fill_read_menu(ClawtWindow *self, guint unread)
     g_menu_append(self->agent_menu_read, label, "agent.mark-read");
     g_menu_append(self->agent_menu_read, "Mark all as read",
                   "agent.mark-all-read");
+
+    /*
+     * One item that flips, worded by clawt_agent_menu_mute_label() as
+     * every client words it: a mute is a state, and the menu reads it
+     * back as the thing it offers to undo.
+     */
+    g_menu_append(self->agent_menu_read, mute, "agent.mute");
 
     enable_agent_action(self, "mark-read", unread > 0);
     enable_agent_action(self, "mark-all-read", total > 0);
@@ -2662,9 +2700,8 @@ popup_agent_menu(ClawtWindow *self, gdouble x, gdouble y)
         return;
 
     /*
-     * Copied off the row before anything else, because selecting it
-     * loads the transcript, which iterates the main context, which lets
-     * a refresh rebuild the sidebar and free this row underneath us.
+     * Copied off the row before anything else: a refresh rebuilds the
+     * sidebar while the menu is open and frees this row underneath us.
      */
     state = g_strdup(g_object_get_data(G_OBJECT(row), "agent-state"));
     team = g_strdup(g_object_get_data(G_OBJECT(row), "agent-team"));
@@ -2677,19 +2714,20 @@ popup_agent_menu(ClawtWindow *self, gdouble x, gdouble y)
                                           "agent-stop-removes"));
 
     /*
-     * The count before selecting, because selecting opens the
-     * conversation and opening it reads it -- after that there would
-     * never be anything for "Mark as read" to say.
+     * Act on what was right-clicked, not on what happened to be
+     * selected -- and without selecting it.  Selecting opens the
+     * conversation, and opening it reads it: the right-click used to
+     * pull the operator into that chat and clear the very count "Mark as
+     * read" was offering.  Every item reads `menu_agent` instead.
      */
+    g_free(self->menu_agent);
+    self->menu_agent = g_strdup(agent_id);
     g_free(self->menu_read_room);
     self->menu_read_room = clawt_room_manager_direct_id("user", agent_id);
     unread = unread_for(self, self->menu_read_room);
 
-    /* Act on what was right-clicked, not on what happened to be selected. */
-    gtk_list_box_select_row(self->sidebar, row);
-
     set_agent_action_states(self, state);
-    fill_read_menu(self, unread);
+    fill_read_menu(self, unread, clawt_gtk_agent_muted(self, agent_id));
     fill_team_menu(self, team);
     fill_computer_menu(self, machine, computer_type);
 
@@ -2742,7 +2780,7 @@ clawt_gtk_build_agent_menu(ClawtWindow *self)
 {
     static const gchar *const names[] = { "start", "stop", "restart",
                                           "delete", "mark-read",
-                                          "mark-all-read" };
+                                          "mark-all-read", "mute" };
     g_autoptr(GMenu) menu = g_menu_new();
     g_autoptr(GMenu) lifecycle = g_menu_new();
     g_autoptr(GMenu) grouping = g_menu_new();

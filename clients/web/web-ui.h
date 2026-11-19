@@ -252,21 +252,49 @@ HtmxButton *clawt_web_post_button(const gchar *label,
  * clawt_web_agent_row_menu:
  * @agent_id: the agent the row is for
  * @unread: how many messages wait in its conversation with the operator
+ * @muted: whether the agent is muted (`notice.mute`)
  *
  * The agent list's per-row menu: a `<details class="row-menu">` drawn
  * after the row, which the page script opens on a right-click of the
  * row (the `contextmenu` handler in this file's script) so the gesture
  * that works in the GTK and lrg clients works here too.
  *
- * "Mark as read" -- worded by clawt_agent_menu_read_label(), as every
- * client words it -- posts to `/a/<id>/read` and appears only when there
- * is something to read; a menu offering to do nothing is noise.  Further
- * per-agent notice actions (muting, say) belong in this same menu.
+ * Two items, always: "Mark as read" -- worded by
+ * clawt_agent_menu_read_label(), and disabled when there is nothing to
+ * read -- posting to `/a/<id>/read`; and "Mute notifications" or
+ * "Unmute" (clawt_agent_menu_mute_label()) posting to `/a/<id>/mute` or
+ * `/a/<id>/unmute`.
  *
- * Returns: (transfer full) (nullable): the menu, or %NULL when it would
- *   hold nothing
+ * Returns: (transfer full) (nullable): the menu, or %NULL with no agent
  */
-HtmxElement *clawt_web_agent_row_menu(const gchar *agent_id, guint unread);
+HtmxElement *clawt_web_agent_row_menu(const gchar *agent_id,
+                                      guint        unread,
+                                      gboolean     muted);
+
+/**
+ * clawt_web_notices_sections:
+ * @reply: (nullable): a `notice.list` reply's payload
+ * @agent: (nullable): only this agent's rows, or %NULL for the fleet
+ * @now_us: now, for the alerts' relative times
+ * @out_shown: (out) (optional): how many rows were drawn
+ *
+ * The body of the Notifications page, in the four sections every client
+ * draws (docs/clients.org, "Notifications"): Chats, Decisions waiting,
+ * Grok jobs needing attention, and Alerts.  A section with nothing in it
+ * is left out.  Each row is followed by its `<details class="row-menu">`,
+ * which the page script opens on a right-click as it does the agent
+ * list's: Mark as read and Mute for a conversation, Remove (asked first)
+ * for a Grok job, Mark read, Dismiss and Mute for an alert.
+ *
+ * Pure -- a reply in, markup out -- so tests/test-web-render.c draws it
+ * without a daemon.
+ *
+ * Returns: (transfer full): the sections
+ */
+HtmxElement *clawt_web_notices_sections(JsonObject  *reply,
+                                        const gchar *agent,
+                                        gint64       now_us,
+                                        guint       *out_shown);
 
 /**
  * clawt_web_mark_all_read_button:

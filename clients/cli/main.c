@@ -3927,6 +3927,268 @@ cmd_team(int argc, char *argv[])
     return EXIT_FAILURE;
 }
 
+/*
+ * The daemon's notification list, as every client draws it: what is
+ * unread, decisions and Grok jobs waiting, then the alerts newest first.
+ * docs/clients.org, "Notifications".
+ */
+static gint
+notices_list(ClawtClient *client, const gchar *agent, gboolean all)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *root;
+    JsonObject *sources;
+    JsonArray *notices;
+    JsonArray *mutes;
+    guint i;
+
+    json_builder_begin_object(builder);
+
+    if (agent != NULL) {
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, agent);
+    }
+
+    json_builder_set_member_name(builder, "include_dismissed");
+    json_builder_add_boolean_value(builder, all);
+    json_builder_end_object(builder);
+
+    reply = call(client, "notice.list", json_builder_get_root(builder));
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    root = json_node_get_object(reply);
+    sources = json_object_get_object_member(root, "sources");
+
+    g_print("Unread chats: %" G_GINT64_FORMAT
+            "  Decisions waiting: %" G_GINT64_FORMAT
+            "  Grok jobs needing attention: %" G_GINT64_FORMAT
+            "  Unread alerts: %" G_GINT64_FORMAT "\n",
+            json_object_get_int_member(sources, "chats_unread"),
+            json_object_get_int_member(sources, "decisions_pending"),
+            json_object_get_int_member(sources, "grok_attention"),
+            json_object_get_int_member(root, "unread"));
+
+    mutes = json_object_get_array_member(root, "mutes");
+
+    for (i = 0; mutes != NULL && i < json_array_get_length(mutes); i++) {
+        JsonObject *mute = json_array_get_object_element(mutes, i);
+        gint64 until = json_object_get_int_member(mute, "until");
+
+        if (until > 0) {
+            g_autoptr(GDateTime) when = g_date_time_new_from_unix_local(until);
+            g_autofree gchar *text = g_date_time_format(when, "%Y-%m-%d %H:%M");
+
+            g_print("Muted: %s until %s\n", member_or(mute, "agent", "?"),
+                    text);
+        } else {
+            g_print("Muted: %s until unmuted\n",
+                    member_or(mute, "agent", "?"));
+        }
+    }
+
+    notices = json_object_get_array_member(root, "notices");
+
+    if (notices == NULL || json_array_get_length(notices) == 0) {
+        g_print("No alerts.\n");
+        return EXIT_SUCCESS;
+    }
+
+    for (i = 0; i < json_array_get_length(notices); i++) {
+        JsonObject *notice = json_array_get_object_element(notices, i);
+        g_autoptr(GDateTime) when = g_date_time_new_from_unix_local(
+            json_object_get_int_member(notice, "created_at"));
+        g_autofree gchar *stamp = g_date_time_format(when, "%m-%d %H:%M");
+        const gchar *mark = json_object_get_boolean_member(notice, "dismissed")
+                            ? "x"
+                            : json_object_get_boolean_member(notice, "read")
+                              ? " " : "*";
+
+        g_print("%s %5" G_GINT64_FORMAT "  %s  %-6s  %s\n", mark,
+                json_object_get_int_member(notice, "id"), stamp,
+                member_or(notice, "tier", "?"),
+                member_or(notice, "title", ""));
+    }
+
+    return EXIT_SUCCESS;
+}
+
+static gint
+cmd_notices(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2 && argv[2][0] != '-') ? argv[2] : NULL;
+    const gchar *usage =
+        "Usage: clawtilla notices [--agent AGENT] [--all]\n"
+        "       clawtilla notices read <ID|--all>\n"
+        "       clawtilla notices dismiss <ID>\n"
+        "       clawtilla notices clear [--agent AGENT]\n"
+        "\n"
+        "Examples:\n"
+        "  clawtilla notices                 what wants you, and the alerts\n"
+        "  clawtilla notices --agent scout   only scout's\n"
+        "  clawtilla notices read --all      the bell to zero\n"
+        "  clawtilla notices dismiss 42      hide one alert\n"
+        "  clawtilla notices clear           hide every alert\n";
+    const gchar *agent = NULL;
+    gboolean all = FALSE;
+    gint i;
+
+    if (argc > 2 && (g_strcmp0(argv[2], "-h") == 0 ||
+                     g_strcmp0(argv[2], "--help") == 0)) {
+        g_print("%s", usage);
+        return EXIT_SUCCESS;
+    }
+
+    /* --agent and --all, wherever they are after the verb. */
+    for (i = (verb != NULL) ? 3 : 2; i < argc; i++) {
+        if (g_strcmp0(argv[i], "--agent") == 0 && i + 1 < argc)
+            agent = argv[++i];
+        else if (g_strcmp0(argv[i], "--all") == 0)
+            all = TRUE;
+        else if (verb == NULL || argv[i][0] == '-') {
+            g_printerr("%s", usage);
+            return EXIT_FAILURE;
+        }
+    }
+
+    /*
+     * Every verb's arguments are checked before the daemon is reached,
+     * so a typo is a usage message rather than a connection error.
+     */
+    if ((g_strcmp0(verb, "read") == 0 && !all && argc != 4) ||
+        (g_strcmp0(verb, "dismiss") == 0 && argc != 4)) {
+        g_printerr("%s", usage);
+        return EXIT_FAILURE;
+    }
+
+    if (verb != NULL && g_strcmp0(verb, "list") != 0 &&
+        g_strcmp0(verb, "read") != 0 && g_strcmp0(verb, "dismiss") != 0 &&
+        g_strcmp0(verb, "clear") != 0) {
+        g_printerr("clawtilla: unknown notices verb '%s'\n%s", verb, usage);
+        return EXIT_FAILURE;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (verb == NULL || g_strcmp0(verb, "list") == 0)
+        return notices_list(client, agent, all);
+
+    if (g_strcmp0(verb, "read") == 0) {
+        if (all)
+            reply = call(client, "notice.read",
+                         build_payload("all", "true", NULL));
+        else
+            reply = call(client, "notice.read",
+                         build_payload("id", argv[3], NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Marked %" G_GINT64_FORMAT " notice(s) read.\n",
+                json_object_get_int_member(json_node_get_object(reply),
+                                           "read"));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "dismiss") == 0) {
+        reply = call(client, "notice.dismiss",
+                     build_payload("id", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Dismissed %s.\n", argv[3]);
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "clear") == 0) {
+        reply = call(client, "notice.clear",
+                     build_payload("agent", agent, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Cleared %" G_GINT64_FORMAT " notice(s).\n",
+                json_object_get_int_member(json_node_get_object(reply),
+                                           "cleared"));
+        return EXIT_SUCCESS;
+    }
+
+    return EXIT_FAILURE;
+}
+
+/*
+ * Mutes an agent's notifications everywhere -- every client's bell and
+ * tab totals, and the push and desktop notifiers -- until unmuted, or
+ * for as long as --for says.
+ */
+static gint
+cmd_mute(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    gboolean mute = g_strcmp0(argv[1], "mute") == 0;
+    g_autofree gchar *until = NULL;
+    const gchar *usage = mute
+        ? "Usage: clawtilla mute <agent> [--for DURATION]\n"
+          "\n"
+          "DURATION is 90s, 30m, 2h or 3d; a bare number is minutes.\n"
+          "\n"
+          "Examples:\n"
+          "  clawtilla mute scout            until unmuted\n"
+          "  clawtilla mute scout --for 2h   for two hours\n"
+        : "Usage: clawtilla unmute <agent>\n"
+          "\n"
+          "Example:\n"
+          "  clawtilla unmute scout\n";
+
+    if (argc > 2 && (g_strcmp0(argv[2], "-h") == 0 ||
+                     g_strcmp0(argv[2], "--help") == 0)) {
+        g_print("%s", usage);
+        return EXIT_SUCCESS;
+    }
+
+    if (argc < 3 || argv[2][0] == '-' ||
+        (mute && argc != 3 && argc != 5) || (!mute && argc != 3)) {
+        g_printerr("%s", usage);
+        return EXIT_FAILURE;
+    }
+
+    if (mute && argc == 5) {
+        gint64 seconds = 0;
+
+        if (g_strcmp0(argv[3], "--for") != 0 ||
+            !clawt_notice_mute_for_parse(argv[4], &seconds)) {
+            g_printerr("%s", usage);
+            return EXIT_FAILURE;
+        }
+
+        until = g_strdup_printf("%" G_GINT64_FORMAT,
+                                g_get_real_time() / G_USEC_PER_SEC + seconds);
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    reply = call(client, mute ? "notice.mute" : "notice.unmute",
+                 build_payload("agent", argv[2], "until", until, NULL));
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    if (!mute)
+        g_print("%s is no longer muted.\n", argv[2]);
+    else if (until != NULL)
+        g_print("%s is muted for %s.\n", argv[2], argv[4]);
+    else
+        g_print("%s is muted until unmuted.\n", argv[2]);
+
+    return EXIT_SUCCESS;
+}
+
 static gint
 cmd_room(int argc, char *argv[])
 {
@@ -11809,6 +12071,12 @@ static const ClawtVerb verbs[] = {
       cmd_mailbox },
     { "room",    "<verb>",   "Manage rooms",
       cmd_room },
+    { "notices", "[verb]",   "The notification list: list, read, dismiss, clear",
+      cmd_notices },
+    { "mute",    "<agent> [--for 2h]", "Silence an agent's notifications",
+      cmd_mute },
+    { "unmute",  "<agent>",  "Let an agent's notifications through again",
+      cmd_mute },
     { "team",    "<verb>",   "Manage teams and who is on them",
       cmd_team },
     { "project", "<verb>",   "Projects: what work is for and may spend",

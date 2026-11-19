@@ -19,6 +19,7 @@
   tasks.db                        every task, its journal, and the incidents
   revisions.db                    every version of the config, personas, skills
   reads.db                        how far the operator has read each conversation (0.52.0)
+  notices.db                      the notification list and the muted agents (0.52.0)
   daemon.lock                     one daemon per state directory; see below
   .git/ .gitignore                daemon.git; the ignore block is clawtilla's
   agents/<id>/                    also the workspace, unless agents.workspace moves it

@@ -1007,6 +1007,73 @@ test_the_read_label_carries_the_count(void)
 }
 
 /*
+ * One item that flips, worded the same in every client: "Mute
+ * notifications" for an agent that is not muted, "Unmute" for one that
+ * is.  Regressing it is three menus saying three things, or a muted
+ * agent offered "Mute" again with no way back.
+ */
+static void
+test_the_mute_label_flips(void)
+{
+    g_autofree gchar *mute = clawt_agent_menu_mute_label(FALSE);
+    g_autofree gchar *unmute = clawt_agent_menu_mute_label(TRUE);
+
+    g_assert_cmpstr(mute, ==, "Mute notifications");
+    g_assert_cmpstr(unmute, ==, "Unmute");
+}
+
+/*
+ * The agent a direct room belongs to, from either spelling of the sorted
+ * pair, and nothing for a group room, a peer room, a malformed name or
+ * none.  Regressing it mutes the wrong conversation, or none.
+ */
+static void
+test_a_direct_room_names_its_agent(void)
+{
+    g_autofree gchar *first = clawt_unread_room_agent("dm:alpha:user");
+    g_autofree gchar *second = clawt_unread_room_agent("dm:user:zed");
+
+    g_assert_cmpstr(first, ==, "alpha");
+    g_assert_cmpstr(second, ==, "zed");
+    g_assert_null(clawt_unread_room_agent("dm:alpha:beta"));
+    g_assert_null(clawt_unread_room_agent("dm:user:user"));
+    g_assert_null(clawt_unread_room_agent("dm:a:b:user"));
+    g_assert_null(clawt_unread_room_agent("standup"));
+    g_assert_null(clawt_unread_room_agent(NULL));
+}
+
+/*
+ * Every total a client draws leaves a muted agent's conversation out --
+ * its pill stays on the row, dimmed, and counts nowhere else -- while a
+ * group room and an unmuted agent still count.  Regressing it is a mute
+ * that leaves the tab and the bell lit.
+ */
+static void
+test_a_muted_agent_leaves_the_total(void)
+{
+    g_autoptr(GHashTable) unread = g_hash_table_new_full(g_str_hash,
+                                                         g_str_equal,
+                                                         g_free, NULL);
+    g_autoptr(GHashTable) muted = g_hash_table_new_full(g_str_hash,
+                                                        g_str_equal,
+                                                        g_free, NULL);
+
+    g_hash_table_insert(unread, g_strdup("dm:alpha:user"),
+                        GUINT_TO_POINTER(3));
+    g_hash_table_insert(unread, g_strdup("dm:user:zed"),
+                        GUINT_TO_POINTER(4));
+    g_hash_table_insert(unread, g_strdup("standup"), GUINT_TO_POINTER(1));
+
+    g_assert_cmpuint(clawt_unread_total(unread, NULL), ==, 8);
+    g_assert_cmpuint(clawt_unread_total(unread, muted), ==, 8);
+
+    g_hash_table_add(muted, g_strdup("zed"));
+    g_assert_cmpuint(clawt_unread_total(unread, muted), ==, 4);
+
+    g_assert_cmpuint(clawt_unread_total(NULL, muted), ==, 0);
+}
+
+/*
  * The daemon's counts are taken for rows the sidebar draws, never for a
  * room without one, never for the room on screen, and not at all from a
  * daemon that holds no marks (no `unread` in its listing).  Regressing
@@ -1162,6 +1229,12 @@ g_test_add_func("/client-rules/tier/unknown",
     g_test_add_func("/client-rules/reply/toast-names-refusal",
                     test_toast_text_names_a_refused_agent);
 
+    g_test_add_func("/client-rules/menu/mute-label",
+                    test_the_mute_label_flips);
+    g_test_add_func("/client-rules/unread/room-agent",
+                    test_a_direct_room_names_its_agent);
+    g_test_add_func("/client-rules/unread/muted-total",
+                    test_a_muted_agent_leaves_the_total);
     g_test_add_func("/client-rules/menu/read-label",
                     test_the_read_label_carries_the_count);
     g_test_add_func("/client-rules/unread/seed",

@@ -960,6 +960,18 @@ clawt_web_stylesheet(void)
     /* Colour is never the only signal; the name goes bold beside it. */
     ".agent-row.is-unread .agent-name{font-weight:700;}"
     /*
+     * A muted agent's pill: still there, so something is seen to be
+     * waiting, but faded -- it is in no total and asks for nothing.
+     */
+    ".unread-badge.is-muted{opacity:.45;}"
+    /*
+     * The Notifications page: a heading per section, and rows drawn as
+     * the alert rows were, each with its right-click menu after it.
+     */
+    ".notice-section{margin:18px 0 6px;font-size:14px;}"
+    "a.notice-row{display:block;color:inherit;text-decoration:none;}"
+    ".notices .row-menu{margin:0 0 8px;}"
+    /*
      * An agent row's menu, drawn after the row and opened by a
      * right-click (the page script).  The summary is there for the
      * keyboard and kept small; the items appear only while it is open.
