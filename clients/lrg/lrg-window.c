@@ -59,6 +59,7 @@ typedef struct {
     LrgWidget  *island_expanded;
     LrgWidget  *banner_label;
     LrgWidget  *banner_action;
+    LrgWidget  *banner_local;   /* Use Local: remembered, never reached */
     LrgWidget  *section_tabs[N_PAGES];
     LrgWidget  *page_tabs[N_PAGES];
     LrgWidget  *page_widgets[N_PAGES];
@@ -768,13 +769,41 @@ on_banner_action(LrgButton *button, gpointer user_data)
         clawt_lrg_open_settings(app, "connections");
 }
 
+/* The way back from a remembered daemon that never answered. */
+static void
+on_banner_local(LrgButton *button, gpointer user_data)
+{
+    clawt_lrg_settings_connections_use_local(user_data);
+}
+
 void
 clawt_lrg_update_banner(ClawtLrgApp *app)
 {
     gboolean connected = clawt_client_is_connected(app->client);
     g_autofree gchar *where = clawt_connection_describe(app->connection);
+    ClawtDaemonLink link = clawt_daemon_link_state(app->client,
+                                                   app->reached_once);
+    gboolean offer_local = clawt_connection_offer_local(
+        link, app->connection, app->connection_remembered);
 
-    if (!connected) {
+    /* only for the one case, the decision shared with GTK */
+    lrg_widget_set_visible(shell.banner_local, offer_local);
+
+    if (offer_local) {
+        /*
+         * The daemon this client was last on, chosen from memory and
+         * never reached: say that, not just "retrying", and offer Local
+         * beside the connections.  The sentence is the library's, the
+         * same one GTK draws.
+         */
+        g_autofree gchar *text = clawt_connection_notice_text(
+            link, app->connection, TRUE, NULL, NULL);
+
+        clawt_lrg_paragraph_set_text(shell.banner_label, text);
+        lrg_button_set_text(LRG_BUTTON(shell.banner_action), "Connections…");
+        lrg_widget_add_class(app->banner, "clawt-banner-bad");
+        lrg_widget_set_visible(app->banner, TRUE);
+    } else if (!connected) {
         g_autofree gchar *text = g_strdup_printf(
             clawt_client_is_reconnecting(app->client)
                 ? "Not connected to %s — retrying"
@@ -801,8 +830,8 @@ clawt_lrg_update_banner(ClawtLrgApp *app)
          * the web client, which also hold it in their banners.
          */
         g_autofree gchar *notice = clawt_connection_notice_text(
-            CLAWT_DAEMON_LINK_UP, app->connection, app->daemon_version,
-            app->daemon_update);
+            CLAWT_DAEMON_LINK_UP, app->connection, FALSE,
+            app->daemon_version, app->daemon_update);
 
         if (notice != NULL) {
             clawt_lrg_paragraph_set_text(shell.banner_label, notice);
@@ -1222,8 +1251,13 @@ clawt_lrg_window_build(ClawtLrgApp *app)
     lrg_widget_set_valign(shell.banner_label, LRG_ALIGN_CENTER);
     shell.banner_action = clawt_lrg_button("", NULL,
                                            G_CALLBACK(on_banner_action), app);
+    shell.banner_local = clawt_lrg_button("Use Local", "primary",
+                                          G_CALLBACK(on_banner_local), app);
+    lrg_widget_set_valign(shell.banner_local, LRG_ALIGN_CENTER);
+    lrg_widget_set_visible(shell.banner_local, FALSE);
     clawt_lrg_take(banner, shell.banner_label);
     clawt_lrg_take(banner, shell.banner_action);
+    clawt_lrg_take(banner, shell.banner_local);
     lrg_widget_set_visible(banner, FALSE);
     app->banner = banner;
     clawt_lrg_take(main_column, banner);

@@ -149,7 +149,12 @@ on_probed(GObject *source, GAsyncResult *result, gpointer user_data)
      */
     if (job->purpose == PROBE_SWITCH) {
         if (status->reach == CLAWT_REACH_REACHABLE) {
-            g_hash_table_replace(links.status, g_strdup(job->name), status);
+            if (links.status != NULL)
+                g_hash_table_replace(links.status, g_strdup(job->name),
+                                     status);
+            else
+                clawt_connection_status_free(status);
+
             switch_to(app, job->connection);
             return;
         }
@@ -166,7 +171,16 @@ on_probed(GObject *source, GAsyncResult *result, gpointer user_data)
         }
     }
 
-    /* an answer about a list that has since been reloaded is still true */
+    /*
+     * An answer about a list that has since been reloaded is still true.
+     * No table at all is a switch asked for before the page was ever
+     * built -- the banner's Use Local -- and has no list to keep it for.
+     */
+    if (links.status == NULL) {
+        clawt_connection_status_free(status);
+        return;
+    }
+
     g_hash_table_replace(links.status, g_strdup(job->name), status);
 
     if (job->generation == links.generation)
@@ -433,6 +447,10 @@ on_status(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     gboolean connected = clawt_client_is_connected(app->client);
 
     if (GPOINTER_TO_UINT(user_data) != links.asked)
+        return;
+
+    /* asked by a switch from the banner, with the page never built */
+    if (links.current == NULL)
         return;
 
     version = clawt_lrg_settings_daemon_version(reply, &update);
@@ -786,6 +804,25 @@ build(ClawtLrgApp *app)
 static const ClawtLrgSettingsPage page_impl = {
     "connections", "Connections", build, refresh
 };
+
+void
+clawt_lrg_settings_connections_use_local(ClawtLrgApp *app)
+{
+    g_autoptr(ClawtConnection) local = NULL;
+
+    g_return_if_fail(app != NULL);
+
+    /*
+     * The page's own switch, probe first: a local daemon that is not
+     * running either is a toast saying so, not a window dropped from a
+     * remote it was still trying onto a socket with nothing behind it.
+     * A switch that lands saves Local, which removes the last-connection
+     * file -- so the next start is not on the unreachable machine again.
+     */
+    local = clawt_connection_new_local("Local", links.local_socket);
+    clawt_lrg_toast(app, "Checking it answers first…");
+    probe(app, local, PROBE_SWITCH);
+}
 
 const ClawtLrgSettingsPage *
 clawt_lrg_settings_connections_page(void)

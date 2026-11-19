@@ -214,7 +214,7 @@ in =clawt_connection_choose()= for both clients:
 2. ~--profile~ (an unknown name is an error: somebody asked for it)
 3. ~--socket~ (an explicit choice of a local daemon)
 4. the remembered connection (one that no longer exists falls back to
-   the local daemon, quietly: nobody asked for it this time)
+   the local daemon without an error, since nobody asked for it this time -- but with a notice; see [[#remembered-daemon-fallback][When the remembered daemon can't be used]])
 5. the local daemon
 
 The CLI does not remember: a script expects the local daemon unless told
@@ -244,6 +244,43 @@ after about a minute and the verb fails with "the daemon closed the
 connection", instead of sitting out the request's 120-second deadline
 and reporting a timeout.  The same outcome a minute earlier, and a truer
 sentence -- a timeout reads as a slow daemon, and this one is not there.
+
+**** When the remembered daemon can't be used
+:PROPERTIES:
+:CUSTOM_ID: remembered-daemon-fallback
+:END:
+
+A daemon the client chose from memory is one nobody asked for this time, so when it can't be used the client says so rather than leaving you to work out why the window is empty or why it is on Local (since 0.52.0).  There are two cases.
+
+*The remembered profile is gone.*  It was deleted or renamed in ~connections.yaml~ since the last switch, or the file can't be read.  The client still opens on the local daemon -- this is not an error, as an unknown ~--profile~ is -- and toasts, once, in its first window:
+
+#+begin_example
+The connection you last used, “workstation”, is no longer saved; connected to Local.
+#+end_example
+
+The same line goes to stderr.  The sentence comes from =clawt_connection_choose()= itself, through its ~notice~ out-parameter, so GTK and libregnum cannot word it differently.  Before 0.52.0 this fallback was silent, and somebody who had been on the workstation yesterday read an empty local fleet as the workstation's fleet having vanished.
+
+*The remembered daemon has not answered since the client started.*  The workstation is switched off, asleep, or off the tailnet.  The banner says that this is the daemon the client was last on, and offers two ways out instead of one:
+
+#+begin_example
+Not connected to workstation (100.72.0.41:8792), the daemon this client was last on. Still trying; use Local, or choose another connection.
+                                                          [ Connections… ]  [ Use Local ]
+#+end_example
+
+- *Use Local* switches to the local daemon through the client's ordinary switch (GTK's connection menu path, libregnum's Settings → Connections path, which checks the daemon answers first).  A switch that lands saves Local, which removes ~last-connection~, so the next start is on the local daemon rather than on the unreachable machine again.  A local daemon that is not running either is a toast, and the window stays where it was, still trying.
+- *Connections…* opens the connection menu (GTK) or Settings → Connections (libregnum), as the ordinary never-connected banner does.
+
+The client keeps trying the remembered daemon while the banner shows, so if the workstation wakes up the window fills itself in and the banner goes away.
+
+When the offer is made is one pure function, =clawt_connection_offer_local(link, connection, remembered)=, which both clients call so they cannot disagree.  It is TRUE only when all three hold:
+
+| condition | why it is required |
+|-----------+--------------------|
+| the link state is never (=CLAWT_DAEMON_LINK_NEVER=) | a daemon that answered earlier this session and dropped is a blip to wait out, not a stale choice; that state keeps its "Lost the connection" sentence |
+| the connection came from ~last-connection~ (=clawt_connection_choose()='s ~from_last~) | somebody who typed ~--host~ or ~--profile~ meant that machine, and is not helped by an offer to undo it |
+| the connection is not local | Local cannot be the way out of Local |
+
+=clawt_connection_notice_text()= takes the same ~remembered~ flag and words the never-connected sentence as above only when =clawt_connection_offer_local()= agrees; every other case reads as before.  Any switch clears the flag, since after one the person chose.  The web client has no ~last-connection~ file -- it serves the daemon its command line names -- so it always passes FALSE and never draws the button; the parity check records that decision as the web marker of its "remembered daemon fallback" row.
 
 *** Pairing a device instead of copying the token
 
@@ -3480,6 +3517,7 @@ are different:
   trying; choose another connection to switch."  No mention of starting
   a daemon: starting one *here* gets you no closer to a machine over
   there.
+- *Remote, chosen from memory* -- the same, saying it is the daemon this client was last on, with a *Use Local* button beside *Connections…*; see [[#remembered-daemon-fallback][When the remembered daemon can't be used]].
 
 It never says the connection was *lost*.  That is a claim about history
 and it is wrong for a window that has never had anything on it -- and it

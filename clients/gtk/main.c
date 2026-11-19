@@ -103,7 +103,23 @@ on_activate(AdwApplication *app, gpointer user_data)
     ClawtWindow *window;
 
     window = clawt_window_new(app, client, connection);
+    clawt_window_set_remembered(
+        window, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(app),
+                                                  "connection-remembered")));
     gtk_window_present(GTK_WINDOW(window));
+
+    /*
+     * What choosing the connection had to say (a remembered profile
+     * since deleted), once, in the first window: taken, so a second
+     * activation does not repeat yesterday's news.
+     */
+    {
+        g_autofree gchar *notice =
+            g_object_steal_data(G_OBJECT(app), "connection-notice");
+
+        if (notice != NULL)
+            clawt_window_toast(window, notice);
+    }
 
     /*
      * This process's own --open, once there is a window to open it in.
@@ -181,6 +197,8 @@ main(int argc, char *argv[])
     g_autoptr(ClawtClient) client = NULL;
     g_autoptr(ClawtConnection) connection = NULL;
     g_autoptr(GError) error = NULL;
+    g_autofree gchar *notice = NULL;
+    gboolean from_last = FALSE;
     gint status;
 
     context = g_option_context_new("- the clawtilla desktop client");
@@ -280,7 +298,8 @@ main(int argc, char *argv[])
      */
     connection = clawt_connection_choose(
         opt_host, opt_port > 0 ? (guint16)opt_port : 0, opt_token,
-        opt_profile, opt_socket_path, NULL, NULL, TRUE, &error);
+        opt_profile, opt_socket_path, NULL, NULL, TRUE, &from_last,
+        &notice, &error);
 
     if (connection == NULL) {
         g_printerr("clawtilla-gtk: %s\n", error->message);
@@ -338,6 +357,19 @@ main(int argc, char *argv[])
     g_object_set_data_full(G_OBJECT(app), "connection",
                            clawt_connection_copy(connection),
                            (GDestroyNotify)clawt_connection_free);
+
+    /*
+     * Whether it came from memory, and anything choosing it had to say:
+     * both for the window, which is what can draw them (on_activate()).
+     */
+    g_object_set_data(G_OBJECT(app), "connection-remembered",
+                      GINT_TO_POINTER(from_last));
+
+    if (notice != NULL) {
+        g_printerr("clawtilla-gtk: %s\n", notice);
+        g_object_set_data_full(G_OBJECT(app), "connection-notice",
+                               g_steal_pointer(&notice), g_free);
+    }
 
     g_signal_connect(app, "activate", G_CALLBACK(on_activate), client);
 
