@@ -261,6 +261,18 @@ void clawt_lrg_request(ClawtLrgApp          *app,
 /* Shows @text as a toast, unless it is the same sentence as a second ago. */
 void clawt_lrg_toast(ClawtLrgApp *app, const gchar *text);
 
+/*
+ * How long a notice about how this window started stays up.  It is queued
+ * before the first frame is drawn, and libregnum's toast clock runs from
+ * then: at the default 3.5 s, "The connection you last used ... is no
+ * longer saved" was on screen for about a second and a half.
+ */
+#define CLAWT_LRG_START_NOTICE_SECONDS (10.0)
+
+/* clawt_lrg_toast() for @seconds rather than libregnum's default. */
+void clawt_lrg_toast_for(ClawtLrgApp *app, const gchar *text,
+                         gdouble seconds);
+
 /* A toast with one action button; @on_action runs if it is pressed. */
 void clawt_lrg_toast_action(ClawtLrgApp *app,
                             const gchar *text,
