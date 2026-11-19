@@ -855,6 +855,48 @@ test_server_launch(void)
     fake_x_teardown(&fake);
 }
 
+/*
+ * An app that is already done when its pid is asked for is still an app
+ * that started.  GLib forgets a reaped child's identifier, and a launch
+ * that read "no pid" as failure reported a startup `echo` that had run
+ * as "did not start: no reason given" -- intermittently, under load, as
+ * /display/computer/commands-and-startup did in a release gate.  Breaks
+ * if a quick app is refused, or refused without saying why.  Many
+ * launches, because which side of the reaping one lands on is a race.
+ */
+static void
+test_server_launch_quick_app(void)
+{
+    FakeX fake = { 0 };
+    g_autoptr(ClawtDisplayServer) server = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *dir = NULL;
+    guint i;
+
+    fake_x_setup(&fake);
+    dir = g_build_filename(fake.root, "display", NULL);
+    server = clawt_display_server_new(CLAWT_DISPLAY_BACKEND_XVFB, dir, 640,
+                                      480);
+    g_assert_true(clawt_display_server_start(server, &error));
+    g_assert_no_error(error);
+
+    for (i = 0; i < 100; i++) {
+        gint pid = -1;
+
+        g_assert_true(clawt_display_server_launch(server, "true", NULL,
+                                                  NULL, &pid, &error));
+        g_assert_no_error(error);
+        g_assert_cmpint(pid, >=, 0);
+
+        /* give the reaper its chance on every other one */
+        if (i % 2 == 1)
+            g_usleep(5 * 1000);
+    }
+
+    clawt_display_server_stop(server);
+    fake_x_teardown(&fake);
+}
+
 /* ── The computer ────────────────────────────────────────────────── */
 
 static ClawtComputer *
@@ -1893,6 +1935,8 @@ main(int argc, char *argv[])
                     test_logs_refuse_symlinks);
     g_test_add_func("/display/computer/binds-the-socket-alone",
                     test_computer_binds_the_socket_alone);
+    g_test_add_func("/display/server/launch-quick-app",
+                    test_server_launch_quick_app);
     g_test_add_func("/display/computer/commands-and-startup",
                     test_computer_commands_and_startup);
     g_test_add_func("/display/computer/observable",

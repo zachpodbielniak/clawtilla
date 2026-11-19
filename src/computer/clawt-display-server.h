@@ -431,6 +431,10 @@ gboolean clawt_display_server_send_input(ClawtDisplayServer *self,
  * under bwrap it is started here, inside the box, as a Wayland client.
  * The app is stopped with the server.
  *
+ * @pid is set to 0 when there is none to give: gowl's MCP spawn does not
+ * say, and an app that finished before it was asked (a startup `echo`)
+ * has already been reaped.  Neither is a failure.
+ *
  * Returns: %TRUE when it was started
  */
 gboolean clawt_display_server_launch(ClawtDisplayServer *self,

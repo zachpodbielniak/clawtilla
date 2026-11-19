@@ -409,13 +409,14 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Then (0.50.0):* the plan's scratch agent per test run -- a temporary copy of the named agent with the skill under test alone, never saved, removed when the run settles.
 - *Version:* minor.
 
-** DONE libregnum papercuts found looking at 0.52.0 v0.52.1 :clients:
+** DONE Papercuts found looking at 0.52.0: libregnum, and a display app that finished too fast v0.52.1 :clients:computers:
 - *Found:* by running the GTK and libregnum clients under Xvfb against a throwaway daemon after 0.52.0, which the automated gate does not do.
 - *Done:*
   - *The island counted a muted agent's messages* ("1 unread" after muting it), while the Chat badge and the bell did not: it now uses =clawt_unread_total()= like them.
   - *A daemon copy's chip and Save a copy… showed its id* ("01m7s9ghwm…-attachment_page.pdf"), the name the cache keeps it under: =clawt_lrg_attachment_display_name()=.
   - *A Files tile's details ran past its edge* into the next tile: name and details are cut short with an ellipsis.
-  - Test: =/lrg/chat/attachments/display-name=.
+  - *A display computer's quick startup app was reported as not started* ("did not start: no reason given"), intermittently, when it finished before its pid was read: GLib forgets a reaped child's identifier.  =spawn_app()= now says started apart from the pid, which is 0 then, as for gowl's MCP spawn.  Found when =/display/computer/commands-and-startup= failed once in this release's gate.
+  - Tests: =/lrg/chat/attachments/display-name=, =/display/server/launch-quick-app= (a hundred launches of =true=; the old code failed it three runs in five).
 - *Checked by eye, both clients:* the notification panel and its sections, right-click Mark as read and Mute on the agent list (GTK no longer selects the row), mute dimming the pill, the Files dialog with an image, a PDF's first page and a text file's head.
 - *Version:* micro.
 

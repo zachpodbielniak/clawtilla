@@ -1866,9 +1866,10 @@ sandbox_child_setup(gpointer user_data)
  * screen's variables, inside @sandbox when there is one, kept so it
  * stops with the server.  Called with lock held.
  */
-static gint
+static gboolean
 spawn_app(ClawtDisplayServer *self, const gchar *command,
-          GHashTable *environment, ClawtSandbox *sandbox, GError **error)
+          GHashTable *environment, ClawtSandbox *sandbox, gint *pid_out,
+          GError **error)
 {
     gint log_fd;
     g_autoptr(GSubprocessLauncher) launcher = NULL;
@@ -1917,7 +1918,7 @@ spawn_app(ClawtDisplayServer *self, const gchar *command,
         g_auto(GStrv) boxed = NULL;
 
         if (!clawt_sandbox_check_argv(sandbox, shell, error))
-            return 0;
+            return FALSE;
         argv = clawt_sandbox_wrap_argv(sandbox, shell);
         boxed = clawt_sandbox_wrap_environment(sandbox,
                                                (const gchar * const *)env);
@@ -1929,7 +1930,7 @@ spawn_app(ClawtDisplayServer *self, const gchar *command,
 
     log_fd = open_log(log, error);
     if (log_fd < 0)
-        return 0;
+        return FALSE;
     launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDIN_INHERIT);
     g_subprocess_launcher_set_environ(launcher, env);
     g_subprocess_launcher_take_stderr_fd(launcher, dup(log_fd));
@@ -1940,14 +1941,23 @@ spawn_app(ClawtDisplayServer *self, const gchar *command,
                                sandbox != NULL ? sandbox_child_setup : NULL,
                                sandbox, error);
     if (child == NULL)
-        return 0;
+        return FALSE;
 
+    /*
+     * Started, whatever the pid says.  GLib reaps a child on its worker
+     * thread and forgets its identifier then, so an app that is already
+     * done -- a startup `echo once >> file` -- has none by the time it is
+     * asked for.  Reading "no pid" as "did not start" logged a failure
+     * for an app that had run ("did not start: no reason given") and
+     * failed /display/computer/commands-and-startup under load.  The pid
+     * is 0 then, as it is for gowl's MCP spawn.
+     */
     {
         const gchar *id = g_subprocess_get_identifier(child);
-        gint pid = (id != NULL) ? (gint)g_ascii_strtoll(id, NULL, 10) : 0;
 
+        *pid_out = (id != NULL) ? (gint)g_ascii_strtoll(id, NULL, 10) : 0;
         g_ptr_array_add(self->apps, g_steal_pointer(&child));
-        return pid;
+        return TRUE;
     }
 }
 
@@ -2053,8 +2063,7 @@ clawt_display_server_launch(ClawtDisplayServer *self, const gchar *command,
                             "%s)", mcp_error->message, rpc_error->message);
         }
     } else {
-        pid = spawn_app(self, command, environment, sandbox, error);
-        ok = pid > 0;
+        ok = spawn_app(self, command, environment, sandbox, &pid, error);
     }
 
     g_mutex_unlock(&self->lock);
