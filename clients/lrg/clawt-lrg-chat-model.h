@@ -717,6 +717,25 @@ void clawt_lrg_gallery_row_free(ClawtLrgGalleryRow *row);
 GPtrArray *clawt_lrg_gallery_rows(JsonNode *reply);
 
 /**
+ * clawt_lrg_attachment_display_name:
+ * @path: a file a transcript or the Files panel is about to show
+ * @cache_dir: (nullable): the directory fetched daemon copies are kept in
+ *
+ * The name to show for @path, and to offer when saving a copy.
+ *
+ * A file fetched with `attachment.get` is cached under its daemon id,
+ * `<random>-<name>`, so its basename is not the name it was sent with:
+ * a chip read "01m7s9ghwmkxmdzpxa4t-attachment_page.pdf".  Under
+ * @cache_dir the id's own name (clawt_attachment_name()) is shown;
+ * anywhere else -- an old message's host path -- the basename is the
+ * name, dashes and all.
+ *
+ * Returns: (transfer full): the name
+ */
+gchar *clawt_lrg_attachment_display_name(const gchar *path,
+                                         const gchar *cache_dir);
+
+/**
  * ClawtLrgSentFile:
  * @name: the file's name
  * @host_path: (nullable): where the daemon put it on the host

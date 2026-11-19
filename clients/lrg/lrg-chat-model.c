@@ -1583,6 +1583,31 @@ clawt_lrg_gallery_row_free(ClawtLrgGalleryRow *row)
     g_free(row);
 }
 
+gchar *
+clawt_lrg_attachment_display_name(const gchar *path, const gchar *cache_dir)
+{
+    g_autofree gchar *base = NULL;
+    g_autofree gchar *dir = NULL;
+
+    g_return_val_if_fail(path != NULL, NULL);
+
+    base = g_path_get_basename(path);
+    dir = g_path_get_dirname(path);
+
+    /*
+     * Only a cached daemon copy carries the id's random prefix.  A name
+     * the id check refuses keeps its basename rather than showing none.
+     */
+    if (cache_dir != NULL && g_strcmp0(dir, cache_dir) == 0) {
+        gchar *name = clawt_attachment_name(base);
+
+        if (name != NULL)
+            return name;
+    }
+
+    return (gchar *)g_steal_pointer(&base);
+}
+
 GPtrArray *
 clawt_lrg_gallery_rows(JsonNode *reply)
 {
