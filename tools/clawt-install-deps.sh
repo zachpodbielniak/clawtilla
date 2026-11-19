@@ -71,6 +71,7 @@ gtk4,optional,gtk4-devel,libgtk-4-dev,gtk4
 libadwaita-1,optional,libadwaita-devel,libadwaita-1-dev,libadwaita
 gobject-introspection-1.0,optional,gobject-introspection-devel,libgirepository1.0-dev gobject-introspection,gobject-introspection
 libqrencode,optional,qrencode-devel,libqrencode-dev,qrencode
+poppler-glib,optional,poppler-glib-devel,libpoppler-glib-dev,poppler-glib
 podman,runtime,podman,podman,podman
 distrobox,runtime,distrobox,distrobox,distrobox
 bwrap,runtime,bubblewrap,bubblewrap,bubblewrap

@@ -340,8 +340,9 @@ test_the_last_connection_is_a_name(void)
 /*
  * Which daemon a client opens on: every flag beats the memory, the
  * memory beats the local default, and a remembered profile that has
- * since gone falls back to local quietly -- where an unknown --profile
- * is an error, because somebody asked for it.
+ * since gone falls back to local without an error (with a notice; see
+ * the next test) -- where an unknown --profile is an error, because
+ * somebody asked for it.
  */
 static void
 test_choosing_a_daemon(void)
@@ -369,7 +370,7 @@ test_choosing_a_daemon(void)
 
     /* nothing remembered yet: the local daemon */
     fresh = clawt_connection_choose(NULL, 0, NULL, NULL, NULL, list_path,
-                                    last_path, TRUE, &error);
+                                    last_path, TRUE, NULL, NULL, &error);
     g_assert_no_error(error);
     g_assert_true(clawt_connection_is_local(fresh));
 
@@ -377,46 +378,220 @@ test_choosing_a_daemon(void)
         last_path, g_ptr_array_index(list, 0), NULL));
 
     /* remembered: the workstation, with its token read afresh */
-    remembered = clawt_connection_choose(NULL, 0, NULL, NULL, NULL,
-                                         list_path, last_path, TRUE, &error);
+    remembered = clawt_connection_choose(NULL, 0, NULL, NULL, NULL, list_path,
+                                         last_path, TRUE, NULL, NULL, &error);
     g_assert_no_error(error);
     g_assert_cmpstr(clawt_connection_get_name(remembered), ==,
                     "workstation");
     g_assert_cmpstr(clawt_connection_get_token(remembered), ==, "tok-w");
 
     /* every flag beats it */
-    host = clawt_connection_choose("10.0.0.5", 0, "t", NULL, NULL,
-                                   list_path, last_path, TRUE, &error);
+    host = clawt_connection_choose("10.0.0.5", 0, "t", NULL, NULL, list_path,
+                                   last_path, TRUE, NULL, NULL, &error);
     g_assert_cmpstr(clawt_connection_get_host(host), ==, "10.0.0.5");
-    profile = clawt_connection_choose(NULL, 0, NULL, "laptop", NULL,
-                                      list_path, last_path, TRUE, &error);
+    profile = clawt_connection_choose(NULL, 0, NULL, "laptop", NULL, list_path,
+                                      last_path, TRUE, NULL, NULL, &error);
     g_assert_cmpstr(clawt_connection_get_name(profile), ==, "laptop");
     socket = clawt_connection_choose(NULL, 0, NULL, NULL, "/run/x.sock",
-                                     list_path, last_path, TRUE, &error);
+                                     list_path, last_path, TRUE, NULL, NULL,
+                                     &error);
     g_assert_true(clawt_connection_is_local(socket));
     g_assert_cmpstr(clawt_connection_get_socket_path(socket), ==,
                     "/run/x.sock");
 
     /* and a caller that does not remember (the self-test) is local */
-    not_asked = clawt_connection_choose(NULL, 0, NULL, NULL, NULL,
-                                        list_path, last_path, FALSE, &error);
+    not_asked = clawt_connection_choose(NULL, 0, NULL, NULL, NULL, list_path,
+                                        last_path, FALSE, NULL, NULL, &error);
     g_assert_true(clawt_connection_is_local(not_asked));
 
     /* the remembered profile deleted since: local, and no error */
     g_ptr_array_remove_index(list, 0);
     g_assert_true(clawt_connection_list_save(list_path, list, NULL));
     gone = clawt_connection_choose(NULL, 0, NULL, NULL, NULL, list_path,
-                                   last_path, TRUE, &error);
+                                   last_path, TRUE, NULL, NULL, &error);
     g_assert_no_error(error);
     g_assert_true(clawt_connection_is_local(gone));
 
     /* an unknown --profile is still an error: somebody asked for it */
     unknown = clawt_connection_choose(NULL, 0, NULL, "nowhere", NULL,
-                                      list_path, last_path, TRUE, &error);
+                                      list_path, last_path, TRUE, NULL, NULL,
+                                      &error);
     g_assert_null(unknown);
     g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND);
 
     clawt_test_remove_tree(dir);
+}
+
+/*
+ * A remembered profile that has gone since still opens on Local, but
+ * says so -- and a remembered one that is there says it came from
+ * memory, which is what the banner's Use Local button is drawn from.
+ *
+ * If this regresses, a laptop whose workstation profile was deleted
+ * opens on an empty local fleet with nothing said (the papercut this
+ * exists for), or the clients stop knowing that the daemon they are
+ * failing to reach was chosen by them rather than by the person, and
+ * the way back to Local disappears from the banner.
+ */
+static void
+test_choosing_says_what_the_memory_did(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-choose-XXXXXX", NULL);
+    g_autofree gchar *list_path = g_build_filename(dir, "conn.yaml", NULL);
+    g_autofree gchar *last_path = g_build_filename(dir, "last", NULL);
+    g_autoptr(GPtrArray) list = empty_list();
+    g_autoptr(ClawtConnection) remembered = NULL;
+    g_autoptr(ClawtConnection) flagged = NULL;
+    g_autoptr(ClawtConnection) gone = NULL;
+    g_autoptr(ClawtConnection) fresh = NULL;
+    g_autofree gchar *remembered_notice = NULL;
+    g_autofree gchar *flagged_notice = NULL;
+    g_autofree gchar *gone_notice = NULL;
+    g_autofree gchar *fresh_notice = NULL;
+    gboolean from_last;
+    g_autoptr(GError) error = NULL;
+
+    g_ptr_array_add(list, clawt_connection_new_remote("workstation",
+                                                       "10.0.0.9", 8792,
+                                                       "tok-w"));
+    g_assert_true(clawt_connection_list_save(list_path, list, NULL));
+
+    /* nothing remembered: local, not from memory, nothing to say */
+    from_last = TRUE;
+    fresh = clawt_connection_choose(NULL, 0, NULL, NULL, NULL, list_path,
+                                    last_path, TRUE, &from_last,
+                                    &fresh_notice, &error);
+    g_assert_no_error(error);
+    g_assert_true(clawt_connection_is_local(fresh));
+    g_assert_false(from_last);
+    g_assert_null(fresh_notice);
+
+    g_assert_true(clawt_connection_last_save(
+        last_path, g_ptr_array_index(list, 0), NULL));
+
+    /* remembered and still saved: from memory, and nothing to say */
+    remembered = clawt_connection_choose(NULL, 0, NULL, NULL, NULL,
+                                         list_path, last_path, TRUE,
+                                         &from_last, &remembered_notice,
+                                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(clawt_connection_get_name(remembered), ==,
+                    "workstation");
+    g_assert_true(from_last);
+    g_assert_null(remembered_notice);
+
+    /* the same profile asked for by name is not from memory */
+    flagged = clawt_connection_choose(NULL, 0, NULL, "workstation", NULL,
+                                      list_path, last_path, TRUE,
+                                      &from_last, &flagged_notice, &error);
+    g_assert_no_error(error);
+    g_assert_false(from_last);
+    g_assert_null(flagged_notice);
+
+    /* deleted since: Local, not from memory, and the sentence names it */
+    g_ptr_array_set_size(list, 0);
+    g_assert_true(clawt_connection_list_save(list_path, list, NULL));
+    gone = clawt_connection_choose(NULL, 0, NULL, NULL, NULL, list_path,
+                                   last_path, TRUE, &from_last, &gone_notice,
+                                   &error);
+    g_assert_no_error(error);
+    g_assert_true(clawt_connection_is_local(gone));
+    g_assert_false(from_last);
+    g_assert_cmpstr(gone_notice, ==,
+                    "The connection you last used, “workstation”, is no "
+                    "longer saved; connected to Local.");
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * Use Local is offered for one case only: a remote daemon, chosen from
+ * memory, that has never answered this session.
+ *
+ * If this regresses one way, the button appears over a connection that
+ * merely blinked (LOST), over a --host somebody typed on purpose, or as
+ * "switch to Local" while on Local; the other way, a laptop opened on a
+ * workstation that is switched off has no one-press way back.
+ */
+static void
+test_use_local_is_offered_only_for_a_stale_memory(void)
+{
+    g_autoptr(ClawtConnection) local =
+        clawt_connection_new_local("Local", NULL);
+    g_autoptr(ClawtConnection) remote =
+        clawt_connection_new_remote("workstation", "10.0.0.9", 8792, "t");
+
+    /* the one case */
+    g_assert_true(clawt_connection_offer_local(CLAWT_DAEMON_LINK_NEVER,
+                                               remote, TRUE));
+
+    /* already local */
+    g_assert_false(clawt_connection_offer_local(CLAWT_DAEMON_LINK_NEVER,
+                                                local, TRUE));
+
+    /* reached once: a blip to wait out, not a stale choice */
+    g_assert_false(clawt_connection_offer_local(CLAWT_DAEMON_LINK_LOST,
+                                                remote, TRUE));
+    g_assert_false(clawt_connection_offer_local(CLAWT_DAEMON_LINK_UP,
+                                                remote, TRUE));
+
+    /* asked for with --host or --profile: somebody meant that machine */
+    g_assert_false(clawt_connection_offer_local(CLAWT_DAEMON_LINK_NEVER,
+                                                remote, FALSE));
+
+    /* no connection at all is not a remote one */
+    g_assert_false(clawt_connection_offer_local(CLAWT_DAEMON_LINK_NEVER,
+                                                NULL, TRUE));
+}
+
+/*
+ * The never-connected sentence for a remembered remote says it is the
+ * daemon this client was last on and points at Use Local; every other
+ * case reads exactly as it did before the flag existed.
+ *
+ * If this regresses, the banner beside the Use Local button either does
+ * not say why this machine was chosen, or the explicit --host case
+ * starts talking about a memory nobody used.
+ */
+static void
+test_the_remembered_notice_says_so(void)
+{
+    g_autoptr(ClawtConnection) local =
+        clawt_connection_new_local("Local", NULL);
+    g_autoptr(ClawtConnection) remote =
+        clawt_connection_new_remote("workstation", "10.0.0.9", 8792,
+                                    "s3cret");
+    g_autofree gchar *remembered = NULL;
+    g_autofree gchar *typed = NULL;
+    g_autofree gchar *local_remembered = NULL;
+    g_autofree gchar *local_plain = NULL;
+    g_autofree gchar *lost_remembered = NULL;
+    g_autofree gchar *lost_plain = NULL;
+
+    remembered = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER,
+                                              remote, TRUE, NULL, NULL);
+    typed = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, remote,
+                                         FALSE, NULL, NULL);
+
+    g_assert_nonnull(strstr(remembered, "last on"));
+    g_assert_nonnull(strstr(remembered, "use Local"));
+    g_assert_nonnull(strstr(remembered, "10.0.0.9"));
+    g_assert_null(strstr(remembered, "s3cret"));
+    g_assert_null(strstr(typed, "last on"));
+    g_assert_null(strstr(typed, "use Local"));
+
+    /* the flag changes nothing where no button is offered */
+    local_remembered = clawt_connection_notice_text(
+        CLAWT_DAEMON_LINK_NEVER, local, TRUE, NULL, NULL);
+    local_plain = clawt_connection_notice_text(
+        CLAWT_DAEMON_LINK_NEVER, local, FALSE, NULL, NULL);
+    g_assert_cmpstr(local_remembered, ==, local_plain);
+
+    lost_remembered = clawt_connection_notice_text(
+        CLAWT_DAEMON_LINK_LOST, remote, TRUE, NULL, NULL);
+    lost_plain = clawt_connection_notice_text(
+        CLAWT_DAEMON_LINK_LOST, remote, FALSE, NULL, NULL);
+    g_assert_cmpstr(lost_remembered, ==, lost_plain);
 }
 
 /*
@@ -1297,10 +1472,10 @@ test_the_advice_matches_where_the_daemon_is(void)
     g_autofree gchar *here = NULL;
     g_autofree gchar *there = NULL;
 
-    here = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local,
+    here = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local, FALSE,
                                         NULL, NULL);
     there = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, remote,
-                                         NULL, NULL);
+                                         FALSE, NULL, NULL);
 
     g_assert_nonnull(here);
     g_assert_nonnull(there);
@@ -1335,9 +1510,9 @@ test_a_connection_never_made_was_not_lost(void)
     g_autofree gchar *never = NULL;
     g_autofree gchar *lost = NULL;
 
-    never = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local,
+    never = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local, FALSE,
                                          NULL, NULL);
-    lost = clawt_connection_notice_text(CLAWT_DAEMON_LINK_LOST, local,
+    lost = clawt_connection_notice_text(CLAWT_DAEMON_LINK_LOST, local, FALSE,
                                         NULL, NULL);
 
     g_assert_nonnull(never);
@@ -1376,14 +1551,14 @@ test_a_broken_connection_outranks_a_version(void)
      * clawt_version_mismatch_text() definitely has something to say --
      * checked, so the test cannot pass by there being no mismatch.
      */
-    up = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local, "99.0.0",
-                                      NULL);
+    up = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local, FALSE,
+                                      "99.0.0", NULL);
     g_assert_nonnull(up);
     g_assert_nonnull(strstr(up, "99.0.0"));
 
-    never = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local,
+    never = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local, FALSE,
                                          "99.0.0", NULL);
-    lost = clawt_connection_notice_text(CLAWT_DAEMON_LINK_LOST, local,
+    lost = clawt_connection_notice_text(CLAWT_DAEMON_LINK_LOST, local, FALSE,
                                         "99.0.0", NULL);
 
     g_assert_null(strstr(never, "99.0.0"));
@@ -1398,13 +1573,13 @@ test_a_healthy_connection_says_nothing(void)
         clawt_connection_new_local("Local", NULL);
     g_autofree gchar *quiet = NULL;
 
-    quiet = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local,
+    quiet = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local, FALSE,
                                          CLAWT_VERSION_STRING, NULL);
     g_assert_null(quiet);
 
     /* An unknown version is not a complaint either. */
-    quiet = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local, NULL,
-                                         NULL);
+    quiet = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local, FALSE,
+                                         NULL, NULL);
     g_assert_null(quiet);
 }
 
@@ -1419,9 +1594,11 @@ static void
 test_a_notice_without_a_connection_still_reads(void)
 {
     g_autofree gchar *never =
-        clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, NULL, NULL, NULL);
+        clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, NULL, FALSE,
+                                     NULL, NULL);
     g_autofree gchar *lost =
-        clawt_connection_notice_text(CLAWT_DAEMON_LINK_LOST, NULL, NULL, NULL);
+        clawt_connection_notice_text(CLAWT_DAEMON_LINK_LOST, NULL, FALSE, NULL,
+                                     NULL);
 
     g_assert_nonnull(never);
     g_assert_nonnull(lost);
@@ -2162,6 +2339,12 @@ main(int argc, char *argv[])
     g_test_add_func("/connection/last-is-a-name",
                     test_the_last_connection_is_a_name);
     g_test_add_func("/connection/choose", test_choosing_a_daemon);
+    g_test_add_func("/connection/choose-says-what-memory-did",
+                    test_choosing_says_what_the_memory_did);
+    g_test_add_func("/connection/offer-local",
+                    test_use_local_is_offered_only_for_a_stale_memory);
+    g_test_add_func("/connection/notice-remembered",
+                    test_the_remembered_notice_says_so);
     g_test_add_func("/connection/file-is-private",
                     test_the_file_is_written_private);
     g_test_add_func("/connection/missing-file",

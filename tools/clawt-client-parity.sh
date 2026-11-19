@@ -141,7 +141,22 @@ declare -A AFFORDANCES=(
     ["jump to latest"]="jump_revealer|jump-pill|on_jump_clicked"
     ["transcript measure"]="adw_clamp_new|transcript-inner|clawt_measure_resolve_px"
     ["markdown rendering"]="clawt_markdown_to_pango|clawt_markdown_to_html|clawt_lrg_markdown"
-    ["attachment previews"]="append_attachment_previews|attachment|attachment_previews_append"
+    ["attachment previews"]="append_attachment_previews|attachment_element|attachment_previews_append"
+    #
+    # Files sent with a message: each client puts them with
+    # attachment.put and names them in the body with the shared block
+    # builder (clawt_attachment_block_*), so every client's message is
+    # spelled the one way the previews and the gallery read.
+    #
+    ["send a file with a message"]="body_with_attachments|clawt_attachment_block_add|clawt_lrg_body_with_attachments"
+    #
+    # A conversation's files as a grid (since 0.52.0): every client asks
+    # attachment.list (layer 1 compares the kind) and draws tiles from
+    # it; and each draws a PDF's first page and a text file's first lines
+    # from attachment.thumbnail, an image from its own bytes.
+    #
+    ["conversation files"]="clawt_gtk_show_conversation_files|clawt_web_files_grid|clawt_lrg_gallery_rows"
+    ["file thumbnails"]="gallery_preview|/thumb?size=|on_gallery_thumbnail"
     ["unread count"]="clawt-unread-badge|unread-badge|unread-badge"
     ["unread tab total"]="adw_view_stack_page_set_badge_number|unread_total|clawt_lrg_unread_badge"
     ["message runs"]="clawt_chat_run_is_start|clawt_chat_run_is_start|clawt_chat_run_is_start"
@@ -211,6 +226,16 @@ declare -A AFFORDANCES=(
     ["daemon version check"]="note_daemon_version|note_daemon_version|note_daemon_version"
     ["connection notice"]="clawt_connection_notice_text|clawt_connection_notice_text|clawt_connection_notice_text"
     ["start on a remote daemon"]="opt_profile|opt_profile|opt_profile"
+    #
+    # The daemon a desktop client chose from last-connection and could
+    # not use (since 0.52.0): a toast when the profile is gone, and Use
+    # Local beside Connections… while it has never answered, both drawn
+    # from clawt_connection_offer_local().  The web client has no
+    # last-connection file -- it serves the daemon its command line
+    # names -- so its marker is the named decision that it never passes
+    # "remembered", not a button it would have nothing to draw for.
+    #
+    ["remembered daemon fallback"]="clawt_connection_offer_local|WEB_REMEMBERS_NO_CONNECTION|clawt_connection_offer_local"
     ["resync after a gap"]="\"resync\"|\"resync\"|\"resync\""
     ["stop the running turn"]="on_stop_turn|stop_turn_button|on_stop_turn_clicked"
     ["decision options stack"]="decision_option_button|decision-options|decision_option_button"

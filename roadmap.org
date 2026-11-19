@@ -418,7 +418,6 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
   - *An agent's unread count that clicking it never cleared* -- hornbill's three routine replies, counted against your conversation while a peer conversation (with gnuisaince) was open.  Clicking the selected agent did nothing in GTK (~::row-selected~ does not fire again) or libregnum.  Now it opens your conversation and clears the count: =clawt_gtk_reopen_agent()=, =clawt_lrg_chat_reopen()=.  Ruled out on the live fleet: a room literally named ~hornbill~, and a stuck mailbox.
   - *The GTK and libregnum clients start on the daemon they were last switched to*: =clawt_connection_choose()= (flags first, then the remembered profile, then local) and =clawt_connection_last_save()=, a name in ~$XDG_STATE_HOME/clawtilla/last-connection~ and never a token.
   - Tests for each: =test-grok= (store, daemon, wording, lapse), =test-daemon= (an attachment kept by id), =test-lrg-models-chat= (one preview per file, the daemon's copy first), =test-connection= (the remembered name, the order).
-- *Not done:* the web client still cannot send a file with a message (its Attach only drops it in the exchange).
 - *Version:* micro.
 
 ** DONE Security review: a display's screen, and only its screen, in a box v0.51.4 :computers:security:

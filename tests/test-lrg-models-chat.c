@@ -1067,6 +1067,52 @@ test_attachment_prefers_the_daemon_copy(void)
                      g_ptr_array_index(old, 1))->value, ==, "b1");
 }
 
+/*
+ * The Files panel's tiles from attachment.list: newest first as the
+ * daemon gives them, "you" for the operator, a gone file said so and
+ * not offered a size, an old message's host path as the target, and an
+ * item with nothing to open skipped.
+ *
+ * What breaks without it: the libregnum Files panel draws exactly these
+ * rows, so a wrong target opens nothing and a wrong `exists` offers a
+ * tile that cannot be opened.
+ */
+static void
+test_gallery_rows(void)
+{
+    g_autoptr(JsonNode) reply = parse(
+        "{\"room\":\"dm:user:scout\",\"items\":["
+        "{\"id\":\"1-paper.pdf\",\"name\":\"paper.pdf\",\"kind\":\"pdf\","
+        " \"bytes\":2048,\"exists\":true,\"message\":\"m2\","
+        " \"sender\":\"scout\",\"ts\":0},"
+        "{\"path\":\"/h/old.png\",\"name\":\"old.png\",\"kind\":\"image\","
+        " \"bytes\":0,\"exists\":false,\"message\":\"m1\","
+        " \"sender\":\"user\",\"ts\":0},"
+        "{\"name\":\"nothing\",\"kind\":\"other\",\"exists\":false}]}");
+    g_autoptr(GPtrArray) rows = clawt_lrg_gallery_rows(reply);
+    g_autoptr(GPtrArray) empty = clawt_lrg_gallery_rows(NULL);
+    ClawtLrgGalleryRow *row;
+
+    g_assert_cmpuint(rows->len, ==, 2);
+
+    row = g_ptr_array_index(rows, 0);
+    g_assert_true(row->daemon_copy);
+    g_assert_cmpstr(row->target, ==, "1-paper.pdf");
+    g_assert_cmpstr(row->kind, ==, "pdf");
+    g_assert_true(row->exists);
+    g_assert_true(g_str_has_prefix(row->subtitle, "scout"));
+    g_assert_nonnull(strstr(row->subtitle, "kB"));
+
+    row = g_ptr_array_index(rows, 1);
+    g_assert_false(row->daemon_copy);
+    g_assert_cmpstr(row->target, ==, "/h/old.png");
+    g_assert_false(row->exists);
+    g_assert_true(g_str_has_prefix(row->subtitle, "you"));
+    g_assert_nonnull(strstr(row->subtitle, "gone"));
+
+    g_assert_cmpuint(empty->len, ==, 0);
+}
+
 /* ── Mentions and conversations ───────────────────────────────────── */
 
 static void
@@ -1420,6 +1466,7 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg/chat/steps/trim-notice", test_step_trim_notice);
     g_test_add_func("/lrg/chat/attachments/refs", test_attachment_refs);
     g_test_add_func("/lrg/chat/attachments/body", test_body_with_attachments);
+    g_test_add_func("/lrg/chat/attachments/gallery-rows", test_gallery_rows);
     g_test_add_func("/lrg/chat/attachments/prefers-daemon-copy",
                     test_attachment_prefers_the_daemon_copy);
     g_test_add_func("/lrg/chat/mentions", test_mentions);

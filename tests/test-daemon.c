@@ -3705,6 +3705,135 @@ test_an_attachment_is_kept_by_id(void)
     fixture_teardown(&fixture);
 }
 
+/* attachment.put one file for alpha; the reply's id. */
+static gchar *
+put_attachment(Fixture *fixture, const gchar *name, const gchar *bytes)
+{
+    g_autofree gchar *encoded = g_base64_encode((const guchar *)bytes,
+                                                strlen(bytes));
+    g_autofree gchar *payload = g_strdup_printf(
+        "{\"agent\":\"alpha\",\"name\":\"%s\",\"data\":\"%s\"}", name,
+        encoded);
+    g_autoptr(JsonNode) reply = request(fixture, "attachment.put", payload);
+
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+
+    return g_strdup(json_object_get_string_member(payload_of(reply), "id"));
+}
+
+/*
+ * A conversation's files, through the daemon: the operator sends two
+ * files in one message the way every client builds it, and
+ * attachment.list -- asked by agent, and by the agent id as a `room` --
+ * answers both in block order, with their kinds; attachment.thumbnail
+ * gives a text file's first lines and refuses a hostile id.
+ *
+ * What breaks without it: the Files gallery in all three clients and
+ * `clawtilla attachment list`.  An agent argument that did not resolve
+ * to the operator's direct room (dm:user:<agent>, named by the room
+ * manager) would list nothing for every agent.
+ */
+static void
+test_a_conversation_lists_its_files(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *exchange = g_dir_make_tmp("clawt-files-XXXXXX", NULL);
+    g_autofree gchar *yaml = g_strdup_printf("  exchange_dir: \"%s\"\n"
+                                             "agents:\n  - id: alpha\n",
+                                             exchange);
+    g_autofree gchar *text_id = NULL;
+    g_autofree gchar *pdf_id = NULL;
+    g_autofree gchar *body = NULL;
+    g_autofree gchar *send = NULL;
+    g_autofree gchar *thumb = NULL;
+    g_autofree gchar *direct = NULL;
+    g_autoptr(JsonNode) sent = NULL;
+    g_autoptr(JsonNode) by_agent = NULL;
+    g_autoptr(JsonNode) by_room = NULL;
+    g_autoptr(JsonNode) lines = NULL;
+    g_autoptr(JsonNode) hostile = NULL;
+    g_autoptr(JsonNode) nobody = NULL;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonGenerator) generator = json_generator_new();
+    GString *block;
+    JsonArray *items;
+
+    fixture_setup(&fixture, yaml);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    text_id = put_attachment(&fixture, "build.log", "line one\nline two\n");
+    pdf_id = put_attachment(&fixture, "paper.pdf", "%PDF-1.4 not really");
+    g_assert_nonnull(text_id);
+    g_assert_nonnull(pdf_id);
+
+    block = clawt_attachment_block_new("two files");
+    clawt_attachment_block_add(block, "build.log", "/h/build.log", NULL,
+                               text_id);
+    clawt_attachment_block_add(block, "paper.pdf", "/h/paper.pdf", NULL,
+                               pdf_id);
+    body = g_string_free(block, FALSE);
+
+    /* the body JSON-escaped, newlines and all */
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "target");
+    json_builder_add_string_value(builder, "alpha");
+    json_builder_set_member_name(builder, "body");
+    json_builder_add_string_value(builder, body);
+    json_builder_set_member_name(builder, "from");
+    json_builder_add_string_value(builder, "user");
+    json_builder_end_object(builder);
+    json_generator_take_root(generator, json_builder_get_root(builder));
+    send = json_generator_to_data(generator, NULL);
+
+    sent = request(&fixture, "msg.send", send);
+    g_assert_false(clawt_ipc_frame_is_error(sent));
+
+    by_agent = request(&fixture, "attachment.list", "{\"agent\":\"alpha\"}");
+    g_assert_false(clawt_ipc_frame_is_error(by_agent));
+
+    direct = clawt_room_manager_direct_id("user", "alpha");
+    g_assert_cmpstr(json_object_get_string_member(payload_of(by_agent),
+                                                  "room"), ==, direct);
+
+    items = json_object_get_array_member(payload_of(by_agent), "items");
+    g_assert_cmpuint(json_array_get_length(items), ==, 2);
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(items, 0), "id"),
+                    ==, text_id);
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(items, 0), "kind"),
+                    ==, "text");
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(items, 1), "kind"),
+                    ==, "pdf");
+    g_assert_true(json_object_get_boolean_member(
+                      json_array_get_object_element(items, 1), "exists"));
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(items, 1), "sender"),
+                    ==, "user");
+
+    /* an agent id given as the room, as room.history takes it */
+    by_room = request(&fixture, "attachment.list", "{\"room\":\"alpha\"}");
+    g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+                         payload_of(by_room), "items")), ==, 2);
+
+    thumb = g_strdup_printf("{\"id\":\"%s\"}", text_id);
+    lines = request(&fixture, "attachment.thumbnail", thumb);
+    g_assert_false(clawt_ipc_frame_is_error(lines));
+    g_assert_cmpstr(json_object_get_string_member(payload_of(lines), "text"),
+                    ==, "line one\nline two\n");
+
+    hostile = request(&fixture, "attachment.thumbnail",
+                      "{\"id\":\"../x.pdf\"}");
+    g_assert_true(clawt_ipc_frame_is_error(hostile));
+
+    nobody = request(&fixture, "attachment.list", "{\"agent\":\"nobody\"}");
+    g_assert_true(clawt_ipc_frame_is_error(nobody));
+
+    clawt_test_remove_tree(exchange);
+    fixture_teardown(&fixture);
+}
+
 /*
  * An agent's overlay is built on its base image and records the path, so
  * deleting that image breaks the VM the next time it starts -- with an
@@ -12529,6 +12658,8 @@ main(int argc, char *argv[])
                     test_an_attachment_cannot_escape_its_directory);
     g_test_add_func("/daemon/attachment/kept-by-id",
                     test_an_attachment_is_kept_by_id);
+    g_test_add_func("/daemon/attachment/conversation-files",
+                    test_a_conversation_lists_its_files);
     g_test_add_func("/daemon/vm-agent-needs-a-disk",
                     test_creating_a_vm_agent_without_a_disk_is_refused);
     g_test_add_func("/daemon/image-in-use",

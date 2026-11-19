@@ -192,6 +192,19 @@ struct _ClawtLrgApp {
     gboolean         held;
     gchar           *daemon_version;  /* control.status, nullable */
     gchar           *daemon_update;   /* an available update, nullable */
+
+    /*
+     * Whether the daemon has answered since this client was pointed at
+     * it (clawt_daemon_link_state()'s reached_once), whether the client
+     * chose it from the last-connection file rather than from a flag
+     * (clawt_connection_choose()'s from_last), and what choosing had to
+     * say, toasted once the window exists.  The first two decide the
+     * banner's Use Local (clawt_connection_offer_local()); a switch
+     * clears both, since after one the person chose.
+     */
+    gboolean         reached_once;
+    gboolean         connection_remembered;
+    gchar           *start_notice;    /* nullable, toasted once */
     ClawtLrgIslandState island;
 
     /* ── per-page state, owned by each page file ── */
@@ -405,6 +418,9 @@ const ClawtLrgSettingsPage *clawt_lrg_settings_folders_page(void);      /* lrg-s
 const ClawtLrgSettingsPage *clawt_lrg_settings_appearance_page(void);   /* lrg-settings-appearance.c */
 const ClawtLrgSettingsPage *clawt_lrg_settings_devices_page(void);      /* lrg-settings-devices.c */
 const ClawtLrgSettingsPage *clawt_lrg_settings_connections_page(void);  /* lrg-settings-connections.c */
+
+/* The banner's Use Local: Settings → Connections' own switch, to Local. */
+void clawt_lrg_settings_connections_use_local(ClawtLrgApp *app);
 
 /* device.* events: the Devices list redraws, a code on screen learns it was used. */
 void clawt_lrg_settings_devices_event(ClawtLrgApp *app, ClawtEvent *event);

@@ -167,6 +167,19 @@ struct _ClawtWindow {
     gboolean           connected_once;
 
     /*
+     * Whether active_connection came from the last-connection file
+     * rather than from anything typed (clawt_connection_choose()'s
+     * from_last), and the bar drawn instead of the banner when
+     * clawt_connection_offer_local() says to offer Use Local.  AdwBanner
+     * holds one button and that state needs two -- the way back to
+     * Local and the rest of the connections -- so it is a bar of its
+     * own.  Cleared by any switch: after one, the person chose.
+     */
+    gboolean           connection_remembered;
+    GtkWidget         *remembered_bar;      /* a GtkRevealer */
+    GtkWidget         *remembered_label;
+
+    /*
      * What the last probe found for each saved connection, by name.
      *
      * Kept rather than asked for on every redraw: a probe is a network
@@ -1257,6 +1270,10 @@ clawt_gtk_follow_viewport_width(ClawtWindow *self, GtkWidget *scroll);
 
 void
 clawt_gtk_load_history(ClawtWindow *self);
+
+/* The Files dialog: every file the conversation on screen carried. */
+void
+clawt_gtk_show_conversation_files(ClawtWindow *self);
 
 /* A click on the sidebar's selected row, which ::row-selected misses. */
 void

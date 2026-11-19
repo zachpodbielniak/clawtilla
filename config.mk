@@ -74,6 +74,28 @@ QRENCODE_CFLAGS :=
 QRENCODE_LIBS   :=
 endif
 
+# poppler-glib, for the first page of a PDF as a thumbnail in each
+# conversation's Files gallery (attachment.thumbnail, clawt-attachment.c).
+#
+# Optional for the reason libqrencode is: a daemon that cannot draw a
+# PDF's first page is still a whole daemon, and attachment.thumbnail
+# then answers "no PDF renderer in this build" while every client shows
+# the file's name instead of a picture.  Detected, so a host with the
+# package gets the feature; POPPLER=0 turns it off on one that has it
+# (the build without it is part of the release gate).  cairo comes in
+# with poppler-glib and is named only so the PNG writer's symbols are
+# linked explicitly.  Fedora: poppler-glib-devel to build, poppler-glib
+# at runtime.
+POPPLER ?= $(shell pkg-config --exists poppler-glib cairo 2>/dev/null && echo 1 || echo 0)
+
+ifeq ($(POPPLER),1)
+POPPLER_CFLAGS := $(shell pkg-config --cflags poppler-glib cairo) -DCLAWT_HAVE_POPPLER=1
+POPPLER_LIBS   := $(shell pkg-config --libs poppler-glib cairo)
+else
+POPPLER_CFLAGS :=
+POPPLER_LIBS   :=
+endif
+
 # ── libreclaw (bundled under deps/libreclaw) ──────────────────────────
 #
 # liblc-1.0.a holds ONLY libreclaw's own objects, so a static link has to
@@ -219,7 +241,7 @@ LRG_SYS_LIBS = $(shell pkg-config --libs $(LRG_PKG_DEPS) 2>/dev/null) \
 # libreclaw's group without its yaml-glib (see above).
 LRG_LIBRECLAW_LIBS = $(filter-out $(LR_YAML_GLIB_DIR)/build/release/libyaml-glib-1.0.a,$(LIBRECLAW_LIBS))
 
-LRG_LDFLAGS = $(LDFLAGS_SAN) $(LRG_LIBRECLAW_LIBS) $(LRG_LIB) $(PKG_LIBS) $(QRENCODE_LIBS) $(LRG_SYS_LIBS) \
+LRG_LDFLAGS = $(LDFLAGS_SAN) $(LRG_LIBRECLAW_LIBS) $(LRG_LIB) $(PKG_LIBS) $(QRENCODE_LIBS) $(POPPLER_LIBS) $(LRG_SYS_LIBS) \
               $(shell pkg-config --libs yaml-0.1)
 
 # Build directories
@@ -300,7 +322,7 @@ endif
 # We include <libreclaw.h>, which defines LC_INSIDE itself, so we do NOT
 # define LC_COMPILATION -- that macro is for building libreclaw, not for
 # consuming it.
-CFLAGS = $(CFLAGS_BASE) $(CFLAGS_OPT) $(CFLAGS_SAN) $(PKG_CFLAGS) $(QRENCODE_CFLAGS) \
+CFLAGS = $(CFLAGS_BASE) $(CFLAGS_OPT) $(CFLAGS_SAN) $(PKG_CFLAGS) $(QRENCODE_CFLAGS) $(POPPLER_CFLAGS) \
          $(LIBRECLAW_CFLAGS) $(GSURF_CFLAGS) \
          -DCLAWT_COMPILATION \
          -DCLAWT_VERSION_MAJOR=$(VERSION_MAJOR) \
@@ -314,7 +336,7 @@ CFLAGS = $(CFLAGS_BASE) $(CFLAGS_OPT) $(CFLAGS_SAN) $(PKG_CFLAGS) $(QRENCODE_CFL
          -DG_LOG_DOMAIN=\"Clawtilla\" \
          -I$(SRCDIR) -I$(OUTDIR)
 
-LDFLAGS = $(LDFLAGS_SAN) $(LIBRECLAW_LIBS) $(PKG_LIBS) $(QRENCODE_LIBS) -lm
+LDFLAGS = $(LDFLAGS_SAN) $(LIBRECLAW_LIBS) $(PKG_LIBS) $(QRENCODE_LIBS) $(POPPLER_LIBS) -lm
 
 # Library names
 LIB_NAME = libclawt-1.0
