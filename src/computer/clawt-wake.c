@@ -34,6 +34,7 @@ typedef struct {
 	GCancellable  *read_cancel;
 	GPid           group;
 	gboolean       timed_out;
+	gboolean       exited;     /* on_bounded_exited() has run */
 	gchar         *stdout_text;
 	gchar         *stderr_text;
 	GError        *error;
@@ -113,6 +114,7 @@ on_bounded_exited(
 	(void)g_subprocess_wait_finish(G_SUBPROCESS(source), result, NULL);
 
 	bounded_kill_group(wait);
+	wait->exited = TRUE;
 }
 
 static void
@@ -227,6 +229,20 @@ clawt_run_argv_bounded(
 		bounded_kill_group(&wait);
 
 	g_subprocess_wait(wait.process, NULL, NULL);
+
+	/*
+	 * Until the exit callback has run, not merely until the context looks
+	 * idle.  The child is reaped by now, but the wait_async completion is
+	 * queued onto this context from GLib's worker thread and can arrive
+	 * just after a non-blocking pass finds nothing: the pass ended, the
+	 * completion was attached to a context nobody iterated again, and its
+	 * task and the context leaked -- an intermittent LeakSanitizer report
+	 * from /wake/once-per-wave.  Had it ever dispatched later, it would
+	 * have written to this stack frame.  It is certain to come, since the
+	 * process has exited, so blocking on it is bounded.
+	 */
+	while (!wait.exited)
+		g_main_context_iteration(context, TRUE);
 
 	while (g_main_context_iteration(context, FALSE))
 		;

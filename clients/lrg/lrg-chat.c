@@ -155,6 +155,10 @@ static void send_text(ClawtLrgApp *app, const gchar *text);
 static void entry_changed(ClawtLrgApp *app);
 static void conversation_action(ClawtLrgApp *app, const gchar *action);
 
+/* Defined with the attachments, used by the menus before them. */
+static gchar *attachment_cache_path(const gchar *id);
+static gchar *attachment_display_name(const gchar *path);
+
 /* ── Small helpers ────────────────────────────────────────────────── */
 
 static gfloat
@@ -767,7 +771,7 @@ on_attachment_menu(GSimpleAction *action, GVariant *parameter,
         copy_text(app, path, "Path");
     } else if (g_strcmp0(name, "save") == 0) {
         g_autoptr(LrgFileDialog) dialog = lrg_file_dialog_new();
-        g_autofree gchar *base = g_path_get_basename(path);
+        g_autofree gchar *base = attachment_display_name(path);
 
         lrg_file_dialog_set_title(dialog, "Save a copy");
         lrg_file_dialog_set_initial_name(dialog, base);
@@ -847,6 +851,20 @@ on_file_chip_clicked(ClawtLrgApp *app, gpointer user_data)
 }
 
 /*
+ * The name a chip or "Save a copy" shows for @path: a daemon copy is
+ * cached under its id, and the id's random prefix is not part of the
+ * name it was sent with (clawt_lrg_attachment_display_name()).
+ */
+static gchar *
+attachment_display_name(const gchar *path)
+{
+    g_autofree gchar *probe = attachment_cache_path("x");
+    g_autofree gchar *cache_dir = g_path_get_dirname(probe);
+
+    return clawt_lrg_attachment_display_name(path, cache_dir);
+}
+
+/*
  * A file that is not a picture: a name, a size and the same menu, and a
  * click opens it -- a PDF in a conversation is something to read, not a
  * path to go and find.
@@ -859,7 +877,7 @@ append_file_chip(ClawtLrgApp *app, LrgWidget *into, const gchar *path,
     g_autoptr(GFileInfo) info = g_file_query_info(
         file, G_FILE_ATTRIBUTE_STANDARD_SIZE, G_FILE_QUERY_INFO_NONE, NULL,
         NULL);
-    g_autofree gchar *name = g_path_get_basename(path);
+    g_autofree gchar *name = attachment_display_name(path);
     g_autofree gchar *label = NULL;
     LrgWidget *content = clawt_lrg_hbox(8.0f);
     LrgWidget *chip;
@@ -1210,7 +1228,7 @@ gallery_act(ClawtLrgApp *app, const gchar *action, const gchar *path)
         copy_text(app, path, "Path");
     } else if (g_strcmp0(action, "save") == 0) {
         g_autoptr(LrgFileDialog) dialog = lrg_file_dialog_new();
-        g_autofree gchar *base = g_path_get_basename(path);
+        g_autofree gchar *base = attachment_display_name(path);
 
         lrg_file_dialog_set_title(dialog, "Save a copy");
         lrg_file_dialog_set_initial_name(dialog, base);
@@ -1380,8 +1398,12 @@ on_gallery_listed(ClawtLrgApp *app, JsonNode *reply, const GError *error,
                                                row->exists ? "info"
                                                            : "warn"));
         clawt_lrg_add(tile, holder);
-        clawt_lrg_take(tile, clawt_lrg_label(row->name, NULL));
-        clawt_lrg_take(tile, clawt_lrg_label(row->subtitle, "caption"));
+        /*
+         * Cut short at the tile's edge: "alice · 2026-11-19 01:57 ·
+         * 297 bytes" ran past a 160-pixel tile into the next one.
+         */
+        clawt_lrg_take(tile, clawt_lrg_one_line(row->name, NULL));
+        clawt_lrg_take(tile, clawt_lrg_one_line(row->subtitle, "caption"));
 
         if (i < GALLERY_PICTURES)
             gallery_request_picture(app, holder, row);

@@ -1068,6 +1068,41 @@ test_attachment_prefers_the_daemon_copy(void)
 }
 
 /*
+ * A daemon copy's chip read "01m7s9ghwmkxmdzpxa4t-attachment_page.pdf",
+ * because the cache keeps it under its id.  Breaks if the id's random
+ * prefix comes back in a chip or a "Save a copy" name -- or if a host
+ * path's own dashes are taken for one and a name loses its first part.
+ */
+static void
+test_attachment_display_name(void)
+{
+    g_autofree gchar *cached = NULL;
+    g_autofree gchar *host = NULL;
+    g_autofree gchar *nocache = NULL;
+    g_autofree gchar *refused = NULL;
+
+    cached = clawt_lrg_attachment_display_name(
+        "/home/u/.cache/clawtilla/attachments/01m7s9ghwm-attachment_page.pdf",
+        "/home/u/.cache/clawtilla/attachments");
+    g_assert_cmpstr(cached, ==, "attachment_page.pdf");
+
+    /* an old message's host path: the basename, dashes and all */
+    host = clawt_lrg_attachment_display_name(
+        "/srv/exchange/alice/my-report-final.pdf",
+        "/home/u/.cache/clawtilla/attachments");
+    g_assert_cmpstr(host, ==, "my-report-final.pdf");
+
+    /* no cache directory known: nothing is taken for an id */
+    nocache = clawt_lrg_attachment_display_name("/tmp/a1-b.png", NULL);
+    g_assert_cmpstr(nocache, ==, "a1-b.png");
+
+    /* in the cache but not an id the daemon would make: kept whole */
+    refused = clawt_lrg_attachment_display_name(
+        "/c/.hidden-name", "/c");
+    g_assert_cmpstr(refused, ==, ".hidden-name");
+}
+
+/*
  * The Files panel's tiles from attachment.list: newest first as the
  * daemon gives them, "you" for the operator, a gone file said so and
  * not offered a size, an old message's host path as the target, and an
@@ -1467,6 +1502,8 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg/chat/attachments/refs", test_attachment_refs);
     g_test_add_func("/lrg/chat/attachments/body", test_body_with_attachments);
     g_test_add_func("/lrg/chat/attachments/gallery-rows", test_gallery_rows);
+    g_test_add_func("/lrg/chat/attachments/display-name",
+                    test_attachment_display_name);
     g_test_add_func("/lrg/chat/attachments/prefers-daemon-copy",
                     test_attachment_prefers_the_daemon_copy);
     g_test_add_func("/lrg/chat/mentions", test_mentions);

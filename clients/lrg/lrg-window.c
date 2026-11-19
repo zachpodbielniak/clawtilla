@@ -743,16 +743,13 @@ void
 clawt_lrg_update_island(ClawtLrgApp *app)
 {
     g_autofree gchar *text = NULL;
-    guint unread = 0;
-    GHashTableIter iter;
-    gpointer value;
 
-    g_hash_table_iter_init(&iter, app->unread);
-
-    while (g_hash_table_iter_next(&iter, NULL, &value))
-        unread += GPOINTER_TO_UINT(value);
-
-    app->island.unread = unread;
+    /*
+     * Less the muted agents' conversations, as the Chat tab's badge and
+     * the bell already count (clawt_unread_total()): a muted agent's
+     * messages still read "1 unread" here after muting it.
+     */
+    app->island.unread = clawt_unread_total(app->unread, app->muted);
     app->island.connected = clawt_client_is_connected(app->client);
     app->island.held = app->held;
 
