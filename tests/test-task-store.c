@@ -1557,6 +1557,111 @@ call_as(
 			json_object_get_array_member(result, "content"), 0), "text"));
 }
 
+/*
+ * The reviewer a delegation names can read the task it is asked to
+ * review, as well as give its verdict.
+ *
+ * Seen live: a lead delegated with review=<a reviewer> into a project
+ * whose review_by names the lead.  The call's own reviewer won, as it
+ * should, and the verdict check agreed -- the lead was told the task was
+ * the reviewer's to review.  But the read check admitted only the
+ * delegator and the assignee, so the reviewer was told the task was
+ * "not yours to read", reasonably concluded it was not its to review
+ * either, and the task sat in review with nobody acting on it.  There
+ * is one reviewer per task and every check must agree on it.
+ */
+static void
+test_the_reviewer_can_read_what_it_reviews(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *yaml = NULL;
+	g_autofree gchar *reply = NULL;
+	g_autofree gchar *args = NULL;
+	g_autofree gchar *id = NULL;
+	gboolean is_error = TRUE;
+	ClawtTask *task;
+
+	fixture.dir = g_dir_make_tmp("clawt-review-read-XXXXXX", NULL);
+	fixture.config = g_build_filename(fixture.dir, "config.yaml", NULL);
+	yaml = g_strdup_printf(
+		"daemon:\n  tailscale: false\n  state_dir: \"%s/state\"\n"
+		"  socket: \"%s/d.sock\"\n  automation_dir: \"%s/pods\"\n"
+		"defaults:\n  workspace_root: \"%s/agents\"\n"
+		"projects:\n  - id: site\n    review_by: lead\n"
+		"agents:\n"
+		"  - id: chief\n    chief_of_staff: true\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: false\n"
+		"  - id: lead\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: false\n"
+		"  - id: dev\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: false\n"
+		"  - id: inspector\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: false\n",
+		fixture.dir, fixture.dir, fixture.dir, fixture.dir);
+	g_assert_true(g_file_set_contents(fixture.config, yaml, -1, &error));
+	daemon_start(&fixture);
+
+	reply = call_as(&fixture, "chief", "clawtilla_delegate",
+		"{\"agent_id\":\"dev\",\"task\":\"port the card step\","
+		"\"project\":\"site\",\"review\":\"inspector\"}", &is_error);
+	g_assert_false(is_error);
+	{
+		GPtrArray *all = clawt_task_manager_list(fixture.daemon->tasks,
+		                                         "dev", TRUE);
+
+		id = g_strdup(clawt_task_get_id(g_ptr_array_index(all, 0)));
+		g_ptr_array_unref(all);
+	}
+	task = clawt_task_manager_get(fixture.daemon->tasks, id);
+	g_assert_cmpstr(clawt_task_get_project(task), ==, "site");
+	g_assert_cmpstr(clawt_task_get_reviewer(task), ==, "inspector");
+
+	clawt_task_manager_complete(fixture.daemon->tasks, id, "ported");
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_REVIEW);
+
+	args = g_strdup_printf("{\"task_id\":\"%s\"}", id);
+
+	/* the reviewer reads it ... */
+	g_clear_pointer(&reply, g_free);
+	reply = call_as(&fixture, "inspector", "clawtilla_task_status", args,
+	                &is_error);
+	g_assert_cmpstr(is_error ? reply : NULL, ==, NULL);
+
+	g_clear_pointer(&reply, g_free);
+	reply = call_as(&fixture, "inspector", "clawtilla_task_result", args,
+	                &is_error);
+	g_assert_cmpstr(is_error ? reply : NULL, ==, NULL);
+	g_assert_nonnull(strstr(reply, "ported"));
+
+	/* ... and nobody else outside it does: the project's reviewer is not it */
+	g_clear_pointer(&reply, g_free);
+	reply = call_as(&fixture, "lead", "clawtilla_task_status", args,
+	                &is_error);
+	g_assert_true(is_error);
+
+	/* only the task's reviewer gives the verdict, and it is recorded */
+	g_clear_pointer(&reply, g_free);
+	g_clear_pointer(&args, g_free);
+	args = g_strdup_printf("{\"task_id\":\"%s\",\"accept\":true}", id);
+	reply = call_as(&fixture, "lead", "clawtilla_task_review", args,
+	                &is_error);
+	g_assert_true(is_error);
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_REVIEW);
+
+	g_clear_pointer(&reply, g_free);
+	reply = call_as(&fixture, "inspector", "clawtilla_task_review", args,
+	                &is_error);
+	g_assert_cmpstr(is_error ? reply : NULL, ==, NULL);
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
+
+	daemon_teardown(&fixture);
+}
+
 static void
 test_delegation_waits(void)
 {
@@ -3194,6 +3299,8 @@ main(
 	g_test_add_func("/task-store/review/rounds", test_review_rounds);
 	g_test_add_func("/task-store/review/end-to-end",
 	                test_review_end_to_end);
+	g_test_add_func("/task-store/review/reviewer-reads",
+	                test_the_reviewer_can_read_what_it_reviews);
 	g_test_add_func("/task-store/checkouts/operator",
 	                test_operator_checkouts);
 	g_test_add_func("/task-store/checkouts/delegated",

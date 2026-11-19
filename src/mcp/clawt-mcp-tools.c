@@ -1414,7 +1414,8 @@ static const ToolDefinition tools[] = {
          NEEDS_NOTHING, task_id_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_task_result",
-         "Get the result of a finished task.",
+         "Get the result of a finished task, or of one waiting for your "
+         "review.",
          NEEDS_NOTHING, task_id_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_task_cancel",
@@ -7060,6 +7061,8 @@ append_handoff_history(ClawtMcpTools *self, GString *out,
  * that is rendered as the *assignee's* own words and holds somebody
  * else's task open past its turn.
  *
+ * Readable by its assignee, its delegator and its reviewer.
+ *
  * An unknown id is not refused here.  The caller already says "there is
  * no such task", and answering a bad id with a permission refusal tells
  * an agent that a task it invented exists.
@@ -7086,6 +7089,17 @@ task_refusal_for(ClawtMcpTools *self, const gchar *task_id,
         return NULL;
 
     if (!assignee_only && g_strcmp0(origin, agent_id) == 0)
+        return NULL;
+
+    /*
+     * And the task's reviewer, who is asked to judge exactly this result.
+     * The verdict check (clawt_task_manager_review) already reads the
+     * reviewer from the task; refusing that same agent here told it the
+     * task was not its business, and it believed us -- so a task could
+     * sit in review with its only reviewer convinced it was not one.
+     */
+    if (!assignee_only &&
+        g_strcmp0(clawt_task_get_reviewer(task), agent_id) == 0)
         return NULL;
 
     if (assignee_only)
@@ -7308,6 +7322,21 @@ tool_task_result(ClawtMcpTools *self, const gchar *agent_id,
 	note = clawt_preamble_escape(clawt_task_get_progress_note(task));
 	result = clawt_preamble_escape(clawt_task_get_result(task));
 	reason = clawt_preamble_escape(clawt_task_get_reason(task));
+
+    /*
+     * In review the result exists and is the very thing being judged:
+     * "no result yet" sent a reviewer that looked for it away empty.
+     */
+    if (clawt_task_get_state(task) == CLAWT_TASK_REVIEW && result != NULL) {
+        const gchar *reviewer = clawt_task_get_reviewer(task);
+
+        return g_strdup_printf(
+            "Task %s is finished and waiting for review by %s; it is not "
+            "accepted yet. The result under review:\n\n%s", task_id,
+            (reviewer == NULL || g_strcmp0(reviewer, "user") == 0)
+                ? "the operator" : reviewer,
+            result);
+    }
 
     if (!clawt_task_is_finished(task)) {
         if (note != NULL)
