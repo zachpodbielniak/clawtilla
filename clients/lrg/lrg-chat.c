@@ -155,6 +155,10 @@ static void send_text(ClawtLrgApp *app, const gchar *text);
 static void entry_changed(ClawtLrgApp *app);
 static void conversation_action(ClawtLrgApp *app, const gchar *action);
 
+/* Defined with the attachments, used by the menus before them. */
+static gchar *attachment_cache_path(const gchar *id);
+static gchar *attachment_display_name(const gchar *path);
+
 /* ── Small helpers ────────────────────────────────────────────────── */
 
 static gfloat
@@ -845,8 +849,6 @@ on_file_chip_clicked(ClawtLrgApp *app, gpointer user_data)
 {
     open_with_desktop(app, user_data);
 }
-
-static gchar *attachment_cache_path(const gchar *id);
 
 /*
  * The name a chip or "Save a copy" shows for @path: a daemon copy is
