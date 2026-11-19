@@ -48,15 +48,32 @@
 /* How often deadlines are checked; a job is late by at most this. */
 #define GROK_SWEEP_SECONDS (30)
 
-/* Settled jobs are kept this long for the page and `grok jobs`. */
-#define GROK_RETENTION_DAYS (30)
+/*
+ * The bounds grok.retention_days and grok.attention_days are clamped to.
+ * The defaults themselves are the schema's (30 and 3), read through
+ * clawt_config_get_int(), so the documented number and this one cannot
+ * drift.
+ *
+ * Retention is at least a day: 0 would prune a job the moment it
+ * settled, before the agent waiting on it or the operator had a chance
+ * to read why.  Ten years is a ceiling, not a recommendation -- it keeps
+ * the arithmetic below well inside a gint64 of microseconds.
+ */
+#define GROK_RETENTION_DAYS_MIN (1)
+#define GROK_RETENTION_DAYS_MAX (3650)
+
+/* 0 is allowed and means "until removed"; a year is the ceiling. */
+#define GROK_ATTENTION_DAYS_MAX (365)
 
 /*
- * A job that needs somebody counts on the page's badge this long after
- * it settled.  It stays listed for the whole retention; it only stops
- * asking.  An unanswered connection test from last week is not news.
+ * How often the sweep prunes settled jobs.  Hourly: the retention is in
+ * days, so pruning every thirty-second tick would be a DELETE per tick
+ * for nothing, and pruning only at start (as before 0.52.0) let a
+ * daemon that stays up for months keep every job it ever sent.
  */
-#define GROK_ATTENTION_DAYS (3)
+#define GROK_PRUNE_INTERVAL_SECONDS (3600)
+
+#define DAY_USEC ((gint64)24 * 3600 * G_USEC_PER_SEC)
 
 /* The longest a job may ask to wait, whatever it asks for. */
 #define GROK_MAX_TTL_MINUTES (24 * 60)
@@ -95,6 +112,9 @@ struct _ClawtDaemonGrok {
      */
     GHashTable     *hops;
     gulong          bus_handler;
+
+    /* When the sweep last pruned settled jobs, in microseconds. */
+    gint64          last_prune;
 };
 
 typedef struct {
@@ -2009,6 +2029,92 @@ clawt_daemon_grok_send(ClawtDaemon          *daemon,
 
 /* ── The deadline ────────────────────────────────────────────────── */
 
+gint64
+clawt_daemon_grok_attention_days(ClawtDaemon *daemon)
+{
+    g_return_val_if_fail(CLAWT_IS_DAEMON(daemon), 0);
+
+    return CLAMP(clawt_config_get_int(daemon->config, "grok.attention_days"),
+                 0, GROK_ATTENTION_DAYS_MAX);
+}
+
+gint64
+clawt_daemon_grok_retention_days(ClawtDaemon *daemon)
+{
+    g_return_val_if_fail(CLAWT_IS_DAEMON(daemon), GROK_RETENTION_DAYS_MIN);
+
+    return CLAMP(clawt_config_get_int(daemon->config, "grok.retention_days"),
+                 GROK_RETENTION_DAYS_MIN, GROK_RETENTION_DAYS_MAX);
+}
+
+/*
+ * Whether a job asks for somebody right now: it needs attention by its
+ * state, and it settled inside grok.attention_days -- or the window is 0,
+ * which means it asks until it is removed.  One predicate, so the badge
+ * on `grok.jobs` and clawt_daemon_grok_attention() cannot disagree.
+ */
+static gboolean
+job_asks(ClawtGrokJob *job, gint64 attention_days, gint64 now)
+{
+    if (!clawt_grok_job_state_needs_attention(clawt_grok_job_get_state(job)))
+        return FALSE;
+
+    if (attention_days == 0)
+        return TRUE;
+
+    return clawt_grok_job_get_updated_at(job) >= now - attention_days *
+                                                      DAY_USEC;
+}
+
+guint
+clawt_daemon_grok_attention(ClawtDaemon *daemon, gint64 now)
+{
+    g_autoptr(GPtrArray) jobs = NULL;
+    gint64 days;
+    guint count = 0;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_DAEMON(daemon), 0);
+
+    if (daemon->grok == NULL || daemon->grok->store == NULL)
+        return 0;
+
+    days = clawt_daemon_grok_attention_days(daemon);
+
+    /*
+     * Every job the store holds, not a page of them: this is a count for
+     * a badge, and a limit here would make the badge stop at whatever
+     * the limit was.  The store is pruned to the retention, so "every"
+     * is bounded.
+     */
+    jobs = clawt_grok_store_list(daemon->grok->store, NULL, NULL, FALSE,
+                                 (guint)G_MAXINT);
+
+    for (i = 0; i < jobs->len; i++) {
+        if (job_asks(g_ptr_array_index(jobs, i), days, now))
+            count++;
+    }
+
+    return count;
+}
+
+/*
+ * Drops settled jobs older than grok.retention_days.  Open jobs are
+ * never pruned -- the store's own rule -- because a job still waiting
+ * has an agent waiting on it.
+ */
+static void
+prune_settled(ClawtDaemon *daemon, Grok *self, gint64 now)
+{
+    if (self == NULL || self->store == NULL)
+        return;
+
+    clawt_grok_store_prune(self->store,
+                           now - clawt_daemon_grok_retention_days(daemon) *
+                                 DAY_USEC);
+    self->last_prune = now;
+}
+
 void
 clawt_daemon_grok_sweep(ClawtDaemon *daemon, gint64 now)
 {
@@ -2038,6 +2144,15 @@ clawt_daemon_grok_sweep(ClawtDaemon *daemon, gint64 now)
         deliver_settled(daemon, settled, NULL);
         publish(daemon, settled);
     }
+
+    /*
+     * And, at most hourly, the settled jobs past their retention.  From
+     * here rather than only at start, so a daemon that stays up for
+     * months still forgets what it was told to.
+     */
+    if (now - self->last_prune >=
+        (gint64)GROK_PRUNE_INTERVAL_SECONDS * G_USEC_PER_SEC)
+        prune_settled(daemon, self, now);
 }
 
 ClawtGrokStore *
@@ -2245,11 +2360,12 @@ clawt_daemon_grok_start(ClawtDaemon *daemon)
      */
     if (self->store == NULL)
         g_warning("grok: %s", error->message);
-    else
-        clawt_grok_store_prune(self->store,
-                               g_get_real_time() -
-                               (gint64)GROK_RETENTION_DAYS * 24 * 3600 *
-                               G_USEC_PER_SEC);
+
+    /*
+     * Old jobs go at start too -- the one moment nobody is waiting on the
+     * store -- and the sweep takes over hourly from here.
+     */
+    prune_settled(daemon, self, g_get_real_time());
 
     if (daemon->main_context != NULL)
         g_main_context_push_thread_default(daemon->main_context);
@@ -2547,9 +2663,8 @@ clawt_daemon_handle_grok(ClawtDaemon *self,
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
                                        "Grok jobs are not available");
 
-        gint64 since = g_get_real_time() -
-                       (gint64)GROK_ATTENTION_DAYS * 24 * 3600 *
-                       G_USEC_PER_SEC;
+        gint64 now = g_get_real_time();
+        gint64 days = clawt_daemon_grok_attention_days(self);
 
         jobs = clawt_grok_store_list(
             self->grok->store, clawt_ipc_payload_string(payload, "bot"),
@@ -2568,13 +2683,13 @@ clawt_daemon_handle_grok(ClawtDaemon *self,
             clawt_grok_job_to_json(job, builder);
 
             /*
-             * Recent ones only: a job settled days ago that nobody
-             * removed has been seen, or will not be, and a badge that
-             * cannot go down is one people learn to ignore.
+             * Recent ones only (grok.attention_days): a job settled days
+             * ago that nobody removed has been seen, or will not be, and
+             * a badge that cannot go down is one people learn to ignore.
+             * The same predicate clawt_daemon_grok_attention() counts
+             * with, over the jobs this listing returned.
              */
-            if (clawt_grok_job_state_needs_attention(
-                    clawt_grok_job_get_state(job)) &&
-                clawt_grok_job_get_updated_at(job) >= since)
+            if (job_asks(job, days, now))
                 attention++;
         }
 

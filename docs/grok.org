@@ -194,7 +194,7 @@ Re-run =clawtilla grok routine-prompt <bot>= after upgrading to 0.11.0 and paste
 
 The table is =ClawtGrokJobState=; =clawt_grok_job_state_label()=, =clawt_grok_job_state_tone()=, =clawt_grok_job_state_is_settled()= and =clawt_grok_job_state_needs_attention()= are what every client draws from, so they cannot disagree.  The Grok page's badge -- and the Work section's, which sums its pages -- is the daemon's count of jobs that need somebody, read from ~grok.jobs~.
 
-A job counts on the badge for three days after it settled.  It stays listed for the 30-day retention; it only stops asking.
+A job counts on the badge for =grok.attention_days= (3) after it settled.  It stays listed until =grok.retention_days= (30) have passed; it only stops asking.  See "How long a job asks, and how long it is kept" below.
 
 *Cancelling or removing a job.*  Every job has *Cancel* while it is open and *Remove* once it has settled (=clawt_grok_job_remove_label()=), asked first.  Remove forgets a settled job and tells nobody.  Cancel settles an open one as *No answer*, tells its agent the operator gave it up and that a late report will be refused, then forgets it.  From the CLI: =clawtilla grok remove <job>=.  Over IPC: ~grok.remove~.
 
@@ -240,11 +240,58 @@ All three graphical clients draw the same page: whether a job could be sent now,
 |-----+---------+--------------|
 | =grok.callback_host= | empty | the name a bot dials; empty asks tailscaled |
 | =grok.job_ttl_minutes= | 120 | how long a job waits before it is given up |
+| =grok.attention_days= | 3 | days a settled job that needs somebody counts on the badge; 0 = until removed (0..365) |
+| =grok.retention_days= | 30 | days a settled job is kept before it is pruned (1..3650) |
 | =integrations.url= (=grokbot=) | -- | the routine's webhook address |
 | =integrations.token= (=grokbot=) | -- | the routine's key, as a secret reference |
 | =integrations.description= | -- | what the bot is for, as agents read it |
 
 See [[file:configuration-options.org][configuration-options.org]] for the generated reference, and [[file:ipc-protocol.org][ipc-protocol.org]] for the =grok.*= frames.
+
+*** How long a job asks, and how long it is kept
+
+Three windows, each about a different stage of a job's life (configurable since 0.52.0; before that the last two were fixed at three and thirty days):
+
+| Key | Starts when | Ends with |
+|-----+-------------+-----------|
+| =grok.job_ttl_minutes= | the job is sent | an *open* job given up as *No answer*, its agent told |
+| =grok.attention_days= | a job *settles* needing somebody (failed, has a question, no answer, not started) | the job no longer counting on the badge -- still listed |
+| =grok.retention_days= | a job *settles*, any outcome | the job pruned from =grok-jobs.db= and every list |
+
+They run one after another, never at once: an open job is never pruned whatever its age -- it expires through =job_ttl_minutes= first, its agent is told, and only then do the other two windows start.  A *Done* job never counts on the badge at all; it is only kept.
+
+The daemon reads both new keys through =clawt_daemon_grok_attention_days()= and =clawt_daemon_grok_retention_days()=, clamped: =attention_days= to 0..365, =retention_days= to 1..3650 -- a retention of 0 would prune a job the moment it settled, before anybody could read why.  The badge count is =clawt_daemon_grok_attention()= (one predicate, shared with the ~grok.jobs~ reply's =attention=).  Pruning runs once at start and then from the thirty-second sweep at most once an hour, so a daemon that stays up for months still forgets what it was told to; before 0.52.0 it pruned only at start.
+
+Worked examples:
+
+#+begin_src yaml
+# An operator who checks the Grok page weekly: a failure keeps asking
+# for a week, and the history is kept for a quarter.
+grok:
+  attention_days: 7
+  retention_days: 90
+#+end_src
+
+#+begin_src yaml
+# Nothing stops asking until somebody removes it, and jobs are kept a
+# week.  A failed job from five days ago still counts on the badge; on
+# day eight it is pruned and the count goes down with it.
+grok:
+  attention_days: 0
+  retention_days: 7
+#+end_src
+
+#+begin_src yaml
+# Long-running research jobs: wait up to a day for a report, keep the
+# badge short.  A job sent at 09:00 that never reports expires at 09:00
+# the next day, then counts on the badge for one day, then is kept for
+# the default thirty.
+grok:
+  job_ttl_minutes: 1440
+  attention_days: 1
+#+end_src
+
+A window longer than the retention is allowed and means "until pruned": with =attention_days: 60= and =retention_days: 30= a job asks until it is pruned on day thirty.
 
 ** Limits that are Grok's
 

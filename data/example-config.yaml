@@ -2368,6 +2368,22 @@ grok:
   # less or more; this is the default.
   job_ttl_minutes: 120
 
+  # Days a job that needs somebody keeps counting on the Grok badge.
+  #
+  # A job that failed, was refused, expired or asked for input needs
+  # somebody. It counts on the badge for this many days after it
+  # settled, then stops asking -- it stays listed until it is removed
+  # or grok.retention_days passes. 0 means it counts until it is
+  # removed. Clamped to 0..365.
+  attention_days: 3
+
+  # Days a settled job is kept for the Grok page and `grok jobs`.
+  #
+  # Pruned at start and then hourly. A job still open is never pruned:
+  # it expires through grok.job_ttl_minutes first, and its agent is
+  # told. Clamped to 1..3650.
+  retention_days: 30
+
 # Standing work: a prompt, an agent, and when to run it.
 #
 # A routine is the thing you would otherwise remember to ask for every

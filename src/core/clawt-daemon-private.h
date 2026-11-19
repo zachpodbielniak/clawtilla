@@ -1240,11 +1240,35 @@ void clawt_daemon_grok_send(ClawtDaemon          *self,
  * @self: the daemon
  * @now: microseconds
  *
- * Gives up every open job past its deadline and tells its agent.  The
- * timer calls it every thirty seconds; a test calls it with a clock of
- * its own.
+ * Gives up every open job past its deadline and tells its agent, and
+ * -- at most once an hour of @now -- prunes settled jobs older than
+ * grok.retention_days.  The timer calls it every thirty seconds; a test
+ * calls it with a clock of its own.
  */
 void clawt_daemon_grok_sweep(ClawtDaemon *self, gint64 now);
+
+/**
+ * clawt_daemon_grok_attention:
+ * @self: the daemon
+ * @now: microseconds
+ *
+ * How many Grok jobs ask for somebody: those whose state needs
+ * attention (failed, needs input, expired, refused) and which settled
+ * within grok.attention_days of @now -- every one of them when that is
+ * 0.  Over the whole store, for a badge or a notification count; the
+ * `grok.jobs` reply counts its own listing with the same rule.  @now is
+ * a parameter so a test can move the clock.
+ *
+ * Returns: the count, 0 without a store
+ */
+guint clawt_daemon_grok_attention(ClawtDaemon *self, gint64 now);
+
+/*
+ * grok.attention_days and grok.retention_days as the daemon uses them:
+ * read from the config and clamped (0..365 and 1..3650).
+ */
+gint64 clawt_daemon_grok_attention_days(ClawtDaemon *self);
+gint64 clawt_daemon_grok_retention_days(ClawtDaemon *self);
 
 /*
  * clawt_daemon_grok_get_store:
