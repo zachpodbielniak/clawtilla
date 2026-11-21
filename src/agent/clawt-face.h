@@ -258,6 +258,19 @@ void clawt_face_outline(gint shape, guint n_points, gdouble *xy);
 gdouble clawt_face_radius_at(gint shape, gdouble theta);
 
 /**
+ * clawt_face_coverage:
+ * @shape: a shape index
+ * @size: the mask's width and height, in pixels
+ * @alpha: (out caller-allocates) (array): @size × @size bytes, row by row
+ *
+ * The blob as an anti-aliased alpha mask: each byte is how much of that
+ * pixel the shape covers, from 4 × 4 samples tested against the polar
+ * edge (clawt_face_radius_at()) -- exact, with no seams, for a client
+ * that draws the body as a texture rather than a path.
+ */
+void clawt_face_coverage(gint shape, guint size, guint8 *alpha);
+
+/**
  * clawt_face_eyes:
  * @shape: a shape index
  * @pose: (nullable): what the face is doing; %NULL for at rest

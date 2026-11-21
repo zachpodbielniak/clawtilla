@@ -491,6 +491,7 @@ typedef struct {
     ModelChooser  designer;
     LrgWidget    *design_button;
     gboolean      designing;
+    LrgWidget    *face_picker;  /* shape and colour (0.53.0) */
 } NewAgent;
 
 static void
@@ -592,6 +593,13 @@ on_created(ClawtLrgApp *app, JsonNode *reply, const GError *error,
         lrg_dialog_close(dialog->dialog);
 }
 
+/* An empty choice is "not set", which the create frame says by omission. */
+static const gchar *
+empty_is_null(const gchar *value)
+{
+    return (value != NULL && *value != '\0') ? value : NULL;
+}
+
 static void
 on_create_clicked(LrgButton *button, gpointer user_data)
 {
@@ -619,6 +627,11 @@ on_create_clicked(LrgButton *button, gpointer user_data)
                           "image", image,
                           "vm_image", disk,
                           "team", dialog_team(dialog),
+                          "face", empty_is_null(clawt_lrg_face_picker_get_face(
+                                      dialog->face_picker)),
+                          "color", empty_is_null(
+                                       clawt_lrg_face_picker_get_color(
+                                           dialog->face_picker)),
                           NULL),
                       CLAWT_LRG_REQUEST_NONE, on_created,
                       g_rc_box_acquire(dialog), new_agent_release);
@@ -874,6 +887,16 @@ on_disks(ClawtLrgApp *app, JsonNode *reply, const GError *error,
 
 /* ── New agent: building ──────────────────────────────────────────── */
 
+/* The automatic face follows the id being typed. */
+static void
+on_new_agent_id_changed(LrgTextInput *input, gpointer user_data)
+{
+    NewAgent *dialog = user_data;
+
+    clawt_lrg_face_picker_set_agent_id(dialog->face_picker,
+                                       lrg_text_input_get_text(input));
+}
+
 static LrgWidget *
 build_by_hand(NewAgent *dialog)
 {
@@ -885,7 +908,18 @@ build_by_hand(NewAgent *dialog)
     LrgWidget *create;
     guint i;
 
+    /*
+     * The face first, as in GTK: the preview is what makes the rest of
+     * the form feel like a someone, and it follows the id as it is
+     * typed so "automatic" previews the face the agent will get.
+     */
+    dialog->face_picker = clawt_lrg_face_picker_new(NULL, NULL, NULL, NULL,
+                                                    NULL);
+    clawt_lrg_take(body, dialog->face_picker);
+
     dialog->id = clawt_lrg_entry(NULL, "researcher");
+    g_signal_connect(dialog->id, "text-changed",
+                     G_CALLBACK(on_new_agent_id_changed), dialog);
     clawt_lrg_form_add(form, "Id", dialog->id, NULL);
 
     /*

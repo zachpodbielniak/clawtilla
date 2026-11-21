@@ -261,6 +261,7 @@ clawt_lrg_avatar(ClawtLrgApp *app, const gchar *name, const gchar *agent_id,
     GrlColor fill = { 0x6c, 0x70, 0x86, 0xff };
     GrlColor ink = { 0xff, 0xff, 0xff, 0xff };
     LrgPartLook look;
+    gint face;
 
     /*
      * The configured colour, or the tone every client derives from the
@@ -280,28 +281,64 @@ clawt_lrg_avatar(ClawtLrgApp *app, const gchar *name, const gchar *agent_id,
      * The disc carries the glow: a running agent's ring lights up in its
      * own colour, so a sidebar of a busy fleet reads at a glance.
      */
+    /*
+     * The generated face (0.53.0), unless this agent asked for the
+     * letter disc.  The disc is still built under it, transparent, to
+     * carry the live glow: the glow is a part look, and a face is not a
+     * box.
+     */
+    face = clawt_lrg_face_for(agent_id != NULL ? agent_id : name);
+
     lrg_part_look_init(&look);
-    lrg_part_look_set_background(&look, &fill);
     lrg_part_look_set_radius(&look, size / 2.0f);
+
+    /*
+     * Transparent under a face, explicitly: a look with no background
+     * set falls back to the theme's panel colour, which drew a dark disc
+     * behind every face.
+     */
+    if (face == CLAWT_FACE_INITIALS) {
+        lrg_part_look_set_background(&look, &fill);
+    } else {
+        GrlColor clear = fill;
+
+        clear.a = 0;
+        lrg_part_look_set_background(&look, &clear);
+        lrg_panel_set_elevation(disc, 0);
+        lrg_panel_set_border_color(disc, NULL);
+    }
 
     if (live) {
         GrlColor glow = fill;
 
         glow.a = 0xa0;
         lrg_part_look_set_glow(&look, &glow, size * 0.32f);
-        lrg_part_look_set_border(&look, &ink, MAX(1.5f, size * 0.045f));
+        if (face == CLAWT_FACE_INITIALS)
+            lrg_part_look_set_border(&look, &ink, MAX(1.5f, size * 0.045f));
     }
 
     lrg_widget_set_part_look(LRG_WIDGET(disc), LRG_UI_PART_BOX,
                              LRG_WIDGET_STATE_NONE, &look);
     clawt_lrg_take(LRG_WIDGET(overlay), LRG_WIDGET(disc));
 
-    lrg_label_set_color(LRG_LABEL(label), &ink);
-    lrg_label_set_font_size(LRG_LABEL(label), size * 0.40f);
-    lrg_label_set_alignment(LRG_LABEL(label), LRG_TEXT_ALIGN_CENTER);
-    lrg_widget_set_halign(label, LRG_ALIGN_CENTER);
-    lrg_widget_set_valign(label, LRG_ALIGN_CENTER);
-    clawt_lrg_take(LRG_WIDGET(overlay), label);
+    if (face != CLAWT_FACE_INITIALS) {
+        LrgWidget *drawn = clawt_lrg_face_new(
+            agent_id != NULL ? agent_id : name, face, color, size);
+
+        lrg_widget_set_halign(drawn, LRG_ALIGN_CENTER);
+        lrg_widget_set_valign(drawn, LRG_ALIGN_CENTER);
+        clawt_lrg_take(LRG_WIDGET(overlay), drawn);
+        g_object_set_data(G_OBJECT(overlay), "clawt-face", drawn);
+        g_object_unref(label);
+        label = NULL;
+    } else {
+        lrg_label_set_color(LRG_LABEL(label), &ink);
+        lrg_label_set_font_size(LRG_LABEL(label), size * 0.40f);
+        lrg_label_set_alignment(LRG_LABEL(label), LRG_TEXT_ALIGN_CENTER);
+        lrg_widget_set_halign(label, LRG_ALIGN_CENTER);
+        lrg_widget_set_valign(label, LRG_ALIGN_CENTER);
+        clawt_lrg_take(LRG_WIDGET(overlay), label);
+    }
 
     lrg_image_set_corner_radius(image, size / 2.0f);
     lrg_image_set_scale_mode(image, LRG_IMAGE_SCALE_MODE_FILL);

@@ -133,6 +133,9 @@ clickable_new(ClawtLrgApp *app, LrgWidget *content, RowClicked func,
                           (GClosureNotify)(void (*)(void))clicker_free, 0);
     clawt_lrg_take(LRG_WIDGET(surface), LRG_WIDGET(catcher));
 
+    /* for anything in the row that wants the pointer too: a face */
+    g_object_set_data(G_OBJECT(surface), "clawt-catcher", catcher);
+
     return LRG_WIDGET(surface);
 }
 
@@ -1123,6 +1126,7 @@ agent_row(ClawtLrgApp *app, const ClawtLrgSidebarEntry *entry)
     LrgWidget *content = clawt_lrg_row(agent->name, agent->subtitle);
     LrgWidget *badges = clawt_lrg_vbox(4.0f);
     LrgWidget *row;
+    LrgWidget *avatar;
     g_autofree gchar *token = clawt_lrg_entry_token(entry);
 
     lrg_container_set_padding(LRG_CONTAINER(content), 8.0f);
@@ -1143,11 +1147,12 @@ agent_row(ClawtLrgApp *app, const ClawtLrgSidebarEntry *entry)
      * The face, so picking an agent out starts with recognising it rather
      * than reading; it glows in its own colour while its process is up.
      */
-    clawt_lrg_row_add_prefix(content,
-                             clawt_lrg_avatar(app, agent->name, agent->id,
-                                              agent->has_avatar, agent->color,
-                                              34.0f * (gfloat)app->scale,
-                                              agent->live));
+    clawt_lrg_face_note(agent->id,
+                        clawt_ipc_payload_string(entry->object, "face"));
+    avatar = clawt_lrg_avatar(app, agent->name, agent->id, agent->has_avatar,
+                              agent->color, 34.0f * (gfloat)app->scale,
+                              agent->live);
+    clawt_lrg_row_add_prefix(content, avatar);
 
     /*
      * The unread count, and not the mailbox depth: the depth is work
@@ -1227,6 +1232,19 @@ agent_row(ClawtLrgApp *app, const ClawtLrgSidebarEntry *entry)
     lrg_widget_set_name(row, "clawt-agent-row");
     g_object_set_data_full(G_OBJECT(row), "clawt-team", g_strdup(agent->team),
                            g_free);
+
+    /*
+     * The eyes follow the pointer anywhere over the row: the catcher on
+     * top of it gets the pointer before the face beneath would, and the
+     * row is what a person is pointing at.
+     */
+    {
+        LrgWidget *face = g_object_get_data(G_OBJECT(avatar), "clawt-face");
+        LrgWidget *catcher = g_object_get_data(G_OBJECT(row), "clawt-catcher");
+
+        if (face != NULL && catcher != NULL)
+            clawt_lrg_face_track(face, catcher);
+    }
 
     if (agent->unread > 0 && !agent->muted)
         lrg_widget_add_class(row, "heading");

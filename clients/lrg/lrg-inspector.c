@@ -518,6 +518,69 @@ on_avatar_clear(LrgButton *button, gpointer user_data)
  * row among the settings: a picture is chosen, not typed, and the face
  * is its own preview.
  */
+/*
+ * The picker changed: write whichever of agents.face and agents.color
+ * now differs from what was saved, and only that one, so a colour
+ * picked here never rewrites a face set by hand in the YAML.  Saved at
+ * once, as the picture is: a face is seen, and one that showed in the
+ * preview but not the sidebar would look unsaved.
+ */
+typedef struct {
+    ClawtLrgApp *app;
+    gchar       *agent_id;
+    gchar       *saved_face;
+    gchar       *saved_color;
+} FaceSave;
+
+static void
+face_save_free(gpointer data)
+{
+    FaceSave *save = data;
+
+    g_free(save->agent_id);
+    g_free(save->saved_face);
+    g_free(save->saved_color);
+    g_free(save);
+}
+
+static void
+on_face_saved(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+              gpointer user_data)
+{
+    (void)reply;
+    (void)user_data;
+
+    /* agent.list carries the face; the sidebar redraws from it */
+    if (error == NULL)
+        clawt_lrg_refresh_fleet(app);
+}
+
+static void
+on_face_picked(gpointer user_data, const gchar *face, const gchar *color)
+{
+    FaceSave *save = user_data;
+
+    if (g_strcmp0(save->saved_face, face) != 0) {
+        g_free(save->saved_face);
+        save->saved_face = g_strdup(face);
+        clawt_lrg_request(save->app, "agent.set",
+                          clawt_ipc_payload_new("agent", save->agent_id,
+                                                "key", "face",
+                                                "value", face, NULL),
+                          CLAWT_LRG_REQUEST_NONE, on_face_saved, NULL, NULL);
+    }
+
+    if (g_strcmp0(save->saved_color, color) != 0) {
+        g_free(save->saved_color);
+        save->saved_color = g_strdup(color);
+        clawt_lrg_request(save->app, "agent.set",
+                          clawt_ipc_payload_new("agent", save->agent_id,
+                                                "key", "color",
+                                                "value", color, NULL),
+                          CLAWT_LRG_REQUEST_NONE, on_face_saved, NULL, NULL);
+    }
+}
+
 static void
 build_avatar_group(ClawtLrgApp *app, JsonObject *agent, guint index)
 {
@@ -527,22 +590,42 @@ build_avatar_group(ClawtLrgApp *app, JsonObject *agent, guint index)
     gboolean has_avatar = clawt_ipc_payload_boolean(agent, "has_avatar",
                                                     FALSE);
     LrgWidget *box = section_card(
-        app, ins.body, "Profile picture",
+        app, ins.body, "Face",
         has_avatar
             ? ((configured != NULL && *configured != '\0')
-                   ? "Set from agents.avatar."
-                   : "Auto-detected: profile-picture.png (or .jpg, .jpeg, or "
-                     ".webp) in the agent's own directory.")
-            : "No picture yet, so initials are shown instead.", index);
+                   ? "A picture from agents.avatar is shown in place of the "
+                     "face below. Remove it to show the face again."
+                   : "A picture (profile-picture.png, .jpg, .jpeg or .webp "
+                     "in the agent's own directory) is shown in place of the "
+                     "face below. Remove it to show the face again.")
+            : "A generated face that blinks and watches the pointer. Pick a "
+              "shape and a colour, or choose a picture to use instead.",
+        index);
     LrgWidget *row = clawt_lrg_row(
         "Picture", "PNG, JPEG or WebP -- the file's own bytes decide, not "
                    "its name.");
     LrgWidget *clear;
+    LrgWidget *picker;
+    FaceSave *save = g_new0(FaceSave, 1);
 
-    clawt_lrg_row_add_prefix(row, clawt_lrg_avatar(
-        app, (name != NULL) ? name : agent_id, agent_id, has_avatar,
-        clawt_ipc_payload_string(agent, "color"), 64.0f,
-        g_strcmp0(clawt_ipc_payload_string(agent, "state"), "running") == 0));
+    save->app = app;
+    save->agent_id = g_strdup(agent_id);
+    picker = clawt_lrg_face_picker_new(
+        agent_id, clawt_ipc_payload_string(agent, "face_configured"),
+        clawt_ipc_payload_string(agent, "color"), on_face_picked, save);
+    save->saved_face = g_strdup(clawt_lrg_face_picker_get_face(picker));
+    save->saved_color = g_strdup(clawt_lrg_face_picker_get_color(picker));
+    g_object_set_data_full(G_OBJECT(picker), "clawt-face-save", save,
+                           face_save_free);
+    clawt_lrg_take(box, picker);
+
+    /* the picture itself, when there is one; the picker shows the face */
+    if (has_avatar)
+        clawt_lrg_row_add_prefix(row, clawt_lrg_avatar(
+            app, (name != NULL) ? name : agent_id, agent_id, has_avatar,
+            clawt_ipc_payload_string(agent, "color"), 48.0f,
+            g_strcmp0(clawt_ipc_payload_string(agent, "state"),
+                      "running") == 0));
     clawt_lrg_row_add_suffix(row, clawt_lrg_button(
         "Choose\xe2\x80\xa6", NULL, G_CALLBACK(on_avatar_choose), app));
 

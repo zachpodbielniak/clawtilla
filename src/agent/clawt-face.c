@@ -366,6 +366,48 @@ clawt_face_outline(gint shape, guint n_points, gdouble *xy)
     }
 }
 
+void
+clawt_face_coverage(gint shape, guint size, guint8 *alpha)
+{
+    enum { SAMPLES = 4 };
+    gdouble half;
+    guint px;
+    guint py;
+
+    g_return_if_fail(alpha != NULL);
+    g_return_if_fail(size > 0);
+
+    half = size / 2.0;
+
+    /*
+     * Each pixel is SAMPLES × SAMPLES points, each inside when it is
+     * nearer the centre than the edge is in its direction -- the same
+     * star-shaped test the tests use, so the mask is the outline.
+     */
+    for (py = 0; py < size; py++) {
+        for (px = 0; px < size; px++) {
+            guint inside = 0;
+            guint sx;
+            guint sy;
+
+            for (sy = 0; sy < SAMPLES; sy++) {
+                for (sx = 0; sx < SAMPLES; sx++) {
+                    gdouble x = (px + (sx + 0.5) / SAMPLES - half) / half;
+                    gdouble y = (py + (sy + 0.5) / SAMPLES - half) / half;
+                    gdouble r = sqrt(x * x + y * y);
+
+                    if (r <= clawt_face_radius_at(shape, atan2(y, x)))
+                        inside++;
+                }
+            }
+
+            alpha[py * size + px] =
+                (guint8)((inside * 255 + SAMPLES * SAMPLES / 2) /
+                         (SAMPLES * SAMPLES));
+        }
+    }
+}
+
 /* ── Eyes ─────────────────────────────────────────────────────────── */
 
 void

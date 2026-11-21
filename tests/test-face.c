@@ -249,6 +249,55 @@ test_outline_closed(void)
     }
 }
 
+/*
+ * The mask lrg draws the body from: solid in the middle, empty in the
+ * corners, partly covered only along the edge, and its area the shape's
+ * own.  A seam or a hole in it is a visible line through a face.
+ */
+static void
+test_coverage(void)
+{
+    enum { SIZE = 64 };
+    guint8 alpha[SIZE * SIZE];
+    guint shape;
+
+    for (shape = 0; shape < clawt_face_shape_count(); shape++) {
+        gdouble area = 0.0;
+        gdouble expected = 0.0;
+        guint i;
+
+        clawt_face_coverage((gint)shape, SIZE, alpha);
+
+        g_assert_cmpuint(alpha[(SIZE / 2) * SIZE + SIZE / 2], ==, 255);
+        g_assert_cmpuint(alpha[0], ==, 0);
+        g_assert_cmpuint(alpha[SIZE * SIZE - 1], ==, 0);
+
+        /* every pixel well inside the edge is fully covered */
+        for (i = 0; i < SIZE * SIZE; i++) {
+            gdouble x = ((i % SIZE) + 0.5 - SIZE / 2.0) / (SIZE / 2.0);
+            gdouble y = ((i / SIZE) + 0.5 - SIZE / 2.0) / (SIZE / 2.0);
+            gdouble r = sqrt(x * x + y * y);
+            gdouble edge = clawt_face_radius_at((gint)shape, atan2(y, x));
+
+            if (r < edge - 0.06)
+                g_assert_cmpuint(alpha[i], ==, 255);
+            if (r > edge + 0.06)
+                g_assert_cmpuint(alpha[i], ==, 0);
+            area += alpha[i] / 255.0;
+        }
+
+        /* the polar area, ½∫r²dθ, in pixels */
+        for (i = 0; i < 3600; i++) {
+            gdouble r = clawt_face_radius_at((gint)shape,
+                                             2.0 * G_PI * i / 3600);
+
+            expected += 0.5 * r * r * (2.0 * G_PI / 3600);
+        }
+        expected *= (SIZE / 2.0) * (SIZE / 2.0);
+        g_assert_cmpfloat(fabs(area - expected) / expected, <, 0.02);
+    }
+}
+
 /* ── Eyes ─────────────────────────────────────────────────────────── */
 
 /* Inside the shape: closer to the centre than its edge in that direction. */
@@ -789,6 +838,7 @@ main(int argc, char **argv)
                     test_shape_independent_of_tone);
     g_test_add_func("/face/outline/bounds", test_outline_bounds);
     g_test_add_func("/face/outline/closed", test_outline_closed);
+    g_test_add_func("/face/coverage", test_coverage);
     g_test_add_func("/face/eyes/stay-inside", test_eyes_stay_inside);
     g_test_add_func("/face/eyes/look-clamped", test_look_clamped);
     g_test_add_func("/face/eyes/blink-shape", test_blink_shape);

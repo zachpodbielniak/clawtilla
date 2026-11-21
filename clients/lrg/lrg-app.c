@@ -311,6 +311,11 @@ clawt_lrg_app_apply_appearance(ClawtLrgApp *app, ClawtAppearance *appearance)
 
     apply_window_buttons(app);
 
+    /* faces that blink and follow the pointer, or still ones (0.53.0) */
+    clawt_lrg_faces_set_animate(
+        app->appearance == NULL ||
+        clawt_appearance_get_animate_faces(app->appearance));
+
     if (IsWindowReady()) {
         Vector2 dpi = GetWindowScaleDPI();
 
