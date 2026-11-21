@@ -29,8 +29,8 @@
 /* defines */
 #define FACE_FILL          (0.92)  /* furthest edge, as a share of the box */
 #define FACE_NORM_SAMPLES  (720)   /* samples taken to find that edge */
-#define FACE_EYE_WIDTH     (0.15)
-#define FACE_EYE_HEIGHT    (0.30)
+#define FACE_EYE_WIDTH     (0.17)
+#define FACE_EYE_HEIGHT    (0.32)
 #define FACE_EYE_MIN       (0.035) /* a shut eye is a line this thick */
 #define FACE_LOOK_REACH_Y  (0.7)   /* share of the reach up and down */
 #define FACE_LOOK_SPAN     (3.0)   /* radii to reach full look */

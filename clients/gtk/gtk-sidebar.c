@@ -15,6 +15,7 @@
  */
 
 #include "clawt-window-private.h"
+#include "clawt-gtk-face.h"
 
 #include <string.h>
 
@@ -361,10 +362,31 @@ agent_row(ClawtWindow *self, JsonObject *agent, guint unread)
      * this agent drawn" is how the sidebar ended up as the client that
      * never got a face at all while the transcript header did.
      */
-    adw_action_row_add_prefix(
-        ADW_ACTION_ROW(row),
-        clawt_gtk_build_avatar(self->client, name, agent_id, has_avatar,
-                               clawt_json_string(agent, "color", NULL), 32));
+    {
+        GtkWidget *face;
+
+        /*
+         * The daemon's resolved face, remembered for every other place
+         * that draws this agent -- the transcript and the inspector
+         * call the same builder without the agent.list entry in hand.
+         */
+        clawt_gtk_face_note(agent_id, clawt_json_string(agent, "face", NULL));
+        face = clawt_gtk_build_avatar(self->client, name, agent_id,
+                                      has_avatar,
+                                      clawt_json_string(agent, "color", NULL),
+                                      32);
+
+        /*
+         * The eyes follow the pointer anywhere over the row, not only
+         * over the face itself: the row is what a person is pointing
+         * at, and a face that looks up only when the pointer is on it
+         * would barely move.
+         */
+        if (CLAWT_GTK_IS_FACE(face))
+            clawt_gtk_face_track(CLAWT_GTK_FACE(face), row);
+
+        adw_action_row_add_prefix(ADW_ACTION_ROW(row), face);
+    }
 
     adw_action_row_add_prefix(ADW_ACTION_ROW(row), state_dot(state));
 

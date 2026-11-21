@@ -67,7 +67,7 @@ G_BEGIN_DECLS
  * as far as they can.  Up and down move 70% of this: a face looking up
  * shifts less than one looking aside, as eyes in a round face do.
  */
-#define CLAWT_FACE_LOOK_REACH (0.2)
+#define CLAWT_FACE_LOOK_REACH (0.22)
 
 /**
  * CLAWT_FACE_PALETTE_SIZE:

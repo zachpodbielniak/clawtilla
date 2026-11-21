@@ -1019,7 +1019,7 @@ The daemon resolves the face and sends it to every client as ~face~ in ~agent.li
 
 *** Eyes
 
-~clawt_face_eyes()~ places two upright rounded rectangles for a shape in a pose (~ClawtFacePose~: where it looks, and how far into a blink). The look is clamped to the unit disc before it moves anything, so a diagonal look reaches no further than a straight one; sideways the eyes move up to ~CLAWT_FACE_LOOK_REACH~ (0.2), up and down 70% of that. A blink squashes each eye toward its own middle down to a thin line, keeping the corner radius legal at every step.
+~clawt_face_eyes()~ places two upright rounded rectangles for a shape in a pose (~ClawtFacePose~: where it looks, and how far into a blink). The look is clamped to the unit disc before it moves anything, so a diagonal look reaches no further than a straight one; sideways the eyes move up to ~CLAWT_FACE_LOOK_REACH~ (0.22), up and down 70% of that. A blink squashes each eye toward its own middle down to a thin line, keeping the corner radius legal at every step.
 
 ~clawt_face_look_at()~ turns a pointer position into a look: toward the pointer, growing with distance and reaching its limit at three radii, so a pointer moving over the face turns the eyes gently and one at the far end of the row turns them all the way. ~clawt_face_ease()~ is one frame of the eyes catching up with that target, with a time constant of about 70 ms; it lands exactly on the target, so a client can stop its frame clock by comparing for equality.
 

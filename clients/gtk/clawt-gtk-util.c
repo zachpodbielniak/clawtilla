@@ -8,6 +8,7 @@
  */
 
 #include "clawt-gtk.h"
+#include "clawt-gtk-face.h"
 
 #include <gio/gio.h>
 #include <stdarg.h>
@@ -537,21 +538,51 @@ clawt_gtk_build_avatar(
     const gchar  *color,
     gint          size
 ){
-    GtkWidget *avatar = adw_avatar_new(size, name, TRUE);
+    GtkWidget *avatar;
     const gchar *ink;
+    gint face;
 
-    gtk_widget_add_css_class(avatar, "clawt-avatar");
-
+    /* ── A picture always wins ── */
     if (has_avatar && agent_id != NULL) {
         g_autoptr(GdkTexture) texture =
             clawt_gtk_avatar_texture(client, agent_id);
 
         if (texture != NULL) {
+            avatar = adw_avatar_new(size, name, TRUE);
+            gtk_widget_add_css_class(avatar, "clawt-avatar");
             adw_avatar_set_custom_image(ADW_AVATAR(avatar),
                                         GDK_PAINTABLE(texture));
             return avatar;
         }
     }
+
+    /*
+     * ── Then the generated face (0.53.0) ──
+     *
+     * The one the daemon resolved, through clawt_gtk_face_for(); a
+     * sender with no id (the Flow tab) is keyed on its name, the same
+     * key clawt_avatar_tone() falls back to, so its face and colour
+     * agree.  The colour is clawt_avatar_color()'s, exactly as the disc
+     * below would have been painted.
+     */
+    face = clawt_gtk_face_for(agent_id != NULL ? agent_id : name);
+
+    if (face != CLAWT_FACE_INITIALS) {
+        GtkWidget *drawn = clawt_gtk_face_new(
+            agent_id != NULL ? agent_id : name, face,
+            clawt_avatar_color(agent_id, name, color), size);
+
+        gtk_widget_add_css_class(drawn, "clawt-avatar");
+        gtk_accessible_update_property(GTK_ACCESSIBLE(drawn),
+                                       GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                       name != NULL ? name : "",
+                                       -1);
+        return drawn;
+    }
+
+    /* ── Or the letter disc, for agents.face: initials ── */
+    avatar = adw_avatar_new(size, name, TRUE);
+    gtk_widget_add_css_class(avatar, "clawt-avatar");
 
     /*
      * Always painted, never left to #AdwAvatar's own colour.  That one

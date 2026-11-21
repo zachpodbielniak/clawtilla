@@ -16,6 +16,7 @@
  */
 
 #include "clawt-window-private.h"
+#include "clawt-gtk-face.h"
 
 static gboolean     apply_schema_rows(ClawtWindow *self);
 static gboolean     apply_computer_limits(ClawtWindow *self);
@@ -3053,6 +3054,54 @@ on_rebuild_computer(GtkButton *button, gpointer user_data)
 /* ── The profile picture ─────────────────────────────────────────── */
 
 /*
+ * The face picker changed: write whichever of agents.face and
+ * agents.color is now different from what was saved, and only that --
+ * picking a colour must not rewrite a face somebody set by hand in the
+ * YAML a moment ago.  Saved at once, like the picture, rather than
+ * waiting for the page's Save: a face is seen, and a choice that showed
+ * in the preview but not the sidebar would look unsaved.
+ */
+static void
+on_face_picked(ClawtGtkFacePicker *picker, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *agent_id = g_object_get_data(G_OBJECT(picker), "agent-id");
+    static const gchar *const keys[] = { "face", "color" };
+    gboolean wrote = FALSE;
+    guint i;
+
+    if (agent_id == NULL)
+        return;
+
+    for (i = 0; i < G_N_ELEMENTS(keys); i++) {
+        g_autofree gchar *data_key = g_strdup_printf("saved-%s", keys[i]);
+        const gchar *saved = g_object_get_data(G_OBJECT(picker), data_key);
+        const gchar *now = (i == 0) ? clawt_gtk_face_picker_get_face(picker)
+                                    : clawt_gtk_face_picker_get_color(picker);
+        g_autoptr(JsonNode) reply = NULL;
+
+        if (g_strcmp0(saved != NULL ? saved : "", now) == 0)
+            continue;
+
+        reply = clawt_window_request(
+            self, "agent.set",
+            clawt_build_payload("agent", agent_id, "key", keys[i],
+                                "value", now, NULL));
+        if (reply == NULL)
+            continue;
+
+        g_object_set_data_full(G_OBJECT(picker), data_key, g_strdup(now),
+                               g_free);
+        wrote = TRUE;
+    }
+
+    /* the sidebar redraws from agent.list, which now carries the face */
+    if (wrote)
+        clawt_gtk_refresh_agents(self);
+}
+
+
+/*
  * Sends bytes, and only bytes, to agent.avatar_set.
  *
  * Not a path: the daemon writes them into the agent's own directory and
@@ -3308,18 +3357,53 @@ build_avatar_group(ClawtWindow *self, JsonObject *agent)
     gboolean has_avatar = clawt_json_boolean(agent, "has_avatar", FALSE);
 
     group = adw_preferences_group_new();
-    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
-                                    "Profile picture");
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "Face");
     adw_preferences_group_set_description(
         ADW_PREFERENCES_GROUP(group),
         has_avatar
             ? ((configured != NULL && *configured != '\0')
-                   ? "Set from agents.avatar."
-                   : "Auto-detected: profile-picture.png (or .jpg, .jpeg, "
-                     "or .webp) in the agent's own directory.")
-            : "No picture yet, so initials are shown instead. Drop an "
-              "image onto the face, choose one, or paste from the "
-              "clipboard.");
+                   ? "A picture from agents.avatar is shown in place of "
+                     "the face below. Remove it to show the face again."
+                   : "A picture (profile-picture.png, .jpg, .jpeg or "
+                     ".webp in the agent's own directory) is shown in "
+                     "place of the face below. Remove it to show the face "
+                     "again.")
+            : "A generated face that blinks and watches the pointer. "
+              "Pick a shape and a colour, or drop, choose or paste a "
+              "picture to use instead.");
+
+    /*
+     * The picker, in a row of its own: a preview that watches the
+     * pointer, every shape, the colours.  Chosen values are what
+     * agents.face and agents.color hold, so "automatic" shows as
+     * selected when neither is set.
+     */
+    {
+        GtkWidget *holder = adw_preferences_row_new();
+        GtkWidget *picker = clawt_gtk_face_picker_new(
+            agent_id, clawt_json_string(agent, "face_configured", NULL),
+            clawt_json_string(agent, "color", NULL));
+
+        gtk_widget_set_margin_top(picker, 12);
+        gtk_widget_set_margin_bottom(picker, 12);
+        gtk_widget_set_margin_start(picker, 12);
+        gtk_widget_set_margin_end(picker, 12);
+        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(holder), FALSE);
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(holder), picker);
+
+        g_object_set_data_full(G_OBJECT(picker), "agent-id",
+                               g_strdup(agent_id), g_free);
+        g_object_set_data_full(
+            G_OBJECT(picker), "saved-face",
+            g_strdup(clawt_gtk_face_picker_get_face(
+                CLAWT_GTK_FACE_PICKER(picker))), g_free);
+        g_object_set_data_full(
+            G_OBJECT(picker), "saved-color",
+            g_strdup(clawt_gtk_face_picker_get_color(
+                CLAWT_GTK_FACE_PICKER(picker))), g_free);
+        g_signal_connect(picker, "changed", G_CALLBACK(on_face_picked), self);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), holder);
+    }
 
     row = adw_action_row_new();
     clawt_gtk_set_row_text(row, "Picture",

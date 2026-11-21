@@ -2143,6 +2143,49 @@ The tone is mixed before the modulo: djb2's low bits follow the last
 byte, and "alpha", "beta", "delta" and "epsilon" had all landed on one
 tone of six.
 
+**** Generated faces (since 0.53.0)
+
+An agent with no picture now wears a generated face rather than its initials: a coloured blob with two eyes that blink now and then and follow the pointer while it is over the agent. The shapes, eyes and blink schedule are one library ([[file:agents.org][agents.org]], "Generated faces"); this is what the clients do with them. The order is fixed in every client: a picture, if there is one; otherwise the face; otherwise -- for ~agents.face: initials~, or a shape name this build does not know -- the letter disc above.
+
+Which face to draw comes from the daemon, as ~face~ in ~agent.list~. The GTK client remembers it per agent (~clawt_gtk_face_note()~ from the sidebar, ~clawt_gtk_face_for()~ everywhere else), so the transcript's run headers and the inspector draw the same face without carrying the field through every view.
+
+***** The face widget
+
+~ClawtGtkFace~ (~clients/gtk/gtk-face.c~) fills the outline as one ~GskPath~ and the eyes as rounded rects in a second. It is built to cost nothing at rest, because a sidebar can hold dozens:
+
+- Between blinks a face holds one GLib timeout, armed for the moment ~clawt_face_next_blink()~ names. No frame clock runs.
+- The frame clock runs only for the length of a blink and while the eyes ease toward the pointer, and the tick callback removes itself the moment both are done.
+- Nothing runs while a face is unmapped: the timeout is armed on map and cleared on unmap.
+
+The eyes follow the pointer while it is over the face's /hover area/. That is the face itself everywhere; in the sidebar it is the whole row, because the row is what a person points at, and a face that only looked up when the pointer was on its 32 pixels would barely move. ~clawt_gtk_face_track()~ adds a ~GtkEventControllerMotion~ to the area and translates each position into the face's own coordinates, so the eyes look at where the pointer really is. When the pointer leaves, the eyes go back to rest.
+
+***** Choosing a face: the picker
+
+~ClawtGtkFacePicker~ is the same widget in two places:
+
+- the *New agent* dialog, at the top of "By hand", above the id -- its Automatic preview follows the id as it is typed, so it shows the face the agent will actually get. Create sends ~face~ and ~color~ with ~agent.create~; *Use a picture instead…* holds the chosen file's bytes and sends them with ~agent.avatar_set~ once the agent exists.
+- the agent's *Agent* page, as the *Face* group, saved at once with ~agent.set~ -- only the key that changed, so picking a colour never rewrites a face set by hand in the YAML. The picture buttons (choose, paste, drop, remove) stay below it.
+
+The picker has a large preview that blinks and watches the pointer anywhere over the picker, then a grid of shapes drawn in the chosen colour: *auto*, the fourteen shapes, and the letter disc. Below that is a row of swatches: the automatic tone (with a dashed ring), the twelve ~clawt_face_palette_color()~ colours, and *+* for any other colour. *+* is a button that opens ~GtkColorDialog~, not a ~GtkColorDialogButton~: that widget always shows a colour, and before anything is chosen it shows GTK's default, which reads as a choice already made. The values the picker gives back are what the config stores: a shape name, ~initials~ or ~""~; a hex colour or ~""~.
+
+***** Turning the motion off
+
+*Settings → Appearance → Agent list → Animated faces* writes ~animate_faces~ to ~appearance.yaml~. Off settles every face on screen at rest immediately and arms no timers. Faces also stay still while the desktop has animations turned off (~gtk-enable-animations~), which the client follows live.
+
+***** Tests
+
+~tests/test-face.c~ covers the geometry without a display. ~make test-gtk-face~ (~tests/integration/test-gtk-face.c~) needs a display but no daemon. It covers:
+
+- the eyes easing toward the pointer and back;
+- the blink timer existing only while a face is mapped and faces animate;
+- the motion switch settling faces already on screen;
+- ~clawt_gtk_build_avatar()~ choosing face, disc, or disc for an unknown shape;
+- the picker's values and its silence when built with a saved choice.
+
+#+begin_src sh
+Xvfb :94 & DISPLAY=:94 GDK_BACKEND=x11 GSETTINGS_BACKEND=memory make test-gtk-face
+#+end_src
+
 **** The measure
 
 Both clients cap the column, at nine tenths of the width the window has
