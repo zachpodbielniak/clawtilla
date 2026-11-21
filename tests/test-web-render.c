@@ -2023,6 +2023,258 @@ test_the_transcript_face_is_larger_and_only_zooms_with_a_picture(void)
     g_assert_nonnull(strstr(css, "#avatar-zoom{display:none"));
 }
 
+/* ── Generated faces (0.53.0) ───────────────────────────────────── */
+
+/*
+ * The order every client keeps: a picture, else the face the daemon
+ * resolved (an inline SVG the stylesheet can blink and the script can
+ * turn), else -- for initials, or a shape this build does not know --
+ * the letter.
+ */
+static void
+test_the_avatar_draws_a_face(void)
+{
+    g_autoptr(HtmxElement) picture = NULL;
+    g_autoptr(HtmxElement) face = NULL;
+    g_autoptr(HtmxElement) letter = NULL;
+    g_autoptr(HtmxElement) unknown = NULL;
+    g_autofree gchar *picture_html = NULL;
+    g_autofree gchar *face_html = NULL;
+    g_autofree gchar *letter_html = NULL;
+    g_autofree gchar *unknown_html = NULL;
+
+    picture = clawt_web_avatar("Scout", "scout", TRUE, NULL, "agent-face");
+    picture_html = htmx_element_render(picture);
+    g_assert_nonnull(strstr(picture_html, "<img"));
+    g_assert_null(strstr(picture_html, "<svg"));
+
+    clawt_web_face_note("scout", "cloud");
+    face = clawt_web_avatar("Scout", "scout", FALSE, "#22b573", "agent-face");
+    face_html = htmx_element_render(face);
+    g_assert_nonnull(strstr(face_html, "<svg"));
+    g_assert_nonnull(strstr(face_html, "web-face"));
+    g_assert_nonnull(strstr(face_html, "agent-face"));
+    g_assert_nonnull(strstr(face_html, "data-face=\"cloud\""));
+    g_assert_nonnull(strstr(face_html, "fill=\"#22b573\""));
+    g_assert_nonnull(strstr(face_html, "--blink-gap:"));
+
+    clawt_web_face_note("scout", "initials");
+    letter = clawt_web_avatar("Scout", "scout", FALSE, NULL, "agent-face");
+    letter_html = htmx_element_render(letter);
+    g_assert_null(strstr(letter_html, "<svg"));
+    g_assert_nonnull(strstr(letter_html, ">S<"));
+
+    clawt_web_face_note("scout", "hexagon");
+    unknown = clawt_web_avatar("Scout", "scout", FALSE, NULL, "agent-face");
+    unknown_html = htmx_element_render(unknown);
+    g_assert_null(strstr(unknown_html, "<svg"));
+
+    clawt_web_face_note("scout", NULL);
+}
+
+/*
+ * A colour typed into YAML reaches the face's markup only when it is a
+ * hex colour; anything else is the derived colour.  A face is the one
+ * place a configured value is written into an attribute unescaped (it
+ * is SVG markup), so this is the check that keeps it out.
+ */
+static void
+test_a_face_never_carries_a_hostile_colour(void)
+{
+    g_autoptr(HtmxElement) face = clawt_web_avatar(
+        "Scout", "scout", FALSE, "red\"/><script>alert(1)</script>",
+        "agent-face");
+    g_autofree gchar *html = htmx_element_render(face);
+    g_autofree gchar *derived = g_strdup_printf(
+        "fill=\"%s\"", clawt_avatar_color("scout", "Scout", NULL));
+
+    g_assert_null(strstr(html, "<script"));
+    g_assert_nonnull(strstr(html, derived));
+}
+
+/*
+ * The stylesheet blinks every face on its own period and moves the eyes
+ * by exactly the library's reach -- a number written here by hand, so
+ * this pins it to CLAWT_FACE_LOOK_REACH: a reach changed in one place
+ * would put the web client's eyes somewhere the others' are not.  And
+ * a browser that asks for reduced motion gets still faces.
+ */
+static void
+test_the_stylesheet_moves_faces_like_the_library(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+    g_autofree gchar *across = g_strdup_printf(
+        "var(--look-x,0)*%gpx", CLAWT_FACE_LOOK_REACH);
+    g_autofree gchar *down = g_strdup_printf(
+        "var(--look-y,0)*%gpx", CLAWT_FACE_LOOK_REACH * 0.7);
+
+    g_assert_nonnull(strstr(css, across));
+    g_assert_nonnull(strstr(css, down));
+    g_assert_nonnull(strstr(css, "@keyframes face-blink"));
+    g_assert_nonnull(strstr(css, "var(--blink-gap,4000ms)"));
+    g_assert_nonnull(strstr(css, "var(--blink-delay,0ms)"));
+    g_assert_nonnull(strstr(css, "@media (prefers-reduced-motion:reduce){"
+                                 ".face .face-eye{animation:none}"));
+}
+
+/*
+ * Still faces are an explicit "0" in clawt_faces, as descriptions are;
+ * the look sheet then stops the blink and tells the script to leave the
+ * eyes alone.  No cookie, or anything else, is faces that move.
+ */
+static void
+test_still_faces_are_an_explicit_choice(void)
+{
+    ClawtWebLook still = { 0 };
+    ClawtWebLook moving = { 0 };
+    g_autofree gchar *still_css = NULL;
+    g_autofree gchar *moving_css = NULL;
+    g_autoptr(ClawtWebLook) none = clawt_web_look_from_request(NULL);
+
+    g_assert_false(none->still_faces);
+
+    still.still_faces = TRUE;
+    still_css = clawt_web_look_css(&still);
+    moving_css = clawt_web_look_css(&moving);
+
+    g_assert_nonnull(strstr(still_css, "--face-motion:0"));
+    g_assert_nonnull(strstr(still_css, "animation:none"));
+    g_assert_null(strstr(moving_css, "--face-motion"));
+
+    {
+        g_autofree gchar *value = cookie_value(
+            "clawt_agent_desc=0; clawt_faces=0", "clawt_faces");
+
+        g_assert_cmpstr(value, ==, "0");
+    }
+}
+
+/* How many times @needle occurs in @haystack. */
+static guint
+count_of(const gchar *haystack, const gchar *needle)
+{
+    guint n = 0;
+    const gchar *at = haystack;
+
+    while ((at = strstr(at, needle)) != NULL) {
+        n++;
+        at += strlen(needle);
+    }
+
+    return n;
+}
+
+/*
+ * Whether @html has an <input> in @group with @value that is checked,
+ * whatever order its attributes were written in.
+ */
+static gboolean
+radio_checked(const gchar *html, const gchar *group, const gchar *value)
+{
+    g_autofree gchar *want_name = g_strdup_printf("name=\"%s\"", group);
+    g_autofree gchar *want_value = g_strdup_printf("value=\"%s\"", value);
+    const gchar *at = html;
+
+    while ((at = strstr(at, "<input")) != NULL) {
+        const gchar *end = strchr(at, '>');
+        g_autofree gchar *tag = g_strndup(at, end != NULL ? (gsize)(end - at)
+                                                          : strlen(at));
+
+        if (strstr(tag, want_name) != NULL && strstr(tag, want_value) != NULL &&
+            strstr(tag, "checked") != NULL)
+            return TRUE;
+        at += 6;
+    }
+
+    return FALSE;
+}
+
+/*
+ * The picker is a form without any script: one face radio per shape
+ * plus automatic and initials, one colour radio per swatch plus
+ * automatic, the starting choice checked -- and a colour that is not a
+ * swatch kept as one more, rather than silently dropped back to
+ * automatic on the next save.
+ */
+static void
+test_the_face_picker_is_a_form(void)
+{
+    g_autoptr(HtmxElement) picker = clawt_web_face_picker("scout", "Star",
+                                                          "#e5484d");
+    g_autoptr(HtmxElement) custom = clawt_web_face_picker("scout", NULL,
+                                                          "#123456");
+    g_autoptr(HtmxElement) hostile = clawt_web_face_picker(
+        "scout", "\"><script>", "red\"><script>");
+    g_autofree gchar *html = htmx_element_render(picker);
+    g_autofree gchar *custom_html = htmx_element_render(custom);
+    g_autofree gchar *hostile_html = htmx_element_render(hostile);
+
+    g_assert_cmpuint(count_of(html, "name=\"face\""), ==,
+                     clawt_face_shape_count() + 2);
+    g_assert_cmpuint(count_of(html, "name=\"color\""), ==,
+                     CLAWT_FACE_PALETTE_SIZE + 1);
+    g_assert_cmpuint(count_of(html, "checked=\"checked\""), ==, 2);
+    g_assert_true(radio_checked(html, "face", "star"));
+    g_assert_true(radio_checked(html, "color", "#e5484d"));
+    g_assert_nonnull(strstr(html, "face-shuffle"));
+    g_assert_nonnull(strstr(html, "face-preview"));
+
+    /* a non-swatch colour is offered, and chosen */
+    g_assert_cmpuint(count_of(custom_html, "name=\"color\""), ==,
+                     CLAWT_FACE_PALETTE_SIZE + 2);
+    g_assert_true(radio_checked(custom_html, "color", "#123456"));
+    /* and no face named is automatic, checked */
+    g_assert_true(radio_checked(custom_html, "face", ""));
+
+    /* nothing typed reaches the markup unescaped */
+    g_assert_null(strstr(hostile_html, "<script"));
+}
+
+/*
+ * The Face form writes only what changed: a colour picked leaves a face
+ * set by hand in the YAML alone, an unchanged form writes nothing, and
+ * a field the form did not carry is never written as "".
+ */
+static void
+test_the_face_form_writes_only_changes(void)
+{
+    g_autoptr(GPtrArray) colour_only =
+        clawt_web_face_changes("star", "star", "", "#22b573");
+    g_autoptr(GPtrArray) nothing =
+        clawt_web_face_changes("star", "star", "#22b573", "#22b573");
+    g_autoptr(GPtrArray) both =
+        clawt_web_face_changes(NULL, "cloud", NULL, "#e5484d");
+    g_autoptr(GPtrArray) to_automatic =
+        clawt_web_face_changes("cloud", "", "#e5484d", NULL);
+
+    g_assert_cmpuint(colour_only->len, ==, 1);
+    g_assert_cmpstr(g_ptr_array_index(colour_only, 0), ==, "color");
+    g_assert_cmpuint(nothing->len, ==, 0);
+    g_assert_cmpuint(both->len, ==, 2);
+    g_assert_cmpstr(g_ptr_array_index(both, 0), ==, "face");
+    g_assert_cmpuint(to_automatic->len, ==, 1);
+    g_assert_cmpstr(g_ptr_array_index(to_automatic, 0), ==, "face");
+}
+
+/*
+ * The page script turns faces' eyes over a row, a face or a picker, and
+ * runs Shuffle -- both delegated, since htmx swaps the sidebar and the
+ * page under them.
+ */
+static void
+test_the_page_script_moves_faces(void)
+{
+    g_autoptr(HtmxDiv) body = htmx_div_new();
+    g_autofree gchar *html = clawt_web_page(NULL, "alpha", CLAWT_PAGE_CHAT,
+                                            HTMX_ELEMENT(body), NULL);
+
+    g_assert_nonnull(strstr(html, "addEventListener('pointermove'"));
+    g_assert_nonnull(strstr(html, "'.agent-row,.web-face,.face-picker'"));
+    g_assert_nonnull(strstr(html, "--face-motion"));
+    g_assert_nonnull(strstr(html, "prefers-reduced-motion"));
+    g_assert_nonnull(strstr(html, ".face-shuffle"));
+}
+
 /* ── Descriptions in the agent list ────────────────────────────── */
 
 /*
@@ -3058,6 +3310,19 @@ main(int argc, char *argv[])
                     test_the_picture_viewer_can_be_dismissed);
     g_test_add_func("/web/transcript-face-is-larger",
                     test_the_transcript_face_is_larger_and_only_zooms_with_a_picture);
+    g_test_add_func("/web/face/avatar-draws-a-face",
+                    test_the_avatar_draws_a_face);
+    g_test_add_func("/web/face/no-hostile-colour",
+                    test_a_face_never_carries_a_hostile_colour);
+    g_test_add_func("/web/face/stylesheet-matches-library",
+                    test_the_stylesheet_moves_faces_like_the_library);
+    g_test_add_func("/web/face/still-is-explicit",
+                    test_still_faces_are_an_explicit_choice);
+    g_test_add_func("/web/face/picker-is-a-form",
+                    test_the_face_picker_is_a_form);
+    g_test_add_func("/web/face/page-script", test_the_page_script_moves_faces);
+    g_test_add_func("/web/face/form-writes-only-changes",
+                    test_the_face_form_writes_only_changes);
     g_test_add_func("/web/no-cookie-shows-descriptions",
                     test_a_browser_with_no_cookie_shows_descriptions);
     g_test_add_func("/web/only-an-explicit-zero-hides-descriptions",

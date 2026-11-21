@@ -583,9 +583,11 @@ The agent's state as a badge in the tone =clawt_lrg_agent_state_tone()= gives it
 
 Start, Stop and Restart send ~agent.start~, ~agent.stop~ and ~agent.restart~ through =clawt_lrg_agent_action()= (shared with the sidebar's menu). Each is enabled only where it can work (=clawt_lrg_agent_verbs()=); a disabled one is explained in a caption beside the buttons, because libregnum has no tooltips to hide the reason in.
 
-*** Profile picture
+*** Face
 
-The agent's avatar at 64 px (=clawt_lrg_avatar()=), with Choose... and Remove. Choose opens an =LrgFileDialog= (no filter: the daemon sniffs the bytes and refuses anything that is not PNG, JPEG or WebP), reads the file and sends its bytes base64-encoded with ~agent.avatar_set~; Remove sends ~agent.avatar_clear~. Either invalidates the shared avatar cache at once (=clawt_lrg_avatar_invalidate()=) rather than waiting for the daemon's ~agent.changed~ echo.
+The face picker (=clawt_lrg_face_picker_new()=, see [[#lrg-faces][Generated faces]]) and, under it, the picture row. A shape or colour picked is saved at once with ~agent.set~ -- only the key that changed -- and the fleet is re-read so the sidebar and header redraw with it.
+
+The picture row shows the picture itself (=clawt_lrg_avatar()=, 48 px) only when there is one; the picker's preview is the face. Choose... and Remove sit at its end. Choose opens an =LrgFileDialog= (no filter: the daemon sniffs the bytes and refuses anything that is not PNG, JPEG or WebP), reads the file and sends its bytes base64-encoded with ~agent.avatar_set~; Remove sends ~agent.avatar_clear~. Either invalidates the shared avatar cache at once (=clawt_lrg_avatar_invalidate()=) rather than waiting for the daemon's ~agent.changed~ echo.
 
 *** Usage
 
@@ -1135,6 +1137,51 @@ The lists the shell keeps (~agent.list~, ~room.list~, ~activity.list~, ~decision
 :END:
 
 An avatar is a disc in the agent's colour with its initials (ink chosen by ~clawt_color_ink()~), and the picture over it when the agent has one.  The picture is fetched once per agent (~agent.avatar~, quiet), decoded at 128 px and shared by every avatar of that agent on screen; ~agent.changed~ invalidates it.  A running agent's disc glows in its own colour.  graylib loads images by filename, so the bytes go through a temporary file whose extension comes from the bytes' own magic number (~clawt_avatar_sniff_mime_type()~), never from anything the daemon claimed.  The template is ~clawt_lrg_image_template()~ -- one spelling for avatars, chat pictures and screen frames, and tested -- because all three once wrote ~XXXXXX%s~ with a bare extension: ~clawtilla-avatar-YEW1X3jpg~ has no extension, graylib logged "Missing file extension", and before 0.7.4 every picture in this client drew as initials and every Screen panel stayed empty.
+
+** Generated faces (since 0.53.0)
+:PROPERTIES:
+:CUSTOM_ID: lrg-faces
+:END:
+
+With no picture, an agent's avatar is its generated face (see "Generated faces" in [[file:agents.org][agents.org]] for the shapes and the blink schedule, and [[file:clients.org][clients.org]] for the order picture > face > letter disc). ~clawt_lrg_avatar()~ looks the face up with ~clawt_lrg_face_for()~, which the sidebar fills from ~agent.list~'s ~face~ (~clawt_lrg_face_note()~). The disc is still built under the face, transparent and with no border or shadow, because it carries the live glow -- a part look needs a box, and a face is not one.
+
+*** Drawing it
+
+=lrg-face.c= makes each face an =LrgCustomWidget=. The body is a texture: ~clawt_face_coverage()~ gives an anti-aliased alpha mask (4 × 4 samples a pixel, tested against the polar edge), which is coloured, uploaded once per shape, colour and size at twice the drawn size, filtered bilinear and cached. The eyes are two =lrg_paint_list_rect()= calls on top.
+
+The first version filled the outline as a triangle fan, which is exact for a star-shaped outline. But libregnum anti-aliases every triangle's edges, including the ones inside the fan, and the seams showed as a faint star of lines through every face. A mask has no inside edges.
+
+*** Moving it
+
+The frame loop sleeps when nothing moves (about ten frames a second; see [[*Running][Running]]), which would give a 160 ms blink one frame. So the face's ~step~ reports itself busy:
+
+- while the eyes ease toward the pointer;
+- during a blink;
+- for 120 ms /before/ each blink, from ~clawt_face_next_blink()~.
+
+The loop then runs at full rate exactly while something moves, and sleeps again afterwards.
+
+The eyes follow the pointer over the face itself, and in the sidebar over the whole row. The row's click catcher sits on top of everything in the row and gets the pointer first, so ~clawt_lrg_face_track()~ listens to the catcher's ~event~ signal. It never consumes the event, so the row still gets its click.
+
+*Settings → Appearance → Agent list → Animated faces* (~animate_faces~) turns both motions off at once.
+
+*** The picker
+
+=clawt_lrg_face_picker_new()= is the New agent dialog's top section and the Overview's Face card:
+
+- a preview at 80 px that blinks and watches the pointer, with the shape's name and a *Shuffle* button under it (New agent opens already shuffled);
+- a grid of tiles -- automatic, the fourteen shapes and /Aa/ -- each a face that is also a button;
+- the automatic tone and the twelve palette colours as dots, with a ring round the chosen tile and dot.
+
+Unlike GTK it has no custom-colour button: any other colour goes in ~agents.color~ by hand, or through GTK, the web client or ~agent set~. The Initials preview is held at the face's height, because a preview that changed height moved every tile under it between two clicks, and the second click landed on a different shape.
+
+*** Tested by
+
+~test-lrgui-widgets~:
+
+- ~/lrgui/widgets/face-follows-the-pointer~: easing, return on leave, the catcher path not consuming, motion off;
+- ~/lrgui/widgets/avatar-draws-the-noted-face~: face, disc, and disc for an unknown shape;
+- ~/lrgui/widgets/face-picker-choice~: stored spellings, the preview, and no save on open.
 
 * Parity
 :PROPERTIES:

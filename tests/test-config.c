@@ -230,6 +230,58 @@ test_unknown_key_warns_but_loads(void)
 }
 
 /*
+ * A face nobody can draw is a warning naming the agent and the shapes,
+ * and the agent is not made a shadow: the setting is cosmetic, and a
+ * typo in it must not take an agent out of the fleet.
+ */
+static void
+test_unknown_face_warns(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = NULL;
+    GPtrArray *warnings;
+    guint i;
+    gboolean found = FALSE;
+
+    config = clawt_config_load_from_string(
+        "agents:\n  - id: scout\n    face: clowd\n"
+        "  - id: fine\n    face: cloud\n", &error);
+    g_assert_no_error(error);
+
+    warnings = clawt_config_get_warnings(config);
+    for (i = 0; i < warnings->len; i++) {
+        const gchar *line = g_ptr_array_index(warnings, i);
+
+        if (strstr(line, "scout") != NULL && strstr(line, "clowd") != NULL &&
+            strstr(line, "bloom") != NULL)
+            found = TRUE;
+        /* the good one is not mentioned */
+        g_assert_null(strstr(line, "agent fine"));
+    }
+    g_assert_true(found);
+    g_assert_false(clawt_agent_config_is_shadow(
+        clawt_config_get_agent(config, "scout")));
+}
+
+/*
+ * The schema's description of agents.face names every shape, since it
+ * is what `clawtilla config describe` and the generated options page
+ * show -- a shape added to the table and not to this text is one
+ * nobody can discover.
+ */
+static void
+test_face_schema_lists_every_shape(void)
+{
+    const ClawtSchemaEntry *entry = clawt_config_schema_lookup("agents.face");
+    guint i;
+
+    g_assert_nonnull(entry);
+    for (i = 0; i < clawt_face_shape_count(); i++)
+        g_assert_nonnull(strstr(entry->doc, clawt_face_shape_name((gint)i)));
+    g_assert_nonnull(strstr(entry->doc, "initials"));
+}
+
+/*
  * An agent's enum that is not one of its values says so, once, naming
  * the agent.  The fleet-wide pass skips agent blocks, so `steer: always`
  * and `computer.start: lazy` loaded in silence and ran as the defaults.
@@ -2324,6 +2376,9 @@ main(int argc, char *argv[])
     g_test_add_func("/config/unset-returns-default",
                     test_unset_returns_to_default);
     g_test_add_func("/config/unknown-key-warns", test_unknown_key_warns_but_loads);
+    g_test_add_func("/config/face/unknown-warns", test_unknown_face_warns);
+    g_test_add_func("/config/face/schema-lists-shapes",
+                    test_face_schema_lists_every_shape);
     g_test_add_func("/config/malformed-yaml", test_malformed_yaml_is_an_error);
     g_test_add_func("/config/empty-is-valid", test_empty_config_is_valid);
     g_test_add_func("/config/comment-only-valid",

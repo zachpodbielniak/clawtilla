@@ -163,6 +163,19 @@ declare -A AFFORDANCES=(
     ["transcript stamps"]="clawt_chat_time_label|clawt_chat_time_label|clawt_chat_time_label"
     ["day dividers"]="day_divider|day-divider|day_divider_new"
     ["sender avatars"]="adw_avatar_new|msg-avatar|sender_avatar"
+    #
+    # Generated faces (since 0.53.0; docs/agents.org, "Generated faces"):
+    # every client draws the shared geometry, takes the daemon's resolved
+    # face from agent.list, turns the eyes toward the pointer over an
+    # agent, offers the picker with Shuffle in New agent and on the agent
+    # page, and stops the motion when the reader asks.
+    #
+    ["generated face"]="clawt_gtk_face_new|clawt_face_svg|clawt_lrg_face_new"
+    ["face from the daemon"]="clawt_gtk_face_note|clawt_web_face_note|clawt_lrg_face_note"
+    ["eyes follow the pointer"]="clawt_gtk_face_track|'pointermove'|clawt_lrg_face_track"
+    ["face picker"]="clawt_gtk_face_picker_new|clawt_web_face_picker|clawt_lrg_face_picker_new"
+    ["face shuffle"]="clawt_gtk_face_picker_shuffle|face-shuffle|clawt_lrg_face_picker_shuffle"
+    ["still faces"]="clawt_gtk_faces_set_animate|clawt_faces|clawt_lrg_faces_set_animate"
     ["own-turn bubbles"]="clawt-bubble|msg-self|own_bubble_new"
     ["alerts surface"]="build_alerts_panel|alert-row|build_alerts_panel"
     #

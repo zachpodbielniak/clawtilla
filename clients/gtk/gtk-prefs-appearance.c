@@ -18,6 +18,7 @@
  */
 
 #include "clawt-window-private.h"
+#include "clawt-gtk-face.h"
 
 /* ── Appearance ──────────────────────────────────────────────────── */
 
@@ -240,6 +241,55 @@ clawt_gtk_apply_window_buttons(GdkDisplay *display, ClawtWindowButtons buttons)
  * dialog is a live preview rather than something you close and hope
  * about.
  */
+/*
+ * Whether faces move: the appearance's animate_faces, and the desktop's
+ * own animation setting, which a person who turned animations off
+ * everywhere should not have to turn off again here.  Followed live:
+ * the desktop setting can change while the window is open.
+ */
+static ClawtAppearance *face_motion_appearance = NULL;
+
+static void
+update_face_motion(void)
+{
+    GtkSettings *settings = gtk_settings_get_default();
+    gboolean desktop = TRUE;
+
+    if (settings != NULL)
+        g_object_get(settings, "gtk-enable-animations", &desktop, NULL);
+
+    clawt_gtk_faces_set_animate(
+        desktop && (face_motion_appearance == NULL ||
+                    clawt_appearance_get_animate_faces(face_motion_appearance)));
+}
+
+static void
+on_desktop_animations(GObject *settings, GParamSpec *pspec, gpointer data)
+{
+    (void)settings;
+    (void)pspec;
+    (void)data;
+
+    update_face_motion();
+}
+
+static void
+apply_face_motion(ClawtAppearance *appearance)
+{
+    static gboolean watching = FALSE;
+    GtkSettings *settings = gtk_settings_get_default();
+
+    face_motion_appearance = appearance;
+
+    if (!watching && settings != NULL) {
+        g_signal_connect(settings, "notify::gtk-enable-animations",
+                         G_CALLBACK(on_desktop_animations), NULL);
+        watching = TRUE;
+    }
+
+    update_face_motion();
+}
+
 void
 clawt_gtk_apply_appearance(ClawtAppearance *appearance)
 {
@@ -249,6 +299,8 @@ clawt_gtk_apply_appearance(ClawtAppearance *appearance)
 
     if (appearance == NULL || display == NULL)
         return;
+
+    apply_face_motion(appearance);
 
     /*
      * The scheme first, and asked for rather than switched on, so a
@@ -438,6 +490,21 @@ on_show_descriptions_changed(GObject *row, GParamSpec *spec,
 
     appearance_changed(self);
     clawt_gtk_refresh_agents(self);
+}
+
+/* Applied at once: every face on screen settles or starts blinking. */
+static void
+on_animate_faces_changed(GObject *row, GParamSpec *spec, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)spec;
+
+    clawt_appearance_set_animate_faces(
+        self->appearance,
+        adw_switch_row_get_active(ADW_SWITCH_ROW(row)));
+
+    appearance_changed(self);
 }
 
 static void
@@ -918,6 +985,27 @@ build_fleet_list_group(ClawtWindow *self)
                      G_CALLBACK(on_show_descriptions_changed), self);
 
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+
+    /*
+     * Faces that move (0.53.0).  Separate from the desktop's animation
+     * switch, which also stops them: somebody may want a still sidebar
+     * without giving up every other animation.
+     */
+    {
+        GtkWidget *motion = adw_switch_row_new();
+
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(motion),
+                                      "Animated faces");
+        adw_action_row_set_subtitle(
+            ADW_ACTION_ROW(motion),
+            "Faces blink, and their eyes follow the pointer over an agent");
+        adw_switch_row_set_active(
+            ADW_SWITCH_ROW(motion),
+            clawt_appearance_get_animate_faces(self->appearance));
+        g_signal_connect(motion, "notify::active",
+                         G_CALLBACK(on_animate_faces_changed), self);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), motion);
+    }
 
     return group;
 }

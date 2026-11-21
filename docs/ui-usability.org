@@ -47,6 +47,8 @@ The first command performs sequential clean application and test builds, runs th
 
 ** GTK interaction test
 
+=make test-gtk-face= is another separate integration target, for the generated-face widget and its picker; it needs a display but no daemon (see "Generated faces" in [[file:clients.org][clients.org]]).
+
 =make test-gtk-navigation= is a separate integration target. It links the real GTK client and tests actual filtering, activation, sidebar selection, expansion of a collapsed team, draft restoration, room transitions, page navigation and no-results behavior. It requires an isolated test daemon with agents =alice= and =bob= in team =engineering=, plus a declared room =standup= containing both. Set =CLAWT_UI_TEST_SOCKET= to that daemon's socket. Do not point it at a personal fleet: it changes the test client's local draft and view state.
 
 A fixture configuration should put its daemon state, socket, automation directory and agent workspaces under a temporary directory, set =defaults.autostart= to false, and disable network listeners with =clawtillad --no-bind=. Set =XDG_CONFIG_HOME=, =XDG_DATA_HOME= and =XDG_CACHE_HOME= to isolated test directories for every fixture process. On a headless machine with GTK Broadway support, start =gtk4-broadwayd= on a private display, then run:

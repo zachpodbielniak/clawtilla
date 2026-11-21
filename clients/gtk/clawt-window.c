@@ -12,6 +12,7 @@
  */
 
 #include "clawt-window-private.h"
+#include "clawt-gtk-face.h"
 
 /* Defined below; the inspector and the create dialog both use them. */
 static JsonObject  *chooser_provider(ModelChooser *chooser);
@@ -2669,6 +2670,9 @@ typedef struct {
     ModelChooser  designer;         /* the model that drafts it */
     ImageChooser  image;
     ImageChooser  disk;             /* the VM's disk, when it is a VM */
+    GtkWidget    *face_picker;      /* shape and colour (0.53.0) */
+    GtkWidget    *picture_button;   /* "Use a picture instead..." */
+    GBytes       *picture;          /* chosen, sent once the agent exists */
 } NewAgentDialog;
 
 static void
@@ -2680,6 +2684,7 @@ new_agent_dialog_free(gpointer data)
     g_clear_pointer(&dialog->designer.catalog, json_node_unref);
     g_clear_pointer(&dialog->image.catalog, json_node_unref);
     g_clear_pointer(&dialog->disk.catalog, json_node_unref);
+    g_clear_pointer(&dialog->picture, g_bytes_unref);
     g_free(dialog);
 }
 
@@ -3431,6 +3436,13 @@ report_created(ClawtWindow *self, JsonNode *reply, const gchar *agent_id)
     clawt_window_toast(self, "Agent created.");
 }
 
+/* An empty choice is "not set", which the create frame says by omission. */
+static const gchar *
+empty_is_null(const gchar *value)
+{
+    return (value != NULL && *value != '\0') ? value : NULL;
+}
+
 static void
 on_create_manually(GtkButton *button, gpointer user_data)
 {
@@ -3469,6 +3481,10 @@ on_create_manually(GtkButton *button, gpointer user_data)
             "image", image,
             "vm_image", disk,
             "team", dialog_team(dialog),
+            "face", empty_is_null(clawt_gtk_face_picker_get_face(
+                        CLAWT_GTK_FACE_PICKER(dialog->face_picker))),
+            "color", empty_is_null(clawt_gtk_face_picker_get_color(
+                         CLAWT_GTK_FACE_PICKER(dialog->face_picker))),
             NULL));
 
     /*
@@ -3477,6 +3493,27 @@ on_create_manually(GtkButton *button, gpointer user_data)
      */
     if (reply == NULL)
         return;
+
+    /*
+     * A picture chosen in the dialog goes up once the agent exists --
+     * agent.avatar_set needs an agent to put it on.  A refusal (not a
+     * PNG, JPEG or WebP) is toasted and the agent keeps its face; the
+     * agent itself is not undone over a picture.
+     */
+    if (dialog->picture != NULL) {
+        g_autoptr(JsonNode) sent = NULL;
+        g_autofree gchar *encoded = NULL;
+        gconstpointer data;
+        gsize length = 0;
+
+        data = g_bytes_get_data(dialog->picture, &length);
+        encoded = g_base64_encode(data, length);
+        sent = clawt_window_request(
+            self, "agent.avatar_set",
+            clawt_build_payload("agent", agent_id, "data", encoded, NULL));
+        if (sent != NULL)
+            clawt_gtk_avatar_invalidate(agent_id);
+    }
 
     report_created(self, reply, agent_id);
     clawt_gtk_refresh_agents(self);
@@ -3736,6 +3773,69 @@ on_computer_type_changed(GObject *object, GParamSpec *pspec,
         on_disk_changed(NULL, NULL, &dialog->disk);
 }
 
+/* The automatic face follows the id being typed. */
+static void
+on_new_agent_id_changed(GtkEditable *editable, gpointer user_data)
+{
+    NewAgentDialog *dialog = user_data;
+
+    clawt_gtk_face_picker_set_agent_id(
+        CLAWT_GTK_FACE_PICKER(dialog->face_picker),
+        gtk_editable_get_text(editable));
+}
+
+/*
+ * The picture is read now and held as bytes: the agent does not exist
+ * yet, and the file may be gone by the time Create is pressed.  The
+ * daemon sniffs the bytes when they are sent, so nothing is checked here
+ * that it would check again.
+ */
+static void
+on_new_agent_picture_chosen(GObject *source, GAsyncResult *result,
+                            gpointer user_data)
+{
+    AdwDialog *window = ADW_DIALOG(user_data);
+    NewAgentDialog *dialog = g_object_get_data(G_OBJECT(window), "dialog");
+    g_autoptr(GFile) file = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *contents = NULL;
+    g_autofree gchar *name = NULL;
+    g_autofree gchar *label = NULL;
+    gsize length = 0;
+
+    file = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result,
+                                       &error);
+
+    if (file != NULL && dialog != NULL &&
+        g_file_load_contents(file, NULL, &contents, &length, NULL, &error)) {
+        g_clear_pointer(&dialog->picture, g_bytes_unref);
+        dialog->picture = g_bytes_new_take(g_steal_pointer(&contents), length);
+        name = g_file_get_basename(file);
+        label = g_strdup_printf("Picture: %s", name);
+        gtk_button_set_label(GTK_BUTTON(dialog->picture_button), label);
+    } else if (error != NULL && dialog != NULL &&
+               !g_error_matches(error, GTK_DIALOG_ERROR,
+                                GTK_DIALOG_ERROR_DISMISSED)) {
+        clawt_window_toast(dialog->window, error->message);
+    }
+
+    g_object_unref(window);
+}
+
+static void
+on_new_agent_picture_clicked(GtkButton *button, gpointer user_data)
+{
+    NewAgentDialog *dialog = user_data;
+    g_autoptr(GtkFileDialog) chooser = gtk_file_dialog_new();
+
+    (void)button;
+
+    gtk_file_dialog_set_title(chooser, "Choose a profile picture");
+    gtk_file_dialog_open(chooser, GTK_WINDOW(dialog->window), NULL,
+                         on_new_agent_picture_chosen,
+                         g_object_ref(dialog->dialog));
+}
+
 void
 clawt_gtk_on_new_agent(GtkButton *button, gpointer user_data)
 {
@@ -3760,6 +3860,44 @@ clawt_gtk_on_new_agent(GtkButton *button, gpointer user_data)
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(manual),
                                     "By hand");
 
+    /*
+     * The face first, as in any "make a character" screen: the preview
+     * is what makes the rest of the form feel like a someone.  It
+     * follows the id as it is typed, so "automatic" previews the face
+     * the agent will actually get.
+     */
+    {
+        GtkWidget *holder = adw_preferences_row_new();
+        GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+
+        dialog->face_picker = clawt_gtk_face_picker_new(NULL, NULL, NULL);
+
+        /* a new agent starts on a random face, as the daemon would give it */
+        clawt_gtk_face_picker_shuffle(
+            CLAWT_GTK_FACE_PICKER(dialog->face_picker));
+        gtk_box_append(GTK_BOX(box), dialog->face_picker);
+
+        dialog->picture_button =
+            gtk_button_new_with_label("Use a picture instead\342\200\246");
+        gtk_widget_add_css_class(dialog->picture_button, "flat");
+        gtk_widget_set_halign(dialog->picture_button, GTK_ALIGN_CENTER);
+        gtk_widget_set_tooltip_text(
+            dialog->picture_button,
+            "A PNG, JPEG or WebP shown in place of the face; the face "
+            "stays underneath for when the picture is removed");
+        g_signal_connect(dialog->picture_button, "clicked",
+                         G_CALLBACK(on_new_agent_picture_clicked), dialog);
+        gtk_box_append(GTK_BOX(box), dialog->picture_button);
+
+        gtk_widget_set_margin_top(box, 12);
+        gtk_widget_set_margin_bottom(box, 6);
+        gtk_widget_set_margin_start(box, 12);
+        gtk_widget_set_margin_end(box, 12);
+        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(holder), FALSE);
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(holder), box);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual), holder);
+    }
+
     dialog->id_entry = adw_entry_row_new();
     adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(dialog->id_entry),
                                         FALSE);
@@ -3767,6 +3905,8 @@ clawt_gtk_on_new_agent(GtkButton *button, gpointer user_data)
                                   "Id");
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(manual),
                               dialog->id_entry);
+    g_signal_connect(dialog->id_entry, "changed",
+                     G_CALLBACK(on_new_agent_id_changed), dialog);
 
     /*
      * Name and description, which only the inspector offered before --

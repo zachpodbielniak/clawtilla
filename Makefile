@@ -153,6 +153,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/agent/clawt-agent-manager.h \
 	$(SRCDIR)/agent/clawt-workspace.h \
 	$(SRCDIR)/agent/clawt-avatar.h \
+	$(SRCDIR)/agent/clawt-face.h \
 	$(SRCDIR)/agent/clawt-team.h \
 	$(SRCDIR)/agent/clawt-agent-confine.h \
 	$(SRCDIR)/computer/clawt-exec-result.h \
@@ -383,6 +384,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/agent/clawt-agent-manager.c \
 	$(SRCDIR)/agent/clawt-workspace.c \
 	$(SRCDIR)/agent/clawt-avatar.c \
+	$(SRCDIR)/agent/clawt-face.c \
 	$(SRCDIR)/agent/clawt-team.c \
 	$(SRCDIR)/agent/clawt-agent-confine.c \
 	$(SRCDIR)/computer/clawt-exec-result.c \
@@ -1269,7 +1271,7 @@ endif # __MIXED
 
 # Explicit integration target: the hermetic suite must never need a display
 # or a running daemon. See docs/ui-usability.org for the isolated fixture.
-.PHONY: test-gtk-navigation
+.PHONY: test-gtk-navigation test-gtk-face
 ifeq ($(GTK_AVAILABLE),1)
 $(OUTDIR)/test-gtk-navigation: tests/integration/test-gtk-navigation.c $(GTK_SOURCES) $(wildcard clients/gtk/*.h) $(LIB_STATIC) | $(OUTDIR) $(OUTDIR)/clawt-version.h
 	$(CC) $(CFLAGS) $(GTK_PKG_CFLAGS) -I$(GTK_SRCDIR) $< \
@@ -1278,9 +1280,21 @@ $(OUTDIR)/test-gtk-navigation: tests/integration/test-gtk-navigation.c $(GTK_SOU
 
 test-gtk-navigation: $(OUTDIR)/test-gtk-navigation
 	$(OUTDIR)/test-gtk-navigation
+
+# The face widget and picker (0.53.0): needs a display, never a daemon.
+$(OUTDIR)/test-gtk-face: tests/integration/test-gtk-face.c $(GTK_SOURCES) $(wildcard clients/gtk/*.h) $(LIB_STATIC) | $(OUTDIR) $(OUTDIR)/clawt-version.h
+	$(CC) $(CFLAGS) $(GTK_PKG_CFLAGS) -I$(GTK_SRCDIR) $< \
+		$(filter-out $(GTK_SRCDIR)/main.c,$(GTK_SOURCES)) \
+		-o $@ $(LIB_STATIC) $(GTK_PKG_LIBS) $(LDFLAGS)
+
+test-gtk-face: $(OUTDIR)/test-gtk-face
+	$(OUTDIR)/test-gtk-face
 else
 test-gtk-navigation:
 	@echo 'GTK navigation test requires gtk4-devel and libadwaita-devel.' >&2
+	@exit 1
+test-gtk-face:
+	@echo 'GTK face test requires gtk4-devel and libadwaita-devel.' >&2
 	@exit 1
 endif
 

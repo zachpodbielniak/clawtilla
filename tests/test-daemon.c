@@ -4473,6 +4473,247 @@ test_computer_settings_refused_where_they_arrive(void)
 
 
 
+/* ── Faces (0.53.0) ───────────────────────────────────────────────── */
+
+/* The agent.list entry for @id, borrowed from @reply. */
+static JsonObject *
+listed_agent(JsonNode *reply, const gchar *id)
+{
+    JsonArray *agents = json_object_get_array_member(payload_of(reply),
+                                                     "agents");
+    guint i;
+
+    for (i = 0; i < json_array_get_length(agents); i++) {
+        JsonObject *agent = json_array_get_object_element(agents, i);
+
+        if (g_strcmp0(json_object_get_string_member(agent, "id"), id) == 0)
+            return agent;
+    }
+    g_assert_not_reached();
+    return NULL;
+}
+
+/*
+ * A face and colour chosen in a create dialog reach the agent's config;
+ * a face nobody can draw, or a colour that would be written into the
+ * web client's markup unchecked, is refused and nothing is created --
+ * an agent half-made with a face it cannot wear would be found later.
+ */
+static void
+test_create_with_a_face(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) created = NULL;
+    g_autoptr(JsonNode) bad_face = NULL;
+    g_autoptr(JsonNode) bad_color = NULL;
+    ClawtAgentConfig *config;
+    ClawtConfig *root;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+    root = clawt_daemon_get_config(fixture.daemon);
+
+    created = request(&fixture, "agent.create",
+                      "{\"id\":\"scout\",\"face\":\"cloud\","
+                      "\"color\":\"#22b573\",\"start\":false}");
+    g_assert_false(clawt_ipc_frame_is_error(created));
+    config = clawt_config_get_agent(root, "scout");
+    g_assert_nonnull(config);
+    g_assert_cmpstr(clawt_agent_config_get_string(config, "face"), ==,
+                    "cloud");
+    g_assert_cmpstr(clawt_agent_config_get_string(config, "color"), ==,
+                    "#22b573");
+
+    /*
+     * Named nothing: a random shape and a palette colour, written down,
+     * so a new fleet varies and the face it is born with stays.  Twelve
+     * creates are not all one shape -- a stuck generator would be.
+     */
+    {
+        g_autoptr(GHashTable) shapes = g_hash_table_new(g_str_hash,
+                                                        g_str_equal);
+        guint n;
+
+        for (n = 0; n < 12; n++) {
+            g_autofree gchar *id = g_strdup_printf("fresh%u", n);
+            g_autofree gchar *json = g_strdup_printf(
+                "{\"id\":\"%s\",\"start\":false}", id);
+            g_autoptr(JsonNode) fresh = request(&fixture, "agent.create",
+                                                json);
+            ClawtAgentConfig *made;
+            const gchar *face;
+            const gchar *color;
+            gboolean in_palette = FALSE;
+            guint p;
+
+            g_assert_false(clawt_ipc_frame_is_error(fresh));
+            made = clawt_config_get_agent(
+                clawt_daemon_get_config(fixture.daemon), id);
+            g_assert_nonnull(made);
+            face = clawt_agent_config_get_string(made, "face");
+            color = clawt_agent_config_get_string(made, "color");
+            g_assert_cmpint(clawt_face_shape_lookup(face), >=, 0);
+            for (p = 0; p < CLAWT_FACE_PALETTE_SIZE; p++)
+                if (g_strcmp0(color, clawt_face_palette_color(p)) == 0)
+                    in_palette = TRUE;
+            g_assert_true(in_palette);
+            g_hash_table_add(shapes, (gpointer)clawt_face_shape_name(
+                                 clawt_face_shape_lookup(face)));
+        }
+        g_assert_cmpuint(g_hash_table_size(shapes), >, 1);
+    }
+
+    /* an explicit "" is "automatic", not "pick for me": left as given */
+    {
+        g_autoptr(JsonNode) automatic = request(
+            &fixture, "agent.create",
+            "{\"id\":\"auto1\",\"face\":\"\",\"color\":\"\","
+            "\"start\":false}");
+
+        g_assert_false(clawt_ipc_frame_is_error(automatic));
+        g_assert_true(clawt_face_value_is_valid(clawt_agent_config_get_string(
+            clawt_config_get_agent(clawt_daemon_get_config(fixture.daemon), "auto1"), "face")));
+        g_assert_cmpint(clawt_face_shape_lookup(clawt_agent_config_get_string(
+            clawt_config_get_agent(clawt_daemon_get_config(fixture.daemon), "auto1"), "face")), ==, -2);
+    }
+
+    bad_face = request(&fixture, "agent.create",
+                       "{\"id\":\"ghost\",\"face\":\"hexagon\","
+                       "\"start\":false}");
+    g_assert_nonnull(strstr(error_text(bad_face), "hexagon"));
+    g_assert_nonnull(strstr(error_text(bad_face), "squircle"));
+    g_assert_null(clawt_config_get_agent(
+        clawt_daemon_get_config(fixture.daemon), "ghost"));
+
+    bad_color = request(&fixture, "agent.create",
+                        "{\"id\":\"ghost\",\"color\":"
+                        "\"red\\\"><script>\",\"start\":false}");
+    g_assert_nonnull(strstr(error_text(bad_color), "colour"));
+    g_assert_null(clawt_config_get_agent(
+        clawt_daemon_get_config(fixture.daemon), "ghost"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * agent.set checks a face and a colour the way agent.create does; the
+ * refusal lists the shapes so the person knows what to type; initials
+ * and empty (automatic) are both accepted, and nothing refused is
+ * written.
+ */
+static void
+test_set_face_checked(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) bogus = NULL;
+    g_autoptr(JsonNode) initials = NULL;
+    g_autoptr(JsonNode) automatic = NULL;
+    g_autoptr(JsonNode) bad_color = NULL;
+    g_autoptr(JsonNode) cleared_color = NULL;
+    ClawtAgentConfig *config;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: chief\n    face: star\n"
+                  "    color: \"#2f7de1\"\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+    config = clawt_config_get_agent(clawt_daemon_get_config(fixture.daemon),
+                                    "chief");
+
+    bogus = request(&fixture, "agent.set",
+                    "{\"agent\":\"chief\",\"key\":\"face\","
+                    "\"value\":\"bogus\"}");
+    g_assert_nonnull(strstr(error_text(bogus), "pebble"));
+    g_assert_nonnull(strstr(error_text(bogus), "initials"));
+    g_assert_cmpstr(clawt_agent_config_get_string(config, "face"), ==,
+                    "star");
+
+    bad_color = request(&fixture, "agent.set",
+                        "{\"agent\":\"chief\",\"key\":\"color\","
+                        "\"value\":\"blue\"}");
+    g_assert_nonnull(strstr(error_text(bad_color), "blue"));
+    g_assert_cmpstr(clawt_agent_config_get_string(config, "color"), ==,
+                    "#2f7de1");
+
+    initials = request(&fixture, "agent.set",
+                       "{\"agent\":\"chief\",\"key\":\"face\","
+                       "\"value\":\"initials\"}");
+    g_assert_false(clawt_ipc_frame_is_error(initials));
+    g_assert_cmpstr(clawt_agent_config_get_string(config, "face"), ==,
+                    "initials");
+
+    automatic = request(&fixture, "agent.set",
+                        "{\"agent\":\"chief\",\"key\":\"face\","
+                        "\"value\":\"\"}");
+    g_assert_false(clawt_ipc_frame_is_error(automatic));
+
+    cleared_color = request(&fixture, "agent.set",
+                            "{\"agent\":\"chief\",\"key\":\"color\","
+                            "\"value\":\"\"}");
+    g_assert_false(clawt_ipc_frame_is_error(cleared_color));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * agent.list says which face to draw, already resolved, so a client on
+ * another build draws what this daemon decided: the configured shape,
+ * initials, or for an unset agent exactly what clawt_face_resolve()
+ * picks -- plus the raw setting for a picker, and the colour the face
+ * is painted in.
+ */
+static void
+test_list_reports_the_face(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) listed = NULL;
+    JsonObject *agent;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "  - id: scout\n    face: Cloud\n    color: \"#22b573\"\n"
+                  "  - id: plain\n    face: initials\n"
+                  "  - id: typo\n    face: clowd\n");
+
+    /* the typo is said out loud, which is the point (test-config.c) */
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING, "*clowd*");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+    g_test_assert_expected_messages();
+
+    listed = request(&fixture, "agent.list", "{}");
+    g_assert_false(clawt_ipc_frame_is_error(listed));
+
+    agent = listed_agent(listed, "chief");
+    g_assert_cmpstr(json_object_get_string_member(agent, "face"), ==,
+                    clawt_face_resolve_name("chief", NULL));
+    g_assert_null(json_object_get_string_member_with_default(
+        agent, "face_configured", NULL));
+    g_assert_cmpstr(json_object_get_string_member(agent, "color_resolved"),
+                    ==, clawt_avatar_color("chief", NULL, NULL));
+
+    agent = listed_agent(listed, "scout");
+    g_assert_cmpstr(json_object_get_string_member(agent, "face"), ==,
+                    "cloud");
+    g_assert_cmpstr(json_object_get_string_member(agent, "face_configured"),
+                    ==, "Cloud");
+    g_assert_cmpstr(json_object_get_string_member(agent, "color_resolved"),
+                    ==, "#22b573");
+
+    agent = listed_agent(listed, "plain");
+    g_assert_cmpstr(json_object_get_string_member(agent, "face"), ==,
+                    "initials");
+
+    /* a typo is the automatic face, never no face (and not a shadow) */
+    agent = listed_agent(listed, "typo");
+    g_assert_cmpstr(json_object_get_string_member(agent, "face"), ==,
+                    clawt_face_resolve_name("typo", NULL));
+    g_assert_cmpstr(json_object_get_string_member(agent, "state"), !=,
+                    "shadow");
+
+    fixture_teardown(&fixture);
+}
+
+
 /*
  * Creating an agent starts it.
  *
@@ -12815,6 +13056,9 @@ main(int argc, char *argv[])
                     test_on_first_use_does_not_start_the_computer);
     g_test_add_func("/daemon/computer/settings-refused-where-they-arrive",
                     test_computer_settings_refused_where_they_arrive);
+    g_test_add_func("/daemon/face/create", test_create_with_a_face);
+    g_test_add_func("/daemon/face/set-checked", test_set_face_checked);
+    g_test_add_func("/daemon/face/list", test_list_reports_the_face);
     g_test_add_func("/daemon/mount/an-unapplicable-relabel-is-refused-on-add",
                     test_an_unapplicable_relabel_is_refused_when_it_is_added);
     g_test_add_func("/daemon/mount/removing-the-last-one-removes-the-key",

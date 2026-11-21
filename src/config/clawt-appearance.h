@@ -764,6 +764,30 @@ gboolean clawt_appearance_get_sidebar_collapsed(ClawtAppearance *self);
 void     clawt_appearance_set_sidebar_collapsed(ClawtAppearance *self,
                                                 gboolean         collapsed);
 
+/**
+ * clawt_appearance_get_animate_faces:
+ * @self: a #ClawtAppearance
+ *
+ * Whether generated faces blink and follow the pointer with their eyes,
+ * as `animate_faces` in `appearance.yaml`.  On by default; only a
+ * recognisable "off" (false, no, 0) turns it off.  Off draws every face
+ * at rest.  GTK also honours the desktop's animation setting, and the
+ * web client the browser's `prefers-reduced-motion`, whatever this says.
+ *
+ * Returns: %TRUE when faces move
+ */
+gboolean clawt_appearance_get_animate_faces(ClawtAppearance *self);
+
+/**
+ * clawt_appearance_set_animate_faces:
+ * @self: a #ClawtAppearance
+ * @animate: whether faces blink and follow the pointer
+ *
+ * See clawt_appearance_get_animate_faces().
+ */
+void     clawt_appearance_set_animate_faces(ClawtAppearance *self,
+                                            gboolean         animate);
+
 /* ── Window buttons ───────────────────────────────────────────────── */
 
 /**

@@ -506,8 +506,10 @@ LrgWidget *clawt_lrg_card(LrgWidget *child);
 /* A small pill: @tone is "good", "warn", "bad", "info" or "neutral". */
 LrgWidget *clawt_lrg_badge(const gchar *text, const gchar *tone);
 
-/* An agent's avatar: picture if it has one, else initials on its colour,
- * with a ring that glows in that colour when @live. */
+/* An agent's avatar: picture if it has one, else its generated face
+ * (clawt_lrg_face_for()), else initials on its colour -- with a glow in
+ * that colour when @live.  The face, when drawn, is the overlay's
+ * "clawt-face" data, for clawt_lrg_face_track(). */
 LrgWidget *clawt_lrg_avatar(ClawtLrgApp *app,
                             const gchar *name,
                             const gchar *agent_id,
@@ -516,6 +518,71 @@ LrgWidget *clawt_lrg_avatar(ClawtLrgApp *app,
                             gfloat       size,
                             gboolean     live);
 void       clawt_lrg_avatar_invalidate(const gchar *agent_id);
+
+/* ── Generated faces (lrg-face.c, 0.53.0) ─────────────────────────── */
+
+/* An agent's generated face (src/agent/clawt-face.h): blinks on the
+ * shared schedule and looks at the pointer while it is over the face,
+ * or over an area given to clawt_lrg_face_track().  @color is checked
+ * with clawt_color_ink(); anything else is grey. */
+LrgWidget *clawt_lrg_face_new(const gchar *agent_id, gint shape,
+                              const gchar *color, gfloat size);
+/* Whether @widget is a face made by clawt_lrg_face_new(). */
+gboolean   clawt_lrg_is_face(LrgWidget *widget);
+void       clawt_lrg_face_set_shape(LrgWidget *face, gint shape);
+gint       clawt_lrg_face_get_shape(LrgWidget *face);
+void       clawt_lrg_face_set_color(LrgWidget *face, const gchar *color);
+void       clawt_lrg_face_set_agent_id(LrgWidget *face, const gchar *agent_id);
+/* The eyes follow the pointer while it is over @area too (a sidebar
+ * row's catcher, which is on top of the face and gets the events). */
+void       clawt_lrg_face_track(LrgWidget *face, LrgWidget *area);
+/* What a pointer at (@world_x, @world_y) does; and leaving. */
+void       clawt_lrg_face_point_at(LrgWidget *face, gfloat world_x,
+                                   gfloat world_y);
+void       clawt_lrg_face_look_away(LrgWidget *face);
+/* The current and target look, for tests. */
+void       clawt_lrg_face_get_pose(LrgWidget *face, gdouble *look_x,
+                                   gdouble *look_y, gdouble *target_x,
+                                   gdouble *target_y);
+/* One frame of easing, as step() runs it; TRUE while still moving. */
+gboolean   clawt_lrg_face_step(LrgWidget *face, gdouble dt_ms);
+/* The client-wide switch from appearance.yaml's animate_faces. */
+void       clawt_lrg_faces_set_animate(gboolean animate);
+gboolean   clawt_lrg_faces_get_animate(void);
+/* The face the daemon resolved for an agent (agent.list's `face`), so
+ * every place that draws the agent agrees; NULL forgets it. */
+void       clawt_lrg_face_note(const gchar *agent_id, const gchar *face);
+/* A shape index, or CLAWT_FACE_INITIALS; automatic when nothing noted,
+ * the disc for a shape this build does not know. */
+gint       clawt_lrg_face_for(const gchar *agent_id);
+
+/* Called when a face picker's choice changes: @face is a shape name,
+ * "initials" or "" (automatic); @color is #rrggbb or "" (automatic). */
+typedef void (*ClawtLrgFacePicked)(gpointer     user_data,
+                                   const gchar *face,
+                                   const gchar *color);
+
+/* A face picker: a preview that blinks and watches the pointer, every
+ * shape (plus automatic and initials) as a tile, and colour swatches.
+ * @face and @color are the configured values, NULL or "" for automatic. */
+LrgWidget   *clawt_lrg_face_picker_new(const gchar        *agent_id,
+                                       const gchar        *face,
+                                       const gchar        *color,
+                                       ClawtLrgFacePicked  func,
+                                       gpointer            user_data);
+/* Whose automatic face "automatic" shows (the create dialog's id). */
+void         clawt_lrg_face_picker_set_agent_id(LrgWidget   *picker,
+                                                const gchar *agent_id);
+/* Selects, as a click would, and calls the picked function. */
+void         clawt_lrg_face_picker_select(LrgWidget   *picker,
+                                          const gchar *face,
+                                          const gchar *color);
+/* A random shape and palette colour (clawt_face_pick_random()), as the
+ * Shuffle button does and New agent does when it opens. */
+void         clawt_lrg_face_picker_shuffle(LrgWidget *picker);
+const gchar *clawt_lrg_face_picker_get_face(LrgWidget *picker);
+const gchar *clawt_lrg_face_picker_get_color(LrgWidget *picker);
+LrgWidget   *clawt_lrg_face_picker_get_preview(LrgWidget *picker);
 
 /* A row: title and optional subtitle on the left, suffixes on the right. */
 LrgWidget *clawt_lrg_row(const gchar *title, const gchar *subtitle);

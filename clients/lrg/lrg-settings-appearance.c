@@ -500,6 +500,21 @@ on_descriptions_toggled(LrgCheckbox *toggle, gboolean active,
     clawt_lrg_sidebar_refresh(app);
 }
 
+/* Applied at once: faces on screen settle, or start blinking again. */
+static void
+on_animate_faces_toggled(LrgCheckbox *toggle, gboolean active,
+                         gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+
+    (void)toggle;
+
+    clawt_appearance_set_animate_faces(looks.edited, active);
+    clawt_lrg_faces_set_animate(active);
+    changed();
+    clawt_lrg_app_wake(app);
+}
+
 static LrgWidget *
 build_agent_list_card(ClawtLrgApp *app)
 {
@@ -518,6 +533,16 @@ build_agent_list_card(ClawtLrgApp *app)
     clawt_lrg_take(body, toggle);
     clawt_lrg_take(body, clawt_lrg_paragraph(
         "Off keeps them on the pointer rather than losing them.", "muted"));
+
+    toggle = clawt_lrg_switch(
+        "Animated faces",
+        clawt_appearance_get_animate_faces(looks.edited));
+    g_signal_connect(toggle, "toggled", G_CALLBACK(on_animate_faces_toggled),
+                     app);
+    clawt_lrg_take(body, toggle);
+    clawt_lrg_take(body, clawt_lrg_paragraph(
+        "Faces blink, and their eyes follow the pointer over an agent.",
+        "muted"));
 
     return card;
 }

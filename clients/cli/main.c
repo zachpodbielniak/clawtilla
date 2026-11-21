@@ -664,6 +664,7 @@ static const struct {
     { "edit", "<agent> [FILE...]", "open those files in $EDITOR" },
     { "mount", "<verb> <agent> [...]", "folders shared with just this agent" },
     { "avatar", "<verb> <agent> [...]", "its profile picture" },
+    { "face", "<agent> [SHAPE] [--color HEX]", "its generated face; --list, --svg" },
     { "git-init", "[agent]", "version an agent's state directory" },
     { "discover", "", "agents on disk the config does not know" },
     { "import", "<id> [--from DIR]", "adopt one, keeping its state" },
@@ -704,6 +705,236 @@ print_agent_usage(gboolean asked_for)
     print_usage_text(text->str, asked_for);
 }
 
+/* ── agent face (0.53.0) ──────────────────────────────────────────── */
+
+static void
+print_face_usage(void)
+{
+    g_printerr("Usage: clawtilla agent face <agent>\n"
+               "       clawtilla agent face <agent> <SHAPE|initials|auto|random> "
+               "[--color HEX|auto]\n"
+               "       clawtilla agent face <agent> --color HEX|auto\n"
+               "       clawtilla agent face --list\n"
+               "       clawtilla agent face --svg <agent|SHAPE> [--color HEX] "
+               "[--size N]\n"
+               "\n"
+               "Examples:\n"
+               "  clawtilla agent face scout cloud --color '#22b573'\n"
+               "  clawtilla agent face scout random\n"
+               "  clawtilla agent face --svg star --color '#e5484d' > star.svg\n");
+}
+
+/* The agent.list entry for @agent_id, borrowed from @reply; NULL if none. */
+static JsonObject *
+listed_agent(JsonNode *reply, const gchar *agent_id)
+{
+    JsonArray *agents;
+    guint i;
+
+    if (reply == NULL || !JSON_NODE_HOLDS_OBJECT(reply))
+        return NULL;
+
+    agents = json_object_get_array_member(json_node_get_object(reply),
+                                          "agents");
+    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
+        JsonObject *agent = json_array_get_object_element(agents, i);
+
+        if (g_strcmp0(member_or(agent, "id", NULL), agent_id) == 0)
+            return agent;
+    }
+
+    return NULL;
+}
+
+/* The value after @flag in argv from @from on, or NULL. */
+static const gchar *
+face_flag(gint argc, gchar *argv[], gint from, const gchar *flag)
+{
+    gint i;
+
+    for (i = from; i + 1 < argc; i++) {
+        if (g_strcmp0(argv[i], flag) == 0)
+            return argv[i + 1];
+    }
+
+    return NULL;
+}
+
+/*
+ * The parts of `agent face` that need no daemon: the shape list, and an
+ * SVG of a named shape.  Answered before connecting, so drawing the
+ * docs' sheet or checking a spelling works on a machine with no fleet.
+ * Returns -1 when the command does need the daemon.
+ */
+static gint
+cmd_agent_face_offline(gint argc, gchar *argv[])
+{
+    const gchar *first = (argc > 3) ? argv[3] : NULL;
+    guint i;
+
+    if (g_strcmp0(first, "--list") == 0) {
+        for (i = 0; i < clawt_face_shape_count(); i++)
+            g_print("%-10s %s\n", clawt_face_shape_name((gint)i),
+                    clawt_face_shape_label((gint)i));
+        g_print("%-10s %s\n", CLAWT_FACE_INITIALS_NAME,
+                "the letter disc instead of a face");
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(first, "--svg") == 0 && argc > 4 &&
+        clawt_face_shape_lookup(argv[4]) >= 0) {
+        gint shape = clawt_face_shape_lookup(argv[4]);
+        const gchar *color = face_flag(argc, argv, 5, "--color");
+        const gchar *size = face_flag(argc, argv, 5, "--size");
+        g_autofree gchar *svg = NULL;
+
+        svg = clawt_face_svg(shape,
+                             color != NULL ? color
+                                           : clawt_face_palette_color(7),
+                             size != NULL ? (guint)CLAMP(atoi(size), 8, 4096)
+                                          : 128,
+                             NULL, clawt_face_seed(argv[4]), FALSE);
+        if (svg == NULL) {
+            g_printerr("clawtilla: '%s' is not a colour: use #rgb or "
+                       "#rrggbb\n", color);
+            return EXIT_FAILURE;
+        }
+        g_print("%s\n", svg);
+        return EXIT_SUCCESS;
+    }
+
+    if (first == NULL || g_strcmp0(first, "--help") == 0) {
+        print_face_usage();
+        return (first == NULL) ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
+
+    return -1;
+}
+
+/* One agent.set; prints the daemon's refusal and answers FALSE. */
+static gboolean
+face_set(ClawtClient *client, const gchar *agent_id, const gchar *key,
+         const gchar *value)
+{
+    g_autoptr(JsonNode) reply = call(client, "agent.set",
+                                     build_payload("agent", agent_id,
+                                                   "key", key,
+                                                   "value", value, NULL));
+
+    return reply != NULL;
+}
+
+static gint
+cmd_agent_face(ClawtClient *client, gint argc, gchar *argv[])
+{
+    const gchar *first = argv[3];
+    g_autoptr(JsonNode) listed = NULL;
+    JsonObject *agent;
+
+    /* --svg of an agent: its own face and colour, as every client draws */
+    if (g_strcmp0(first, "--svg") == 0) {
+        const gchar *who = (argc > 4) ? argv[4] : NULL;
+        const gchar *color;
+        const gchar *size = face_flag(argc, argv, 5, "--size");
+        g_autofree gchar *svg = NULL;
+        gint shape;
+
+        if (who == NULL) {
+            print_face_usage();
+            return EXIT_FAILURE;
+        }
+        listed = call(client, "agent.list", NULL);
+        agent = listed_agent(listed, who);
+        if (agent == NULL) {
+            g_printerr("clawtilla: '%s' is neither a shape nor an agent\n",
+                       who);
+            return EXIT_FAILURE;
+        }
+        shape = clawt_face_shape_lookup(member_or(agent, "face", NULL));
+        if (shape < 0) {
+            g_printerr("clawtilla: %s wears the letter disc, not a face\n",
+                       who);
+            return EXIT_FAILURE;
+        }
+        color = face_flag(argc, argv, 5, "--color");
+        svg = clawt_face_svg(shape,
+                             color != NULL
+                                 ? color
+                                 : member_or(agent, "color_resolved",
+                                             clawt_face_palette_color(7)),
+                             size != NULL ? (guint)CLAMP(atoi(size), 8, 4096)
+                                          : 128,
+                             NULL, clawt_face_seed(who), FALSE);
+        if (svg == NULL) {
+            g_printerr("clawtilla: '%s' is not a colour\n", color);
+            return EXIT_FAILURE;
+        }
+        g_print("%s\n", svg);
+        return EXIT_SUCCESS;
+    }
+
+    /* Show: no shape and no --color given */
+    if (argc == 4) {
+        listed = call(client, "agent.list", NULL);
+        agent = listed_agent(listed, first);
+        if (agent == NULL) {
+            g_printerr("clawtilla: no agent called '%s'\n", first);
+            return EXIT_FAILURE;
+        }
+        g_print("face:   %s%s\n", member_or(agent, "face", "?"),
+                member_or(agent, "face_configured", NULL) == NULL
+                    ? " (automatic)" : "");
+        g_print("colour: %s%s\n", member_or(agent, "color_resolved", "?"),
+                member_or(agent, "color", NULL) == NULL ? " (automatic)" : "");
+        g_print("picture: %s\n",
+                json_object_get_boolean_member_with_default(
+                    agent, "has_avatar", FALSE)
+                    ? "yes, shown in place of the face" : "none");
+        return EXIT_SUCCESS;
+    }
+
+    /* Set: a shape (auto = "", random = any shape and colour), --color */
+    {
+        const gchar *shape_word = (argv[4][0] != '-') ? argv[4] : NULL;
+        const gchar *color = face_flag(argc, argv, 4, "--color");
+        const gchar *face_value = NULL;
+        const gchar *color_value = NULL;
+
+        if (g_strcmp0(shape_word, "random") == 0) {
+            gint shape;
+            const gchar *picked;
+
+            clawt_face_pick_random(&shape, &picked);
+            face_value = clawt_face_shape_name(shape);
+            color_value = picked;
+        } else if (g_strcmp0(shape_word, "auto") == 0) {
+            face_value = "";
+        } else if (shape_word != NULL) {
+            face_value = shape_word;   /* the daemon checks it */
+        }
+
+        if (color != NULL)
+            color_value = (g_strcmp0(color, "auto") == 0) ? "" : color;
+
+        if (face_value == NULL && color_value == NULL) {
+            print_face_usage();
+            return EXIT_FAILURE;
+        }
+        if (face_value != NULL && !face_set(client, first, "face", face_value))
+            return EXIT_FAILURE;
+        if (color_value != NULL &&
+            !face_set(client, first, "color", color_value))
+            return EXIT_FAILURE;
+
+        g_print("%s: face %s, colour %s\n", first,
+                face_value == NULL ? "unchanged"
+                    : (*face_value == '\0' ? "automatic" : face_value),
+                color_value == NULL ? "unchanged"
+                    : (*color_value == '\0' ? "automatic" : color_value));
+        return EXIT_SUCCESS;
+    }
+}
+
 static gint
 cmd_agent(int argc, char *argv[])
 {
@@ -734,9 +965,20 @@ cmd_agent(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
+    /* the face's list and a shape's SVG need no daemon */
+    if (g_strcmp0(verb, "face") == 0) {
+        gint offline = cmd_agent_face_offline(argc, argv);
+
+        if (offline >= 0)
+            return offline;
+    }
+
     client = connect_to_daemon();
     if (client == NULL)
         return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "face") == 0)
+        return cmd_agent_face(client, argc, argv);
 
     if (g_strcmp0(verb, "list") == 0) {
         JsonArray *agents;
@@ -1346,7 +1588,13 @@ cmd_agent(int argc, char *argv[])
                 g_printerr("clawtilla: unexpected argument '%s'\n", flag);
                 g_printerr("Usage: clawtilla agent create --id <id> "
                            "[--name X] [--model X] [--computer X] "
-                           "[--image X] [--vm-image PATH] [--no-start]\n");
+                           "[--image X] [--vm-image PATH] [--face SHAPE] "
+                           "[--color HEX] [--no-start]\n");
+                g_printerr("\n  --face      a shape (clawtilla agent face "
+                           "--list), initials, or \"\" for automatic; "
+                           "left out, a random one\n");
+                g_printerr("  --color     the face's colour, #rgb or "
+                           "#rrggbb; left out, a random palette colour\n");
                 g_printerr("\n  --image     container image\n");
                 g_printerr("  --vm-image  disk image for --computer vm; "
                            "required, because a VM with no disk boots "

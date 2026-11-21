@@ -7119,6 +7119,26 @@ clawt_daemon_create_agent(ClawtDaemon  *self,
     }
 
     /*
+     * A new agent with no face or colour named gets a random one of each,
+     * written to its config (0.53.0).  Here rather than in agent.create,
+     * so an agent drafted by "Design it" (design.commit) gets one too:
+     * whichever client or script made it, a new fleet is not a row of one
+     * shape, and the face it is born with is the face it keeps.  An
+     * explicit empty value still means "automatic" and is left alone.
+     */
+    {
+        gint shape;
+        const gchar *color;
+
+        clawt_face_pick_random(&shape, &color);
+        if (fields == NULL || !g_hash_table_contains(fields, "face"))
+            clawt_agent_config_set_from_string(created, "face",
+                                               clawt_face_shape_name(shape));
+        if (fields == NULL || !g_hash_table_contains(fields, "color"))
+            clawt_agent_config_set_from_string(created, "color", color);
+    }
+
+    /*
      * The persona, into SOUL.org, before the save below reloads and
      * scaffolds every agent from the templates.
      *
@@ -9301,6 +9321,29 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
         builder, "avatar", clawt_agent_config_get_string(config, "avatar"));
     clawt_daemon_add_string_member(
         builder, "color", clawt_agent_config_get_string(config, "color"));
+
+    /*
+     * The face, already decided (0.53.0).  `face` is what to draw -- a
+     * shape name, or `initials` -- resolved here so a client on an older
+     * or newer build draws what this daemon decided rather than what its
+     * own copy of the shape table would pick.  `face_configured` is the
+     * raw setting, for a picker to show "automatic" as selected, and
+     * `color_resolved` the colour the face is painted in when none is
+     * set, so no client has to know how a tone is derived.
+     */
+    {
+        const gchar *agent_id = clawt_agent_config_get_id(config);
+        const gchar *face = clawt_agent_config_get_string(config, "face");
+
+        clawt_daemon_add_string_member(
+            builder, "face", clawt_face_resolve_name(agent_id, face));
+        clawt_daemon_add_string_member(builder, "face_configured", face);
+        clawt_daemon_add_string_member(
+            builder, "color_resolved",
+            clawt_avatar_color(agent_id, NULL,
+                               clawt_agent_config_get_string(config,
+                                                             "color")));
+    }
 
     /*
      * Whether `agent.avatar` has anything to hand back, so a client

@@ -186,13 +186,77 @@ const gchar *clawt_web_state_tone(const gchar *state);
  *
  * Resolution order: @agent_id's picture, as an `<img src="/a/:id/avatar">`
  * -- never a filesystem path, since the browser may not be on the
- * daemon's machine -- when @has_avatar says there is one; then @color;
- * then initials and a tone from the sheet's own palette, chosen by
- * @name.
+ * daemon's machine -- when @has_avatar says there is one; then its
+ * generated face (clawt_web_face_for()), an inline SVG in @color or the
+ * derived colour, which the stylesheet blinks and the page-head script
+ * turns toward the pointer; then, for `initials`, the letter on @color
+ * or a tone from the sheet's own palette.
  *
  * Returns: (transfer full): an `<img>` or a `<span>`, with @css_class
  *   already applied
  */
+/**
+ * clawt_web_face_note:
+ * @agent_id: an agent's id
+ * @face: (nullable): its resolved face, `agent.list`'s `face`
+ *
+ * Remembers which face the daemon resolved for an agent, so the
+ * transcript draws the face the sidebar drew without carrying the field
+ * through every page.  %NULL forgets it.
+ */
+void clawt_web_face_note(const gchar *agent_id, const gchar *face);
+
+/**
+ * clawt_web_face_for:
+ * @agent_id: (nullable): an agent's id
+ *
+ * Returns: the shape to draw, or %CLAWT_FACE_INITIALS: what
+ *   clawt_web_face_note() was told, the automatic face when nothing was,
+ *   and the letter disc for a shape this build does not know
+ */
+gint clawt_web_face_for(const gchar *agent_id);
+
+/**
+ * clawt_web_face_picker:
+ * @agent_id: (nullable): whose face; "automatic" shows its own
+ * @face: (nullable): the value to start on: a shape name, `initials`,
+ *   or %NULL / "" for automatic
+ * @color: (nullable): likewise, a hex colour or %NULL / "" for automatic
+ *
+ * The face picker as form fields: a preview, a `face` radio group (one
+ * tile a shape, plus automatic and initials), a `color` radio group
+ * (the automatic tone and the palette) and a Shuffle button.  Works
+ * with no script at all -- the radios are the form -- and the page-head
+ * script keeps the preview and the tiles' colour in step with the
+ * choice.
+ *
+ * Returns: (transfer full): a `<fieldset class="face-picker">`
+ */
+/**
+ * clawt_web_face_changes:
+ * @saved_face: (nullable): `agents.face` when the page was drawn
+ * @face: (nullable): what the picker sent; %NULL means "not sent"
+ * @saved_color: (nullable): `agents.color` when the page was drawn
+ * @color: (nullable): likewise
+ *
+ * Which of `face` and `color` the agent page's Face form should write:
+ * only what was sent and differs from what was saved, so picking a
+ * colour never rewrites a face somebody set by hand in the YAML, and a
+ * form that did not carry a field writes nothing for it.  %NULL saved
+ * values count as "".
+ *
+ * Returns: (transfer full) (element-type utf8): the keys, in the order
+ *   face, color
+ */
+GPtrArray *clawt_web_face_changes(const gchar *saved_face,
+                                  const gchar *face,
+                                  const gchar *saved_color,
+                                  const gchar *color);
+
+HtmxElement *clawt_web_face_picker(const gchar *agent_id,
+                                   const gchar *face,
+                                   const gchar *color);
+
 HtmxElement *clawt_web_avatar(const gchar *name,
                               const gchar *agent_id,
                               gboolean     has_avatar,
@@ -571,6 +635,15 @@ typedef struct {
      * for the whole of it.
      */
     gboolean hide_descriptions;
+
+    /*
+     * Whether faces stay still (0.53.0): no blink, no eyes following
+     * the pointer.  Negated for the same reason as hide_descriptions --
+     * zero is faces that move, which is the shipped behaviour.  The
+     * browser's own prefers-reduced-motion stops them too, whatever this
+     * says.
+     */
+    gboolean still_faces;
 } ClawtWebLook;
 
 /**

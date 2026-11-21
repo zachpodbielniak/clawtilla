@@ -818,6 +818,167 @@ test_a_skill_tile_keeps_its_text_inside(void)
     }
 }
 
+/* ── Generated faces (0.53.0) ──────────────────────────────────────── */
+
+/*
+ * The eyes turn toward the pointer, easing rather than jumping, and come
+ * back when it leaves.  The same through the row's catcher, which sits
+ * on top of the face and gets the pointer first: a face that only saw
+ * pointers on its own 34 pixels would barely move.
+ */
+static void
+test_face_follows_the_pointer(void)
+{
+    g_autoptr(LrgWidget) face = g_object_ref_sink(
+        clawt_lrg_face_new("scout", 1, "#22b573", 34.0f));
+    g_autoptr(LrgWidget) catcher = g_object_ref_sink(
+        LRG_WIDGET(lrg_custom_widget_new()));
+    gdouble look_x;
+    gdouble target_x;
+    guint frames = 0;
+
+    clawt_lrg_faces_set_animate(TRUE);
+    g_assert_true(clawt_lrg_is_face(face));
+    g_assert_false(clawt_lrg_is_face(catcher));
+
+    /* far to the right of a face at the origin: the whole way */
+    clawt_lrg_face_point_at(face, 500.0f, 17.0f);
+    clawt_lrg_face_get_pose(face, &look_x, NULL, &target_x, NULL);
+    g_assert_cmpfloat(target_x, ==, 1.0);
+    g_assert_cmpfloat(look_x, ==, 0.0);
+
+    clawt_lrg_face_step(face, 16.0);
+    clawt_lrg_face_get_pose(face, &look_x, NULL, NULL, NULL);
+    g_assert_cmpfloat(look_x, >, 0.0);
+    g_assert_cmpfloat(look_x, <, 1.0);
+
+    clawt_lrg_face_look_away(face);
+    while (clawt_lrg_face_step(face, 16.0) && frames++ < 100)
+        ;
+    clawt_lrg_face_get_pose(face, &look_x, NULL, &target_x, NULL);
+    g_assert_cmpfloat(look_x, ==, 0.0);
+
+    /* through a tracked area: the catcher's events move the eyes */
+    clawt_lrg_face_track(face, catcher);
+    {
+        g_autoptr(LrgUIEvent) move = lrg_ui_event_new_mouse_move(-400.0f,
+                                                                 17.0f);
+        g_autoptr(LrgUIEvent) leave =
+            lrg_ui_event_new(LRG_UI_EVENT_POINTER_LEAVE);
+        gboolean consumed = TRUE;
+
+        g_signal_emit_by_name(catcher, "event", move, &consumed);
+        g_assert_false(consumed);  /* the row still gets its click */
+        clawt_lrg_face_get_pose(face, NULL, NULL, &target_x, NULL);
+        g_assert_cmpfloat(target_x, ==, -1.0);
+
+        g_signal_emit_by_name(catcher, "event", leave, &consumed);
+        clawt_lrg_face_get_pose(face, NULL, NULL, &target_x, NULL);
+        g_assert_cmpfloat(target_x, ==, 0.0);
+    }
+
+    /* motion off: the pointer does nothing */
+    clawt_lrg_faces_set_animate(FALSE);
+    clawt_lrg_face_point_at(face, 500.0f, 17.0f);
+    clawt_lrg_face_get_pose(face, NULL, NULL, &target_x, NULL);
+    g_assert_cmpfloat(target_x, ==, 0.0);
+    clawt_lrg_faces_set_animate(TRUE);
+}
+
+/*
+ * The avatar builder draws what the daemon resolved: a face for a
+ * shape, the letter disc for initials and for a shape this build does
+ * not know -- and keeps the face findable for the row to track.
+ */
+static void
+test_avatar_draws_the_noted_face(void)
+{
+    g_autoptr(LrgWidget) with_face = NULL;
+    g_autoptr(LrgWidget) with_disc = NULL;
+    LrgWidget *face;
+
+    clawt_lrg_face_note("scout", "cloud");
+    with_face = g_object_ref_sink(clawt_lrg_avatar(NULL, "Scout", "scout",
+                                                   FALSE, NULL, 34.0f,
+                                                   FALSE));
+    face = g_object_get_data(G_OBJECT(with_face), "clawt-face");
+    g_assert_nonnull(face);
+    g_assert_cmpint(clawt_lrg_face_get_shape(face), ==,
+                    clawt_face_shape_lookup("cloud"));
+
+    clawt_lrg_face_note("scout", "initials");
+    with_disc = g_object_ref_sink(clawt_lrg_avatar(NULL, "Scout", "scout",
+                                                   FALSE, NULL, 34.0f,
+                                                   FALSE));
+    g_assert_null(g_object_get_data(G_OBJECT(with_disc), "clawt-face"));
+
+    clawt_lrg_face_note("scout", "hexagon");
+    g_assert_cmpint(clawt_lrg_face_for("scout"), ==, CLAWT_FACE_INITIALS);
+
+    clawt_lrg_face_note("scout", NULL);
+    g_assert_cmpint(clawt_lrg_face_for("scout"), ==,
+                    clawt_face_resolve("scout", NULL));
+}
+
+static void
+count_picked(gpointer user_data, const gchar *face, const gchar *color)
+{
+    (void)face;
+    (void)color;
+    (*(guint *)user_data)++;
+}
+
+/*
+ * The picker answers in the spellings agents.face and agents.color
+ * store, its preview shows the choice, and "automatic" follows the id
+ * typed into the create dialog.  Building it with a saved choice calls
+ * nothing: an inspector that saved on open would rewrite the YAML.
+ */
+static void
+test_face_picker_choice(void)
+{
+    guint picked = 0;
+    g_autoptr(LrgWidget) picker = g_object_ref_sink(
+        clawt_lrg_face_picker_new("scout", "Star", "#e5484d", count_picked,
+                                  &picked));
+
+    g_assert_cmpuint(picked, ==, 0);
+    g_assert_cmpstr(clawt_lrg_face_picker_get_face(picker), ==, "star");
+    g_assert_cmpstr(clawt_lrg_face_picker_get_color(picker), ==, "#e5484d");
+
+    clawt_lrg_face_picker_select(picker, "CLOUD", "#22b573");
+    g_assert_cmpuint(picked, ==, 1);
+    g_assert_cmpstr(clawt_lrg_face_picker_get_face(picker), ==, "cloud");
+    g_assert_cmpint(
+        clawt_lrg_face_get_shape(clawt_lrg_face_picker_get_preview(picker)),
+        ==, clawt_face_shape_lookup("cloud"));
+
+    clawt_lrg_face_picker_select(picker, "initials", "red");
+    g_assert_cmpstr(clawt_lrg_face_picker_get_face(picker), ==, "initials");
+    g_assert_cmpstr(clawt_lrg_face_picker_get_color(picker), ==, "");
+
+    /* shuffle: always a real shape and a palette colour, announced */
+    {
+        guint before = picked;
+        guint n;
+
+        for (n = 0; n < 20; n++) {
+            clawt_lrg_face_picker_shuffle(picker);
+            g_assert_cmpint(clawt_face_shape_lookup(
+                                clawt_lrg_face_picker_get_face(picker)), >=, 0);
+            g_assert_nonnull(clawt_color_ink(
+                clawt_lrg_face_picker_get_color(picker)));
+        }
+        g_assert_cmpuint(picked, ==, before + 20);
+    }
+
+    clawt_lrg_face_picker_select(picker, "", NULL);
+    clawt_lrg_face_picker_set_agent_id(picker, "another-agent");
+    g_assert_cmpint(
+        clawt_lrg_face_get_shape(clawt_lrg_face_picker_get_preview(picker)),
+        ==, clawt_face_resolve("another-agent", NULL));
+}
+
 /*
  * A message's mark -- the interrupted notice, the steered one -- wraps
  * its sentence inside the transcript.  The explanation was a one-line
@@ -907,6 +1068,12 @@ main(int argc, char *argv[])
                     test_a_message_mark_wraps_inside_the_transcript);
     g_test_add_func("/lrgui/widgets/escaped-lines-no-backslashes",
                     test_escaped_lines_draw_without_backslashes);
+    g_test_add_func("/lrgui/widgets/face-follows-the-pointer",
+                    test_face_follows_the_pointer);
+    g_test_add_func("/lrgui/widgets/avatar-draws-the-noted-face",
+                    test_avatar_draws_the_noted_face);
+    g_test_add_func("/lrgui/widgets/face-picker-choice",
+                    test_face_picker_choice);
 
     result = g_test_run();
 

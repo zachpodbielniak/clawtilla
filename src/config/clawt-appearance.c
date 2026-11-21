@@ -59,6 +59,14 @@ struct _ClawtAppearance {
     gboolean   sidebar_collapsed;
 
     /*
+     * Whether generated faces stay still (0.53.0): no blinking, eyes
+     * that do not follow the pointer.  Stored negated for the same
+     * reason as hide_descriptions -- zero is the shipped behaviour,
+     * which is faces that move.
+     */
+    gboolean   still_faces;
+
+    /*
      * Whether the window draws its own minimize, maximize and close
      * buttons.  Zero is "automatic": hidden under a tiling window
      * manager, shown elsewhere.
@@ -117,6 +125,7 @@ clawt_appearance_copy(ClawtAppearance *self)
     copy->run_spacing = self->run_spacing;
     copy->hide_descriptions = self->hide_descriptions;
     copy->sidebar_collapsed = self->sidebar_collapsed;
+    copy->still_faces = self->still_faces;
     copy->window_buttons = self->window_buttons;
     copy->palette = g_strdup(self->palette);
     copy->lrg_motion = self->lrg_motion;
@@ -649,6 +658,22 @@ clawt_appearance_set_sidebar_collapsed(ClawtAppearance *self,
     g_return_if_fail(self != NULL);
 
     self->sidebar_collapsed = collapsed ? TRUE : FALSE;
+}
+
+gboolean
+clawt_appearance_get_animate_faces(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, TRUE);
+
+    return !self->still_faces;
+}
+
+void
+clawt_appearance_set_animate_faces(ClawtAppearance *self, gboolean animate)
+{
+    g_return_if_fail(self != NULL);
+
+    self->still_faces = !animate;
 }
 
 /* ── Themes ──────────────────────────────────────────────────────── */
@@ -1712,6 +1737,18 @@ clawt_appearance_parse(const gchar *text, GError **error)
      * Only a recognisable "on" hides the sidebar: a typo must not take
      * the fleet out of the window, which would look like it had gone.
      */
+    /*
+     * Faces move unless this is a recognisable "off", as with
+     * agent_descriptions: a typo must not look like the setting working.
+     */
+    value = member_string(mapping, "animate_faces");
+
+    if (value != NULL)
+        clawt_appearance_set_animate_faces(
+            self, !(g_ascii_strcasecmp(value, "false") == 0 ||
+                    g_ascii_strcasecmp(value, "no") == 0 ||
+                    g_strcmp0(value, "0") == 0));
+
     value = member_string(mapping, "sidebar_collapsed");
 
     if (value != NULL)
@@ -1900,6 +1937,15 @@ clawt_appearance_to_data(ClawtAppearance *self)
         "# then opens it over the page rather than beside it.\n");
     g_string_append_printf(out, "sidebar_collapsed: %s\n",
                            self->sidebar_collapsed ? "true" : "false");
+
+    g_string_append(out,
+        "\n"
+        "# Whether generated faces blink and turn their eyes toward the\n"
+        "# pointer while it is over an agent. false keeps them still. GTK\n"
+        "# also keeps them still when the desktop turns animations off, and\n"
+        "# the web client when the browser asks for reduced motion.\n");
+    g_string_append_printf(out, "animate_faces: %s\n",
+                           self->still_faces ? "false" : "true");
 
     g_string_append(out,
         "\n"

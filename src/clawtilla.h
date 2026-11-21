@@ -224,6 +224,7 @@
 #include "agent/clawt-agent-manager.h"
 #include "agent/clawt-workspace.h"
 #include "agent/clawt-avatar.h"
+#include "agent/clawt-face.h"
 #include "agent/clawt-team.h"
 #include "agent/clawt-agent-confine.h"
 
