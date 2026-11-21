@@ -971,6 +971,8 @@ The coordinates are a unit box, -1 to 1 on both axes, with y growing downward as
 
 *** The shapes
 
+[[file:images/faces.svg]]
+
 | Name       | Look                                  |
 |------------+---------------------------------------|
 | ~pebble~   | a slightly wide round stone            |
@@ -1039,6 +1041,30 @@ The daemon resolves the face and sends it to every client as ~face~ in ~agent.li
 *** Colour
 
 The body is the agent's avatar colour, from ~clawt_avatar_color()~ exactly as before: the configured ~agents.color~ when it is a valid hex colour, otherwise the tone derived from the id. The eyes are near-black, or near-white when the body is dark enough that white has the better WCAG contrast -- the crossover is a relative luminance of about 0.19. ~clawt_face_palette_color()~ is the set of brighter colours a picker offers as swatches.
+
+*** From the command line
+
+#+begin_src sh
+clawtilla agent face --list                         # every shape, and initials
+clawtilla agent face scout                          # its face and colour, and whether a picture hides it
+clawtilla agent face scout cloud --color '#22b573'  # choose; each checked by the daemon
+clawtilla agent face scout random                   # a random shape and palette colour
+clawtilla agent face scout auto --color auto        # back to the automatic face and colour
+clawtilla agent face --svg star --color '#e5484d' > star.svg
+clawtilla agent face --svg scout --size 256 > scout.svg
+clawtilla agent create --id scout --face cloud --color '#22b573'
+#+end_src
+
+~--list~ and ~--svg~ of a shape name need no daemon. ~--svg~ of an agent draws its own resolved face in its own colour. Setting goes through ~agent.set~, so a face nobody can draw is refused with the list, and only the key named is written.
+
+The sheet above is ~docs/images/faces.svg~, built from that command, one nested ~<svg>~ per shape:
+
+#+begin_src sh
+clawtilla agent face --list | awk '$1 != "initials" { print $1 }' |
+    while read -r shape; do clawtilla agent face --svg "${shape}" --size 72; done
+#+end_src
+
+The committed file positions each face with ~x~ / ~y~ and adds its name.
 
 *** As SVG
 

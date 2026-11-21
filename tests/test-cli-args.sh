@@ -119,6 +119,17 @@ check_usage 1 "clawtilla unmute <agent>" "unmute"
 check_usage 0 "notices dismiss <ID>" "notices --help"
 check_usage 1 "notices dismiss <ID>" "notices dismiss"
 
+# `agent face` (0.53.0): the shape list and a shape's SVG need no daemon,
+# so they are answered against a socket that does not exist; a colour
+# that is not hex is refused rather than written into the markup.
+check_usage 0 "squircle" "agent face --list"
+check_usage 0 "initials" "agent face --list"
+check_usage 0 "<svg " "agent face --svg cloud --size 48"
+check_usage 0 'fill="#22b573"' "agent face --svg cloud --color #22b573"
+check_usage 1 "is not a colour" "agent face --svg cloud --color red"
+check_usage 1 "clawtilla agent face <agent>" "agent face"
+check_usage 0 "--color HEX|auto" "agent face --help"
+
 if [[ ${failures} -ne 0 ]]
 then
     exit 1

@@ -171,6 +171,8 @@ created and left alone has a config file and no machine.
 The same fold is in ~connector add~, where ~--client-id~ becomes
 ~client_id~.
 
+
+~--face~ and ~--color~ choose the new agent's face (see "Generated faces" in [[file:agents.org][agents.org]]); left out, the daemon gives it a random shape and palette colour and writes them down. ~clawtilla agent face~ shows, sets, shuffles (~random~) and exports (~--svg~) a face afterwards.
 *** Why the event log has a verb here
 
 ~ClawtEventLog~ has recorded every published event since the daemon was
