@@ -153,6 +153,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/agent/clawt-agent-manager.h \
 	$(SRCDIR)/agent/clawt-workspace.h \
 	$(SRCDIR)/agent/clawt-avatar.h \
+	$(SRCDIR)/agent/clawt-face.h \
 	$(SRCDIR)/agent/clawt-team.h \
 	$(SRCDIR)/agent/clawt-agent-confine.h \
 	$(SRCDIR)/computer/clawt-exec-result.h \
@@ -383,6 +384,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/agent/clawt-agent-manager.c \
 	$(SRCDIR)/agent/clawt-workspace.c \
 	$(SRCDIR)/agent/clawt-avatar.c \
+	$(SRCDIR)/agent/clawt-face.c \
 	$(SRCDIR)/agent/clawt-team.c \
 	$(SRCDIR)/agent/clawt-agent-confine.c \
 	$(SRCDIR)/computer/clawt-exec-result.c \

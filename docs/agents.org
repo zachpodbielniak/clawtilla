@@ -951,6 +951,78 @@ clawtilla agent avatar set researcher ./face.png
 clawtilla agent avatar clear researcher
 #+end_src
 
+** Generated faces
+
+An agent with no profile picture wears a generated face: a coloured blob with two rounded eyes that blink now and then and, while the pointer is over the agent, turn to watch it. The picture always wins -- a face is what an agent has until someone gives it a picture, not a replacement for one -- and the old letter disc is still there for anyone who prefers it.
+
+*** One geometry for every client
+
+~src/agent/clawt-face.[ch]~ is plain C with no toolkit in it. It owns the shapes, the eyes, the blink schedule and the eye colour; the GTK, lrg and web clients only decide how to paint what it returns. So a face drawn by GTK and the same agent's face in a browser are the same face, from the same numbers, and a test of the geometry is a test of all three.
+
+Every shape is a polar radius function
+
+#+begin_example
+r(θ) = super(θ - rotate) × (1 + Σ amp_k · cos(k·(θ - rotate) + phase_k))
+#+end_example
+
+where ~super()~ is a superellipse (1 for a circle). A polar function is /star-shaped/ around its centre by construction: a line from the centre meets the edge exactly once. That one property is what lets lrg fill the outline as a triangle fan, GTK and SVG draw it as one closed path, and the tests check eye placement with a simple ray cast. Each shape is scaled so its furthest point is at 92% of the box, leaving room for a glow or a selection ring.
+
+The coordinates are a unit box, -1 to 1 on both axes, with y growing downward as it does on screen.
+
+*** The shapes
+
+| Name       | Look                                  |
+|------------+---------------------------------------|
+| ~pebble~   | a slightly wide round stone            |
+| ~cloud~    | six soft bumps on a wide body          |
+| ~cushion~  | a tilted rounded square                |
+| ~clover~   | four lobes on the diagonals            |
+| ~star~     | a soft four-pointed sparkle            |
+| ~bean~     | a lopsided bean                        |
+| ~flower~   | six shallow petals                     |
+| ~drop~     | wider at the top, like an egg on end   |
+| ~gem~      | a tilted, uneven rounded square        |
+| ~petal~    | a rounded three-lobed triangle         |
+| ~puff~     | an irregular puff                      |
+| ~squircle~ | a near-square with round corners       |
+| ~wedge~    | a rounded triangle, eyes set aside     |
+| ~bloom~    | five deep petals                       |
+
+The table in ~clawt-face.c~ is append-only. An automatic face is picked by /index/, so reordering or removing a shape would change the face of every agent that never chose one.
+
+*** Which face an agent gets
+
+~clawt_face_resolve()~ decides, in this order:
+
+1. A shape named in ~agents.face~ -- matched ignoring case and surrounding space, since it is typed into YAML by hand.
+2. ~initials~, which keeps the letter disc.
+3. Otherwise a shape picked from ~clawt_face_seed()~ of the agent's id. That covers an unset value and a mistyped one alike: a typo in a cosmetic setting costs the agent its chosen face, never its face altogether.
+
+The seed is ~g_str_hash()~ of the id -- the same in every process -- mixed with a salt. The salt matters: the avatar /colour/ is hashed from the same id, and without it the two would be correlated, so every blue agent would also be a cloud.
+
+*** Eyes
+
+~clawt_face_eyes()~ places two upright rounded rectangles for a shape in a pose (~ClawtFacePose~: where it looks, and how far into a blink). The look is clamped to the unit disc before it moves anything, so a diagonal look reaches no further than a straight one; sideways the eyes move up to ~CLAWT_FACE_LOOK_REACH~ (0.2), up and down 70% of that. A blink squashes each eye toward its own middle down to a thin line, keeping the corner radius legal at every step.
+
+~clawt_face_look_at()~ turns a pointer position into a look: toward the pointer, growing with distance and reaching its limit at three radii, so a pointer moving over the face turns the eyes gently and one at the far end of the row turns them all the way. ~clawt_face_ease()~ is one frame of the eyes catching up with that target, with a time constant of about 70 ms; it lands exactly on the target, so a client can stop its frame clock by comparing for equality.
+
+*** Blinking
+
+~clawt_face_blink_at(seed, t)~ is a pure function: how closed the eyes are at time ~t~. No client keeps blink state, every client blinks an agent the same way, and the tests check the schedule directly.
+
+- Each agent has its own period between 3.3 and 5 seconds, and its own phase, so a sidebar never blinks in step.
+- Each blink lands up to 0.8 s late in its cycle, so the rhythm never looks mechanical. Gaps between blinks are 2.5 to 6 seconds.
+- A blink takes ~CLAWT_FACE_BLINK_MS~ (160 ms), closing and opening; about one in five is a double blink.
+- ~clawt_face_next_blink()~ says when the next one starts, so a client can arm a single timer and sleep until then instead of redrawing every frame to find out.
+
+*** Colour
+
+The body is the agent's avatar colour, from ~clawt_avatar_color()~ exactly as before: the configured ~agents.color~ when it is a valid hex colour, otherwise the tone derived from the id. The eyes are near-black, or near-white when the body is dark enough that white has the better WCAG contrast -- the crossover is a relative luminance of about 0.19. ~clawt_face_palette_color()~ is the set of brighter colours a picker offers as swatches.
+
+*** As SVG
+
+~clawt_face_svg()~ writes a face as a self-contained ~<svg>~: one ~face-body~ path and a ~face-eyes~ group of two rects. The fill is refused unless ~clawt_color_ink()~ accepts it, since it is written into markup, and every number goes through ~g_ascii_formatd()~ so a locale with a decimal comma cannot cut the path short. With ~animated~ set it also writes ~--blink-gap~ and ~--blink-delay~ CSS variables for the web client's stylesheet to animate.
+
 ** Runtimes
 
 *** process (default)
