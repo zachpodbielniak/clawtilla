@@ -2806,6 +2806,16 @@ agents:
     # Accent colour in the clients, as a hex string.
     color: null
 
+    # The generated face the agent wears when it has no profile picture.
+    #
+    # Unset, the agent gets a shape picked from its id -- the same one in
+    # every client, every time. Set it to choose: pebble, cloud, cushion,
+    # clover, star, bean, flower, drop, gem, petal, puff, squircle, wedge
+    # or bloom. initials keeps the letter disc instead. The face is
+    # painted in agents.color, and a profile picture always takes its
+    # place. An unknown name is a warning and the automatic face is used.
+    face: null
+
     # Where this agent sits in the list, lowest first.
     #
     # Set by dragging a row in the clients rather than written by hand,

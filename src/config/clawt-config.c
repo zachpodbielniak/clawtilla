@@ -3558,6 +3558,26 @@ reload_agents_from_root(ClawtConfig *self)
         }
 
         /*
+         * A face nobody has drawn is a warning, never a shadow: the
+         * setting is cosmetic, and clawt_face_resolve() already falls
+         * back to the automatic face, so the agent runs exactly as it
+         * would have.  The warning is what tells somebody why their
+         * "clowd" looks like a pebble.
+         */
+        {
+            const gchar *face = clawt_agent_config_get_string(agent, "face");
+
+            if (!clawt_face_value_is_valid(face)) {
+                g_autofree gchar *allowed = clawt_face_valid_values();
+
+                g_ptr_array_add(self->warnings, g_strdup_printf(
+                    "agent %s: face '%s' is not a shape, so it gets one "
+                    "picked automatically; agents.face takes one of %s",
+                    id, face, allowed));
+            }
+        }
+
+        /*
          * At most one chief-of-staff.  Two would mean work addressed to the
          * fleet going to whichever happened to be found first, which is a
          * coin toss dressed up as a routing rule.

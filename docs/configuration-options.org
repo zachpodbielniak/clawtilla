@@ -4270,6 +4270,21 @@ At most one agent may hold this.
 
 Accent colour in the clients, as a hex string.
 
+*** =agents.face=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.53.0
+
+The generated face the agent wears when it has no profile picture.
+
+Unset, the agent gets a shape picked from its id -- the same one in
+every client, every time. Set it to choose: pebble, cloud, cushion,
+clover, star, bean, flower, drop, gem, petal, puff, squircle, wedge
+or bloom. initials keeps the letter disc instead. The face is
+painted in agents.color, and a profile picture always takes its
+place. An unknown name is a warning and the automatic face is used.
+
 *** =agents.order=
 
 - Type :: integer

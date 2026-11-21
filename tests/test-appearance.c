@@ -1587,6 +1587,44 @@ test_sidebar_collapsed_round_trip(void)
 }
 
 /*
+ * Faces move by default, survive the file and the copy when turned off,
+ * and only a recognisable "off" stops them: a typo that froze every face
+ * would look like the faces were broken.
+ */
+static void
+test_animate_faces_round_trip(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autoptr(ClawtAppearance) back = NULL;
+    g_autoptr(ClawtAppearance) copy = NULL;
+    g_autoptr(ClawtAppearance) typo = NULL;
+    g_autoptr(ClawtAppearance) absent = NULL;
+    g_autofree gchar *data = NULL;
+    g_autofree gchar *fresh = clawt_appearance_to_data(appearance);
+
+    g_assert_true(clawt_appearance_get_animate_faces(appearance));
+    g_assert_nonnull(strstr(fresh, "animate_faces: true"));
+
+    clawt_appearance_set_animate_faces(appearance, FALSE);
+    data = clawt_appearance_to_data(appearance);
+    g_assert_nonnull(strstr(data, "animate_faces: false"));
+    back = clawt_appearance_parse(data, NULL);
+    g_assert_nonnull(back);
+    g_assert_false(clawt_appearance_get_animate_faces(back));
+
+    copy = clawt_appearance_copy(appearance);
+    g_assert_false(clawt_appearance_get_animate_faces(copy));
+
+    typo = clawt_appearance_parse("animate_faces: flase\n", NULL);
+    g_assert_nonnull(typo);
+    g_assert_true(clawt_appearance_get_animate_faces(typo));
+
+    absent = clawt_appearance_parse("theme: catppuccin-mocha\n", NULL);
+    g_assert_nonnull(absent);
+    g_assert_true(clawt_appearance_get_animate_faces(absent));
+}
+
+/*
  * A file written before this key existed keeps its descriptions.
  *
  * Absent has to be "show" rather than "off", or upgrading would empty
@@ -2165,6 +2203,8 @@ main(int argc, char *argv[])
                     test_descriptions_emit_no_css);
     g_test_add_func("/appearance/sidebar-collapsed-round-trip",
                     test_sidebar_collapsed_round_trip);
+    g_test_add_func("/appearance/animate-faces",
+                    test_animate_faces_round_trip);
     g_test_add_func("/appearance/window-buttons/round-trip",
                     test_window_buttons_round_trip);
     g_test_add_func("/appearance/window-buttons/tiling-session",

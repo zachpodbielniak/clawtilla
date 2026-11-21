@@ -128,6 +128,44 @@ clawt_daemon_apply_limits_in_place(
  *
  * Returns: %TRUE if the config was saved
  */
+/*
+ * appearance_setting_refusal:
+ * @key: an agent setting, without the `agents.` prefix
+ * @value: (nullable): what someone wants to store in it
+ *
+ * Why @value may not be written to @key, for the two settings that
+ * decide how an agent's face looks -- or %NULL if it may.
+ *
+ * `face` takes a shape name, `initials`, or empty for the automatic
+ * face.  `color` takes a hex colour or empty for the derived tone; it
+ * is written into the web client's markup and GTK's stylesheet, so
+ * nothing that clawt_color_ink() would not accept is stored at all.
+ * Both agent.create and agent.set ask here, so the two cannot disagree
+ * about what a face may be.
+ *
+ * Returns: (transfer full) (nullable): the message to refuse with
+ */
+static gchar *
+appearance_setting_refusal(const gchar *key, const gchar *value)
+{
+    if (g_strcmp0(key, "face") == 0 && !clawt_face_value_is_valid(value)) {
+        g_autofree gchar *allowed = clawt_face_valid_values();
+
+        return g_strdup_printf("'%s' is not a face: it takes one of %s, "
+                               "or empty for one picked automatically",
+                               value, allowed);
+    }
+
+    if (g_strcmp0(key, "color") == 0 && value != NULL && *value != '\0' &&
+        clawt_color_ink(value) == NULL)
+        return g_strdup_printf("'%s' is not a colour: it takes a hex "
+                               "colour such as #22b573 or #2b7, or empty "
+                               "for one derived from the agent's id",
+                               value);
+
+    return NULL;
+}
+
 static gboolean
 renumber_fleet(ClawtDaemon  *self,
                const gchar  *entries,
@@ -1266,6 +1304,8 @@ clawt_daemon_handle_agent(
                 { "team",           "team" },
                 { "team_role",      "team_role" },
                 { "workspace",      "workspace" },
+                { "color",          "color" },
+                { "face",           "face" },
                 { NULL, NULL }
             };
             gsize i;
@@ -1276,9 +1316,22 @@ clawt_daemon_handle_agent(
                 const gchar *value = clawt_ipc_payload_string(payload,
                                                               names[i].from);
 
-                if (value != NULL)
+                if (value != NULL) {
+                    g_autofree gchar *refusal =
+                        appearance_setting_refusal(names[i].to, value);
+
+                    /*
+                     * Refused before anything is created: an agent
+                     * half-made with a face it cannot wear is worse than
+                     * a create that asks again.
+                     */
+                    if (refusal != NULL)
+                        return clawt_ipc_error_new(
+                            request, CLAWT_ERROR_INVALID_ARGUMENT, refusal);
+
                     g_hash_table_insert(fields, (gpointer)names[i].to,
                                         (gpointer)value);
+                }
             }
         }
 
@@ -1609,6 +1662,17 @@ clawt_daemon_handle_agent(
                                            CLAWT_ERROR_INVALID_ARGUMENT,
                                            message);
             }
+        }
+
+        /* The face and its colour: see appearance_setting_refusal(). */
+        {
+            g_autofree gchar *refusal =
+                appearance_setting_refusal(key, value);
+
+            if (refusal != NULL)
+                return clawt_ipc_error_new(request,
+                                           CLAWT_ERROR_INVALID_ARGUMENT,
+                                           refusal);
         }
 
         /*

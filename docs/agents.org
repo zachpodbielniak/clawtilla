@@ -1000,6 +1000,23 @@ The table in ~clawt-face.c~ is append-only. An automatic face is picked by /inde
 
 The seed is ~g_str_hash()~ of the id -- the same in every process -- mixed with a salt. The salt matters: the avatar /colour/ is hashed from the same id, and without it the two would be correlated, so every blue agent would also be a cloud.
 
+*** Choosing a face
+
+#+begin_src yaml
+agents:
+  - id: scout
+    face: cloud        # or initials, or leave it out for an automatic one
+    color: "#22b573"   # the face's colour; leave it out for a derived one
+#+end_src
+
+Both are also set from the clients' face pickers -- in the create dialog and the agent's settings -- and over IPC (~agent.create~ ~face~ / ~color~, ~agent.set~ ~face~ / ~color~; see [[file:ipc-protocol.org][ipc-protocol.org]]). Those check the value where it arrives and refuse an unknown face or a colour that is not ~#rgb~ / ~#rrggbb~, so nothing undrawable is stored. A value typed into the YAML by hand is checked when the file loads: an unknown face is a warning naming the agent and listing the shapes, and the agent gets its automatic face. It is never made a shadow for it -- a face is cosmetic, and a typo in one must not take an agent out of the fleet.
+
+The daemon resolves the face and sends it to every client as ~face~ in ~agent.list~, so all clients agree even across versions.
+
+*** Turning the motion off
+
+~animate_faces: false~ in ~appearance.yaml~ (each client's Appearance settings) draws every face at rest: no blinking, eyes that stay put. GTK also keeps faces still when the desktop has animations turned off, and the web client when the browser asks for reduced motion.
+
 *** Eyes
 
 ~clawt_face_eyes()~ places two upright rounded rectangles for a shape in a pose (~ClawtFacePose~: where it looks, and how far into a blink). The look is clamped to the unit disc before it moves anything, so a diagonal look reaches no further than a straight one; sideways the eyes move up to ~CLAWT_FACE_LOOK_REACH~ (0.2), up and down 70% of that. A blink squashes each eye toward its own middle down to a thin line, keeping the corner radius legal at every step.

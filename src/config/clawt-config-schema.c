@@ -3067,6 +3067,17 @@ static const ClawtSchemaEntry schema[] = {
 { "agents.color", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Accent colour in the clients, as a hex string.", "0.1.0" },
 
+{ "agents.face", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The generated face the agent wears when it has no profile picture.\n"
+  "\n"
+  "Unset, the agent gets a shape picked from its id -- the same one in\n"
+  "every client, every time. Set it to choose: pebble, cloud, cushion,\n"
+  "clover, star, bean, flower, drop, gem, petal, puff, squircle, wedge\n"
+  "or bloom. initials keeps the letter disc instead. The face is\n"
+  "painted in agents.color, and a profile picture always takes its\n"
+  "place. An unknown name is a warning and the automatic face is used.",
+  "0.53.0" },
+
 { "agents.order", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "0", NULL,
   "Where this agent sits in the list, lowest first.\n"
