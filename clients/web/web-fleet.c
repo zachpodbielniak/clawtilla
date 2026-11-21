@@ -160,6 +160,9 @@ agent_row(JsonObject *agent, const gchar *selected, ClawtPage view,
      * sidebar and reading its turns cannot disagree about what it
      * looks like.
      */
+    /* the daemon's resolved face, for the transcript to draw the same */
+    clawt_web_face_note(id, clawt_web_member(agent, "face", NULL));
+
     clawt_web_add(
         line,
         clawt_web_avatar(name, id,
@@ -2213,6 +2216,20 @@ on_new_agent_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
         "Creating an agent also builds its computer and starts it. A VM "
         "needs a disk image before it can be created at all.", "lede"));
 
+    /*
+     * The face first, already shuffled: a new agent is born with a
+     * random shape and colour, and the picker shows which before Create
+     * -- Shuffle for another, or pick one.
+     */
+    {
+        gint shape;
+        const gchar *color;
+
+        clawt_face_pick_random(&shape, &color);
+        clawt_web_add(form, clawt_web_face_picker(
+            NULL, clawt_face_shape_name(shape), color));
+    }
+
     clawt_web_add(form, clawt_web_field("Id", "id", NULL, "researcher"));
     clawt_web_add(form, clawt_web_field("Name", "name", NULL, "Researcher"));
     clawt_web_add(form, clawt_web_field(
@@ -2320,6 +2337,15 @@ on_create_agent(HtmxRequest *request, GHashTable *params, gpointer user_data)
     clawt_web_payload_set(payload, "model",
                           clawt_web_form_value(request, "model"));
     clawt_web_payload_set(payload, "computer", computer);
+
+    /*
+     * As chosen.  Absent (a form from before faces) lets the daemon pick
+     * at random; "" is the automatic choice and is sent as such.
+     */
+    clawt_web_payload_set(payload, "face",
+                          clawt_web_form_value(request, "face"));
+    clawt_web_payload_set(payload, "color",
+                          clawt_web_form_value(request, "color"));
 
     {
         gint type = CLAWT_COMPUTER_NONE;

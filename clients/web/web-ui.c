@@ -323,6 +323,198 @@ clawt_web_state_tone(const gchar *state)
     return "neutral";
 }
 
+/* ── Generated faces (0.53.0) ─────────────────────────────────────── */
+
+static GHashTable *noted_faces = NULL;   /* agent id -> resolved face */
+
+void
+clawt_web_face_note(const gchar *agent_id, const gchar *face)
+{
+    g_return_if_fail(agent_id != NULL);
+
+    if (noted_faces == NULL)
+        noted_faces = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                            g_free);
+
+    if (face == NULL)
+        g_hash_table_remove(noted_faces, agent_id);
+    else
+        g_hash_table_replace(noted_faces, g_strdup(agent_id), g_strdup(face));
+}
+
+gint
+clawt_web_face_for(const gchar *agent_id)
+{
+    const gchar *noted = NULL;
+    gint shape;
+
+    if (noted_faces != NULL && agent_id != NULL)
+        noted = g_hash_table_lookup(noted_faces, agent_id);
+
+    if (noted == NULL)
+        return clawt_face_resolve(agent_id, NULL);
+
+    /* a shape this build does not know is the disc, as in GTK and lrg */
+    shape = clawt_face_shape_lookup(noted);
+
+    return (shape == -2) ? CLAWT_FACE_INITIALS : shape;
+}
+
+GPtrArray *
+clawt_web_face_changes(const gchar *saved_face, const gchar *face,
+                       const gchar *saved_color, const gchar *color)
+{
+    GPtrArray *keys = g_ptr_array_new_with_free_func(g_free);
+
+    if (face != NULL &&
+        g_strcmp0(face, saved_face != NULL ? saved_face : "") != 0)
+        g_ptr_array_add(keys, g_strdup("face"));
+    if (color != NULL &&
+        g_strcmp0(color, saved_color != NULL ? saved_color : "") != 0)
+        g_ptr_array_add(keys, g_strdup("color"));
+
+    return keys;
+}
+
+/* One radio and its tile, inside a <label> so the tile is the target. */
+static HtmxElement *
+picker_choice(const gchar *group, const gchar *value, gboolean checked,
+              const gchar *tile_html, const gchar *title)
+{
+    g_autoptr(HtmxLabel) label = htmx_label_new();
+    g_autoptr(HtmxInput) radio = htmx_input_new(HTMX_INPUT_RADIO);
+    g_autoptr(HtmxSpan) tile = htmx_span_new();
+
+    htmx_input_set_name(radio, group);
+    htmx_element_set_attribute(HTMX_ELEMENT(radio), "value", value);
+    if (checked)
+        htmx_element_set_attribute(HTMX_ELEMENT(radio), "checked", "checked");
+    htmx_element_set_attribute(HTMX_ELEMENT(label), "title", title);
+    htmx_element_add_class(HTMX_ELEMENT(label),
+                           g_strcmp0(group, "face") == 0 ? "face-tile"
+                                                         : "face-swatch");
+    htmx_node_set_html_content(HTMX_NODE(tile), tile_html);
+    htmx_node_add_child(HTMX_NODE(label), HTMX_NODE(radio));
+    htmx_node_add_child(HTMX_NODE(label), HTMX_NODE(tile));
+
+    return HTMX_ELEMENT(g_steal_pointer(&label));
+}
+
+HtmxElement *
+clawt_web_face_picker(const gchar *agent_id, const gchar *face,
+                      const gchar *color)
+{
+    g_autoptr(HtmxFieldset) fieldset = htmx_fieldset_new();
+    HtmxElement *set = HTMX_ELEMENT(fieldset);
+    g_autoptr(HtmxDiv) preview = htmx_div_new();
+    g_autoptr(HtmxDiv) shapes = htmx_div_new();
+    g_autoptr(HtmxDiv) swatches = htmx_div_new();
+    g_autoptr(HtmxButton) shuffle = htmx_button_new();
+    const gchar *automatic_color = clawt_avatar_color(agent_id, agent_id,
+                                                      NULL);
+    gint chosen_shape = clawt_face_shape_lookup(face);
+    const gchar *chosen_color = (clawt_color_ink(color) != NULL) ? color : "";
+    const gchar *paint = (*chosen_color != '\0') ? chosen_color
+                                                  : automatic_color;
+    guint32 seed = clawt_face_seed(agent_id);
+    guint i;
+
+    htmx_element_add_class(set, "face-picker");
+    htmx_element_set_attribute(set, "data-auto-color", automatic_color);
+
+    /* ── The preview: the chosen shape, or the letters ── */
+    htmx_element_add_class(HTMX_ELEMENT(preview), "face-preview");
+    {
+        gint shown = (chosen_shape == -2) ? clawt_face_resolve(agent_id, NULL)
+                                          : chosen_shape;
+
+        if (shown == CLAWT_FACE_INITIALS) {
+            htmx_node_set_html_content(HTMX_NODE(preview),
+                                       "<span class=\"face-initials\">Aa"
+                                       "</span>");
+        } else {
+            g_autofree gchar *svg = clawt_face_svg(shown, paint, 96, NULL,
+                                                   seed, TRUE);
+
+            htmx_node_set_html_content(HTMX_NODE(preview), svg);
+        }
+    }
+    htmx_node_add_child(HTMX_NODE(set), HTMX_NODE(preview));
+
+    htmx_element_add_class(HTMX_ELEMENT(shuffle), "btn");
+    htmx_element_add_class(HTMX_ELEMENT(shuffle), "face-shuffle");
+    htmx_element_set_attribute(HTMX_ELEMENT(shuffle), "type", "button");
+    htmx_element_set_attribute(HTMX_ELEMENT(shuffle), "title",
+                               "A random shape and colour");
+    htmx_node_set_text_content(HTMX_NODE(shuffle), "Shuffle");
+    htmx_node_add_child(HTMX_NODE(set), HTMX_NODE(shuffle));
+
+    /* ── Shapes: automatic, each shape, initials ── */
+    htmx_element_add_class(HTMX_ELEMENT(shapes), "face-shapes");
+    {
+        g_autofree gchar *svg = clawt_face_svg(
+            clawt_face_resolve(agent_id, NULL), paint, 32, NULL, seed, TRUE);
+
+        clawt_web_add(shapes, picker_choice("face", "", chosen_shape == -2,
+                                            svg, "Automatic: picked from the "
+                                            "agent's id"));
+    }
+    for (i = 0; i < clawt_face_shape_count(); i++) {
+        g_autofree gchar *svg = clawt_face_svg((gint)i, paint, 32, NULL, seed,
+                                               TRUE);
+
+        clawt_web_add(shapes, picker_choice(
+            "face", clawt_face_shape_name((gint)i), chosen_shape == (gint)i,
+            svg, clawt_face_shape_label((gint)i)));
+    }
+    clawt_web_add(shapes, picker_choice(
+        "face", CLAWT_FACE_INITIALS_NAME, chosen_shape == CLAWT_FACE_INITIALS,
+        "<span class=\"face-initials\">Aa</span>", "Initials: the letter disc"));
+    htmx_node_add_child(HTMX_NODE(set), HTMX_NODE(shapes));
+
+    /* ── Colours: automatic, then the palette ── */
+    htmx_element_add_class(HTMX_ELEMENT(swatches), "face-swatches");
+    {
+        g_autofree gchar *dot = g_strdup_printf(
+            "<span class=\"dot-swatch auto\" style=\"background:%s\"></span>",
+            automatic_color);
+
+        clawt_web_add(swatches, picker_choice("color", "",
+                                              *chosen_color == '\0', dot,
+                                              "Automatic: a tone from the id"));
+    }
+    for (i = 0; i < CLAWT_FACE_PALETTE_SIZE; i++) {
+        const gchar *hex = clawt_face_palette_color(i);
+        g_autofree gchar *dot = g_strdup_printf(
+            "<span class=\"dot-swatch\" style=\"background:%s\"></span>", hex);
+
+        clawt_web_add(swatches, picker_choice(
+            "color", hex, g_ascii_strcasecmp(chosen_color, hex) == 0, dot,
+            hex));
+    }
+
+    /* a colour that is not a swatch is kept, shown as one more */
+    if (*chosen_color != '\0') {
+        gboolean known = FALSE;
+
+        for (i = 0; i < CLAWT_FACE_PALETTE_SIZE; i++)
+            if (g_ascii_strcasecmp(chosen_color,
+                                   clawt_face_palette_color(i)) == 0)
+                known = TRUE;
+        if (!known) {
+            g_autofree gchar *dot = g_strdup_printf(
+                "<span class=\"dot-swatch\" style=\"background:%s\"></span>",
+                chosen_color);
+
+            clawt_web_add(swatches, picker_choice("color", chosen_color, TRUE,
+                                                  dot, chosen_color));
+        }
+    }
+    htmx_node_add_child(HTMX_NODE(set), HTMX_NODE(swatches));
+
+    return HTMX_ELEMENT(g_steal_pointer(&fieldset));
+}
+
 HtmxElement *
 clawt_web_avatar(const gchar *name, const gchar *agent_id,
                  gboolean has_avatar, const gchar *color,
@@ -339,6 +531,36 @@ clawt_web_avatar(const gchar *name, const gchar *agent_id,
         htmx_element_add_class(HTMX_ELEMENT(picture), "web-avatar-img");
 
         return HTMX_ELEMENT(g_steal_pointer(&picture));
+    }
+
+    /*
+     * The generated face: an inline SVG, so the stylesheet can blink it
+     * and the page-head script can turn its eyes -- an <img> of the same
+     * SVG would be a sealed document neither can reach.  The colour is
+     * clawt_avatar_color()'s, the one GTK and lrg paint, rather than a
+     * tone class: a face's eyes are chosen against its body colour, so
+     * the body has to be a colour this side knows.
+     */
+    {
+        const gchar *key = (agent_id != NULL) ? agent_id : name;
+        gint shape = clawt_web_face_for(key);
+
+        if (shape != CLAWT_FACE_INITIALS) {
+            g_autoptr(HtmxSpan) holder = htmx_span_new();
+            g_autofree gchar *svg = clawt_face_svg(
+                shape, clawt_avatar_color(agent_id, name, color), 32, NULL,
+                clawt_face_seed(key), TRUE);
+
+            htmx_element_add_class(HTMX_ELEMENT(holder), css_class);
+            htmx_element_add_class(HTMX_ELEMENT(holder), "web-face");
+            htmx_element_set_attribute(HTMX_ELEMENT(holder), "data-face",
+                                       clawt_face_shape_name(shape));
+            htmx_element_set_attribute(HTMX_ELEMENT(holder), "title",
+                                       name != NULL ? name : "");
+            htmx_node_set_html_content(HTMX_NODE(holder), svg);
+
+            return HTMX_ELEMENT(g_steal_pointer(&holder));
+        }
     }
 
     {
@@ -1680,6 +1902,13 @@ clawt_web_look_from_request(HtmxRequest *request)
         look->hide_descriptions = descriptions_hidden(descriptions);
     }
 
+    {
+        g_autofree gchar *faces = cookie_value(cookies, "clawt_faces");
+
+        /* only a "0" stops them, as with descriptions: a typo moves */
+        look->still_faces = (faces != NULL && g_strcmp0(faces, "0") == 0);
+    }
+
     return look;
 }
 
@@ -1778,6 +2007,19 @@ clawt_web_look_css(const ClawtWebLook *look)
     if (look->run_gap > 0 &&
         look->run_gap <= CLAWT_APPEARANCE_MAX_RUN_SPACING)
         g_string_append_printf(css, "--chat-run-gap:%dpx;", look->run_gap);
+
+    /*
+     * Still faces: a variable the page-head script reads before moving
+     * any eyes, and a rule that stops the blink -- in the sheet, so a
+     * face swapped in later by htmx is still at once.
+     */
+    if (look->still_faces) {
+        g_string_append(css, "--face-motion:0;");
+
+        return g_strdup_printf(
+            ":root{%s}.face .face-eye{animation:none!important}"
+            ".face .face-eyes{transform:none!important}", css->str);
+    }
 
     if (css->len == 0)
         return g_strdup("");
@@ -2465,6 +2707,80 @@ open_document(HtmxBuilder *builder, const gchar *title,
          * re-asked for rather than served from a node holding the old
          * one.
          */
+        /*
+         * Faces (0.53.0).  The blink is the stylesheet's; this only
+         * turns the eyes.  While the pointer is over an agent's row, a
+         * face, or a face picker, every face in it looks toward the
+         * pointer -- the same rule as GTK and lrg, from
+         * clawt_face_look_at(): full at three radii, gentler closer.
+         * Leaving puts them back.  Still when the browser asks for
+         * reduced motion or the reader chose still faces.
+         */
+        "var face_area=null;"
+        "function face_still(){return(window.matchMedia&&"
+        "matchMedia('(prefers-reduced-motion: reduce)').matches)||"
+        "getComputedStyle(document.documentElement)"
+        ".getPropertyValue('--face-motion').trim()==='0';}"
+        "function face_rest(a){if(!a){return;}"
+        "a.querySelectorAll('svg.face').forEach(function(s){"
+        "s.style.setProperty('--look-x','0');"
+        "s.style.setProperty('--look-y','0');});}"
+        "document.addEventListener('pointermove',function(e){"
+        "var a=e.target&&e.target.closest?"
+        "e.target.closest('.agent-row,.web-face,.face-picker'):null;"
+        "if(a!==face_area){face_rest(face_area);face_area=a;}"
+        "if(!a||face_still()){return;}"
+        "a.querySelectorAll('svg.face').forEach(function(s){"
+        "var r=s.getBoundingClientRect(),rad=r.width/2;if(!rad){return;}"
+        "var dx=e.clientX-(r.left+rad),dy=e.clientY-(r.top+rad),"
+        "d=Math.sqrt(dx*dx+dy*dy);if(d<0.001){dx=0;dy=0;d=1;}"
+        "var m=Math.min(1,d/(3*rad));"
+        "s.style.setProperty('--look-x',(dx/d*m).toFixed(3));"
+        "s.style.setProperty('--look-y',(dy/d*m).toFixed(3));});});"
+        "document.addEventListener('pointerleave',function(){"
+        "face_rest(face_area);face_area=null;});"
+        /*
+         * The face picker: the radios are the form and work without
+         * this; it keeps the preview showing the chosen tile, paints
+         * every tile in the chosen colour (with eyes picked by the same
+         * contrast rule as clawt_face_eye_color()), and makes Shuffle
+         * pick a random shape and palette colour.
+         */
+        "function face_lin(c){c=c/255;return c<=0.04045?c/12.92:"
+        "Math.pow((c+0.055)/1.055,2.4);}"
+        "function face_eye(h){var m=/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(h);"
+        "if(!m){return'#1b1b22';}var x=m[1];if(x.length===3){"
+        "x=x[0]+x[0]+x[1]+x[1]+x[2]+x[2];}"
+        "var l=0.2126*face_lin(parseInt(x.substr(0,2),16))+"
+        "0.7152*face_lin(parseInt(x.substr(2,2),16))+"
+        "0.0722*face_lin(parseInt(x.substr(4,2),16));"
+        "return l<0.19?'#f6f5f4':'#1b1b22';}"
+        "function face_pick(p){"
+        "var c=p.querySelector('input[name=\"color\"]:checked');"
+        "var col=(c&&c.value)||p.dataset.autoColor;"
+        "p.querySelectorAll('.face-body').forEach(function(b){"
+        "b.setAttribute('fill',col);});"
+        "p.querySelectorAll('.face-eyes').forEach(function(g){"
+        "g.setAttribute('fill',face_eye(col));});"
+        "var f=p.querySelector('input[name=\"face\"]:checked');"
+        "var t=f?f.parentNode.querySelector('svg'):null;"
+        "var pv=p.querySelector('.face-preview');if(!pv){return;}"
+        "pv.innerHTML=t?t.outerHTML:"
+        "'<span class=\"face-initials\">Aa</span>';"
+        "var s=pv.querySelector('svg');if(s){s.setAttribute('width','96');"
+        "s.setAttribute('height','96');}}"
+        "document.addEventListener('change',function(e){"
+        "var p=e.target&&e.target.closest?"
+        "e.target.closest('.face-picker'):null;if(p){face_pick(p);}});"
+        "document.addEventListener('click',function(e){"
+        "var b=e.target&&e.target.closest?"
+        "e.target.closest('.face-shuffle'):null;if(!b){return;}"
+        "e.preventDefault();var p=b.closest('.face-picker');"
+        "['face','color'].forEach(function(n){"
+        "var o=p.querySelectorAll('input[name=\"'+n+'\"]:not([value=\"\"])"
+        ":not([value=\"initials\"])');"
+        "if(o.length){o[Math.floor(Math.random()*o.length)].checked=true;}});"
+        "face_pick(p);});"
         "function zoom(){return document.getElementById('avatar-zoom');}"
         "function unzoom(){var z=zoom();if(!z){return;}"
         "z.classList.remove('on');var i=z.querySelector('img');"

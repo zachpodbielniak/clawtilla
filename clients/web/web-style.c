@@ -707,6 +707,57 @@ clawt_web_stylesheet(void)
      */
     ".web-avatar-img{object-fit:cover}"
     /*
+     * Generated faces (0.53.0).  The holder drops the disc's background
+     * -- the face is its own shape -- and the SVG fills it.  The eyes
+     * move by --look-x/--look-y, which the page-head script sets while
+     * the pointer is over the agent; the reach is CLAWT_FACE_LOOK_REACH
+     * across and 70% of it down, in the SVG's own units (its viewBox is
+     * two wide, and px in an SVG transform is a user unit).  The blink
+     * is all CSS: each face's period and offset come from its own
+     * --blink-gap and --blink-delay (clawt_face_svg()), so a sidebar
+     * never blinks in step, and 2% of a 3.3-5 s period is a 130-200 ms
+     * blink.
+     */
+    ".web-face{background:none!important;overflow:visible}"
+    ".web-face svg{width:100%;height:100%;display:block;overflow:visible}"
+    ".face .face-eyes{transform:translate(calc(var(--look-x,0)*0.22px),"
+      "calc(var(--look-y,0)*0.154px));transition:transform .12s ease-out}"
+    ".face .face-eye{transform-box:fill-box;transform-origin:center;"
+      "animation:face-blink var(--blink-gap,4000ms) linear "
+      "var(--blink-delay,0ms) infinite}"
+    "@keyframes face-blink{0%,96%,100%{transform:scaleY(1)}"
+      "98%{transform:scaleY(.12)}}"
+    "@media (prefers-reduced-motion:reduce){"
+      ".face .face-eye{animation:none}"
+      ".face .face-eyes{transition:none;transform:none}}"
+    /*
+     * The face picker: a preview, a grid of shape tiles and a row of
+     * colour dots, each a radio inside its label; the radio is hidden
+     * and the checked tile gets the ring.
+     */
+    ".face-picker{border:0;padding:0;margin:0 0 12px;display:flex;"
+      "flex-direction:column;align-items:center;gap:8px}"
+    ".face-preview{width:96px;height:96px;display:flex;align-items:center;"
+      "justify-content:center}"
+    ".face-preview svg{width:96px;height:96px}"
+    ".face-initials{font-weight:700;font-size:20px;color:var(--ink-2)}"
+    ".face-shapes,.face-swatches{display:flex;flex-wrap:wrap;gap:4px;"
+      "justify-content:center;max-width:420px}"
+    ".face-tile,.face-swatch{position:relative;display:inline-flex;"
+      "align-items:center;justify-content:center;border-radius:10px;"
+      "padding:4px;border:2px solid transparent;cursor:pointer}"
+    ".face-tile{width:44px;height:44px}"
+    ".face-tile svg{width:32px;height:32px}"
+    ".face-tile input,.face-swatch input{position:absolute;opacity:0;"
+      "width:1px;height:1px}"
+    ".face-tile:has(input:checked),.face-swatch:has(input:checked){"
+      "border-color:var(--info-fg)}"
+    ".face-tile:has(input:focus-visible),.face-swatch:has(input:focus-visible)"
+      "{outline:2px solid var(--info-fg)}"
+    ".dot-swatch{display:block;width:20px;height:20px;border-radius:50%}"
+    ".dot-swatch.auto{box-shadow:inset 0 0 0 3px var(--surface),"
+      "inset 0 0 0 4px rgba(255,255,255,.8)}"
+    /*
      * The derived tones, from the palette rather than computed, so a
      * colour scheme recolours the faces with everything else.
      */

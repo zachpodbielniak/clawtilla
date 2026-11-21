@@ -271,7 +271,7 @@ answers with the page it did it on.
 |-------------------------------+-----------------------------------------|
 | =/=, =/fleet=                 | the fleet index                         |
 | =/a/:id/:view=                | the seven agent views                   |
-| =/a/:id/...=                  | everything done to one agent: send, start, stop, restart, reset, set, team, reorder, read, mute, unmute, remove, exec, rebuild, attach/remove, mount, mailbox, memories, file, files, compose, export, copy |
+| =/a/:id/...=                  | everything done to one agent: send, start, stop, restart, reset, set, face, team, reorder, read, mute, unmute, remove, exec, rebuild, attach/remove, mount, mailbox, memories, file, files, compose, export, copy |
 | =/read-all=                   | *Mark all as read* at the head of the agent list (~room.read~ with ~all: true~) |
 | =/f/...=                      | fragments htmx swaps in: the sidebar, a transcript, an attachment, a PDF attachment's first page (=/f/attachment/:id/thumb=), an inline decision answered (=/f/decision/answer=) |
 | =/a/:id/attachments=, =/r/:id/attachments= | a conversation's Files page; ahead of =/a/:id/:view=, registered with the chat routes |
@@ -574,6 +574,35 @@ The page asks ~attachment.list~ (~agent~ or ~room~) and draws =clawt_web_files_g
 
 Each name links to =/f/attachment/<id>= in a new tab, which serves an image inline and anything else as a download.  A file named only by a host path (from before 0.51.5) is a name with the path as its tooltip and nothing to click: this page may be read on another machine.
 
+*** Generated faces (since 0.53.0)
+
+With no picture, ~clawt_web_avatar()~ draws the agent's generated face (see "Generated faces" in [[file:agents.org][agents.org]] and [[file:clients.org][clients.org]]) as an /inline/ SVG from ~clawt_face_svg()~ in a ~<span class="web-face">~. An ~<img>~ of the same SVG would be a sealed document that neither the stylesheet nor the page script can reach. The face drawn is the daemon's ~face~ from ~agent.list~, which the sidebar records (~clawt_web_face_note()~) for the transcript to use. The colour is ~clawt_avatar_color()~'s, as in GTK and lrg, not a tone class: the eyes are chosen against the body colour, so the body has to be a colour this side knows. A configured colour reaches the markup only when it is hex.
+
+**** The blink is CSS
+
+~clawt_face_svg()~ writes each face's own ~--blink-gap~ (its period, 3.3--5 s) and ~--blink-delay~ (a negative offset). The stylesheet runs ~@keyframes face-blink~ on each eye over that period, squashing it at 98%. Faces therefore never blink in step, the blink costs no script at all, and ~prefers-reduced-motion~ turns it off in the sheet.
+
+**** The eyes are a few lines of script
+
+While the pointer is over an agent's row, a face or a face picker, a delegated ~pointermove~ handler sets ~--look-x~ / ~--look-y~ on every face in it, toward the pointer: full at three radii and gentler closer, the rule of ~clawt_face_look_at()~. The stylesheet translates the eye group by those times ~CLAWT_FACE_LOOK_REACH~ across and 70% of it down, with a short transition. Leaving resets them. It is delegated because htmx replaces the sidebar on every fleet event. A test pins the stylesheet's numbers to the library's constant.
+
+**** The picker is a form
+
+~clawt_web_face_picker()~ is a ~<fieldset>~ of radios: ~face~ (automatic, each shape and initials, each tile an SVG) and ~color~ (the automatic tone and the palette, plus the current colour when it is not a swatch, so a save does not drop it). With no script it works as is. The page script keeps the preview showing the chosen tile, paints every tile in the chosen colour with eyes by the same contrast rule as ~clawt_face_eye_color()~, and makes *Shuffle* pick a random shape and palette colour.
+
+- *New agent* (~/new~) opens with a random face already chosen (~clawt_face_pick_random()~), and ~agent.create~ is sent ~face~ and ~color~ as picked. A form without them, from before faces, gets a random one from the daemon.
+- The agent page's *Face* card posts to ~/a/:id/face~. That route writes with ~agent.set~ only what changed from the values the page was drawn with (~clawt_web_face_changes()~; the saved values ride along hidden), so a colour picked here never rewrites a face set by hand in the YAML. The daemon's refusal of a face nobody can draw is shown as the error page. The picture upload and Remove sit under it.
+
+Tested in ~test-web-render~ (~/web/face/...~):
+
+- the avatar's choice of picture, face or letter;
+- a hostile colour never reaching the markup;
+- the stylesheet's reach matching the library;
+- still faces as an explicit choice;
+- the picker as a form;
+- the page script;
+- the Face form writing only what changed.
+
 *** Editing workspace files
 
 The GTK client opens them in =$EDITOR=, which is a program on the machine
@@ -777,6 +806,8 @@ outright on every fleet event and nothing about that swap goes through
 the page renderer, so without the second read the setting would hold
 until the first event arrived and then silently revert. That reads as a
 preference that does not stick.
+
+A second select in the same card, *Faces*, writes ~clawt_faces=0~ for still faces (no blink, eyes that stay put); the default, again, is no cookie. Still faces are applied by the look sheet -- ~--face-motion:0~ and a rule that stops the blink -- so a face htmx swaps in later is still at once, and the page script reads the variable before moving any eyes. A browser that asks for ~prefers-reduced-motion~ gets still faces whatever the cookie says.
 
 *** A font family is sanitised, not escaped
 

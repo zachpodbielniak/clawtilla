@@ -1019,21 +1019,56 @@ static void
 add_avatar_card(HtmxElement *parent, JsonObject *agent, const gchar *agent_id)
 {
     g_autoptr(HtmxDiv) card = clawt_web_card(
-        "Profile picture",
-        "PNG, JPEG or WebP -- the file's own bytes decide, not its name.");
+        "Face",
+        "A generated face that blinks and watches the pointer -- or a "
+        "picture (PNG, JPEG or WebP) shown in its place.");
     HtmxElement *body = clawt_web_card_body(card);
     gboolean has_avatar = clawt_web_member_bool(agent, "has_avatar", FALSE);
     const gchar *configured = clawt_web_member(agent, "avatar", "");
     g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
 
-    clawt_web_add(body, clawt_web_text(
-        has_avatar
-            ? ((configured != NULL && *configured != '\0')
-                   ? "Set from agents.avatar."
-                   : "Auto-detected: profile-picture.png (or .jpg, .jpeg, "
-                     "or .webp) in the agent's own directory.")
-            : "No picture yet -- initials are shown instead.",
-        "small muted"));
+    if (has_avatar)
+        clawt_web_add(body, clawt_web_text(
+            (configured != NULL && *configured != '\0')
+                ? "A picture from agents.avatar is shown in place of the "
+                  "face. Remove it to show the face again."
+                : "A picture (profile-picture.png, .jpg, .jpeg or .webp in "
+                  "the agent's own directory) is shown in place of the "
+                  "face. Remove it to show the face again.",
+            "small muted"));
+
+    /*
+     * The picker, in a form of its own posting to /a/:id/face, which
+     * writes only what changed: the saved values ride along hidden, so
+     * picking a colour never rewrites a face somebody set in the YAML.
+     */
+    {
+        g_autofree gchar *action = g_strdup_printf("/a/%s/face", escaped);
+        g_autoptr(HtmxForm) form = clawt_web_form(action);
+        g_autoptr(HtmxInput) saved_face = htmx_input_new(HTMX_INPUT_HIDDEN);
+        g_autoptr(HtmxInput) saved_color = htmx_input_new(HTMX_INPUT_HIDDEN);
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+        g_autoptr(HtmxButton) save = clawt_web_button("Save face", "primary");
+        const gchar *face = clawt_web_member(agent, "face_configured", "");
+        const gchar *color = clawt_web_member(agent, "color", "");
+
+        clawt_web_add(form, clawt_web_face_picker(agent_id, face, color));
+
+        htmx_input_set_name(saved_face, "saved_face");
+        htmx_element_set_attribute(HTMX_ELEMENT(saved_face), "value",
+                                   face != NULL ? face : "");
+        htmx_input_set_name(saved_color, "saved_color");
+        htmx_element_set_attribute(HTMX_ELEMENT(saved_color), "value",
+                                   color != NULL ? color : "");
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(saved_face));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(saved_color));
+
+        htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+        htmx_element_set_attribute(HTMX_ELEMENT(save), "type", "submit");
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(save));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+    }
 
     if (has_avatar) {
         g_autofree gchar *url = g_strdup_printf("/a/%s/avatar", escaped);
@@ -2143,6 +2178,47 @@ on_avatar_set(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                   "Profile picture updated.");
 }
 
+/*
+ * The face picker's form: agent.set for whichever of face and color
+ * differs from what the page was drawn with, and only that one.  Both
+ * are checked by the daemon (a face nobody can draw, a colour that is
+ * not hex), whose refusal is shown as the error page says it.
+ */
+static HtmxResponse *
+on_face_save(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autoptr(GPtrArray) keys = clawt_web_face_changes(
+        clawt_web_form_value(request, "saved_face"),
+        clawt_web_form_value(request, "face"),
+        clawt_web_form_value(request, "saved_color"),
+        clawt_web_form_value(request, "color"));
+    guint i;
+
+    for (i = 0; i < keys->len; i++) {
+        const gchar *key = g_ptr_array_index(keys, i);
+        g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+        g_autoptr(JsonNode) reply = NULL;
+
+        clawt_web_payload_set(payload, "agent", agent_id);
+        clawt_web_payload_set(payload, "key", key);
+        clawt_web_payload_set(payload, "value",
+                              clawt_web_form_value(request, key));
+        reply = clawt_web_app_call(
+            app, "agent.set",
+            clawt_web_payload_take(g_steal_pointer(&payload)));
+
+        if (reply == NULL)
+            return clawt_web_error_page(app, request, agent_id,
+                                        CLAWT_PAGE_AGENT,
+                                        clawt_web_app_last_error(app));
+    }
+
+    return clawt_web_after_action(app, request, agent_id, CLAWT_PAGE_AGENT,
+                                  "Face saved.");
+}
+
 static HtmxResponse *
 on_avatar_clear(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -2180,4 +2256,5 @@ clawt_web_register_agent(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_get(router, "/a/:id/avatar", on_avatar_get, app);
     htmx_router_post(router, "/a/:id/avatar/set", on_avatar_set, app);
     htmx_router_post(router, "/a/:id/avatar/clear", on_avatar_clear, app);
+    htmx_router_post(router, "/a/:id/face", on_face_save, app);
 }

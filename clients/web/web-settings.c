@@ -2292,6 +2292,21 @@ appearance_content(HtmxRequest *request)
             "rather than losing it.",
             "small muted"));
 
+        /* faces that move, or still ones (0.53.0); a select, as above */
+        {
+            static const gchar *const face_nicks[] = { "1", "0", NULL };
+            static const gchar *const face_labels[] = {
+                "Blink and watch the pointer", "Still", NULL
+            };
+
+            clawt_web_add(body, clawt_web_select_field(
+                "Faces", "faces", face_nicks, face_labels,
+                look->still_faces ? "0" : "1"));
+            clawt_web_add(body, clawt_web_text(
+                "Faces are also still whenever this browser asks for "
+                "reduced motion.", "small muted"));
+        }
+
         htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(card));
     }
 
@@ -4382,6 +4397,14 @@ on_appearance(HtmxRequest *request, GHashTable *params, gpointer user_data)
                         g_strcmp0(choice, "0") == 0 ? "0" : NULL);
     }
 
+    /* "1" is the default, so it is no cookie at all, as above */
+    {
+        const gchar *faces = clawt_web_form_value(request, "faces");
+
+        set_look_cookie(response, "clawt_faces",
+                        g_strcmp0(faces, "0") == 0 ? "0" : NULL);
+    }
+
     set_look_cookie(response, "clawt_run_gap",
                     clawt_web_form_value(request, "run_gap"));
 
@@ -4404,7 +4427,7 @@ on_appearance_reset(HtmxRequest *request, GHashTable *params,
     static const gchar *const names[] = {
         "clawt_theme", "clawt_font", "clawt_font_size",
         "clawt_mono", "clawt_mono_size",
-        "clawt_measure", "clawt_run_gap", "clawt_agent_desc"
+        "clawt_measure", "clawt_run_gap", "clawt_agent_desc", "clawt_faces"
     };
     guint i;
 
