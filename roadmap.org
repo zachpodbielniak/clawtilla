@@ -409,6 +409,20 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Then (0.50.0):* the plan's scratch agent per test run -- a temporary copy of the named agent with the skill under test alone, never saved, removed when the run settles.
 - *Version:* minor.
 
+** DONE Generated faces that blink and watch the pointer v0.53.0 :clients:agents:
+- *Asked:* automatic profile pictures like the reference's bot faces -- a coloured blob with two eyes that blink, and follow the cursor only while the pointer is over the agent -- with a picker of shapes and colours at creation, keeping picture support; and a new agent born with a random combination.
+- *Done:*
+  - *One geometry* (=src/agent/clawt-face.[ch]=): fourteen original star-shaped polar shapes, eyes that look and blink, a pure per-agent blink schedule, eye colour by contrast, an anti-aliased coverage mask and a safe SVG writer.
+  - *Config and IPC:* ~agents.face~ (a shape, ~initials~, or unset for automatic; an unknown one is a warning, never a shadow). ~agent.create~ / ~agent.set~ check ~face~ and ~color~. ~agent.list~ carries the resolved ~face~, ~face_configured~ and ~color_resolved~. A new agent is given a random shape and palette colour, written down (~clawt_face_pick_random()~ in ~clawt_daemon_create_agent()~).
+  - *Every client* draws picture > face > letter disc, turns the eyes toward the pointer over the agent's row, and has the picker with Shuffle in New agent (opening shuffled) and on the agent page:
+    - GTK: =ClawtGtkFace= with =GskPath=, one idle timeout per face;
+    - libregnum: a cached coverage texture, ~step~ waking the loop around each blink;
+    - web: inline SVG, the blink in CSS, a delegated ~pointermove~.
+  - *Settings:* ~animate_faces~ in ~appearance.yaml~ / the web's ~clawt_faces~ cookie turns the motion off, as do the desktop's animation setting and ~prefers-reduced-motion~.
+  - *CLI:* ~clawtilla agent face~ (show, set, ~random~, ~--list~, ~--svg~); ~agent create --face --color~.
+  - *Tests:* =test-face= (23), =/daemon/face/*=, =/config/face/*=, =/appearance/animate-faces=, =make test-gtk-face= (5), three =test-lrgui-widgets= tests, seven =/web/face/*=, =test-cli-args.sh=, and six parity rows.
+- *Version:* minor.
+
 ** DONE The web client's Alerts tab back in the sidebar v0.52.3 :clients:
 - *Found:* by screenshotting the web client in headless Chromium against a throwaway daemon (the chat, Notifications and Files pages, which render as intended).  The sidebar head held the wordmark and three tabs in one unwrapped row wider than its 17rem column, so *Alerts* -- the only link to the Notifications page -- sat under the main pane with only its count showing at the pane's edge.
 - *Done:* the head wraps, the wordmark on its own line and the tabs under it; the sidebar keeps ~min-width: 0~.  Test: =/web/style/sidebar-head-wraps=.
