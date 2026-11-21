@@ -889,6 +889,25 @@ clawt_gtk_face_picker_set_agent_id(ClawtGtkFacePicker *self,
     gtk_widget_queue_draw(self->swatches);
 }
 
+void
+clawt_gtk_face_picker_shuffle(ClawtGtkFacePicker *self)
+{
+    gint shape;
+    const gchar *color;
+
+    g_return_if_fail(CLAWT_GTK_IS_FACE_PICKER(self));
+
+    clawt_face_pick_random(&shape, &color);
+    clawt_gtk_face_picker_select(self, clawt_face_shape_name(shape), color);
+}
+
+static void
+on_shuffle_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    clawt_gtk_face_picker_shuffle(CLAWT_GTK_FACE_PICKER(user_data));
+}
+
 const gchar *
 clawt_gtk_face_picker_get_face(ClawtGtkFacePicker *self)
 {
@@ -977,10 +996,27 @@ clawt_gtk_face_picker_new(const gchar *agent_id, const gchar *face,
     gtk_stack_add_child(GTK_STACK(self->stack), self->initials);
     gtk_box_append(GTK_BOX(self), self->stack);
 
-    self->caption = gtk_label_new(NULL);
-    gtk_widget_add_css_class(self->caption, "dim-label");
-    gtk_widget_add_css_class(self->caption, "caption");
-    gtk_box_append(GTK_BOX(self), self->caption);
+    /* the caption, and Shuffle beside it: a random shape and colour */
+    {
+        GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget *shuffle = gtk_button_new_from_icon_name(
+            "media-playlist-shuffle-symbolic");
+
+        gtk_widget_set_halign(line, GTK_ALIGN_CENTER);
+        self->caption = gtk_label_new(NULL);
+        gtk_widget_add_css_class(self->caption, "dim-label");
+        gtk_widget_add_css_class(self->caption, "caption");
+        gtk_box_append(GTK_BOX(line), self->caption);
+
+        gtk_widget_add_css_class(shuffle, "flat");
+        gtk_widget_add_css_class(shuffle, "circular");
+        gtk_widget_set_tooltip_text(shuffle, "Shuffle: a random shape and colour");
+        gtk_widget_set_valign(shuffle, GTK_ALIGN_CENTER);
+        g_signal_connect(shuffle, "clicked", G_CALLBACK(on_shuffle_clicked),
+                         self);
+        gtk_box_append(GTK_BOX(line), shuffle);
+        gtk_box_append(GTK_BOX(self), line);
+    }
 
     /* ── Shapes: Automatic, each shape, Initials ── */
     self->shapes = gtk_flow_box_new();

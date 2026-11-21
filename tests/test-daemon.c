@@ -4524,18 +4524,73 @@ test_create_with_a_face(void)
     g_assert_cmpstr(clawt_agent_config_get_string(config, "color"), ==,
                     "#22b573");
 
+    /*
+     * Named nothing: a random shape and a palette colour, written down,
+     * so a new fleet varies and the face it is born with stays.  Twelve
+     * creates are not all one shape -- a stuck generator would be.
+     */
+    {
+        g_autoptr(GHashTable) shapes = g_hash_table_new(g_str_hash,
+                                                        g_str_equal);
+        guint n;
+
+        for (n = 0; n < 12; n++) {
+            g_autofree gchar *id = g_strdup_printf("fresh%u", n);
+            g_autofree gchar *json = g_strdup_printf(
+                "{\"id\":\"%s\",\"start\":false}", id);
+            g_autoptr(JsonNode) fresh = request(&fixture, "agent.create",
+                                                json);
+            ClawtAgentConfig *made;
+            const gchar *face;
+            const gchar *color;
+            gboolean in_palette = FALSE;
+            guint p;
+
+            g_assert_false(clawt_ipc_frame_is_error(fresh));
+            made = clawt_config_get_agent(
+                clawt_daemon_get_config(fixture.daemon), id);
+            g_assert_nonnull(made);
+            face = clawt_agent_config_get_string(made, "face");
+            color = clawt_agent_config_get_string(made, "color");
+            g_assert_cmpint(clawt_face_shape_lookup(face), >=, 0);
+            for (p = 0; p < CLAWT_FACE_PALETTE_SIZE; p++)
+                if (g_strcmp0(color, clawt_face_palette_color(p)) == 0)
+                    in_palette = TRUE;
+            g_assert_true(in_palette);
+            g_hash_table_add(shapes, (gpointer)clawt_face_shape_name(
+                                 clawt_face_shape_lookup(face)));
+        }
+        g_assert_cmpuint(g_hash_table_size(shapes), >, 1);
+    }
+
+    /* an explicit "" is "automatic", not "pick for me": left as given */
+    {
+        g_autoptr(JsonNode) automatic = request(
+            &fixture, "agent.create",
+            "{\"id\":\"auto1\",\"face\":\"\",\"color\":\"\","
+            "\"start\":false}");
+
+        g_assert_false(clawt_ipc_frame_is_error(automatic));
+        g_assert_true(clawt_face_value_is_valid(clawt_agent_config_get_string(
+            clawt_config_get_agent(clawt_daemon_get_config(fixture.daemon), "auto1"), "face")));
+        g_assert_cmpint(clawt_face_shape_lookup(clawt_agent_config_get_string(
+            clawt_config_get_agent(clawt_daemon_get_config(fixture.daemon), "auto1"), "face")), ==, -2);
+    }
+
     bad_face = request(&fixture, "agent.create",
                        "{\"id\":\"ghost\",\"face\":\"hexagon\","
                        "\"start\":false}");
     g_assert_nonnull(strstr(error_text(bad_face), "hexagon"));
     g_assert_nonnull(strstr(error_text(bad_face), "squircle"));
-    g_assert_null(clawt_config_get_agent(root, "ghost"));
+    g_assert_null(clawt_config_get_agent(
+        clawt_daemon_get_config(fixture.daemon), "ghost"));
 
     bad_color = request(&fixture, "agent.create",
                         "{\"id\":\"ghost\",\"color\":"
                         "\"red\\\"><script>\",\"start\":false}");
     g_assert_nonnull(strstr(error_text(bad_color), "colour"));
-    g_assert_null(clawt_config_get_agent(root, "ghost"));
+    g_assert_null(clawt_config_get_agent(
+        clawt_daemon_get_config(fixture.daemon), "ghost"));
 
     fixture_teardown(&fixture);
 }

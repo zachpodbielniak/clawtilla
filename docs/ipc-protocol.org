@@ -505,7 +505,7 @@ Every agent in ~agent.list~ and ~agent.show~ carries three members for its gener
 
 ~face~ is resolved by the daemon rather than by each client, so a client built against an older or newer shape table still draws what this daemon decided. A client that does not know the name it is sent draws the letter disc. ~has_avatar~ still wins: a picture is drawn instead of any face.
 
-~agent.create~ takes ~face~ and ~color~ beside its other fields. ~agent.set~ takes them as the keys ~face~ and ~color~. Both are checked where they arrive, and a refused value writes nothing (and creates no agent):
+~agent.create~ takes ~face~ and ~color~ beside its other fields. A request that leaves either out gets a random one, written to the config (~design.commit~ too): a new agent is born with a random shape and palette colour. Send ~""~ to ask for the automatic one instead. ~agent.set~ takes them as the keys ~face~ and ~color~. Both are checked where they arrive, and a refused value writes nothing (and creates no agent):
 
 - ~face~ must be a shape name, ~initials~, or empty for the automatic face. The refusal lists every shape.
 - ~color~ must be ~#rgb~ or ~#rrggbb~, or empty for the derived tone. It is written into the web client's markup, so nothing else is stored.

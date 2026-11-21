@@ -560,6 +560,8 @@ typedef struct {
     gboolean is_color;
 } PickerChoice;
 
+static void on_shuffle_clicked(LrgButton *button, gpointer user_data);
+
 static void
 picker_free(gpointer data)
 {
@@ -897,10 +899,20 @@ clawt_lrg_face_picker_new(const gchar *agent_id, const gchar *face,
     g_object_ref(picker->initials);
     clawt_lrg_take(box, picker->initials);
 
-    picker->caption = clawt_lrg_label("", "muted");
-    lrg_widget_set_halign(picker->caption, LRG_ALIGN_CENTER);
-    g_object_ref(picker->caption);
-    clawt_lrg_take(box, picker->caption);
+    /* the caption, and Shuffle beside it: a random shape and colour */
+    {
+        LrgWidget *line = clawt_lrg_hbox(8.0f);
+
+        lrg_widget_set_halign(line, LRG_ALIGN_CENTER);
+        picker->caption = clawt_lrg_label("", "muted");
+        lrg_widget_set_valign(picker->caption, LRG_ALIGN_CENTER);
+        g_object_ref(picker->caption);
+        clawt_lrg_take(line, picker->caption);
+        clawt_lrg_take(line, clawt_lrg_button("Shuffle", "flat",
+                                              G_CALLBACK(on_shuffle_clicked),
+                                              box));
+        clawt_lrg_take(box, line);
+    }
 
     /* ── Shapes: automatic, each shape, initials; PICKER_PER_ROW a row ── */
     for (i = 0; i <= clawt_face_shape_count() + 1; i++) {
@@ -995,6 +1007,23 @@ clawt_lrg_face_picker_select(LrgWidget *widget, const gchar *face,
     picker_refresh(picker);
     if (picker->func != NULL)
         picker->func(picker->func_data, picker->face, picker->color);
+}
+
+void
+clawt_lrg_face_picker_shuffle(LrgWidget *widget)
+{
+    gint shape;
+    const gchar *color;
+
+    clawt_face_pick_random(&shape, &color);
+    clawt_lrg_face_picker_select(widget, clawt_face_shape_name(shape), color);
+}
+
+static void
+on_shuffle_clicked(LrgButton *button, gpointer user_data)
+{
+    (void)button;
+    clawt_lrg_face_picker_shuffle(LRG_WIDGET(user_data));
 }
 
 const gchar *

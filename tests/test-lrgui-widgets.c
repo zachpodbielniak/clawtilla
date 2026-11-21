@@ -957,6 +957,21 @@ test_face_picker_choice(void)
     g_assert_cmpstr(clawt_lrg_face_picker_get_face(picker), ==, "initials");
     g_assert_cmpstr(clawt_lrg_face_picker_get_color(picker), ==, "");
 
+    /* shuffle: always a real shape and a palette colour, announced */
+    {
+        guint before = picked;
+        guint n;
+
+        for (n = 0; n < 20; n++) {
+            clawt_lrg_face_picker_shuffle(picker);
+            g_assert_cmpint(clawt_face_shape_lookup(
+                                clawt_lrg_face_picker_get_face(picker)), >=, 0);
+            g_assert_nonnull(clawt_color_ink(
+                clawt_lrg_face_picker_get_color(picker)));
+        }
+        g_assert_cmpuint(picked, ==, before + 20);
+    }
+
     clawt_lrg_face_picker_select(picker, "", NULL);
     clawt_lrg_face_picker_set_agent_id(picker, "another-agent");
     g_assert_cmpint(

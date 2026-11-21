@@ -239,6 +239,21 @@ test_picker_choice(void)
         clawt_gtk_face_get_shape(clawt_gtk_face_picker_get_preview(p)), ==,
         clawt_face_resolve("another-agent", NULL));
 
+    /* shuffle: always a real shape and a palette colour, announced */
+    {
+        guint before = changed;
+        guint n;
+
+        for (n = 0; n < 20; n++) {
+            clawt_gtk_face_picker_shuffle(p);
+            g_assert_cmpint(clawt_face_shape_lookup(
+                                clawt_gtk_face_picker_get_face(p)), >=, 0);
+            g_assert_nonnull(clawt_color_ink(
+                clawt_gtk_face_picker_get_color(p)));
+        }
+        g_assert_cmpuint(changed, ==, before + 20);
+    }
+
     /* building with a saved choice does not announce a change */
     {
         guint quiet = 0;

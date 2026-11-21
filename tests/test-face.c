@@ -678,6 +678,37 @@ test_eye_color(void)
     g_assert_null(clawt_face_palette_color(CLAWT_FACE_PALETTE_SIZE));
 }
 
+/*
+ * A random face is always a real shape and a palette colour, and over
+ * many draws covers the table -- a new fleet that came out all one
+ * shape would mean the generator was not reaching every index.
+ */
+static void
+test_pick_random(void)
+{
+    guint seen[64] = { 0 };
+    guint used = 0;
+    guint i;
+
+    for (i = 0; i < 2000; i++) {
+        gint shape = -1;
+        const gchar *color = NULL;
+
+        clawt_face_pick_random(&shape, &color);
+        g_assert_cmpint(shape, >=, 0);
+        g_assert_cmpint(shape, <, (gint)clawt_face_shape_count());
+        g_assert_nonnull(clawt_color_ink(color));
+        seen[shape]++;
+    }
+    for (i = 0; i < clawt_face_shape_count(); i++)
+        if (seen[i] > 0)
+            used++;
+    g_assert_cmpuint(used, ==, clawt_face_shape_count());
+
+    /* either out may be skipped */
+    clawt_face_pick_random(NULL, NULL);
+}
+
 /* ── SVG ──────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -849,6 +880,7 @@ main(int argc, char **argv)
     g_test_add_func("/face/blink/not-in-step", test_blink_not_in_step);
     g_test_add_func("/face/blink/next", test_next_blink);
     g_test_add_func("/face/eye-color", test_eye_color);
+    g_test_add_func("/face/pick-random", test_pick_random);
     g_test_add_func("/face/svg/shape", test_svg);
     g_test_add_func("/face/svg/refuses-bad-fill", test_svg_refuses_bad_fill);
     g_test_add_func("/face/svg/locale", test_svg_locale);

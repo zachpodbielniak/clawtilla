@@ -7119,6 +7119,26 @@ clawt_daemon_create_agent(ClawtDaemon  *self,
     }
 
     /*
+     * A new agent with no face or colour named gets a random one of each,
+     * written to its config (0.53.0).  Here rather than in agent.create,
+     * so an agent drafted by "Design it" (design.commit) gets one too:
+     * whichever client or script made it, a new fleet is not a row of one
+     * shape, and the face it is born with is the face it keeps.  An
+     * explicit empty value still means "automatic" and is left alone.
+     */
+    {
+        gint shape;
+        const gchar *color;
+
+        clawt_face_pick_random(&shape, &color);
+        if (fields == NULL || !g_hash_table_contains(fields, "face"))
+            clawt_agent_config_set_from_string(created, "face",
+                                               clawt_face_shape_name(shape));
+        if (fields == NULL || !g_hash_table_contains(fields, "color"))
+            clawt_agent_config_set_from_string(created, "color", color);
+    }
+
+    /*
      * The persona, into SOUL.org, before the save below reloads and
      * scaffolds every agent from the templates.
      *

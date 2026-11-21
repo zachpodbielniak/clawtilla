@@ -915,6 +915,8 @@ build_by_hand(NewAgent *dialog)
      */
     dialog->face_picker = clawt_lrg_face_picker_new(NULL, NULL, NULL, NULL,
                                                     NULL);
+    /* a new agent starts on a random face, as the daemon would give it */
+    clawt_lrg_face_picker_shuffle(dialog->face_picker);
     clawt_lrg_take(body, dialog->face_picker);
 
     dialog->id = clawt_lrg_entry(NULL, "researcher");

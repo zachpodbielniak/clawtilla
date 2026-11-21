@@ -670,6 +670,20 @@ clawt_face_palette_color(guint index)
     return face_palette[index];
 }
 
+void
+clawt_face_pick_random(gint *shape, const gchar **color)
+{
+    /*
+     * g_random: a process-wide generator seeded from the system, which
+     * is all this needs -- nothing about a face is secret, it only has
+     * to differ from the last one.
+     */
+    if (shape != NULL)
+        *shape = g_random_int_range(0, (gint32)FACE_SHAPE_COUNT);
+    if (color != NULL)
+        *color = face_palette[g_random_int_range(0, CLAWT_FACE_PALETTE_SIZE)];
+}
+
 /* ── SVG ──────────────────────────────────────────────────────────── */
 
 /* A number in the C locale: a decimal comma would end the path there. */

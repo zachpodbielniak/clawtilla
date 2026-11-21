@@ -389,6 +389,19 @@ const gchar *clawt_face_eye_color(const gchar *fill);
 const gchar *clawt_face_palette_color(guint index);
 
 /**
+ * clawt_face_pick_random:
+ * @shape: (out) (optional): a shape index, uniformly at random
+ * @color: (out) (optional) (transfer none): one of the palette colours,
+ *   uniformly at random
+ *
+ * A random face for a new agent.  agent.create stores one when the
+ * request names no face or colour, and the create dialogs preselect one
+ * (with a Shuffle button), so a new fleet is not a row of the same
+ * shape -- and the choice is written down, so it never changes after.
+ */
+void clawt_face_pick_random(gint *shape, const gchar **color);
+
+/**
  * clawt_face_svg:
  * @shape: a shape index
  * @fill: the face's colour; must pass clawt_color_ink()

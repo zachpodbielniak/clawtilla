@@ -252,6 +252,16 @@ void clawt_gtk_face_picker_select(ClawtGtkFacePicker *self,
                                   const gchar        *color);
 
 /**
+ * clawt_gtk_face_picker_shuffle:
+ * @self: a picker
+ *
+ * Selects a random shape and palette colour (clawt_face_pick_random()),
+ * as the Shuffle button does and as the New agent dialog does when it
+ * opens.
+ */
+void clawt_gtk_face_picker_shuffle(ClawtGtkFacePicker *self);
+
+/**
  * clawt_gtk_face_picker_get_preview:
  * @self: a picker
  *

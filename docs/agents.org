@@ -992,6 +992,10 @@ The table in ~clawt-face.c~ is append-only. An automatic face is picked by /inde
 
 *** Which face an agent gets
 
+*A new agent gets a random face.* Creating an agent -- from any client's New agent dialog, ~clawtilla agent create~, ~agent.create~ or "Design it" (~design.commit~) -- writes a random shape and a random palette colour into its config when the request names neither (~clawt_face_pick_random()~, applied in ~clawt_daemon_create_agent()~). The face is written down rather than recomputed, so the face an agent is born with is the face it keeps, and a new fleet is not a row of one shape. The create dialogs show that random choice before Create, with a *Shuffle* button for another. An explicit empty ~face~ or ~color~ still means automatic, below.
+
+Agents that existed before 0.53.0, and any whose ~face~ is unset or empty, get their face this way:
+
 ~clawt_face_resolve()~ decides, in this order:
 
 1. A shape named in ~agents.face~ -- matched ignoring case and surrounding space, since it is typed into YAML by hand.

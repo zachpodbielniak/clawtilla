@@ -3871,6 +3871,10 @@ clawt_gtk_on_new_agent(GtkButton *button, gpointer user_data)
         GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
 
         dialog->face_picker = clawt_gtk_face_picker_new(NULL, NULL, NULL);
+
+        /* a new agent starts on a random face, as the daemon would give it */
+        clawt_gtk_face_picker_shuffle(
+            CLAWT_GTK_FACE_PICKER(dialog->face_picker));
         gtk_box_append(GTK_BOX(box), dialog->face_picker);
 
         dialog->picture_button =

@@ -577,6 +577,9 @@ void         clawt_lrg_face_picker_set_agent_id(LrgWidget   *picker,
 void         clawt_lrg_face_picker_select(LrgWidget   *picker,
                                           const gchar *face,
                                           const gchar *color);
+/* A random shape and palette colour (clawt_face_pick_random()), as the
+ * Shuffle button does and New agent does when it opens. */
+void         clawt_lrg_face_picker_shuffle(LrgWidget *picker);
 const gchar *clawt_lrg_face_picker_get_face(LrgWidget *picker);
 const gchar *clawt_lrg_face_picker_get_color(LrgWidget *picker);
 LrgWidget   *clawt_lrg_face_picker_get_preview(LrgWidget *picker);

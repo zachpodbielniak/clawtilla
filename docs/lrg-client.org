@@ -1169,7 +1169,7 @@ The eyes follow the pointer over the face itself, and in the sidebar over the wh
 
 =clawt_lrg_face_picker_new()= is the New agent dialog's top section and the Overview's Face card:
 
-- a preview at 80 px that blinks and watches the pointer;
+- a preview at 80 px that blinks and watches the pointer, with the shape's name and a *Shuffle* button under it (New agent opens already shuffled);
 - a grid of tiles -- automatic, the fourteen shapes and /Aa/ -- each a face that is also a button;
 - the automatic tone and the twelve palette colours as dots, with a ring round the chosen tile and dot.
 
