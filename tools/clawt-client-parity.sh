@@ -97,9 +97,9 @@ declare -A GTK_MAY_LACK=(
     ["agent.file_write"]="the other half of the same; \$EDITOR writes the file directly"
     ["browser.list"]="the Browser view's line comes from browser.frame's reply here; the web client reads browser.list for it because its picture is a separate request, and two frames per poll would be two screenshots"
     ["connector.app_call"]="an MCP app's own tools/call comes from its view, and only the web client can draw a view; GTK's Open ... in the browser link opens the web client's page of the same app, where the call is made (docs/connectors.org, \"Apps in chat\")"
-    ["office.layout"]="same capability, different process: GTK draws the office through clawtilla-office (OFFICE=1), which asks the daemon for the layout itself; the web client has no such process, so its page asks (docs/web-client.org, \"The drawn office\")"
-    ["office.world"]="the other half of the same: clawtilla-office reads the pack; the web page embeds it"
-    ["office.file"]="the same again: clawtilla-office reads pack files from disk or the daemon; the web page inlines the map and tileset it draws"
+    ["office.layout"]="same capability, different process: GTK draws the office through clawtilla-office, whose feed (clients/office/office-feed.c) asks the daemon for the layout itself; the web client has no such process, so its page asks (docs/web-client.org, \"The drawn office\")"
+    ["office.world"]="the other half of the same: clawtilla-office's feed reads the world; the web page embeds it"
+    ["office.file"]="the same again: clawtilla-office's feed fetches pack files over office.file; the web page inlines the map and tileset it draws"
 )
 
 #
@@ -1223,9 +1223,9 @@ declare -A LRG_MAY_LACK=(
     ["agent.file_write"]="the other half of the same; \$EDITOR writes the file directly"
     ["browser.list"]="the Browser view's line comes from browser.frame's reply here, as in GTK; the web client reads browser.list because its picture is a separate request"
     ["connector.app_call"]="as in GTK: an app's own call comes from its view, which only the web client draws; lrg links to the web client's page of the app, where the call is made"
-    ["office.layout"]="as in GTK: lrg draws the office with the libregnum renderer in an OFFICE=1 build, which asks for the layout itself; the web client's canvas is its own renderer, so its page asks"
-    ["office.world"]="the other half of the same: the renderer reads the pack; the web page embeds it"
-    ["office.file"]="the same again: the renderer reads pack files itself; the web page inlines the map and tileset it draws"
+    ["office.layout"]="as in GTK: lrg draws the office in an OFFICE=1 build with the scene and feed it shares with clawtilla-office (clients/office/), and the feed asks for the layout; the web client's canvas is its own renderer, so its page asks"
+    ["office.world"]="the other half of the same: the shared feed reads the world; the web page embeds it"
+    ["office.file"]="the same again: the shared feed fetches pack files over office.file; the web page inlines the map and tileset it draws"
 )
 
 #

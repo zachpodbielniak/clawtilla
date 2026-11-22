@@ -17,6 +17,7 @@
 #include "core/clawt-daemon-private.h"
 
 #include <string.h>
+#include <unistd.h>
 
 #define T0 ((gint64)1800000000)
 
@@ -502,6 +503,81 @@ test_daemon_office(void)
     clawt_test_remove_tree(dir);
 }
 
+/*
+ * office.file serves a pack's own files and nothing a link in the pack
+ * points at: packs are written by agents, and a lexical containment check
+ * read a link to anywhere as a file inside the pack.
+ */
+static void
+test_daemon_file_stays_in_the_pack(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-office-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "config.yaml", NULL);
+    g_autofree gchar *worlds = g_build_filename(dir, "worlds", NULL);
+    g_autofree gchar *pack = g_build_filename(worlds, "good", NULL);
+    g_autofree gchar *secret = g_build_filename(dir, "secret.txt", NULL);
+    g_autofree gchar *link = g_build_filename(pack, "leak.txt", NULL);
+    g_autofree gchar *yaml = g_strdup_printf(
+        "daemon:\n  tailscale: false\n  state_dir: \"%s/state\"\n"
+        "  socket: \"%s/d.sock\"\n  automation_dir: \"%s/pods\"\n"
+        "defaults:\n  workspace_root: \"%s/agents\"\n"
+        "office:\n  enabled: true\n  world: good\n  world_dirs: [\"%s\"]\n",
+        dir, dir, dir, dir, worlds);
+    GMainContext *context = g_main_context_new();
+    ClawtDaemon *daemon;
+    static const gchar *const files[] = { "office.yaml", "map.tmj", "choreography.yaml", NULL };
+    guint i;
+
+    /* a copy of the good fixture pack, and a link in it to a file outside */
+    g_assert_cmpint(g_mkdir_with_parents(pack, 0700), ==, 0);
+    for (i = 0; files[i] != NULL; i++) {
+        g_autofree gchar *from = g_build_filename(CLAWT_TEST_FIXTURES, "office", "good",
+                                                  files[i], NULL);
+        g_autofree gchar *to = g_build_filename(pack, files[i], NULL);
+        g_autofree gchar *data = NULL;
+        gsize length = 0;
+
+        g_assert_true(g_file_get_contents(from, &data, &length, NULL));
+        g_assert_true(g_file_set_contents(to, data, (gssize)length, NULL));
+    }
+    g_assert_true(g_file_set_contents(secret, "not the pack's", -1, NULL));
+    g_assert_cmpint(symlink(secret, link), ==, 0);
+
+    g_assert_true(g_file_set_contents(path, yaml, -1, &error));
+    daemon = clawt_daemon_new(path, context);
+    clawt_daemon_start(daemon, &error);
+    g_assert_no_error(error);
+
+    {
+        g_autoptr(JsonNode) frame = clawt_ipc_request_new("office.file", "t1");
+        g_autoptr(JsonNode) reply = NULL;
+
+        clawt_ipc_frame_set_payload(frame, clawt_ipc_payload_new("world", "good",
+                                                                 "path", "leak.txt", NULL));
+        reply = clawt_daemon_handle_request(daemon, frame);
+        g_assert_true(clawt_ipc_frame_is_error(reply));
+    }
+    {
+        g_autoptr(JsonNode) frame = clawt_ipc_request_new("office.file", "t2");
+        g_autoptr(JsonNode) reply = NULL;
+
+        clawt_ipc_frame_set_payload(frame, clawt_ipc_payload_new("world", "good",
+                                                                 "path", "map.tmj", NULL));
+        reply = clawt_daemon_handle_request(daemon, frame);
+        g_assert_false(clawt_ipc_frame_is_error(reply));
+        g_assert_nonnull(json_object_get_string_member(clawt_ipc_frame_get_payload(reply),
+                                                       "base64"));
+    }
+
+    clawt_daemon_stop(daemon);
+    g_object_unref(daemon);
+    while (g_main_context_iteration(context, FALSE))
+        ;
+    g_main_context_unref(context);
+    clawt_test_remove_tree(dir);
+}
+
 gint
 main(gint argc, gchar *argv[])
 {
@@ -519,6 +595,7 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office/choreography-layers", test_choreography_layers);
     g_test_add_func("/office/director-places", test_director_places);
     g_test_add_func("/office/daemon", test_daemon_office);
+    g_test_add_func("/office/daemon-file-stays-in-the-pack", test_daemon_file_stays_in_the_pack);
 
     return g_test_run();
 }

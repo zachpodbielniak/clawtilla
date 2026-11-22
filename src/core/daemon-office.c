@@ -25,6 +25,8 @@
  */
 
 #include "clawtilla.h"
+
+#include <stdlib.h>
 #include "core/clawt-daemon-private.h"
 
 #include <glib/gstdio.h>
@@ -695,10 +697,24 @@ clawt_daemon_handle_office(ClawtDaemon *self,
         if (relative == NULL || g_path_is_absolute(relative))
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
                                        "a path inside the pack is required");
+        /*
+         * Resolved by the kernel, both ends: g_canonicalize_filename() is
+         * lexical, so a symbolic link planted in a pack -- packs are
+         * written by agents -- would have served any file the daemon can
+         * read.  The same rule clawt_office_pack_write_file() applies.
+         */
         full = g_build_filename(clawt_office_world_get_directory(world), relative, NULL);
-        canonical = g_canonicalize_filename(full, NULL);
-        root = g_strconcat(clawt_office_world_get_directory(world), G_DIR_SEPARATOR_S, NULL);
-        if (!g_str_has_prefix(canonical, root))
+        canonical = realpath(full, NULL);
+        {
+            g_autofree gchar *pack_real = realpath(clawt_office_world_get_directory(world),
+                                                   NULL);
+
+            root = pack_real != NULL ? g_strconcat(pack_real, G_DIR_SEPARATOR_S, NULL) : NULL;
+        }
+        if (canonical == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "the pack has no such file");
+        if (root == NULL || !g_str_has_prefix(canonical, root))
             return clawt_ipc_error_new(request, CLAWT_ERROR_PERMISSION_DENIED,
                                        "that path is outside the pack");
         if (!g_file_get_contents(canonical, &data, &length, &error))
