@@ -211,6 +211,123 @@ test_import_asset(void)
     clawt_test_remove_tree(root);
 }
 
+/* ── Characters ─────────────────────────────────────────────────── */
+
+/* A PNG's signature and IHDR: all the size check reads. */
+static void
+write_png_header(const gchar *path, guint width, guint height)
+{
+    guchar bytes[33] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n',
+                         0, 0, 0, 13, 'I', 'H', 'D', 'R' };
+
+    bytes[16] = (guchar)(width >> 24);
+    bytes[17] = (guchar)(width >> 16);
+    bytes[18] = (guchar)(width >> 8);
+    bytes[19] = (guchar)width;
+    bytes[20] = (guchar)(height >> 24);
+    bytes[21] = (guchar)(height >> 16);
+    bytes[22] = (guchar)(height >> 8);
+    bytes[23] = (guchar)height;
+    bytes[24] = 8;
+    bytes[25] = 6;
+    g_assert_true(g_file_set_contents(path, (const gchar *)bytes, sizeof(bytes), NULL));
+}
+
+static JsonObject *
+json_of(const gchar *text)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+
+    g_assert_true(json_parser_load_from_data(parser, text, -1, NULL));
+    return json_object_ref(json_node_get_object(json_parser_get_root(parser)));
+}
+
+/*
+ * A sheet is described only after it is imported, and only as far as it
+ * goes: a row or a frame past the image is refused, so a renderer can
+ * never read outside it; a refusal leaves the manifest as it was.
+ */
+static void
+test_character_layout(void)
+{
+    g_autofree gchar *root = g_dir_make_tmp("clawt-chars-XXXXXX", NULL);
+    g_autofree gchar *source = g_build_filename(root, "sheet.png", NULL);
+    g_autofree gchar *kudu = g_build_filename(root, "kudu", NULL);
+    g_autoptr(JsonObject) good = json_of(
+        "{\"idle\":{\"row\":0,\"frames\":1},\"walk_down\":{\"row\":1,\"frames\":4,\"fps\":8}}");
+    g_autoptr(JsonObject) past_row = json_of("{\"idle\":{\"row\":6,\"frames\":1}}");
+    g_autoptr(JsonObject) past_frames = json_of("{\"idle\":{\"row\":0,\"frames\":5}}");
+    g_autoptr(JsonObject) bad_name = json_of("{\"Idle!\":{\"row\":0,\"frames\":1}}");
+    g_autoptr(JsonObject) none = json_of("{}");
+    g_autoptr(ClawtOfficeCharacter) loaded = NULL;
+    g_autoptr(GError) error = NULL;
+    guint w = 0;
+    guint h = 0;
+
+    write_png_header(source, 128, 288);
+    g_assert_true(clawt_office_png_size(source, &w, &h));
+    g_assert_cmpuint(w, ==, 128);
+    g_assert_cmpuint(h, ==, 288);
+
+    /* nothing imported yet: nothing to describe */
+    g_assert_false(clawt_office_character_set_sheet(root, "kudu", "sprites/sheet.png", 32, 48,
+                                                    good, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND);
+    g_clear_error(&error);
+
+    g_assert_true(clawt_office_character_import_asset(root, "kudu", source,
+                                                      "sprites/sheet.png", "CC0-1.0",
+                                                      "drawn for a test", NULL, &error));
+    g_assert_no_error(error);
+
+    /* each refusal names its reason and writes nothing */
+    g_assert_false(clawt_office_character_set_sheet(root, "kudu", "sprites/sheet.png", 32, 48,
+                                                    past_row, &error));
+    g_assert_nonnull(strstr(error->message, "runs past"));
+    g_clear_error(&error);
+    g_assert_false(clawt_office_character_set_sheet(root, "kudu", "sprites/sheet.png", 32, 48,
+                                                    past_frames, &error));
+    g_clear_error(&error);
+    g_assert_false(clawt_office_character_set_sheet(root, "kudu", "sprites/sheet.png", 32, 48,
+                                                    bad_name, &error));
+    g_clear_error(&error);
+    g_assert_false(clawt_office_character_set_sheet(root, "kudu", "sprites/sheet.png", 32, 48,
+                                                    none, &error));
+    g_clear_error(&error);
+    g_assert_false(clawt_office_character_set_sheet(root, "kudu", "../sheet.png", 32, 48,
+                                                    good, &error));
+    g_clear_error(&error);
+    g_assert_false(clawt_office_character_set_sheet(root, "../kudu", "sprites/sheet.png", 32,
+                                                    48, good, &error));
+    g_clear_error(&error);
+    loaded = clawt_office_character_load(kudu, &error);
+    g_assert_no_error(error);
+    g_assert_null(loaded->sheet);
+    g_clear_pointer(&loaded, clawt_office_character_free);
+
+    /* a good one, read back with the checksum the import recorded */
+    g_assert_true(clawt_office_character_set_sheet(root, "kudu", "sprites/sheet.png", 32, 48,
+                                                   good, &error));
+    g_assert_no_error(error);
+    loaded = clawt_office_character_load(kudu, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(loaded->sheet, ==, "sprites/sheet.png");
+    g_assert_nonnull(loaded->sheet_sha256);
+    g_assert_cmpuint(loaded->frame_width, ==, 32);
+    g_assert_cmpuint(loaded->frame_height, ==, 48);
+    g_assert_cmpuint(loaded->animations->len, ==, 2);
+    {
+        g_autoptr(JsonNode) json = clawt_office_character_to_json(loaded);
+        JsonObject *animations = json_object_get_object_member(json_node_get_object(json),
+                                                               "animations");
+
+        g_assert_cmpint(json_object_get_int_member(
+            json_object_get_object_member(animations, "walk_down"), "frames"), ==, 4);
+    }
+
+    clawt_test_remove_tree(root);
+}
+
 /* ── The daemon ─────────────────────────────────────────────────── */
 
 typedef struct {
@@ -529,6 +646,78 @@ test_no_generator_no_character(void)
     daemon_teardown(&fixture);
 }
 
+/* office.characters lists a whole character only; office.character_file stays inside. */
+static void
+test_daemon_characters(void)
+{
+    DaemonFixture fixture = { 0 };
+    g_autofree gchar *chars = NULL;
+    g_autofree gchar *source = NULL;
+    g_autofree gchar *secret = NULL;
+    g_autofree gchar *link = NULL;
+    g_autoptr(JsonObject) layout = json_of("{\"idle\":{\"row\":0,\"frames\":1}}");
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) list = NULL;
+    JsonArray *characters;
+
+    daemon_setup(&fixture, "");
+    chars = clawt_daemon_office_characters_dir(fixture.daemon);
+    source = g_build_filename(fixture.dir, "sheet.png", NULL);
+    write_png_header(source, 64, 96);
+
+    /* imported, not described: not listed yet */
+    g_assert_true(clawt_office_character_import_asset(chars, "kudu", source, "sheet.png",
+                                                      NULL, "test", NULL, &error));
+    {
+        g_autoptr(JsonNode) frame = clawt_ipc_request_new("office.characters", "c1");
+
+        list = clawt_daemon_handle_request(fixture.daemon, frame);
+        characters = json_object_get_array_member(clawt_ipc_frame_get_payload(list),
+                                                   "characters");
+        g_assert_cmpuint(json_array_get_length(characters), ==, 0);
+        g_clear_pointer(&list, json_node_unref);
+    }
+
+    g_assert_true(clawt_office_character_set_sheet(chars, "kudu", "sheet.png", 32, 48, layout,
+                                                   &error));
+    {
+        g_autoptr(JsonNode) frame = clawt_ipc_request_new("office.characters", "c2");
+
+        list = clawt_daemon_handle_request(fixture.daemon, frame);
+        characters = json_object_get_array_member(clawt_ipc_frame_get_payload(list),
+                                                   "characters");
+        g_assert_cmpuint(json_array_get_length(characters), ==, 1);
+        g_assert_cmpstr(json_object_get_string_member(
+            json_array_get_object_element(characters, 0), "agent"), ==, "kudu");
+    }
+
+    /* a link in a character does not reach outside it */
+    secret = g_build_filename(fixture.dir, "secret.txt", NULL);
+    g_assert_true(g_file_set_contents(secret, "not the character's", -1, NULL));
+    link = g_build_filename(chars, "kudu", "leak.txt", NULL);
+    g_assert_cmpint(symlink(secret, link), ==, 0);
+    {
+        g_autoptr(JsonNode) frame = clawt_ipc_request_new("office.character_file", "c3");
+        g_autoptr(JsonNode) reply = NULL;
+
+        clawt_ipc_frame_set_payload(frame, clawt_ipc_payload_new("agent", "kudu",
+                                                                 "path", "leak.txt", NULL));
+        reply = clawt_daemon_handle_request(fixture.daemon, frame);
+        g_assert_true(clawt_ipc_frame_is_error(reply));
+    }
+    {
+        g_autoptr(JsonNode) frame = clawt_ipc_request_new("office.character_file", "c4");
+        g_autoptr(JsonNode) reply = NULL;
+
+        clawt_ipc_frame_set_payload(frame, clawt_ipc_payload_new("agent", "kudu",
+                                                                 "path", "sheet.png", NULL));
+        reply = clawt_daemon_handle_request(fixture.daemon, frame);
+        g_assert_false(clawt_ipc_frame_is_error(reply));
+    }
+    g_clear_pointer(&list, json_node_unref);
+    daemon_teardown(&fixture);
+}
+
 gint
 main(gint argc, gchar *argv[])
 {
@@ -539,6 +728,7 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office-custodial/link-does-not-escape", test_link_does_not_escape);
     g_test_add_func("/office-custodial/fork", test_fork);
     g_test_add_func("/office-custodial/import-asset", test_import_asset);
+    g_test_add_func("/office-custodial/character-layout", test_character_layout);
     g_test_add_func("/office-custodial/tools-gated", test_tools_gated);
     g_test_add_func("/office-custodial/write-copies-under-state", test_write_copies_under_state);
     g_test_add_func("/office-custodial/import-only-from-own-workspace",
@@ -547,6 +737,7 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office-custodial/commission-character", test_commission_character);
     g_test_add_func("/office-custodial/no-generator-no-character",
                     test_no_generator_no_character);
+    g_test_add_func("/office-custodial/daemon-characters", test_daemon_characters);
 
     return g_test_run();
 }

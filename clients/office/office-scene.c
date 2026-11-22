@@ -25,6 +25,7 @@
 #include <libregnum.h>
 #include <raylib.h>
 #include <rlgl.h>
+#include <gmodule.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -123,6 +124,11 @@ struct _ClawtOfficeScene {
     gchar                *status;
     gchar                *hovered;
     JsonObject           *usage;      /* usage.providers, for the board */
+    LrgWorldAdapter      *adapter;    /* a world adapter drawing the office, or NULL */
+    gchar                *adapter_name;
+    GModule              *adapter_module;
+    GHashTable           *handles;    /* id -> the adapter's actor handle */
+    GStrv                 adapter_dirs;
     gboolean              has_board;
     gfloat                board_x;    /* the usage_board's first anchor */
     gfloat                board_y;
@@ -197,6 +203,7 @@ clawt_office_scene_new(void)
     self->beams = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
     self->sheets = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                          (GDestroyNotify)sheet_free);
+    self->handles = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     self->tile = 32.0f;
     self->person_scale = PERSON_SCALE;
     self->orbit = 0.65f;
@@ -225,6 +232,11 @@ clawt_office_scene_free(ClawtOfficeScene *self)
     g_free(self->status);
     g_free(self->hovered);
     g_clear_pointer(&self->usage, json_object_unref);
+    g_hash_table_unref(self->handles);
+    g_clear_object(&self->adapter);
+    g_free(self->adapter_name);
+    /* the module stays loaded: an adapter's types are registered for good */
+    g_strfreev(self->adapter_dirs);
     g_free(self);
 }
 
@@ -260,6 +272,119 @@ zone_anchor(JsonObject *world, const gchar *tag, gfloat *x, gfloat *y)
         }
     }
     return FALSE;
+}
+
+/* ── World adapters ─────────────────────────────────────────────── */
+
+void
+clawt_office_scene_set_adapter_dirs(ClawtOfficeScene *self, const gchar *const *dirs)
+{
+    g_strfreev(self->adapter_dirs);
+    self->adapter_dirs = g_strdupv((gchar **)dirs);
+}
+
+const gchar *
+clawt_office_scene_get_adapter_name(ClawtOfficeScene *self)
+{
+    return self->adapter != NULL ? self->adapter_name : NULL;
+}
+
+/*
+ * An adapter by name: `tiled` is libregnum's own (walls, path-finding,
+ * seats from the map); anything else is a module named
+ * `libclawt-office-adapter-<name>.so`, looked for in the directories the
+ * host gave, then the user's, then the install location -- and the error
+ * names every place it looked.
+ */
+static LrgWorldAdapter *
+open_adapter(ClawtOfficeScene *self, const gchar *name, const gchar *pack_dir, GError **error)
+{
+    g_autoptr(GPtrArray) dirs = g_ptr_array_new_with_free_func(g_free);
+    g_autofree gchar *file = NULL;
+    g_autofree gchar *plugins = g_path_get_dirname(CLAWT_PLUGIN_DIR);
+    g_autoptr(GString) looked = g_string_new(NULL);
+    guint i;
+
+    if (g_strcmp0(name, "tiled") == 0)
+        return LRG_WORLD_ADAPTER(lrg_tiled_world_new());
+    for (i = 0; self->adapter_dirs != NULL && self->adapter_dirs[i] != NULL; i++)
+        g_ptr_array_add(dirs, g_strdup(self->adapter_dirs[i]));
+    g_ptr_array_add(dirs, g_build_filename(g_get_user_data_dir(), "clawtilla",
+                                           "office-adapters", NULL));
+    g_ptr_array_add(dirs, g_build_filename(plugins, "office-adapters", NULL));
+    file = g_strdup_printf("libclawt-office-adapter-%s.so", name);
+
+    for (i = 0; i < dirs->len; i++) {
+        g_autofree gchar *path = g_build_filename(g_ptr_array_index(dirs, i), file, NULL);
+        LrgWorldAdapter *(*make)(const gchar *, GError **) = NULL;
+        GModule *module;
+        LrgWorldAdapter *adapter;
+
+        g_string_append_printf(looked, "%s%s", looked->len > 0 ? ", " : "", path);
+        if (!g_file_test(path, G_FILE_TEST_IS_REGULAR))
+            continue;
+        module = g_module_open(path, G_MODULE_BIND_LOCAL);
+        if (module == NULL) {
+            g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "%s would not load: %s", path,
+                        g_module_error());
+            return NULL;
+        }
+        if (!g_module_symbol(module, CLAWT_OFFICE_ADAPTER_SYMBOL, (gpointer *)&make) ||
+            make == NULL) {
+            g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "%s has no %s", path,
+                        CLAWT_OFFICE_ADAPTER_SYMBOL);
+            g_module_close(module);
+            return NULL;
+        }
+        adapter = make(pack_dir, error);
+        if (adapter == NULL || !LRG_IS_WORLD_ADAPTER(adapter)) {
+            if (error != NULL && *error == NULL)
+                g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                            "%s made no world adapter", path);
+            g_clear_object(&adapter);
+            g_module_close(module);
+            return NULL;
+        }
+        /* resident: the adapter's GTypes outlive any one scene */
+        g_module_make_resident(module);
+        self->adapter_module = module;
+        return adapter;
+    }
+    g_set_error(error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                "no world adapter '%s'; looked for %s", name, looked->str);
+    return NULL;
+}
+
+/*
+ * The adapter loads what the pack names: a file in the pack when the
+ * source is one, otherwise the source as it stands (a place in a game's
+ * own world, say), which is the adapter's to understand.
+ */
+static gboolean
+use_adapter(ClawtOfficeScene *self, const gchar *pack_dir, JsonObject *spec, GError **error)
+{
+    const gchar *name = json_object_get_string_member_with_default(spec, "module", NULL);
+    const gchar *source = json_object_get_string_member_with_default(spec, "source", NULL);
+    g_autofree gchar *in_pack = NULL;
+    g_autoptr(LrgWorldAdapter) adapter = NULL;
+
+    adapter = open_adapter(self, name, pack_dir, error);
+    if (adapter == NULL)
+        return FALSE;
+    if (source != NULL && clawt_office_pack_path_is_safe(source)) {
+        in_pack = g_build_filename(pack_dir, source, NULL);
+        if (!g_file_test(in_pack, G_FILE_TEST_EXISTS))
+            g_clear_pointer(&in_pack, g_free);
+    }
+    if (!lrg_world_adapter_load(adapter, in_pack != NULL ? in_pack : source, error))
+        return FALSE;
+    lrg_world_adapter_set_camera(adapter, LRG_WORLD_CAMERA_OVERVIEW);
+    g_clear_object(&self->adapter);
+    self->adapter = g_steal_pointer(&adapter);
+    g_free(self->adapter_name);
+    self->adapter_name = g_strdup(name);
+    g_hash_table_remove_all(self->handles);
+    return TRUE;
 }
 
 gboolean
@@ -331,7 +456,25 @@ clawt_office_scene_load_world(ClawtOfficeScene  *self,
         }
     }
 
-    if (!self->has_2d && !self->has_3d) {
+    /* a world adapter, when the pack names one; the pack's own map if it will not load */
+    g_clear_object(&self->adapter);
+    if (json_object_has_member(world, "adapter") &&
+        JSON_NODE_HOLDS_OBJECT(json_object_get_member(world, "adapter"))) {
+        g_autoptr(GError) why = NULL;
+
+        if (!use_adapter(self, pack_dir, json_object_get_object_member(world, "adapter"),
+                         &why)) {
+            /* nothing to fall back to: the reason is the answer */
+            if (!self->has_2d && !self->has_3d) {
+                g_propagate_error(error, g_steal_pointer(&why));
+                return FALSE;
+            }
+            g_warning("office: the world adapter did not load, so the pack's own map is "
+                      "drawn: %s", why->message);
+        }
+    }
+
+    if (!self->has_2d && !self->has_3d && self->adapter == NULL) {
         g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
                             "the world has neither a map nor a level this build can draw");
         return FALSE;
@@ -512,15 +655,57 @@ clawt_office_scene_set_layout(ClawtOfficeScene *self, JsonObject *layout)
         }
     }
 
+    /*
+     * With a world adapter, the adapter walks people (round its walls,
+     * to its seats); the scene keeps what floats over them.  Spawned in
+     * the actor's colour, sent to the director's seat in map pixels --
+     * the Tiled adapter's own units.
+     */
+    if (self->adapter != NULL) {
+        GHashTableIter people_iter;
+        gpointer person;
+
+        g_hash_table_iter_init(&people_iter, self->actors);
+        while (g_hash_table_iter_next(&people_iter, NULL, &person)) {
+            Actor *a = person;
+            gpointer handle = NULL;
+            g_autoptr(GError) why = NULL;
+
+            if (!a->seen)
+                continue;
+            if (!g_hash_table_lookup_extended(self->handles, a->id, NULL, &handle)) {
+                g_autofree gchar *hex = g_strdup_printf("#%02x%02x%02x", a->color.r,
+                                                        a->color.g, a->color.b);
+                guint made = lrg_world_adapter_spawn_actor(self->adapter, a->id, hex, &why);
+
+                if (made == 0) {
+                    g_warning("office: the adapter would not place %s: %s", a->id,
+                              why != NULL ? why->message : "no reason given");
+                    continue;
+                }
+                handle = GUINT_TO_POINTER(made);
+                g_hash_table_insert(self->handles, g_strdup(a->id), handle);
+            }
+            lrg_world_adapter_move_actor(self->adapter, GPOINTER_TO_UINT(handle), a->tx, a->ty,
+                                         0.0f, NULL);
+        }
+    }
+
     /* whoever is no longer in the layout walks out */
     g_hash_table_iter_init(&iter, self->actors);
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
         Actor *a = value;
 
         if (!a->seen && !a->leaving) {
+            gpointer handle = NULL;
+
             a->leaving = TRUE;
             a->tx = self->entrance_x;
             a->ty = self->entrance_y;
+            if (self->adapter != NULL &&
+                g_hash_table_lookup_extended(self->handles, a->id, NULL, &handle))
+                lrg_world_adapter_move_actor(self->adapter, GPOINTER_TO_UINT(handle), a->tx,
+                                             a->ty, 0.0f, NULL);
         }
     }
 }
@@ -659,6 +844,21 @@ clawt_office_scene_update(ClawtOfficeScene *self, gfloat delta)
 
     clawt_office_scene_prepare(self);
 
+    if (self->adapter != NULL) {
+        lrg_world_adapter_update(self->adapter, delta);
+        g_hash_table_iter_init(&iter, self->actors);
+        while (g_hash_table_iter_next(&iter, &key, &value)) {
+            Actor *a = value;
+            gpointer handle = NULL;
+            gfloat z = 0.0f;
+
+            /* where the adapter's path-finding has them, so overlays follow */
+            if (g_hash_table_lookup_extended(self->handles, a->id, NULL, &handle))
+                lrg_world_adapter_get_actor_position(self->adapter, GPOINTER_TO_UINT(handle),
+                                                     &a->x, &a->y, &z);
+        }
+    }
+
     g_hash_table_iter_init(&iter, self->actors);
     while (g_hash_table_iter_next(&iter, &key, &value)) {
         Actor *a = value;
@@ -690,8 +890,17 @@ clawt_office_scene_update(ClawtOfficeScene *self, gfloat delta)
         if (lrg_world_widget_is_shown(LRG_WORLD_WIDGET(a->mark)))
             moving = TRUE;
     }
-    for (i = 0; i < gone->len; i++)
-        g_hash_table_remove(self->actors, g_ptr_array_index(gone, i));
+    for (i = 0; i < gone->len; i++) {
+        gpointer handle = NULL;
+        const gchar *id = g_ptr_array_index(gone, i);
+
+        if (self->adapter != NULL &&
+            g_hash_table_lookup_extended(self->handles, id, NULL, &handle)) {
+            lrg_world_adapter_remove_actor(self->adapter, GPOINTER_TO_UINT(handle));
+            g_hash_table_remove(self->handles, id);
+        }
+        g_hash_table_remove(self->actors, id);
+    }
 
     {
         GHashTableIter beams;
@@ -1216,6 +1425,41 @@ draw_3d(ClawtOfficeScene *self, gint width, gint height)
     }
 }
 
+/*
+ * A world adapter draws the world and its actors; the scene adds what
+ * floats over them where it can place it.  The Tiled adapter's camera
+ * says where an actor is on screen; an adapter with no camera of this
+ * kind (a game's own world) draws its own people and nothing is floated
+ * over them -- the roster says the same.
+ */
+static void
+draw_adapter(ClawtOfficeScene *self, gint width, gint height)
+{
+    GHashTableIter iter;
+    gpointer value;
+    LrgCamera2D *camera;
+
+    if (LRG_IS_TILED_WORLD(self->adapter))
+        lrg_tiled_world_set_viewport(LRG_TILED_WORLD(self->adapter), width, height);
+    lrg_world_adapter_draw(self->adapter);
+    if (!LRG_IS_TILED_WORLD(self->adapter))
+        return;
+
+    camera = lrg_tiled_world_get_camera(LRG_TILED_WORLD(self->adapter));
+    g_hash_table_iter_init(&iter, self->actors);
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        Actor *a = value;
+        GrlVector3 world = { a->x, a->y, 0.0f };
+        GrlVector2 screen = { 0.0f, 0.0f };
+
+        if (!a->placed)
+            continue;
+        lrg_camera_world_to_screen(LRG_CAMERA(camera), &world, &screen);
+        draw_overlays(self, a, (Vector2){ screen.x, screen.y },
+                      MAX(lrg_camera2d_get_zoom(camera) * PERSON_SCALE, 0.8f));
+    }
+}
+
 void
 clawt_office_scene_draw(ClawtOfficeScene *self, gint width, gint height)
 {
@@ -1225,6 +1469,8 @@ clawt_office_scene_draw(ClawtOfficeScene *self, gint width, gint height)
 
     if (self->mode == CLAWT_OFFICE_SCENE_3D && self->has_3d)
         draw_3d(self, width, height);
+    else if (self->adapter != NULL)
+        draw_adapter(self, width, height);
     else if (self->has_2d)
         draw_2d(self, width, height);
 

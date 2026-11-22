@@ -67,6 +67,7 @@ Offered to any agent with ~tools.office~ -- on for the chief of staff unless set
 | ~clawtilla_office_world_apply~ | draws the office in another world, for everybody |
 | ~clawtilla_office_preview~ | who would sit where, in what pose, in a world as it stands |
 | ~clawtilla_office_asset_import~ | copies a file from the agent's workspace into a pack or a character, with its checksum, licence and provenance |
+| ~clawtilla_office_character_layout~ | says how an imported sprite sheet is laid out; checked against the image |
 | ~clawtilla_office_custodians_install~ | installs this team (also needs ~tools.manage_fleet~) |
 
 How writes stay safe (~src/office/clawt-office-pack.c~, so every caller gets the same rules):
@@ -83,7 +84,19 @@ How writes stay safe (~src/office/clawt-office-pack.c~, so every caller gets the
 
 With the office on and =office.asset_generator= naming a generator, creating an agent files a task: *Office character for <agent>*, to the custodial lead -- or, with no custodial team, to the chief when its ~tools.office~ is on.  Nothing is generated without that task, nothing about the new agent waits on it, and an ephemeral helper gets none.
 
-The daemon puts the reference picture where the maker can read it, in its own workspace under ~office-characters/<agent>/~: the agent's =agents.avatar= when it has one, otherwise its generated face as an SVG -- the face every client already draws.  The task asks for a turnaround, short clips per action (walk, idle, sit and type, phone, present) and a sprite sheet cut from them, each imported with ~clawtilla_office_asset_import~ under ~character~.  They land in ~<state_dir>/office/characters/<agent>/~ beside a ~character.yaml~ listing each file's checksum and provenance.  Until a sprite sheet is there the agent is drawn with the default body and its own face.
+The daemon puts the reference picture where the maker can read it, in its own workspace under ~office-characters/<agent>/~: the agent's =agents.avatar= when it has one, otherwise its generated face as an SVG -- the face every client already draws.  The task asks for a turnaround, short clips per action (walk, idle, sit and type, phone, present) and a sprite sheet cut from them, each imported with ~clawtilla_office_asset_import~ under ~character~.  They land in ~<state_dir>/office/characters/<agent>/~ beside a ~character.yaml~ listing each file's checksum and provenance.  The steward then says how the sheet is laid out with ~clawtilla_office_character_layout~ -- the frame size and a row per animation:
+
+#+begin_src json
+{"agent": "kudu", "sheet": "sprites/sheet.png", "frame_width": 32, "frame_height": 48,
+ "animations": {"idle": {"row": 0, "frames": 1},
+                "walk_down": {"row": 1, "frames": 4, "fps": 8},
+                "walk_up": {"row": 2, "frames": 4, "fps": 8},
+                "walk_left": {"row": 3, "frames": 4, "fps": 8},
+                "walk_right": {"row": 4, "frames": 4, "fps": 8},
+                "type": {"row": 5, "frames": 4, "fps": 6}}}
+#+end_src
+
+Every row and frame is checked against the image, so a layout that runs past the sheet is refused and the manifest left as it was; the sheet must have been imported first, so it has its checksum and provenance.  From then on every renderer draws the agent from it (see [[file:office.org::#drawn][the drawn office]]); until then the agent is drawn with the default body and its own face.
 
 To ask again (a new picture, a better generator):
 

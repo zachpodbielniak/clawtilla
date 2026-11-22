@@ -95,6 +95,8 @@ struct _ClawtOfficeWorld {
     gchar     *license;
     gchar     *map_2d;        /* relative */
     gchar     *level_3d;      /* relative */
+    gchar     *adapter_module; /* a world adapter's name (office.adapter_dirs), or NULL */
+    gchar     *adapter_source; /* what that adapter loads: its own business */
     gchar     *choreography;  /* YAML, or NULL */
     GPtrArray *zones;
     GPtrArray *assets;
@@ -138,6 +140,8 @@ clawt_office_world_finalize(GObject *object)
     g_free(self->license);
     g_free(self->map_2d);
     g_free(self->level_3d);
+    g_free(self->adapter_module);
+    g_free(self->adapter_source);
     g_free(self->choreography);
     g_ptr_array_unref(self->zones);
     g_ptr_array_unref(self->assets);
@@ -237,6 +241,19 @@ relative_inside(const gchar *path)
     return TRUE;
 }
 
+static gboolean
+adapter_name_is_valid(const gchar *name)
+{
+    const gchar *p;
+
+    if (name == NULL || *name == '\0' || strlen(name) > 64)
+        return FALSE;
+    for (p = name; *p != '\0'; p++)
+        if (!g_ascii_islower(*p) && !g_ascii_isdigit(*p) && *p != '-')
+            return FALSE;
+    return TRUE;
+}
+
 /* Each anchor a list of numbers, flattened; `want` numbers each. */
 static GArray *
 anchors_member(YamlMapping *mapping, const gchar *name, guint want)
@@ -312,12 +329,24 @@ clawt_office_world_load(const gchar *directory, GError **error)
         YamlMapping *two = mapping_member(renderers, "2d");
         YamlMapping *three = mapping_member(renderers, "3d");
 
+        YamlMapping *adapter = mapping_member(renderers, "adapter");
+
         self->map_2d = g_strdup(string_member(two, "map"));
         self->level_3d = g_strdup(string_member(three, "level"));
+        self->adapter_module = g_strdup(string_member(adapter, "module"));
+        self->adapter_source = g_strdup(string_member(adapter, "source"));
     }
-    if (self->map_2d == NULL && self->level_3d == NULL) {
+    if (self->map_2d == NULL && self->level_3d == NULL && self->adapter_module == NULL) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
-                    "%s: `renderers` names neither a 2d map nor a 3d level", path);
+                    "%s: `renderers` names neither a 2d map, a 3d level nor an adapter",
+                    path);
+        return NULL;
+    }
+    /* a module is a name, looked up in office.adapter_dirs -- never a path */
+    if (self->adapter_module != NULL && !adapter_name_is_valid(self->adapter_module)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                    "%s: an adapter module is a name (letters, digits, '-'), not a path",
+                    path);
         return NULL;
     }
     if ((self->map_2d != NULL && !relative_inside(self->map_2d)) ||
@@ -437,6 +466,16 @@ clawt_office_world_get_renderer(ClawtOfficeWorld *self, const gchar *dimension)
                           : g_strcmp0(dimension, "2d") == 0 ? self->map_2d : NULL;
 
     return relative != NULL ? g_build_filename(self->directory, relative, NULL) : NULL;
+}
+
+const gchar *
+clawt_office_world_get_adapter(ClawtOfficeWorld *self, const gchar **out_source)
+{
+    g_return_val_if_fail(CLAWT_IS_OFFICE_WORLD(self), NULL);
+
+    if (out_source != NULL)
+        *out_source = self->adapter_source;
+    return self->adapter_module;
 }
 
 GPtrArray *
@@ -591,6 +630,13 @@ clawt_office_world_to_json(ClawtOfficeWorld *self)
     /* relative paths only: the requester may not be on this machine */
     add_string(builder, "map_2d", self->map_2d);
     add_string(builder, "level_3d", self->level_3d);
+    if (self->adapter_module != NULL) {
+        json_builder_set_member_name(builder, "adapter");
+        json_builder_begin_object(builder);
+        add_string(builder, "module", self->adapter_module);
+        add_string(builder, "source", self->adapter_source);
+        json_builder_end_object(builder);
+    }
 
     json_builder_set_member_name(builder, "zones");
     json_builder_begin_array(builder);

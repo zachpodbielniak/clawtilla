@@ -165,10 +165,31 @@ The lrg client draws the same scene in its own process, into an =LrgViewport= on
 
 ~--embed FD~ draws offscreen and streams each frame over the unix socket =FD= in libregnum's frame protocol (LFRM v1: a 16-byte header, RGBA8 frames inline or in a sealed memfd passed with =SCM_RIGHTS=; pointer, button, scroll, key and resize back), dropping frames rather than queueing them when the host falls behind.  The host owns the size: a resize message re-sizes the frames.  A click on somebody is the same stdout line as in a window.  The protocol is specified in libregnum's =docs/modules/remote/frame-protocol.org=.
 
+*** Characters
+
+An agent the custodial team has made a character for ([[file:office-custodial-team.org::#characters][characters]]) is drawn from its own sprite sheet instead of the shared body: walking picks the row for the direction it is going, a pose (sit, type, read, phone, present) its own row, a still pose holds a frame.  A sheet is fetched with ~office.character_file~ and checked against the sha256 its manifest recorded -- one that does not match is not drawn.  The 3D view keeps the shared body with its face.
+
+#+caption: kudu drawn from its sheet, on a call with the chief
+[[file:images/office/office-character.png]]
+
+*** The usage board
+
+Each provider login's allowance -- the meters on the Fleet page, from the same library calls -- is drawn on the wall a pack tags =usage_board=.  It reads ~usage.providers~ as it stands and never asks for a fresh read: a wall display left open all day must not spawn a provider's CLI once a minute.  The Fleet page refreshes; the board shows the result.
+
+#+caption: the usage board
+[[file:images/office/office-board.png]]
+
+*** World adapters
+
+A pack can name a world adapter -- code that owns its world and walks people through it -- instead of being drawn by the office: libregnum's =tiled= adapter (walls and path-finding), or a module of your own.  See [[file:office-adapters.org][office-adapters.org]].
+
+*** Opening on the office
+
+=--office= on =clawtilla-gtk= and =clawtilla-lrg= opens on the Office page; on =clawtilla-web= it sends =/= there, for a wall display.
+
 *** What it does not do yet
 
-- People walk in a straight line to their seat: the shipped maps carry no collision layer, so there is nothing to path around.  A pack whose tile layer is marked =collision= is where pathfinding (libregnum's =LrgActorMover= with the map's grid) would come in.
-- Every participant is the shared body in its colour with its face; a character made by the custodial team ([[file:office-custodial-team.org#characters][characters]]) is not drawn yet.
+- People walk in a straight line to their seat in the office's own drawing: the shipped maps carry no collision layer.  A pack with walls should use the [[file:office-adapters.org::#tiled][=tiled= adapter]], which paths round them.
 
 ** Who keeps it
 :PROPERTIES:
@@ -213,6 +234,8 @@ Which zone, pose, prop and emote each activity gets.  Three layers, each replaci
 | ~office.layout~ (~world~ optional) | the director's ~placements~ (each ~id~, ~activity~, ~zone~, ~zone_tag~, ~seat~, ~x~/~y~, ~x3~/~z3~, ~pose~, ~prop~, ~emote~, ~facing~, ~fallback~) plus ~participants~ and ~now~ |
 | ~office.file~ (~world~, ~path~) | one file of a pack as ~base64~, at most 32 MiB, only inside the pack -- for a renderer not on the daemon's machine |
 | ~office.set~ (~enabled~, ~world~, ~renderer~, each optional) | writes them to clawtilla.yaml and applies them at once; answers the new ~enabled~, ~world~, ~renderer~; a world that does not exist is refused |
+| ~office.characters~ | ~characters~: each agent the custodial team has made a whole character for -- ~agent~, ~sheet~, ~sheet_sha256~, ~frame~ ([w, h]) and ~animations~ (~{name: {row, frames, fps}}~) (since 0.60.0) |
+| ~office.character_file~ (~agent~, ~path~) | one file of a character as ~base64~, resolved by the kernel inside =<state_dir>/office/characters/<agent>/= |
 | ~office.custodians~ | ~team~ (the team tagged ~office-custodial~, or null) and ~generator~ (=office.asset_generator=) -- whether a client offers the install (since 0.58.0) |
 | ~office.custodians_install~ (~team~, ~start~ optional) | makes the custodial team and its three agents, started unless ~start: false~; answers ~team~ and ~agents~; refused when a team already carries the tag |
 | ~office.character~ (~agent~) | files the task that makes ~agent~'s character; answers its ~task~ id; refused with what is missing when there is no generator or nobody keeps the office |

@@ -147,6 +147,7 @@ All under [[file:docs/][docs/]], in org-mode:
 | [[file:docs/tasks.org][tasks.org]] | the work model: states, the store, backlog, blockers, review, checkouts, projects |
 | [[file:docs/spending.org][spending.org]] | what the fleet costs, and the budget that reads it |
 | [[file:docs/provider-usage.org][provider-usage.org]] | what each provider login has left of its plan, and how to read the meters |
+| [[file:docs/office-adapters.org][office-adapters.org]] | drawing the office in someone else's world: the adapter interface, the built-in Tiled one, writing a module |
 | [[file:docs/office-custodial-team.org][office-custodial-team.org]] | the agents that keep the office -- worlds, assets, each agent's character -- and the office tools |
 | [[file:docs/higgsfield.org][higgsfield.org]] | image and video generation for any granted agent, through Higgsfield's hosted MCP server; terms and costs |
 | [[file:docs/integrations.org][integrations.org]] | Matrix, mail, MCP servers, notifications; scoping them |

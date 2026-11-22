@@ -68,6 +68,32 @@ gboolean clawt_office_scene_load_world(ClawtOfficeScene  *self,
                                        GError           **error);
 
 /**
+ * CLAWT_OFFICE_ADAPTER_SYMBOL:
+ *
+ * What a world-adapter module exports (docs/office-adapters.org):
+ * `LrgWorldAdapter *clawt_office_adapter_new (const gchar *pack_dir,
+ * GError **error)`.
+ */
+#define CLAWT_OFFICE_ADAPTER_SYMBOL "clawt_office_adapter_new"
+
+/**
+ * clawt_office_scene_set_adapter_dirs:
+ * @self: a scene
+ * @dirs: (nullable) (array zero-terminated=1): where adapter modules are
+ *   looked for, before the default places
+ */
+void clawt_office_scene_set_adapter_dirs(ClawtOfficeScene *self, const gchar *const *dirs);
+
+/**
+ * clawt_office_scene_get_adapter_name:
+ * @self: a scene
+ *
+ * Returns: (transfer none) (nullable): the world adapter drawing the
+ *   office, or %NULL when the scene draws the pack itself
+ */
+const gchar *clawt_office_scene_get_adapter_name(ClawtOfficeScene *self);
+
+/**
  * clawt_office_scene_set_layout:
  * @self: a scene
  * @layout: `office.layout`'s answer: `placements` and `participants`

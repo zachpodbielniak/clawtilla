@@ -124,6 +124,48 @@ test_layout_in_and_out(void)
     clawt_office_scene_free(scene);
 }
 
+/*
+ * A pack can name a world adapter.  The built-in `tiled` one is
+ * libregnum's LrgTiledWorld (walls, path-finding); it walks people to the
+ * director's seats while the scene keeps the overlays.  An adapter that
+ * cannot be found is refused naming every place it looked.
+ */
+static void
+test_world_adapters(void)
+{
+    g_autofree gchar *pack = g_build_filename(CLAWT_TEST_FIXTURES, "..", "..", "data", "office",
+                                              "worlds", "modern-office", NULL);
+    ClawtOfficeScene *scene = clawt_office_scene_new();
+    g_autoptr(JsonObject) tiled = parse(
+        "{\"id\":\"modern-office\",\"adapter\":{\"module\":\"tiled\",\"source\":\"map.tmj\"},"
+        "\"zones\":[{\"id\":\"door\",\"tags\":[\"entrance\"],\"anchors_2d\":[[700,1200]]}]}");
+    g_autoptr(JsonObject) missing = parse(
+        "{\"id\":\"x\",\"adapter\":{\"module\":\"nope\",\"source\":\"somewhere\"}}");
+    g_autofree gchar *people = g_strdup_printf(
+        "{\"placements\":[{\"id\":\"chief\",\"activity\":\"working\",\"x\":400,\"y\":112}],%s}",
+        people_json);
+    g_autoptr(JsonObject) layout = parse(people);
+    g_autoptr(GError) error = NULL;
+    guint frames;
+    gboolean moving = FALSE;
+
+    g_assert_true(clawt_office_scene_load_world(scene, pack, tiled, &error));
+    g_assert_no_error(error);
+    g_assert_cmpstr(clawt_office_scene_get_adapter_name(scene), ==, "tiled");
+    clawt_office_scene_set_layout(scene, layout);
+    g_assert_cmpuint(clawt_office_scene_n_participants(scene), ==, 1);
+    for (frames = 0; frames < 30; frames++)
+        moving = clawt_office_scene_update(scene, 1.0f / 30.0f) || moving;
+    g_assert_true(moving);
+    clawt_office_scene_free(scene);
+
+    scene = clawt_office_scene_new();
+    g_assert_false(clawt_office_scene_load_world(scene, pack, missing, &error));
+    g_assert_nonnull(error);
+    g_assert_nonnull(strstr(error->message, "libclawt-office-adapter-nope.so"));
+    clawt_office_scene_free(scene);
+}
+
 #endif /* CLAWT_HAVE_OFFICE */
 
 gint
@@ -134,6 +176,7 @@ main(gint argc, gchar *argv[])
 #ifdef CLAWT_HAVE_OFFICE
     g_test_add_func("/lrgui/office/simulate-uses-the-world", test_simulate_uses_the_world);
     g_test_add_func("/lrgui/office/layout-in-and-out", test_layout_in_and_out);
+    g_test_add_func("/lrgui/office/world-adapters", test_world_adapters);
 #else
     g_test_message("built without OFFICE=1: the office scene is not compiled in");
 #endif

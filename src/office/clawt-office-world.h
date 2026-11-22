@@ -159,6 +159,22 @@ GPtrArray *clawt_office_world_get_assets(ClawtOfficeWorld *self);
 GPtrArray *clawt_office_world_get_warnings(ClawtOfficeWorld *self);
 
 /**
+ * clawt_office_world_get_adapter:
+ * @self: a world
+ * @out_source: (out) (optional) (transfer none) (nullable): what the
+ *   adapter is asked to load: a file in the pack, or the adapter's own
+ *   name for a place in its world
+ *
+ * The world adapter the pack is drawn with (`renderers.adapter.module`),
+ * looked up by clawtilla-office in `office.adapter_dirs` or among the
+ * built-in ones.  See docs/office-adapters.org.
+ *
+ * Returns: (transfer none) (nullable): the adapter's name, or %NULL
+ */
+const gchar *clawt_office_world_get_adapter(ClawtOfficeWorld *self,
+                                            const gchar     **out_source);
+
+/**
  * clawt_office_world_get_choreography_yaml:
  * @self: a world
  *

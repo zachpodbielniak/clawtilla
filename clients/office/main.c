@@ -50,6 +50,7 @@ static gint      opt_frames = 90;
 static gint      opt_embed = -1;
 static gint      opt_width = 1280;
 static gint      opt_height = 720;
+static gchar   **opt_adapter_dirs = NULL;
 static gboolean  opt_version = FALSE;
 static gboolean  opt_license = FALSE;
 
@@ -76,6 +77,8 @@ static GOptionEntry entries[] = {
       "Stream frames over this socket fd (libregnum frame protocol)", "FD" },
     { "width", 0, 0, G_OPTION_ARG_INT, &opt_width, "Width in pixels (default 1280)", "W" },
     { "height", 0, 0, G_OPTION_ARG_INT, &opt_height, "Height in pixels (default 720)", "H" },
+    { "adapter-dir", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_adapter_dirs,
+      "Look for world adapter modules here first; repeatable", "DIR" },
     { "version", 'V', 0, G_OPTION_ARG_NONE, &opt_version, "Print the version", NULL },
     { "license", 0, 0, G_OPTION_ARG_NONE, &opt_license, "Print the licence", NULL },
     { NULL }
@@ -96,7 +99,8 @@ static const gchar description_text[] =
     "  clawtilla-office --3d --world cozy-town\n"
     "  clawtilla-office --profile workstation\n"
     "  clawtilla-office --simulate\n"
-    "  clawtilla-office --screenshot office.png --width 1600 --height 900\n";
+    "  clawtilla-office --screenshot office.png --width 1600 --height 900\n"
+    "  clawtilla-office --adapter-dir ~/src/my-world/build\n";
 
 static const gchar license_text[] =
     "clawtilla-office - the fleet drawn as people in a building\n"
@@ -517,6 +521,7 @@ main(int argc, char *argv[])
 
     office.context = g_main_context_ref(g_main_context_default());
     office.scene = clawt_office_scene_new();
+    clawt_office_scene_set_adapter_dirs(office.scene, (const gchar *const *)opt_adapter_dirs);
     office.rng = g_rand_new();
     client = clawt_connection_create_client(connection);
     clawt_client_set_auto_reconnect(client, TRUE);

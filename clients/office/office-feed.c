@@ -34,11 +34,13 @@ struct _ClawtOfficeFeed {
     GSource              *timer;
     gboolean              layout_in_flight;
     gboolean              ready;
+    guint                 generation;   /* bumped by every refresh */
 };
 
 typedef struct {
     ClawtOfficeFeed *feed;
     gchar           *path;
+    guint            generation;
 } FileRequest;
 
 typedef struct {
@@ -130,10 +132,17 @@ on_file(GObject *source, GAsyncResult *result, gpointer user_data)
     g_autoptr(JsonNode) node = NULL;
     JsonObject *reply;
 
-    if (g_cancellable_is_cancelled(self->cancellable) ||
-        g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+    if (g_cancellable_is_cancelled(self->cancellable))
         goto done;
     reply = finish(source, result, &node, &error);
+
+    /*
+     * A reply from a fetch a refresh has since started over (a replayed
+     * office.changed at connect does this) is dropped: it would find the
+     * new pass's queue and announce the world before its files are here.
+     */
+    if (req->generation != self->generation)
+        goto done;
     if (reply == NULL) {
         g_autofree gchar *line = g_strdup_printf("Could not read %s from the daemon: %s",
                                                  req->path,
@@ -184,6 +193,7 @@ fetch_next(ClawtOfficeFeed *self)
     req = g_new0(FileRequest, 1);
     req->feed = self;
     req->path = path;
+    req->generation = self->generation;
     payload = clawt_ipc_payload_new("world",
                                     json_object_get_string_member_with_default(self->world,
                                                                                "id", ""),
@@ -194,7 +204,9 @@ fetch_next(ClawtOfficeFeed *self)
 static void
 on_world(GObject *source, GAsyncResult *result, gpointer user_data)
 {
-    ClawtOfficeFeed *self = user_data;
+    FileRequest *req = user_data;
+    ClawtOfficeFeed *self = req->feed;
+    guint generation = req->generation;
     g_autoptr(GError) error = NULL;
     g_autoptr(JsonNode) node = NULL;
     JsonObject *reply;
@@ -202,9 +214,13 @@ on_world(GObject *source, GAsyncResult *result, gpointer user_data)
     const gchar *id;
     guint i;
 
+    g_free(req);
     if (g_cancellable_is_cancelled(self->cancellable))
         return;
     reply = finish(source, result, &node, &error);
+    /* an older refresh's answer: a newer one is on its way */
+    if (generation != self->generation)
+        return;
     if (reply == NULL) {
         g_autofree gchar *line = g_strdup_printf("The daemon did not give the world: %s",
             error != NULL ? error->message : "no reply");
@@ -228,6 +244,11 @@ on_world(GObject *source, GAsyncResult *result, gpointer user_data)
     want(self, json_object_get_string_member_with_default(reply, "map_2d", NULL));
     want(self, json_object_get_string_member_with_default(reply, "level_3d", NULL));
     want(self, "office.yaml");
+    /* an adapter's source, when it is a file in the pack */
+    if (json_object_has_member(reply, "adapter") &&
+        JSON_NODE_HOLDS_OBJECT(json_object_get_member(reply, "adapter")))
+        want(self, json_object_get_string_member_with_default(
+            json_object_get_object_member(reply, "adapter"), "source", NULL));
     assets = json_object_has_member(reply, "assets")
         ? json_object_get_array_member(reply, "assets") : NULL;
     for (i = 0; assets != NULL && i < json_array_get_length(assets); i++)
@@ -435,9 +456,16 @@ clawt_office_feed_refresh(ClawtOfficeFeed *self)
     JsonNode *payload = NULL;
 
     self->ready = FALSE;
+    self->generation++;
     if (self->world_id != NULL)
         payload = clawt_ipc_payload_new("world", self->world_id, NULL);
-    request(self, "office.world", payload, on_world, self);
+    {
+        FileRequest *req = g_new0(FileRequest, 1);
+
+        req->feed = self;
+        req->generation = self->generation;
+        request(self, "office.world", payload, on_world, req);
+    }
     request(self, "agent.list", NULL, on_agents, self);
 }
 

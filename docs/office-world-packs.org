@@ -43,6 +43,9 @@ renderers:
     map: map.tmj                  # relative paths only, inside the pack
   3d:
     level: office.rlevel
+  adapter:                        # optional: a world adapter draws it instead
+    module: tiled                 # see office-adapters.org
+    source: map.tmj
 zones:
   - id: floor
     name: "Open floor"
