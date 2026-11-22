@@ -5907,6 +5907,7 @@ release_components(ClawtDaemon *self)
     /* allowance reads in flight answer into nothing once this is gone */
     clawt_daemon_provider_usage_stop(self);
     clawt_daemon_ephemeral_teardown(self);
+    clawt_daemon_office_teardown(self);
 
     /*
      * The routine tick and the pods for the same reason -- both start
@@ -8288,6 +8289,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_daemon_notices_setup(self);
     /* the ephemeral tools' hooks and the reap-reminder sweep */
     clawt_daemon_ephemeral_setup(self);
+    /* the office, when office.enabled: after the agents and the bus exist */
+    clawt_daemon_office_setup(self);
 
     /*
      * After the tools exist, whose wait tools it supplies, and after
@@ -8653,6 +8656,8 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
      * away, and nothing a reload changed ever took effect.
      */
     clawt_agent_manager_set_config(self->agents, self->config);
+    /* office.enabled may have changed */
+    clawt_daemon_office_reconfigure(self);
     clawt_agent_manager_load(self->agents, NULL);
 
     clawt_room_manager_load(self->rooms, self->config);
@@ -11229,6 +11234,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_grok,
     clawt_daemon_handle_provider_usage,
     clawt_daemon_handle_ephemeral,
+    clawt_daemon_handle_office,
     clawt_daemon_handle_config,
     clawt_daemon_handle_skill_tests,
     clawt_daemon_handle_skill,
@@ -11367,6 +11373,7 @@ clawt_daemon_finalize(GObject *object)
     g_free(self->libreclaw_binary);
     g_free(self->state_dir);
     g_free(self->link_socket);
+    g_free(self->fleet_id);
     g_clear_pointer(&self->main_context, g_main_context_unref);
 
     G_OBJECT_CLASS(clawt_daemon_parent_class)->finalize(object);

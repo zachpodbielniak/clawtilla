@@ -1,0 +1,4 @@
+name: No Licence
+renderers:
+  2d:
+    map: map.tmj

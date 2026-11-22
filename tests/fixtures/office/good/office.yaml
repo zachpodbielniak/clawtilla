@@ -1,0 +1,16 @@
+name: Test Office
+description: A fixture pack with every kind of zone a test needs.
+license: CC0-1.0
+renderers:
+  2d:
+    map: map.tmj
+zones:
+  - { id: lounge, tags: [lounge], anchors_2d: [[10, 10], [20, 10]] }
+  - { id: core-desks, tags: [desk], team: core, anchors_2d: [[40, 10]] }
+  - { id: desks, tags: [desk], anchors_2d: [[60, 10]] }
+  - { id: huddle, tags: ["meeting:4"], anchors_2d: [[10, 40]] }
+  - { id: boardroom, tags: ["meeting:12"], anchors_2d: [[40, 40]] }
+  - { id: hall, tags: [town_hall], anchors_2d: [[80, 80]] }
+  - { id: odd, tags: [disco_floor], anchors_2d: [[90, 90]] }
+assets:
+  - { path: map.tmj, sha256: 42e64789f506163392219a91542c1e050933d298bdd9c6b014bf42bd3a289b1d, source: hand-written fixture }

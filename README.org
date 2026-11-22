@@ -141,6 +141,9 @@ All under [[file:docs/][docs/]], in org-mode:
 | [[file:docs/orchestration.org][orchestration.org]] | rooms, tasks, chief-of-staff, loop safety |
 | [[file:docs/ephemeral-agents.org][ephemeral-agents.org]] | temporary helpers an agent spawns for one piece of work and reaps after |
 | [[file:docs/team-tags.org][team-tags.org]] | tags that give a team a job in clawtilla, whatever it is called |
+| [[file:docs/office.org][office.org]] | the fleet drawn as people in a building: who is where, and why |
+| [[file:docs/office-world-packs.org][office-world-packs.org]] | writing, extending and sharing the worlds the office is drawn in |
+| [[file:docs/office-choreography.org][office-choreography.org]] | which zone, pose and prop each activity gets |
 | [[file:docs/tasks.org][tasks.org]] | the work model: states, the store, backlog, blockers, review, checkouts, projects |
 | [[file:docs/spending.org][spending.org]] | what the fleet costs, and the budget that reads it |
 | [[file:docs/provider-usage.org][provider-usage.org]] | what each provider login has left of its plan, and how to read the meters |

@@ -223,9 +223,10 @@ gchar *clawt_alert_text_for_event(ClawtEvent  *event,
  * @event: the event
  *
  * Whether @event describes work in flight rather than something that
- * happened.  Two kinds are: `turn.step`, and `usage.providers_changed`,
+ * happened.  Three kinds are: `turn.step`; `usage.providers_changed`,
  * which only says "read usage.providers again" -- a client that
- * connects reads that anyway.
+ * connects reads that anyway; and `office.presence`, an edge a client
+ * reads `office.snapshot` for on connect.
  *
  * An ephemeral event is delivered live to every subscriber and then
  * forgotten: it is not kept in the bus's replay ring and not written to

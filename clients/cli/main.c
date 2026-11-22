@@ -4772,6 +4772,194 @@ cmd_room(int argc, char *argv[])
 
 
 /* Whether any login in a usage.providers reply is still being read. */
+/*
+ * clawtilla office -- who is where, the world packs, the layout.
+ *
+ * `who` is the roster every client draws, with the same line
+ * (clawt_office_roster_line()); `worlds` lists the packs and why any was
+ * refused; `layout` is the director's seats; `choreography` prints the
+ * built-in rules, which are also the format an override is written in,
+ * and needs no daemon.  `open` starts the renderer, when it was built.
+ */
+static gint
+cmd_office(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = argc > 2 ? argv[2] : NULL;
+    gboolean json = argc > 3 && g_strcmp0(argv[argc - 1], "--json") == 0;
+    JsonObject *root;
+    guint i;
+
+    if (verb == NULL || g_strcmp0(verb, "-h") == 0 || g_strcmp0(verb, "--help") == 0) {
+        g_print("Usage: clawtilla office <who|worlds|layout|choreography|on|off|use|renderer|open>\n"
+                "\n"
+                "The office draws the fleet as people in a building: at a desk\n"
+                "while a turn runs, on the phone while two agents message, round a\n"
+                "table in a group round.  It is on when office.enabled is true.\n"
+                "\n"
+                "  who           who is where, and since when\n"
+                "  worlds        the world packs that can be drawn, and any refused\n"
+                "  layout        which seat the director gives each participant\n"
+                "  choreography  the built-in rules: zone, pose, prop per activity\n"
+                "  on, off       turn the office on or off, at once\n"
+                "  use WORLD     draw this world pack\n"
+                "  renderer R    auto, 2d or 3d\n"
+                "  open          start clawtilla-office (built with OFFICE=1)\n"
+                "\n"
+                "Examples:\n"
+                "  clawtilla office on\n"
+                "  clawtilla office use cozy-town\n"
+                "  clawtilla office who\n"
+                "  clawtilla office worlds --json\n"
+                "  clawtilla office choreography > my-rules.yaml\n");
+        return verb == NULL ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "choreography") == 0) {
+        g_print("%s", clawt_office_choreography_default_yaml());
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "open") == 0) {
+        g_autofree gchar *exe = g_file_read_link("/proc/self/exe", NULL);
+        g_autofree gchar *dir = exe != NULL ? g_path_get_dirname(exe) : NULL;
+        g_autofree gchar *beside = dir != NULL
+            ? g_build_filename(dir, "clawtilla-office", NULL) : NULL;
+        const gchar *program = beside != NULL && g_file_test(beside, G_FILE_TEST_IS_EXECUTABLE)
+            ? beside : "clawtilla-office";
+        g_autoptr(GPtrArray) args = g_ptr_array_new();
+        g_autoptr(GError) error = NULL;
+        gint k;
+
+        g_ptr_array_add(args, (gpointer)program);
+        for (k = 3; k < argc; k++)
+            g_ptr_array_add(args, argv[k]);
+        g_ptr_array_add(args, NULL);
+        execvp(program, (gchar **)args->pdata);
+        g_printerr("clawtilla: could not start %s: %s.  It is built with "
+                   "`make OFFICE=1 LRG_BACKEND=1`.\n", program, g_strerror(errno));
+        return EXIT_FAILURE;
+    }
+
+    /* on, off, which world, how to draw it: office.set, applied at once */
+    if (g_strcmp0(verb, "on") == 0 || g_strcmp0(verb, "off") == 0 ||
+        g_strcmp0(verb, "use") == 0 || g_strcmp0(verb, "renderer") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        JsonObject *answer;
+
+        if ((g_strcmp0(verb, "use") == 0 || g_strcmp0(verb, "renderer") == 0) && argc < 4) {
+            g_printerr("Usage: clawtilla office %s <%s>\n", verb,
+                       g_strcmp0(verb, "use") == 0 ? "world" : "auto|2d|3d");
+            return EXIT_FAILURE;
+        }
+        json_builder_begin_object(builder);
+        if (g_strcmp0(verb, "use") == 0) {
+            json_builder_set_member_name(builder, "world");
+            json_builder_add_string_value(builder, argv[3]);
+        } else if (g_strcmp0(verb, "renderer") == 0) {
+            json_builder_set_member_name(builder, "renderer");
+            json_builder_add_string_value(builder, argv[3]);
+        } else {
+            json_builder_set_member_name(builder, "enabled");
+            json_builder_add_boolean_value(builder, g_strcmp0(verb, "on") == 0);
+        }
+        json_builder_end_object(builder);
+
+        client = connect_to_daemon();
+        if (client == NULL)
+            return EXIT_FAILURE;
+        reply = call(client, "office.set", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        answer = json_node_get_object(reply);
+        g_print("The office is %s; world %s, drawn %s.\n",
+                json_object_get_boolean_member_with_default(answer, "enabled", FALSE)
+                    ? "on" : "off",
+                member_or(answer, "world", "?"), member_or(answer, "renderer", "auto"));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "who") != 0 && g_strcmp0(verb, "worlds") != 0 &&
+        g_strcmp0(verb, "layout") != 0) {
+        g_printerr("clawtilla office: unknown verb '%s'\n", verb);
+        return EXIT_FAILURE;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+    reply = call(client, g_strcmp0(verb, "who") == 0 ? "office.snapshot"
+                         : g_strcmp0(verb, "worlds") == 0 ? "office.worlds" : "office.layout",
+                 NULL);
+    if (reply == NULL)
+        return EXIT_FAILURE;
+    if (json) {
+        g_autofree gchar *text = json_to_string(reply, TRUE);
+
+        g_print("%s\n", text);
+        return EXIT_SUCCESS;
+    }
+    root = json_node_get_object(reply);
+
+    if (g_strcmp0(verb, "worlds") == 0) {
+        JsonArray *worlds = json_object_get_array_member(root, "worlds");
+        JsonArray *refused = json_object_get_array_member(root, "refused");
+
+        for (i = 0; worlds != NULL && i < json_array_get_length(worlds); i++) {
+            JsonObject *w = json_array_get_object_element(worlds, i);
+            const gchar *id = member_or(w, "id", "?");
+
+            g_print("%s %-16s %-24s %s%s%s\n",
+                    g_strcmp0(id, member_or(root, "current", NULL)) == 0 ? "*" : " ",
+                    id, member_or(w, "name", ""), member_or(w, "license", "?"),
+                    json_object_get_boolean_member_with_default(w, "has_2d", FALSE) ? " 2d" : "",
+                    json_object_get_boolean_member_with_default(w, "has_3d", FALSE) ? " 3d" : "");
+        }
+        for (i = 0; refused != NULL && i < json_array_get_length(refused); i++)
+            g_printerr("clawtilla: refused %s\n", json_array_get_string_element(refused, i));
+        return EXIT_SUCCESS;
+    }
+
+    if (!json_object_get_boolean_member_with_default(root, "enabled", TRUE)) {
+        g_print("%s\n", member_or(root, "why", "the office is off"));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "who") == 0) {
+        JsonArray *people = json_object_get_array_member(root, "participants");
+        gint64 now = json_object_get_int_member_with_default(root, "now",
+                                                             g_get_real_time() / G_USEC_PER_SEC);
+
+        if (people == NULL || json_array_get_length(people) == 0)
+            g_print("(nobody in the office)\n");
+        for (i = 0; people != NULL && i < json_array_get_length(people); i++) {
+            JsonObject *p = json_array_get_object_element(people, i);
+            g_autofree gchar *line = clawt_office_roster_line(p, now);
+
+            g_print("%-20s %s\n", member_or(p, "id", "?"), line);
+        }
+        return EXIT_SUCCESS;
+    }
+
+    {
+        JsonArray *placements = json_object_get_array_member(root, "placements");
+
+        for (i = 0; placements != NULL && i < json_array_get_length(placements); i++) {
+            JsonObject *p = json_array_get_object_element(placements, i);
+
+            g_print("%-20s %-14s %-14s seat %-3" G_GINT64_FORMAT " %s%s%s\n",
+                    member_or(p, "id", "?"), member_or(p, "activity", "?"),
+                    member_or(p, "zone", "-"),
+                    json_object_get_int_member_with_default(p, "seat", 0),
+                    member_or(p, "pose", ""),
+                    json_object_has_member(p, "prop") ? " holding " : "",
+                    member_or(p, "prop", ""));
+        }
+    }
+    return EXIT_SUCCESS;
+}
+
 static gboolean
 limits_pending(JsonObject *root)
 {
@@ -12798,6 +12986,8 @@ static const ClawtVerb verbs[] = {
     { "limits",  "[--cached] [--json]",
       "What each provider login has left of its plan",
       cmd_limits },
+    { "office",  "<verb>",   "Who is where in the office, and its worlds",
+      cmd_office },
     { "memory",  "<verb>",   "What an agent has written down",
       cmd_memory },
     { "sentinel", "[--output FILE|-]", "Scan the event log for recurring trouble (read-only)",

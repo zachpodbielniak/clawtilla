@@ -2663,6 +2663,55 @@ static const ClawtSchemaEntry schema[] = {
   "Pruned at start and then hourly, whichever of this and notices.keep\n"
   "drops a notice first. 0 keeps them until notices.keep.", "0.52.0" },
 
+/* ── office (0.56.0) ─────────────────────────────────────────────── */
+{ "office", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The office: the fleet drawn as people in a building.\n"
+  "\n"
+  "The daemon folds what it sees -- turn edges, tool steps, messages,\n"
+  "decisions, incidents -- into an activity for every agent, and every\n"
+  "client draws who is where from it; with OFFICE=1 the office itself is\n"
+  "drawn in 2D or 3D. Nothing is invented: an agent at its desk is one\n"
+  "the daemon saw start a turn. See docs/office.org.", "0.56.0" },
+
+{ "office.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE, "false", NULL,
+  "Whether the daemon keeps the office: the presence fold, the\n"
+  "office.presence events and the office.* requests. Off, nothing is\n"
+  "computed, and every client's Office page says how to turn it on.\n"
+  "Takes effect on the next reload.", "0.56.0" },
+
+{ "office.world", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, "modern-office", NULL,
+  "Which world pack to draw: a directory name under one of the world\n"
+  "directories (office.world_dirs, <state_dir>/office/worlds, then the\n"
+  "shipped data/office/worlds). Two ship: modern-office and cozy-town.\n"
+  "`clawtilla office worlds` lists what is available. See\n"
+  "docs/office-world-packs.org.", "0.56.0" },
+
+{ "office.renderer", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, "auto", NULL,
+  "How a renderer should draw the world: `2d`, `3d`, or `auto` -- 3D\n"
+  "when the pack has a level, otherwise 2D. A renderer's own option\n"
+  "(clawtilla-office --2d) wins over this.", "0.56.0" },
+
+{ "office.world_dirs", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Extra directories holding world packs, searched before the daemon's\n"
+  "own and the shipped ones, so your copy of a pack replaces theirs.", "0.56.0" },
+
+{ "office.stale_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "600", NULL,
+  "How long a turn that was never seen to end is believed. A process\n"
+  "that dies mid-turn never closes its turn edge; after this long its\n"
+  "agent goes back to the lounge rather than sitting at its desk for\n"
+  "ever.", "0.56.0" },
+
+{ "office.meeting_min_members", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "3", NULL,
+  "How many members a group room needs for a round in it to be drawn\n"
+  "as a meeting. Fewer than 3 is read as 3: two agents talking is a\n"
+  "call, not a meeting.", "0.56.0" },
+
+{ "office.choreography", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "A YAML file of choreography rules -- which zone, pose, prop and emote\n"
+  "each activity gets -- applied over the built-in rules and the world\n"
+  "pack's own. `clawtilla office choreography` prints the built-in rules,\n"
+  "which are also the format. See docs/office-choreography.org.", "0.56.0" },
+
 { "routines", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing work: a prompt, an agent, and when to run it.\n"
   "\n"

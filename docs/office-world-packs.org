@@ -1,0 +1,156 @@
+#+title: Office world packs
+#+description: How to write, extend and share a world the office is drawn in
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-11-21 Sat]
+#+updated: [2026-11-21 Sat]
+#+version: 0.1.0
+
+* Office world packs
+:PROPERTIES:
+:CUSTOM_ID: world-packs
+:END:
+
+A world pack is a directory that describes a place for the office to be drawn in.  clawtilla knows nothing about any pack's geometry: everything it does asks for "a zone tagged X", so a glass office, a cozy town and -- later -- a game world are the same to it.  The overview is in [[file:office.org][office.org]].
+
+** The layout of a pack
+:PROPERTIES:
+:CUSTOM_ID: layout
+:END:
+
+#+begin_example
+my-office/
+├── office.yaml        the manifest (required)
+├── choreography.yaml  rules that override the built-in choreography (optional)
+├── map.tmj            a Tiled map, for the 2D view (one of the two renderers is required)
+├── tiles.png          its tileset
+└── office.rlevel      a libregnum level, for the 3D view
+#+end_example
+
+The pack's id is its directory name.  Put it under one of the world directories: =office.world_dirs=, =<state_dir>/office/worlds/=, or the shipped =data/office/worlds/=, searched in that order.  A pack id found twice keeps the first, so a copy of =modern-office= in your own directory replaces the shipped one.
+
+** office.yaml
+:PROPERTIES:
+:CUSTOM_ID: manifest
+:END:
+
+#+begin_src yaml
+name: Modern Office
+description: "A glassy open-plan office."
+license: CC0-1.0                  # required: a pack with no licence is refused
+renderers:
+  2d:
+    map: map.tmj                  # relative paths only, inside the pack
+  3d:
+    level: office.rlevel
+zones:
+  - id: floor
+    name: "Open floor"
+    tags: [desk]
+    team: core                    # optional: this team's desks first
+    capacity: 12                  # optional: otherwise the anchor count
+    anchors_2d:                   # seats, in map pixels
+      - [400, 112]
+      - [496, 112]
+    anchors_3d:                   # the same seats, in level units (x, y, z)
+      - [12.5, 0.0, 3.5]
+      - [15.5, 0.0, 3.5]
+  - id: boardroom
+    tags: ["meeting:10"]          # a meeting room for ten
+    anchors_2d: [[1120, 352], [1152, 352]]
+districts: [north-wing, south-wing]   # optional; see "Federation" in office.org
+assets:
+  - { path: tiles.png, sha256: 5f3c..., source: "drawn by hand", license: CC0-1.0 }
+#+end_src
+
+Load rules (=clawt_office_world_load()=):
+
+- *Refused*, so the pack is listed under ~refused~ by ~clawtilla office worlds~: the file is missing or not YAML; there is no =license=; =renderers= names neither a map nor a level; a renderer or asset path is absolute or contains =..=.
+- *Warned* and kept: a zone with no id (ignored), a tag nothing sends anybody to (usually a typo), a zone with no anchors (nobody can stand in it), and a pack with no =lounge= (where anything without a zone of its own goes).
+
+=clawt_office_world_verify_assets()= checks every listed asset exists and matches its =sha256=; that is the check a pack synced from another fleet has to pass.
+
+** Zone tags
+:PROPERTIES:
+:CUSTOM_ID: zone-tags
+:END:
+
+The tags something in clawtilla sends people to (=clawt_office_zone_tag_count()= / =_nth()=):
+
+| Tag | Used for |
+|-----+----------|
+| =desk= | where an agent works; =team= on the zone keeps a team's desks together |
+| =team_area= | a team's own corner (=team_area:<team>=) |
+| =lead_office= | where team leads sit |
+| =chief_office= | where the chief of staff sits |
+| =lounge= | where idle agents rest; also the fallback for any missing zone |
+| =breakroom= | a second idle spot, used when the lounge is full |
+| =meeting= | a meeting room (=meeting:<capacity>=) |
+| =town_hall= | the big room a round of every lead goes to |
+| =phone_booth= | where a call is taken when there is one |
+| =bug_corner= | where an agent whose turn broke stands |
+| =library= | reading, searching and research |
+| =lab= | running commands and tests |
+| =whiteboard= | planning, tasks and delegation |
+| =terminal= | driving a browser, a screen or a computer |
+| =server_room= | decoration with blinking lights; optional |
+| =visitor= | where remote workers (Grok bots, other fleets) appear |
+| =entrance= | where ephemeral helpers arrive and leave |
+| =usage_board= | the wall the plan allowances are drawn on |
+
+A zone may carry several tags.  =meeting:4= and =meeting:10= both answer =meeting=; the director picks the smallest that fits the people in the round.
+
+** How seats are given
+:PROPERTIES:
+:CUSTOM_ID: seats
+:END:
+
+The director (=clawt_office_direct()=, served as ~office.layout~) gives every participant a seat:
+
+1. Everybody gets a *home*: the chief the =chief_office=, leads a =lead_office=, a Grok bot a =visitor= desk, everybody else a =desk= -- their team's zone first.  Homes are given in id order, so a refresh never reshuffles the room.
+2. Meetings are seated next, together, in the smallest =meeting= zone that fits (=town_hall= for a town hall).
+3. Everybody else goes where the choreography sends them: home for desk work, thinking and waiting; beside the assignee's desk when delivering; the zone for their station, the lounge, the bug corner.
+4. A full zone overflows to another zone with the same tag, then to standing room at its last anchor.  A tag the pack does not have falls back to the desk (for a call or work) or the lounge, and the placement says so in =fallback=.
+
+So a pack's capacity is real: give a meeting room as many anchors as it has chairs.
+
+** Making a 2D pack in Tiled
+:PROPERTIES:
+:CUSTOM_ID: tiled
+:END:
+
+1. Start from a shipped pack: copy =data/office/worlds/modern-office= to =~/office-worlds/my-office=, and set =office.world_dirs: [~/office-worlds]= and =office.world: my-office=.
+2. Open ~map.tmj~ in Tiled.  It has a =floor= layer, a =furniture= layer and a =zones= object layer whose rectangles are named for the zones, with the tags in their /type/.
+3. Draw.  Keep the tileset at 32×32 tiles, or change =tilewidth= in the map and the anchors with it.
+4. Write each zone into ~office.yaml~ with its anchors in map pixels: the middle of the tile somebody sits on.
+5. ~clawtilla office worlds~ lists it, or says why not; ~clawtilla office layout~ shows who would sit where.
+
+** Making a 3D pack in lrgeditor
+:PROPERTIES:
+:CUSTOM_ID: lrgeditor
+:END:
+
+The 3D view loads a libregnum =.rlevel= (YAML).  Edit it in lrgeditor or by hand: each node has a =transform= and a =visual= (=primitive= with =cube=, =plane=, =sphere=, =cylinder=, =capsule=, =cone=, =torus=, or =mesh_asset= for a glTF/GLB/OBJ/VOX file inside the pack).  The shipped levels use one unit per map tile, with the map's x as x and its y as z, so =anchors_3d= are the 2D anchors divided by the tile size.  A camera node is optional; the renderer brings its own orbit camera.
+
+** Characters
+:PROPERTIES:
+:CUSTOM_ID: characters
+:END:
+
+A participant is drawn as a body in its agent's colour with its generated face (or picture) as the head.  Per-agent characters made by the custodial team's asset steward live in =<state_dir>/office/characters/<agent>/= and are used when present; see [[file:office.org][office.org]].
+
+** Licensing and provenance
+:PROPERTIES:
+:CUSTOM_ID: licensing
+:END:
+
+- A pack has one =license=; an asset with a different one says so in its own =license=.
+- =source= says where an asset came from: a URL, an author, or a generator and the model it used.  A generated asset also records the generator's terms; see [[file:office.org][office.org]] and the custodial team.
+- Only ship what you may redistribute.  LimeZu's interiors, for example, are not redistributable even when bought; a pack using them is a private pack.
+
+** The shipped packs
+:PROPERTIES:
+:CUSTOM_ID: shipped
+:END:
+
+=modern-office= and =cozy-town= are drawn entirely by =tools/clawt-office-genworld.c= -- the tiles with cairo, the 3D level from primitives -- so they are CC0 and nothing is downloaded.  ~make office-worlds~ redraws them (it needs =cairo-devel= and =json-glib-devel=; a normal build does not); the output is deterministic, so the sha256 sums in their manifests only change when the drawing does.  The program is also the worked example of describing a world as rooms: a floor, a wall style, the zone the room is and its furniture, with the seats coming from the furniture.

@@ -157,6 +157,9 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/agent/clawt-face.h \
 	$(SRCDIR)/agent/clawt-team.h \
 	$(SRCDIR)/agent/clawt-ephemeral-name.h \
+	$(SRCDIR)/office/clawt-office-presence.h \
+	$(SRCDIR)/office/clawt-office-world.h \
+	$(SRCDIR)/office/clawt-office-director.h \
 	$(SRCDIR)/agent/clawt-agent-confine.h \
 	$(SRCDIR)/computer/clawt-exec-result.h \
 	$(SRCDIR)/computer/clawt-sandbox.h \
@@ -320,6 +323,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-grok.c \
 	$(SRCDIR)/core/daemon-provider-usage.c \
 	$(SRCDIR)/core/daemon-ephemeral.c \
+	$(SRCDIR)/core/daemon-office.c \
 	$(SRCDIR)/core/daemon-config.c \
 	$(SRCDIR)/core/daemon-skill.c \
 	$(SRCDIR)/core/daemon-skill-proposal.c \
@@ -392,6 +396,9 @@ LIB_SOURCES = \
 	$(SRCDIR)/agent/clawt-face.c \
 	$(SRCDIR)/agent/clawt-team.c \
 	$(SRCDIR)/agent/clawt-ephemeral-name.c \
+	$(SRCDIR)/office/clawt-office-presence.c \
+	$(SRCDIR)/office/clawt-office-world.c \
+	$(SRCDIR)/office/clawt-office-director.c \
 	$(SRCDIR)/agent/clawt-agent-confine.c \
 	$(SRCDIR)/computer/clawt-exec-result.c \
 	$(SRCDIR)/computer/clawt-sandbox.c \
@@ -931,6 +938,24 @@ $(GENCONFIG_BIN): $(TOOLSDIR)/clawt-genconfig.c $(LIB_STATIC) | $(OUTDIR)
 	@echo "Building $(notdir $@)..."
 	$(CC) $(CFLAGS) -I$(SRCDIR) $< -o $@ $(LIB_STATIC) $(LDFLAGS)
 
+# ============================================================
+# The office world packs clawtilla ships (0.56.0)
+#
+# Every asset in data/office/worlds is drawn by tools/clawt-office-genworld.c,
+# so the packs are CC0 and nothing is downloaded.  The output is committed,
+# so only this target needs cairo; a build never does.
+# ============================================================
+OFFICE_GENWORLD = $(OUTDIR)/clawt-office-genworld
+
+$(OFFICE_GENWORLD): $(TOOLSDIR)/clawt-office-genworld.c | $(OUTDIR)
+	@echo "Building $(notdir $@)..."
+	$(CC) -std=gnu89 $(WARNINGS) -O2 $< -o $@ \
+		$$(pkg-config --cflags --libs cairo json-glib-1.0 glib-2.0) -lm
+
+.PHONY: office-worlds  ## Redraw the shipped office world packs into data/office/worlds
+office-worlds: $(OFFICE_GENWORLD)
+	@$(OFFICE_GENWORLD) $(DATADIR_SRC)/office/worlds
+
 .PHONY: config-files  ## Regenerate data/{example,default}-config.yaml and the docs tables
 config-files: $(GENCONFIG_BIN)
 	@echo "Regenerating config files and docs tables from the schema..."
@@ -1233,6 +1258,12 @@ install: all
 		$(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/web/icons/
 	install -m 644 $(DATADIR_SRC)/connectors.d/*.yaml \
 		$(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/connectors.d/
+	@# the shipped office world packs (clawt_daemon_office_world_dirs())
+	@for w in $(DATADIR_SRC)/office/worlds/*/; do \
+		n=$$(basename "$$w"); \
+		install -d $(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/office/worlds/$$n; \
+		install -m 644 "$$w"* $(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/office/worlds/$$n/; \
+	done
 	@for p in $(PLUGIN_OUTDIR)/*.so; do \
 		[ -f "$$p" ] && install -m 755 "$$p" $(DESTDIR)$(PLUGIN_SYSTEM_DIR)/ || true; \
 	done

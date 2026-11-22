@@ -1,0 +1,2 @@
+choreography:
+  - { activity: idle, zone: breakroom, pose: sit, prop: coffee }

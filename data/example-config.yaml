@@ -2436,6 +2436,54 @@ notices:
   # drops a notice first. 0 keeps them until notices.keep.
   keep_days: 30
 
+# The office: the fleet drawn as people in a building.
+#
+# The daemon folds what it sees -- turn edges, tool steps, messages,
+# decisions, incidents -- into an activity for every agent, and every
+# client draws who is where from it; with OFFICE=1 the office itself is
+# drawn in 2D or 3D. Nothing is invented: an agent at its desk is one
+# the daemon saw start a turn. See docs/office.org.
+office:
+
+  # Whether the daemon keeps the office: the presence fold, the
+  # office.presence events and the office.* requests. Off, nothing is
+  # computed, and every client's Office page says how to turn it on.
+  # Takes effect on the next reload.
+  enabled: false
+
+  # Which world pack to draw: a directory name under one of the world
+  # directories (office.world_dirs, <state_dir>/office/worlds, then the
+  # shipped data/office/worlds). Two ship: modern-office and cozy-town.
+  # `clawtilla office worlds` lists what is available. See
+  # docs/office-world-packs.org.
+  world: "modern-office"
+
+  # How a renderer should draw the world: `2d`, `3d`, or `auto` -- 3D
+  # when the pack has a level, otherwise 2D. A renderer's own option
+  # (clawtilla-office --2d) wins over this.
+  renderer: "auto"
+
+  # Extra directories holding world packs, searched before the daemon's
+  # own and the shipped ones, so your copy of a pack replaces theirs.
+  world_dirs: []
+
+  # How long a turn that was never seen to end is believed. A process
+  # that dies mid-turn never closes its turn edge; after this long its
+  # agent goes back to the lounge rather than sitting at its desk for
+  # ever.
+  stale_seconds: 600
+
+  # How many members a group room needs for a round in it to be drawn
+  # as a meeting. Fewer than 3 is read as 3: two agents talking is a
+  # call, not a meeting.
+  meeting_min_members: 3
+
+  # A YAML file of choreography rules -- which zone, pose, prop and emote
+  # each activity gets -- applied over the built-in rules and the world
+  # pack's own. `clawtilla office choreography` prints the built-in rules,
+  # which are also the format. See docs/office-choreography.org.
+  choreography: null
+
 # Standing work: a prompt, an agent, and when to run it.
 #
 # A routine is the thing you would otherwise remember to ask for every

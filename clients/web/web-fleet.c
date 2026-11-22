@@ -1305,6 +1305,8 @@ clawt_web_view_body(ClawtWebApp *app, const gchar *agent_id, ClawtPage view)
         return clawt_web_fleet_usage_body(app, agent_id);
     case CLAWT_PAGE_GROK:
         return clawt_web_grok_body(app, agent_id);
+    case CLAWT_PAGE_OFFICE:
+        return clawt_web_office_body(app, agent_id);
     case CLAWT_PAGE_SKILLS:
         return clawt_web_skills_body(app, agent_id);
     case CLAWT_PAGE_MEMORY:

@@ -1296,6 +1296,16 @@ absent when nothing has been scanned yet, which is a different answer
 from a scan that found nothing (an empty ~issues~).  See
 [[file:maintenance.org::*The sentinel: what keeps going wrong][maintenance.org]].
 
+*** office.*
+
+~office.snapshot~, ~office.worlds~, ~office.world~, ~office.layout~,
+~office.file~ and ~office.set~ (since 0.56.0), and the events
+~office.presence~ (ephemeral, an edge per participant) and
+~office.changed~.  Every member is listed in
+[[file:office.org::#wire][office.org]].  With =office.enabled= off,
+~office.snapshot~ and ~office.layout~ answer ~enabled: false~ and ~why~
+rather than an error, so a client can say how to turn it on.
+
 *** usage.*
 
 ~usage.summary~ (~since~, unix seconds, 0 for everything) → ~agents~, one

@@ -1,0 +1,84 @@
+#+title: Office choreography
+#+description: Which zone, pose, prop and emote each activity gets, and how to change them
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-11-21 Sat]
+#+updated: [2026-11-21 Sat]
+#+version: 0.1.0
+
+* Office choreography
+:PROPERTIES:
+:CUSTOM_ID: choreography
+:END:
+
+The choreography is how the office looks when somebody does something: which zone an activity sends them to, what pose they take there, what they hold, and what floats over their head.  It is data, so retheming the office -- everybody idles in the café, the bug corner becomes a repair shed with a wrench -- needs no code.
+
+** The rules
+:PROPERTIES:
+:CUSTOM_ID: rules
+:END:
+
+A rule names an =activity= (and, for =working=, optionally a =station=) and what it looks like:
+
+| Field | Meaning |
+|-------+---------|
+| =activity= | one of the activities in [[file:office.org::#activities][office.org]]; required |
+| =station= | for =working=: =desk=, =library=, =lab=, =whiteboard= or =terminal=; a rule with a station beats the plain =working= one |
+| =zone= | the zone tag to go to; required (see [[file:office-world-packs.org::#zone-tags][zone tags]]) |
+| =pose= | =stand=, =sit=, =walk=, =phone=, =present=, =read=, =type=, or any name a renderer knows; default =stand= |
+| =prop= | what to hold: =phone=, =folder=, =book=, =laptop=, =marker=, =terminal=, =screen=, =coffee=, or anything a renderer draws |
+| =emote= | what floats overhead: =question=, =alert=, =thought=, =zzz=, =wave= |
+
+The built-in rules are printed by ~clawtilla office choreography~, which is also the format to write overrides in:
+
+#+begin_src yaml
+choreography:
+  - { activity: offline,        zone: entrance,    pose: stand }
+  - { activity: idle,           zone: lounge,      pose: sit }
+  - { activity: thinking,       zone: desk,        pose: sit,     emote: thought }
+  - { activity: working,        zone: desk,        pose: type,    prop: laptop }
+  - { activity: working, station: library,    zone: library,    pose: read,    prop: book }
+  - { activity: working, station: lab,        zone: lab,        pose: type,    prop: terminal }
+  - { activity: working, station: whiteboard, zone: whiteboard, pose: present, prop: marker }
+  - { activity: working, station: terminal,   zone: terminal,   pose: type,    prop: screen }
+  - { activity: on_call,        zone: phone_booth, pose: phone,   prop: phone }
+  - { activity: in_meeting,     zone: meeting,     pose: sit }
+  - { activity: delivering,     zone: desk,        pose: walk,    prop: folder }
+  - { activity: waiting_on_you, zone: desk,        pose: stand,   emote: question }
+  - { activity: error,          zone: bug_corner,  pose: stand,   emote: alert }
+  - { activity: arriving,       zone: entrance,    pose: walk }
+  - { activity: leaving,        zone: entrance,    pose: walk,    emote: wave }
+#+end_src
+
+(=working= with station =desk= is listed too; it is the same as plain =working=.)
+
+=desk= means the participant's *own* desk -- their home (see [[file:office-world-packs.org::#seats][how seats are given]]) -- and for =delivering= the assignee's.
+
+** Overriding
+:PROPERTIES:
+:CUSTOM_ID: overriding
+:END:
+
+Three layers, each replacing only the rules it names, by activity and station:
+
+1. the built-in rules;
+2. the pack's own ~choreography.yaml~, if it has one;
+3. the file =office.choreography= names, if set.
+
+#+begin_src yaml
+# ~/.config/clawtilla/office-rules.yaml
+choreography:
+  - { activity: idle,  zone: breakroom,  pose: sit,   prop: coffee }
+  - { activity: error, zone: bug_corner, pose: stand, prop: wrench, emote: alert }
+#+end_src
+
+Point =office.choreography= at it in clawtilla.yaml, then:
+
+#+begin_src bash
+clawtilla config reload
+clawtilla office layout          # see where everybody goes now
+#+end_src
+
+An override is checked whole before any of it applies: an unknown activity or station, or a rule with no zone, refuses the file and the error names the rule.  A pack's broken file is ignored with a warning in the daemon's log; yours is refused out loud by ~office.world~ and ~office.layout~, since you are the one who can fix it.
+
+When a rule names a zone the world does not have, the director falls back -- to the desk for a call or work, to the lounge otherwise -- and the placement carries =fallback= with the reason.  A renderer may draw a pose or prop it does not know as a plain stand.

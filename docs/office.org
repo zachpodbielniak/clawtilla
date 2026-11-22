@@ -1,0 +1,156 @@
+#+title: The office
+#+description: The fleet drawn as people in a building: who is where, and why
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-11-21 Sat]
+#+updated: [2026-11-21 Sat]
+#+version: 0.1.0
+
+* The office
+:PROPERTIES:
+:CUSTOM_ID: office
+:END:
+
+The office draws the fleet as people in a building.  An agent sits at its desk while a turn is running, walks to the library when it reads and to the lab when it runs commands, takes out a phone while it messages another agent, and joins a meeting round a table when a group round is under way.  When the chief or you start a round that every lead is in, everybody walks to the town hall.  An idle agent sits in the lounge, one whose turn broke stands in the bug corner, and one that asked you something waits at its desk with a question mark over its head.  An ephemeral helper walks in through the entrance when it is spawned and out again when it is reaped.
+
+It is a view of what the daemon already knows, and it never invents anything.  Every pose comes from an event the daemon saw: a turn edge, a tool step, a message, a decision, an incident.  An edge that is never closed decays after =office.stale_seconds=.
+
+** At a glance
+:PROPERTIES:
+:CUSTOM_ID: glance
+:END:
+
+| Piece | What it is | Built |
+|-------+------------+-------|
+| presence | the fold from events to an activity per participant, in libclawt; the daemon runs it | always |
+| ~office.snapshot~, ~office.presence~ | who is doing what, on request and as it changes | always (answers "off" unless =office.enabled=) |
+| world packs | directories describing a place: zones, a 2D map, a 3D level | always (two ship) |
+| choreography | which zone, pose and prop each activity gets | always (built in, overridable) |
+| ~office.layout~ | the director's answer: who sits in which seat | always |
+| the roster | a who-is-where list on every client's Office page and in ~clawtilla office who~ | always |
+| =clawtilla-office= | the renderer: 2D and 3D, on libregnum | =OFFICE=1= |
+| the lrg Office page | the same renderer inside the libregnum client | =OFFICE=1 LRG_BACKEND=1= |
+| the GTK Office page | the renderer embedded as a region of the window | =OFFICE=1= |
+| the web Office page | its own canvas renderer, the same layout | =OFFICE=1= |
+
+The roster, the presence and the layout are in every build, because they cost nothing and every client should be able to say who is where.  Only the drawing needs =OFFICE=1=.
+
+** Turning it on
+:PROPERTIES:
+:CUSTOM_ID: enabling
+:END:
+
+#+begin_src bash
+clawtilla office on                    # or the switch on the Office page
+clawtilla office use cozy-town         # or the World picker; modern-office is the default
+clawtilla office who                   # the roster
+clawtilla office worlds                # what packs are available
+#+end_src
+
+~office.set~ writes =office.enabled=, =office.world= and =office.renderer= to clawtilla.yaml and applies them at once; no reload and no agent restart is needed.  Editing the keys by hand works too, followed by ~clawtilla config reload~.  The Office page in each client has the switch and the world picker, and says the office is off until it is on.
+
+** Activities
+:PROPERTIES:
+:CUSTOM_ID: activities
+:END:
+
+Each participant has one activity, chosen by priority: the loud ones win.
+
+| Activity | When | Drawn by default |
+|----------+------+------------------|
+| =waiting_on_you= | it asked you a decision and nobody has answered | at its desk, a question mark overhead |
+| =error= | its last turn timed out or kept repeating, or a run of its broke; cleared by its next turn | the bug corner, an alert overhead |
+| =in_meeting= | a group room with at least =office.meeting_min_members= members had a message in the last three minutes | round the table of the smallest meeting room that fits; the town hall when the chief or you are speaking and every lead is in the room |
+| =on_call= | it and one other agent exchanged a message in a room of two within the last minute | a phone booth, phone out, facing the other; at its desk when the world has no booth |
+| =delivering= | it just handed work over (a task assigned, a handoff queued) | beside the assignee's desk with a folder |
+| =working= | a turn is running and it used a tool in the last 45 seconds | the tool's station, see below |
+| =thinking= | a turn is running with no tool in hand | at its desk |
+| =arriving= | an ephemeral helper spawned in the last 15 seconds | at the entrance |
+| =leaving= | an ephemeral helper being reaped | walking out through the entrance |
+| =idle= | running, nothing to do | the lounge |
+| =offline= | not running | not drawn |
+
+*Stations* put a working agent where its tool belongs, matched on the tool's name (=clawt_office_station_for_tool()=):
+
+| Station | Tools |
+|---------+-------|
+| library | read, grep, glob, search, fetch, research, recall, memory |
+| lab | bash, shell, exec, test, computer |
+| whiteboard | todo, plan, task, delegate, ephemeral, decision |
+| terminal | browser, display, screen |
+| desk | anything else (writing and editing) |
+
+** Participants
+:PROPERTIES:
+:CUSTOM_ID: participants
+:END:
+
+| Kind | Who | Notes |
+|------+-----+-------|
+| =agent= | every agent in the fleet | the chief's home is the chief's office, a lead's the leads' offices, everybody else's a desk, a team's own desks first |
+| =ephemeral= | ephemeral helpers ([[file:ephemeral-agents.org][ephemeral-agents.org]]) | arrive and leave through the entrance |
+| =grok_bot= | a Grok bot with a job ([[file:grok.org][grok.org]]) | a remote worker at the visitor desk while it has a job; waiting on you when the job needs input |
+| =external= | reserved: another agent system, or a participant from another fleet | drawn at the visitor desk |
+
+Every participant carries =fleet= -- this fleet's id, made once and kept in =<state_dir>/fleet-id= -- so a future merged office can tell fleets apart.  See [[#federation][Federation]].
+
+** World packs
+:PROPERTIES:
+:CUSTOM_ID: worlds
+:END:
+
+A world pack is a directory with an ~office.yaml~.  Two ship with clawtilla, both CC0 and drawn by =tools/clawt-office-genworld.c= so nothing is downloaded:
+
+- =modern-office= -- an open-plan floor with glass offices, a huddle room and a boardroom, a library, a lab, a planning wall, an ops desk, a server room, a lounge and kitchen, phone booths, a bug corner, a visitor desk, a usage board, a lobby and a town hall.
+- =cozy-town= -- workshops for the teams, a manor for the chief, a guild hall for the leads, a tea house and a council chamber, a café garden, a library, a smithy, an observatory, an inn for visitors, a repair shed, a market square and a town hall.
+
+Packs are looked for, in order, in =office.world_dirs=, then =<state_dir>/office/worlds/= (where the custodial team writes), then the shipped =data/office/worlds/=.  A pack id found twice keeps the first, so your own copy of =modern-office= replaces the shipped one.
+
+How to write one -- the manifest, the zone tags, a 2D map in Tiled, a 3D level in lrgeditor, assets and provenance -- is in [[file:office-world-packs.org][office-world-packs.org]].
+
+** Choreography
+:PROPERTIES:
+:CUSTOM_ID: choreography
+:END:
+
+Which zone, pose, prop and emote each activity gets.  Three layers, each replacing the rules it names: the built-in rules, then the pack's own ~choreography.yaml~, then the file =office.choreography= names.  ~clawtilla office choreography~ prints the built-in rules, which are also the format.  See [[file:office-choreography.org][office-choreography.org]].
+
+** The wire
+:PROPERTIES:
+:CUSTOM_ID: wire
+:END:
+
+| Request | Answers |
+|---------+---------|
+| ~office.snapshot~ | ~enabled~, ~fleet~, ~now~, ~world~, ~renderer~ and ~participants~ (each ~fleet~, ~kind~, ~id~, ~name~, ~team~, ~parent~, ~role~, ~activity~, ~station~, ~peer~, ~room~, ~since~, ~detail~); or ~enabled: false~ and ~why~ |
+| ~office.worlds~ | ~enabled~, ~current~, ~worlds~ (~id~, ~name~, ~license~, ~has_2d~, ~has_3d~, ~warnings~) and ~refused~ (why a pack was not loaded) |
+| ~office.world~ (~world~ optional) | the pack: ~zones~, ~assets~, ~warnings~, ~districts~, relative ~map_2d~ / ~level_3d~, and the merged ~choreography~ |
+| ~office.layout~ (~world~ optional) | the director's ~placements~ (each ~id~, ~activity~, ~zone~, ~zone_tag~, ~seat~, ~x~/~y~, ~x3~/~z3~, ~pose~, ~prop~, ~emote~, ~facing~, ~fallback~) plus ~participants~ and ~now~ |
+| ~office.file~ (~world~, ~path~) | one file of a pack as ~base64~, at most 32 MiB, only inside the pack -- for a renderer not on the daemon's machine |
+| ~office.set~ (~enabled~, ~world~, ~renderer~, each optional) | writes them to clawtilla.yaml and applies them at once; answers the new ~enabled~, ~world~, ~renderer~; a world that does not exist is refused |
+
+~office.changed~ is published after ~office.set~.  ~office.presence~ is published whenever what a participant should be drawn doing changes, and never for a repeat: subject the participant's id, details every member of the participant as strings, or ~activity: gone~ when a helper has walked out.  It is ephemeral like ~turn.step~: not replayed and not logged.  Read ~office.snapshot~ on connect.
+
+** Federation
+:PROPERTIES:
+:CUSTOM_ID: federation
+:END:
+
+Not built yet.  These invariants exist so it can be built without undoing anything:
+
+- Every participant carries its fleet's id; locally they all carry this one.
+- A fleet publishes only its own participants.  A merged office would take other fleets' snapshots as read-only participants, kind =external=, drawn at the visitor desk or in a district of their own.
+- A pack names files by relative path only, and lists each with a =sha256= (=clawt_office_world_verify_assets()= checks them), so a pack can be synced between fleets by hash.  =districts= in a manifest names the parts of a world a merged office could give to other fleets.
+- ~office.file~ serves pack files by pack and path, never by a path on this machine.
+- Team tags and ephemeral names are unique within a fleet only; anything that crosses fleets namespaces them.
+
+** Troubleshooting
+:PROPERTIES:
+:CUSTOM_ID: troubleshooting
+:END:
+
+- *The Office page says the office is off.*  Turn it on there, or ~clawtilla office on~.
+- *Everybody is in the lounge.*  Nobody is in a turn.  Send an agent a message and watch it walk to its desk.
+- *An agent stays at its desk long after it finished.*  A turn edge was never closed -- the agent's process died mid-turn, say.  It decays after =office.stale_seconds= (600 by default).
+- *A pack is missing from ~clawtilla office worlds~.*  It is listed under ~refused~ with the reason: no licence, a path outside the pack, or YAML that does not parse.
+- *Somebody is "at the lounge instead".*  The pack has no zone with the tag the choreography asked for; ~office.layout~ names the fallback.  Add the zone, or override the rule.

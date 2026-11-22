@@ -2194,6 +2194,12 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
          g_strcmp0(kind, "spending.limit-reached") == 0))
         clawt_gtk_refresh_fleet(self);
 
+    /* somebody moved in the office: the daemon's edge, never a repeat */
+    if (clawt_gtk_current_page(self) == CLAWT_PAGE_OFFICE &&
+        (g_strcmp0(kind, "office.presence") == 0 ||
+         g_strcmp0(kind, "agent.created") == 0 || g_strcmp0(kind, "agent.removed") == 0))
+        clawt_gtk_refresh_office(self);
+
     /* a login's allowance was read: redraw the cards, ask for nothing */
     if (clawt_gtk_current_page(self) == CLAWT_PAGE_FLEET &&
         g_strcmp0(kind, "usage.providers_changed") == 0)
@@ -6304,6 +6310,10 @@ on_page_shown(ClawtWindow *self)
         clawt_gtk_refresh_limits(self, TRUE);
         return;
     }
+    if (clawt_gtk_current_page(self) == CLAWT_PAGE_OFFICE) {
+        clawt_gtk_refresh_office(self);
+        return;
+    }
     if (clawt_gtk_current_page(self) == CLAWT_PAGE_GROK) {
         clawt_gtk_refresh_grok(self);
         return;
@@ -6505,6 +6515,7 @@ build_page(ClawtWindow *self, ClawtPage page)
     case CLAWT_PAGE_ACTIVITY:  return clawt_gtk_build_activity_page(self);
     case CLAWT_PAGE_FLEET:     return clawt_gtk_build_fleet_page(self);
     case CLAWT_PAGE_GROK:      return clawt_gtk_build_grok_page(self);
+    case CLAWT_PAGE_OFFICE:    return clawt_gtk_build_office_page(self);
     case CLAWT_PAGE_SKILLS:    return clawt_gtk_build_skill_page(self);
     case CLAWT_PAGE_MEMORY:    return clawt_gtk_build_recall_page(self);
     }

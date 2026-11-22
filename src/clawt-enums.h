@@ -2199,6 +2199,8 @@ const gchar *clawt_grok_job_state_label(ClawtGrokJobState state);
  * @CLAWT_PAGE_FLEET: what each agent costs and which are idle (since 0.8.0)
  * @CLAWT_PAGE_GROK: the Grok bots the fleet hands work to, and every job
  *   sent to one (since 0.10.0)
+ * @CLAWT_PAGE_OFFICE: the office -- who is where, and with OFFICE=1 the
+ *   office drawn (since 0.56.0)
  *
  * Every page either client can show, in the order they are drawn.
  *
@@ -2220,7 +2222,8 @@ typedef enum {
     CLAWT_PAGE_SKILLS,
     CLAWT_PAGE_MEMORY,
     CLAWT_PAGE_FLEET,
-    CLAWT_PAGE_GROK
+    CLAWT_PAGE_GROK,
+    CLAWT_PAGE_OFFICE
 } ClawtPage;
 
 /**

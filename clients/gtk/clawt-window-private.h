@@ -117,6 +117,7 @@ typedef enum {
     CLAWT_REFRESH_FLEET,
     CLAWT_REFRESH_GROK,
     CLAWT_REFRESH_DEVICES,
+    CLAWT_REFRESH_OFFICE,
     CLAWT_N_REFRESH
 } ClawtRefreshKind;
 
@@ -650,6 +651,13 @@ struct _ClawtWindow {
     GtkWidget         *fleet_strip;
     GtkWidget         *fleet_stop_idle;
     GtkWidget         *fleet_limits;   /* a box of login cards */
+
+    /* The Office page (gtk-office.c). */
+    GtkListBox        *office_list;
+    GtkListBox        *office_controls;
+    GtkWidget         *office_status;
+    GtkWidget         *office_view_slot;  /* where OFFICE=1 embeds the drawing */
+    gpointer           office_view;       /* gtk-office-view.c's state, or NULL */
 
     /* The Grok page (gtk-grok.c). */
     GtkWidget         *grok_status;
@@ -1525,6 +1533,22 @@ clawt_gtk_refresh_limits(ClawtWindow *self, gboolean ask);
 
 GtkWidget *
 clawt_gtk_build_grok_page(ClawtWindow *self);
+
+GtkWidget *
+clawt_gtk_build_office_page(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_office(ClawtWindow *self);
+
+/*
+ * The drawn office in the Office page's slot: clawtilla-office embedded
+ * (gtk-office-view.c, OFFICE=1), or a line saying how to get it.
+ */
+void
+clawt_gtk_office_view_attach(ClawtWindow *self);
+
+void
+clawt_gtk_office_view_detach(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_grok(ClawtWindow *self);

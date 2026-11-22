@@ -637,5 +637,6 @@ clawt_event_is_ephemeral(ClawtEvent *event)
      * would only make it read twice.
      */
     return g_strcmp0(kind, "turn.step") == 0 ||
-           g_strcmp0(kind, "usage.providers_changed") == 0;
+           g_strcmp0(kind, "usage.providers_changed") == 0 ||
+           g_strcmp0(kind, "office.presence") == 0;
 }

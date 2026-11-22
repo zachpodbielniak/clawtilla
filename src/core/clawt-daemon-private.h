@@ -307,6 +307,14 @@ struct _ClawtDaemon {
      */
     gboolean                 ephemeral_no_start;
 
+    /* the office (0.56.0): NULL unless office.enabled */
+    ClawtOfficePresence     *office;
+    gulong                   office_bus_handler;
+    GSource                 *office_tick;
+    guint                    office_flush;
+    /* this fleet's id, made once in <state_dir>/fleet-id */
+    gchar                   *fleet_id;
+
     /*
      * Who to tell when something is worth interrupting somebody for.
      *
@@ -1388,6 +1396,18 @@ void clawt_daemon_provider_usage_landed(ClawtDaemon  *self,
                                         const GError *error);
 void clawt_provider_usage_login_free(ClawtProviderUsageLogin *login);
 void clawt_daemon_provider_usage_stop(ClawtDaemon *self);
+
+/* The office (daemon-office.c, 0.56.0). */
+JsonNode *clawt_daemon_handle_office(ClawtDaemon *self,
+                                     const gchar *kind,
+                                     JsonNode    *request,
+                                     JsonObject  *payload,
+                                     gboolean    *handled);
+const gchar *clawt_daemon_fleet_id(ClawtDaemon *self);
+GStrv    clawt_daemon_office_world_dirs(ClawtDaemon *self);
+void     clawt_daemon_office_setup(ClawtDaemon *self);
+void     clawt_daemon_office_teardown(ClawtDaemon *self);
+void     clawt_daemon_office_reconfigure(ClawtDaemon *self);
 
 /* Ephemeral agents (daemon-ephemeral.c, 0.55.0). */
 JsonNode *clawt_daemon_handle_ephemeral(ClawtDaemon *self,

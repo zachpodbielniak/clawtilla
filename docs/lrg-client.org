@@ -907,6 +907,9 @@ A section under the cards: the age of the last sentinel report (=clawt_sentinel_
 The read is =clawt_lrg_request()= with a generation guard, at most one in flight with one queued behind it, so a period change while a read is out draws the newer period and never the older. Events (~message~, ~agent.state~, ~agent.idle_stopped~, ~spending.limit-reached~) re-read only while the page is showing; the shell's 250 ms coalescer is for its own lists, and this page's one request is already bounded by the in-flight flag.
 
 
+** Office
+=clients/lrg/lrg-office.c=, the third drawing of [[file:clients.org::#office-page][the Office page]] (since 0.56.0). The toolbar carries the office's on/off button and a combo of the world packs ~office.worlds~ lists, each sent with ~office.set~ and followed by a re-read of both lists. Under them, the drawn office in an =OFFICE=1= build (drawn natively in this process, by the same renderer as =clawtilla-office=) or a note, then the roster: one row per participant with the activity badge in =clawt_office_activity_tone()= and =clawt_office_roster_line()= under the name. Re-read on ~office.presence~, ~agent.created~ and ~agent.removed~ while the page is showing, with a generation guard so an older reply never overwrites a newer one.
+
 ** Grok
 =clients/lrg/lrg-grok.c=, the third drawing of [[file:clients.org::#grok-tab][the Grok tab]]. A paragraph saying whether a job could be sent now, a row per bot (description and who may reach it, a "no key" badge, MCP or HTTP only, *Routine prompt* and *Mint MCP key* -- the key shown once in =clawt_lrg_show_text()=), a composer whose bot and agent combos are rebuilt on refresh keeping the chosen ids, and the jobs: a row each with the state badge in =clawt_grok_job_state_tone()=, at most thirty drawn and the rest counted. A report opens in the copyable text dialog, never as markdown, because the bot wrote it outside the fleet.
 

@@ -2148,6 +2148,7 @@ static const struct {
     { CLAWT_PAGE_ACTIVITY,  CLAWT_SECTION_WORK,       "activity",  "Activity" },
     { CLAWT_PAGE_FLEET,     CLAWT_SECTION_WORK,       "fleet",     "Fleet" },
     { CLAWT_PAGE_GROK,      CLAWT_SECTION_WORK,       "grok",      "Grok" },
+    { CLAWT_PAGE_OFFICE,    CLAWT_SECTION_WORK,       "office",    "Office" },
     { CLAWT_PAGE_SKILLS,    CLAWT_SECTION_LIBRARY,    "skills",    "Skills" },
     { CLAWT_PAGE_MEMORY,    CLAWT_SECTION_LIBRARY,    "memory",    "Memory" }
 };

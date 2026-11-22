@@ -342,6 +342,13 @@ declare -A AFFORDANCES=(
     ["reap a helper"]="on_reap_agent|/a/%s/reap|on_reap_confirmed"
     ["team tags field"]="clawt_team_tags_label|clawt_team_tags_label|clawt_team_tags_label"
     #
+    # The Office page (0.56.0): the roster line from the library, and the
+    # slot the drawn office goes in -- a note in a build without OFFICE=1.
+    #
+    ["office roster"]="clawt_office_roster_line|clawt_office_roster_line|clawt_office_roster_line"
+    ["office drawn"]="clawt_gtk_office_view_attach|clawt_web_office_view_add|clawt_lrg_office_view_add"
+    ["office on and world"]="on_enabled_changed|/office/set|on_toggle"
+    #
     # The Spending page's ledger: the grouping is a library enumeration,
     # so layer 3 already sees the selector -- but the unpriced-turn
     # sentence and the CSV export are each one call, sent no frame of

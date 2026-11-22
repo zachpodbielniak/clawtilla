@@ -402,6 +402,10 @@ LrgWidget *clawt_lrg_steps_build(ClawtLrgApp *app);
 void clawt_lrg_steps_refresh(ClawtLrgApp *app);
 const ClawtLrgPage *clawt_lrg_fleet_page(void);      /* lrg-fleet-page.c */
 const ClawtLrgPage *clawt_lrg_grok_page(void);       /* lrg-grok.c */
+const ClawtLrgPage *clawt_lrg_office_page(void);     /* lrg-office.c */
+/* The drawn office on the Office page: native with OFFICE=1, else a note. */
+void clawt_lrg_office_view_add(ClawtLrgApp *app, LrgWidget *parent);
+void clawt_lrg_office_view_event(ClawtLrgApp *app, ClawtEvent *event);
 const ClawtLrgPage *clawt_lrg_skills_page(void);     /* lrg-skills.c */
 /* Draws @skill into one library tile (a fixed-size vbox): name and
  * description each one line, cut short at the tile's edge. */
