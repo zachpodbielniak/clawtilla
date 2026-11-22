@@ -119,8 +119,8 @@ void clawt_office_scene_set_color(ClawtOfficeScene *self, const gchar *id,
  * @sheet_path: its sprite sheet, a local PNG
  * @character: its layout, as `office.characters` gives it
  *
- * Draws @id with its own character instead of the default body (in 2D;
- * the 3D view keeps the shared body with its face).  The texture is
+ * Draws @id with its own character instead of the default body: as a
+ * sprite in 2D, and in 3D as a billboard facing the camera.  The texture is
  * loaded at the next clawt_office_scene_prepare().
  */
 void clawt_office_scene_set_character(ClawtOfficeScene *self, const gchar *id,

@@ -1088,8 +1088,14 @@ pick_animation(JsonObject *animations, Actor *a, gboolean walking, gfloat dx, gf
  * as the default body.  A still pose holds its first frame: the sheet
  * animates walking and what a pose names, never an idle bob.
  */
+/*
+ * Which frame of a character's sheet is drawn now, as a source rectangle
+ * and the frame's aspect.  Shared by the 2D sprite and the 3D billboard,
+ * so a character moves the same way in both views.
+ */
 static gboolean
-draw_character_2d(ClawtOfficeScene *self, Actor *a, Sheet *sheet, gfloat x, gfloat y)
+character_frame(ClawtOfficeScene *self, Actor *a, Sheet *sheet, Rectangle *out_source,
+                gfloat *out_aspect)
 {
     JsonArray *frame = json_object_get_array_member(sheet->layout, "frame");
     JsonObject *animations = json_object_get_object_member(sheet->layout, "animations");
@@ -1101,8 +1107,6 @@ draw_character_2d(ClawtOfficeScene *self, Actor *a, Sheet *sheet, gfloat x, gflo
     gint64 frames;
     gdouble fps;
     gint64 index = 0;
-    gfloat height = 34.0f;
-    gfloat width;
 
     if (!sheet->loaded || frame == NULL || json_array_get_length(frame) < 2 ||
         animations == NULL)
@@ -1114,6 +1118,7 @@ draw_character_2d(ClawtOfficeScene *self, Actor *a, Sheet *sheet, gfloat x, gflo
         return FALSE;
     frames = MAX(1, json_object_get_int_member_with_default(anim, "frames", 1));
     fps = json_object_get_double_member_with_default(anim, "fps", 0.0);
+
     /*
      * Only the row that was asked for moves: a fallback (idle standing in
      * for a pose the sheet lacks) holds its first frame, or a sheet with
@@ -1122,16 +1127,56 @@ draw_character_2d(ClawtOfficeScene *self, Actor *a, Sheet *sheet, gfloat x, gflo
     if (fps > 0.0 && asked && (walking || (a->pose != NULL && g_strcmp0(a->pose, "stand") != 0 &&
                                            g_strcmp0(a->pose, "sit") != 0)))
         index = (gint64)(self->clock * fps) % frames;
-    width = height * (gfloat)(fw / fh);
+    *out_source = (Rectangle){ (gfloat)(index * fw),
+                               (gfloat)(json_object_get_int_member_with_default(anim, "row", 0) *
+                                        fh),
+                               (gfloat)fw, (gfloat)fh };
+    *out_aspect = (gfloat)(fw / fh);
+    return TRUE;
+}
+
+/*
+ * A person drawn from their own sheet, feet at (@x, @y), about as tall
+ * as the default body.
+ */
+static gboolean
+draw_character_2d(ClawtOfficeScene *self, Actor *a, Sheet *sheet, gfloat x, gfloat y)
+{
+    Rectangle source;
+    gfloat aspect = 1.0f;
+    gfloat height = 34.0f;
+    gfloat width;
+
+    if (!character_frame(self, a, sheet, &source, &aspect))
+        return FALSE;
+    width = height * aspect;
     DrawEllipse((gint)x, (gint)(y + 7.0f), width * 0.45f, 4.0f,
                 with_alpha((Color){ 0, 0, 0, 70 }, a->fade));
-    DrawTexturePro(sheet->texture,
-                   (Rectangle){ (gfloat)(index * fw),
-                                (gfloat)(json_object_get_int_member_with_default(anim, "row", 0) *
-                                         fh),
-                                (gfloat)fw, (gfloat)fh },
+    DrawTexturePro(sheet->texture, source,
                    (Rectangle){ x - width / 2.0f, y + 8.0f - height, width, height },
                    (Vector2){ 0.0f, 0.0f }, 0.0f, with_alpha(WHITE, a->fade));
+    return TRUE;
+}
+
+/*
+ * The same character in the 3D view: its current frame on a billboard
+ * that faces the camera, standing on the floor where the body would.
+ * A character is a picture until a pack ships a mesh for it, and a
+ * picture that turns to face you reads better than a body that is not
+ * them.
+ */
+static gboolean
+draw_character_3d(ClawtOfficeScene *self, Actor *a, Sheet *sheet, Vector3 feet)
+{
+    Rectangle source;
+    gfloat aspect = 1.0f;
+    gfloat height = 2.6f;
+
+    if (!character_frame(self, a, sheet, &source, &aspect))
+        return FALSE;
+    DrawBillboardRec(self->camera3d, sheet->texture, source,
+                     (Vector3){ feet.x, feet.y + height / 2.0f, feet.z },
+                     (Vector2){ height * aspect, height }, with_alpha(WHITE, a->fade));
     return TRUE;
 }
 
@@ -1406,6 +1451,13 @@ draw_3d(ClawtOfficeScene *self, gint width, gint height)
         Color body = with_alpha(shade(a->color, 0.72f), a->fade);
         Color head = with_alpha(a->color, a->fade);
 
+        /* their own character when they have one, facing the camera */
+        {
+            Sheet *sheet = g_hash_table_lookup(self->sheets, a->id);
+
+            if (sheet != NULL && draw_character_3d(self, a, sheet, feet))
+                continue;
+        }
         /* a figure about two tiles tall, so it reads from a god's-eye camera */
         DrawCapsule((Vector3){ feet.x, base + 0.45f, feet.z },
                     (Vector3){ feet.x, base + 1.25f, feet.z }, 0.42f, 10, 8, body);

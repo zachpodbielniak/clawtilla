@@ -167,7 +167,7 @@ The lrg client draws the same scene in its own process, into an =LrgViewport= on
 
 *** Characters
 
-An agent the custodial team has made a character for ([[file:office-custodial-team.org::#characters][characters]]) is drawn from its own sprite sheet instead of the shared body: walking picks the row for the direction it is going, a pose (sit, type, read, phone, present) its own row, a still pose holds a frame.  A sheet is fetched with ~office.character_file~ and checked against the sha256 its manifest recorded -- one that does not match is not drawn.  The 3D view keeps the shared body with its face.
+An agent the custodial team has made a character for ([[file:office-custodial-team.org::#characters][characters]]) is drawn from its own sprite sheet instead of the shared body: walking picks the row for the direction it is going, a pose (sit, type, read, phone, present) its own row, a still pose holds a frame.  A sheet is fetched with ~office.character_file~ and checked against the sha256 its manifest recorded -- one that does not match is not drawn.  In the 3D view the same frame is drawn on a billboard that faces the camera, standing where the body would; a generated 3D mesh per agent is not made yet.
 
 #+caption: kudu drawn from its sheet, on a call with the chief
 [[file:images/office/office-character.png]]

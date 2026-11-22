@@ -104,7 +104,7 @@ To ask again (a new picture, a better generator):
 clawtilla office character <agent>
 #+end_src
 
-Higgsfield makes images and video and no 3D models, so a 3D office draws every character as the shared body wearing its generated face, whatever the generator.
+Higgsfield makes images and video and no 3D models, so the 3D view draws a character as its current frame on a billboard facing the camera, whatever the generator.
 
 ** Made by the daemon itself
 :PROPERTIES:
