@@ -74,7 +74,25 @@ on_status(const gchar *text, gpointer user_data)
     clawt_lrg_app_wake(user_data);
 }
 
-static const ClawtOfficeFeedFuncs feed_funcs = { on_world, on_layout, on_color, on_status };
+static void
+on_character(const gchar *agent, const gchar *sheet_path, JsonObject *character,
+             gpointer user_data)
+{
+    clawt_office_scene_set_character(view.scene, agent, sheet_path, character);
+    /* the texture loads here, in the drain, outside the viewport's texture mode */
+    clawt_office_scene_prepare(view.scene);
+    clawt_lrg_app_wake(user_data);
+}
+
+static void
+on_usage(JsonObject *usage, gpointer user_data)
+{
+    clawt_office_scene_set_usage(view.scene, usage);
+}
+
+static const ClawtOfficeFeedFuncs feed_funcs = {
+    on_world, on_layout, on_color, on_status, on_character, on_usage
+};
 
 /* Every frame, inside the viewport's render texture. */
 static void

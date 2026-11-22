@@ -14,7 +14,8 @@
 #ifndef CLAWT_OFFICE_PACK_H
 #define CLAWT_OFFICE_PACK_H
 
-#include <glib.h>
+#include <glib-object.h>
+#include <json-glib/json-glib.h>
 
 G_BEGIN_DECLS
 
@@ -139,6 +140,122 @@ gboolean clawt_office_character_import_asset(const gchar  *characters,
                                              const gchar  *provenance,
                                              gchar       **out_sha256,
                                              GError      **error);
+
+/**
+ * ClawtOfficeAnimation:
+ * @name: what it is for: `idle`, `walk_down`, `walk_up`, `walk_left`,
+ *   `walk_right`, `sit`, `type`, `read`, `phone`, `present`, or a pack's own
+ * @row: its row in the sheet, from 0
+ * @frames: how many frames, left to right
+ * @fps: frames a second; 0 holds the first frame
+ *
+ * One row of a character's sprite sheet.
+ */
+typedef struct {
+    gchar   *name;
+    guint    row;
+    guint    frames;
+    gdouble  fps;
+} ClawtOfficeAnimation;
+
+/**
+ * ClawtOfficeCharacter:
+ * @agent: whose character it is
+ * @sheet: (nullable): the sprite sheet, relative to the character's
+ *   directory, or %NULL while it has none
+ * @sheet_sha256: (nullable): its checksum, from the manifest's `assets`
+ * @frame_width: one frame's width in pixels
+ * @frame_height: one frame's height in pixels
+ * @animations: (element-type ClawtOfficeAnimation): its rows
+ *
+ * An agent's character as the custodial team made it
+ * (`<state_dir>/office/characters/<agent>/character.yaml`).
+ */
+typedef struct {
+    gchar     *agent;
+    gchar     *sheet;
+    gchar     *sheet_sha256;
+    guint      frame_width;
+    guint      frame_height;
+    GPtrArray *animations;
+} ClawtOfficeCharacter;
+
+GType clawt_office_character_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_OFFICE_CHARACTER (clawt_office_character_get_type())
+
+/**
+ * clawt_office_character_copy:
+ * @character: a character
+ *
+ * Returns: (transfer full): a deep copy
+ */
+ClawtOfficeCharacter *clawt_office_character_copy(const ClawtOfficeCharacter *character);
+
+/**
+ * clawt_office_character_free:
+ * @character: (nullable): a character
+ */
+void clawt_office_character_free(ClawtOfficeCharacter *character);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtOfficeCharacter, clawt_office_character_free)
+
+/**
+ * clawt_office_character_load:
+ * @dir: a character's directory
+ * @error: return location for a #GError
+ *
+ * Reads `character.yaml`.  A character with no `sheet` yet loads, with
+ * @sheet %NULL: its assets are still being made.
+ *
+ * Returns: (transfer full) (nullable): the character
+ */
+ClawtOfficeCharacter *clawt_office_character_load(const gchar *dir, GError **error);
+
+/**
+ * clawt_office_character_to_json:
+ * @character: a character
+ *
+ * Returns: (transfer full): `{agent, sheet, sheet_sha256, frame: [w, h],
+ *   animations: {name: {row, frames, fps}}}`
+ */
+JsonNode *clawt_office_character_to_json(const ClawtOfficeCharacter *character);
+
+/**
+ * clawt_office_character_set_sheet:
+ * @characters: the characters directory, `<state_dir>/office/characters`
+ * @agent_id: whose character
+ * @sheet: the sprite sheet, relative to the character's directory; it must
+ *   have been imported (clawt_office_character_import_asset()) and be a PNG
+ * @frame_width: one frame's width, 8 to 512 pixels
+ * @frame_height: one frame's height, 8 to 512 pixels
+ * @animations: `{name: {row, frames, fps}}`, at least one
+ * @error: return location for a #GError
+ *
+ * Says how the sheet is laid out, checked against the image: every
+ * animation's row and frames must fit inside it, so a renderer never
+ * reads past the sheet.  The manifest's assets are kept.
+ *
+ * Returns: %TRUE when the manifest was written
+ */
+gboolean clawt_office_character_set_sheet(const gchar  *characters,
+                                          const gchar  *agent_id,
+                                          const gchar  *sheet,
+                                          guint         frame_width,
+                                          guint         frame_height,
+                                          JsonObject   *animations,
+                                          GError      **error);
+
+/**
+ * clawt_office_png_size:
+ * @path: a file
+ * @width: (out): its width
+ * @height: (out): its height
+ *
+ * Reads a PNG's size from its header, without decoding it.
+ *
+ * Returns: %TRUE when @path is a PNG
+ */
+gboolean clawt_office_png_size(const gchar *path, guint *width, guint *height);
 
 /**
  * clawt_office_file_sha256:

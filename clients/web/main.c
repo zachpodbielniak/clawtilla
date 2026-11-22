@@ -26,6 +26,7 @@ static gint      opt_daemon_port = 0;
 static gchar    *opt_token = NULL;
 static gchar   **opt_bind = NULL;
 static gboolean  opt_no_tailscale = FALSE;
+static gboolean  opt_office = FALSE;
 static gboolean  opt_version = FALSE;
 static gboolean  opt_license = FALSE;
 
@@ -41,6 +42,10 @@ static GOptionEntry entries[] = {
     {
         "no-tailscale", 0, 0, G_OPTION_ARG_NONE, &opt_no_tailscale,
         "Do not bind the tailnet address; localhost only", NULL
+    },
+    {
+        "office", 0, 0, G_OPTION_ARG_NONE, &opt_office,
+        "Send / to the Office page rather than the chat", NULL
     },
     {
         "socket", 's', 0, G_OPTION_ARG_FILENAME, &opt_socket,
@@ -329,6 +334,9 @@ main(int argc, char *argv[])
         "  # This machine only\n"
         "  clawtilla-web --no-tailscale\n"
         "\n"
+        "  # A wall display: open on the office\n"
+        "  clawtilla-web --office\n"
+        "\n"
         "  # Somewhere else entirely, on another port\n"
         "  clawtilla-web --bind 192.168.1.10 --port 9000\n"
         "\n"
@@ -444,6 +452,7 @@ main(int argc, char *argv[])
     }
 
     app = clawt_web_app_new(client);
+    clawt_web_app_set_landing_page(app, opt_office ? CLAWT_PAGE_OFFICE : CLAWT_PAGE_CHAT);
 
     /*
      * The connection, so the connections page can show which one is in

@@ -180,6 +180,7 @@ struct _ClawtLrgApp {
      * exists (lrg-window.c).  Normalised; nullable.
      */
     gchar           *open_target;
+    gboolean         open_office;     /* --office: the Office page once the fleet loads */
     guint            generation;   /* bumped on every selection change */
 
     /* ── the fleet, as last read ── */

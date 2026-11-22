@@ -62,6 +62,23 @@ ClawtWebApp *clawt_web_app_new(ClawtClient *client);
 ClawtClient *clawt_web_app_get_client(ClawtWebApp *self);
 
 /**
+ * clawt_web_app_set_landing_page:
+ * @self: a #ClawtWebApp
+ * @page: the page `/` sends a visitor to, on the first agent
+ *
+ * %CLAWT_PAGE_CHAT unless `--office` asked for %CLAWT_PAGE_OFFICE.
+ */
+void clawt_web_app_set_landing_page(ClawtWebApp *self, ClawtPage page);
+
+/**
+ * clawt_web_app_get_landing_page:
+ * @self: a #ClawtWebApp
+ *
+ * Returns: the page `/` sends a visitor to
+ */
+ClawtPage clawt_web_app_get_landing_page(ClawtWebApp *self);
+
+/**
  * clawt_web_app_request:
  * @self: a #ClawtWebApp
  * @kind: an IPC frame kind

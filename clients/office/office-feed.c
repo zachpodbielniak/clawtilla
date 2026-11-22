@@ -41,8 +41,16 @@ typedef struct {
     gchar           *path;
 } FileRequest;
 
+typedef struct {
+    ClawtOfficeFeed *feed;
+    JsonObject      *character;
+    gchar           *local;
+} SheetRequest;
+
 static void fetch_next(ClawtOfficeFeed *self);
 static void request_layout(ClawtOfficeFeed *self);
+static void request_characters(ClawtOfficeFeed *self);
+static void request_usage(ClawtOfficeFeed *self);
 
 static void
 say(ClawtOfficeFeed *self, const gchar *text)
@@ -169,6 +177,8 @@ fetch_next(ClawtOfficeFeed *self)
             self->funcs.world(self->pack_dir, self->world, self->user_data);
         self->ready = TRUE;
         request_layout(self);
+        request_characters(self);
+        request_usage(self);
         return;
     }
     req = g_new0(FileRequest, 1);
@@ -298,6 +308,125 @@ on_agents(GObject *source, GAsyncResult *result, gpointer user_data)
     }
 }
 
+/* ── Characters ─────────────────────────────────────────────────── */
+
+/*
+ * A character's sheet, fetched over office.character_file into the
+ * cache and checked against the checksum its manifest recorded: a sheet
+ * that does not match is not drawn, rather than drawn wrong.
+ */
+static void
+on_sheet(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    SheetRequest *req = user_data;
+    ClawtOfficeFeed *self = req->feed;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) node = NULL;
+    JsonObject *reply;
+    const gchar *encoded;
+    const gchar *want;
+    g_autofree guchar *data = NULL;
+    g_autofree gchar *sum = NULL;
+    g_autofree gchar *parent = NULL;
+    gsize length = 0;
+
+    if (g_cancellable_is_cancelled(self->cancellable))
+        goto done;
+    reply = finish(source, result, &node, &error);
+    encoded = reply != NULL ? json_object_get_string_member_with_default(reply, "base64", NULL)
+                            : NULL;
+    if (encoded == NULL)
+        goto done;
+    data = g_base64_decode(encoded, &length);
+    want = json_object_get_string_member_with_default(req->character, "sheet_sha256", NULL);
+    sum = g_compute_checksum_for_data(G_CHECKSUM_SHA256, data, length);
+    if (want != NULL && g_ascii_strcasecmp(want, sum) != 0) {
+        g_warning("office: %s's sheet does not match its manifest; not drawn",
+                  json_object_get_string_member_with_default(req->character, "agent", "?"));
+        goto done;
+    }
+    parent = g_path_get_dirname(req->local);
+    g_mkdir_with_parents(parent, 0700);
+    if (g_file_set_contents(req->local, (const gchar *)data, (gssize)length, NULL) &&
+        self->funcs.character != NULL)
+        self->funcs.character(json_object_get_string_member(req->character, "agent"),
+                              req->local, req->character, self->user_data);
+
+done:
+    json_object_unref(req->character);
+    g_free(req->local);
+    g_free(req);
+}
+
+static void
+on_characters(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtOfficeFeed *self = user_data;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) node = NULL;
+    JsonObject *reply;
+    JsonArray *list;
+    guint i;
+
+    if (g_cancellable_is_cancelled(self->cancellable) || self->funcs.character == NULL)
+        return;
+    reply = finish(source, result, &node, &error);
+    list = reply != NULL && json_object_has_member(reply, "characters")
+        ? json_object_get_array_member(reply, "characters") : NULL;
+    for (i = 0; list != NULL && i < json_array_get_length(list); i++) {
+        JsonObject *c = json_array_get_object_element(list, i);
+        const gchar *agent = json_object_get_string_member_with_default(c, "agent", NULL);
+        const gchar *sheet = json_object_get_string_member_with_default(c, "sheet", NULL);
+        SheetRequest *req;
+
+        if (agent == NULL || sheet == NULL || !clawt_office_pack_path_is_safe(agent) ||
+            strchr(agent, '/') != NULL || !clawt_office_pack_path_is_safe(sheet))
+            continue;
+        req = g_new0(SheetRequest, 1);
+        req->feed = self;
+        req->character = json_object_ref(c);
+        req->local = g_build_filename(g_get_user_cache_dir(), "clawtilla", "office",
+                                      "characters", agent, sheet, NULL);
+        request(self, "office.character_file",
+                clawt_ipc_payload_new("agent", agent, "path", sheet, NULL), on_sheet, req);
+    }
+}
+
+static void
+request_characters(ClawtOfficeFeed *self)
+{
+    request(self, "office.characters", NULL, on_characters, self);
+}
+
+/* ── The usage board ──────────────────────────────────────────────── */
+
+static void
+on_usage(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtOfficeFeed *self = user_data;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) node = NULL;
+    JsonObject *reply;
+
+    if (g_cancellable_is_cancelled(self->cancellable))
+        return;
+    reply = finish(source, result, &node, &error);
+    if (reply != NULL && self->funcs.usage != NULL)
+        self->funcs.usage(reply, self->user_data);
+}
+
+/*
+ * As it stands, never with `refresh`: reading an allowance spawns the
+ * provider's CLI, and a wall display left open all day must not do that
+ * once a minute.  The Fleet page refreshes; the board shows the result.
+ */
+static void
+request_usage(ClawtOfficeFeed *self)
+{
+    if (self->funcs.usage != NULL)
+        request(self, "usage.providers", NULL, on_usage, self);
+}
+
 /* ── Life cycle ─────────────────────────────────────────────────── */
 
 void
@@ -347,7 +476,10 @@ clawt_office_feed_event(ClawtOfficeFeed *self, ClawtEvent *event)
     if (g_strcmp0(kind, "office.presence") == 0)
         request_layout(self);
     else if (g_strcmp0(kind, "office.changed") == 0)
+        /* a pack, a world choice or a character: read it all again */
         clawt_office_feed_refresh(self);
+    else if (g_strcmp0(kind, "usage.providers_changed") == 0)
+        request_usage(self);
     else if (g_strcmp0(kind, "agent.created") == 0 || g_strcmp0(kind, "agent.changed") == 0)
         request(self, "agent.list", NULL, on_agents, self);
 }

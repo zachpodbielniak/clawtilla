@@ -929,6 +929,19 @@ static const ClawtParamInfo office_asset_import_params[] = {
       "and its terms. Required.", TRUE }
 };
 
+static const ClawtParamInfo office_character_layout_params[] = {
+    { "agent", "string", "Whose character.", TRUE },
+    { "sheet", "string",
+      "The sprite sheet, a PNG already imported into the character "
+      "(clawtilla_office_asset_import), e.g. sprites/sheet.png.", TRUE },
+    { "frame_width", "integer", "One frame's width in pixels.", TRUE },
+    { "frame_height", "integer", "One frame's height in pixels.", TRUE },
+    { "animations", "object",
+      "Each animation's row: {\"idle\": {\"row\": 0, \"frames\": 1}, "
+      "\"walk_down\": {\"row\": 1, \"frames\": 4, \"fps\": 8}, ...}. "
+      "Checked against the image: a row or frame past its edge is refused.", TRUE }
+};
+
 static const ClawtParamInfo office_custodians_params[] = {
     { "team", "string",
       "The team's id; it may be named anything, it is found by its "
@@ -1019,6 +1032,12 @@ static const ToolDefinition tools[] = {
          "character, recording its checksum, licence and provenance. Every "
          "asset needs its provenance.",
          NEEDS_OFFICE, office_asset_import_params, CLAWT_ACTION_WRITE),
+
+    TOOL("clawtilla_office_character_layout",
+         "Say how an agent's imported sprite sheet is laid out -- the frame "
+         "size and which row is which animation -- after which the office "
+         "draws that agent with it instead of the default body.",
+         NEEDS_OFFICE, office_character_layout_params, CLAWT_ACTION_WRITE),
 
     TOOL("clawtilla_office_custodians_install",
          "Install the office's custodial team: a lead, an asset steward and a "

@@ -578,6 +578,42 @@ test_daemon_file_stays_in_the_pack(void)
     clawt_test_remove_tree(dir);
 }
 
+/*
+ * Federation, ahead of time: a participant another fleet published --
+ * kind external, its own fleet id -- is seated at the visitor desk and
+ * never at one of ours, from a snapshot the daemon did not make.  The
+ * invariant docs/office.org records, checked rather than promised.
+ */
+static void
+test_director_seats_a_visitor_from_another_fleet(void)
+{
+    g_autofree gchar *dir = g_build_filename(CLAWT_TEST_FIXTURES, "..", "..", "data", "office",
+                                             "worlds", "modern-office", NULL);
+    g_autoptr(ClawtOfficeWorld) world = clawt_office_world_load(dir, NULL);
+    g_autoptr(ClawtOfficeChoreography) rules = clawt_office_choreography_new_default();
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(JsonNode) layout = NULL;
+    JsonObject *p;
+
+    g_assert_nonnull(world);
+    g_assert_true(json_parser_load_from_data(parser,
+        "{\"fleet\":\"ours\",\"now\":1000,\"participants\":["
+        "{\"fleet\":\"ours\",\"kind\":\"agent\",\"id\":\"kudu\",\"activity\":\"working\","
+        "\"since\":990},"
+        "{\"fleet\":\"theirs\",\"kind\":\"external\",\"id\":\"theirs:ada\","
+        "\"activity\":\"working\",\"since\":990}]}", -1, NULL));
+    layout = clawt_office_direct(world, rules,
+                                 json_node_get_object(json_parser_get_root(parser)));
+
+    p = placement_of(layout, "theirs:ada");
+    g_assert_nonnull(p);
+    /* zone_tag is the choreography's ("desk": their own); the seat is the zone */
+    g_assert_cmpstr(json_object_get_string_member(p, "zone"), ==, "visitors");
+    p = placement_of(layout, "kudu");
+    g_assert_nonnull(p);
+    g_assert_cmpstr(json_object_get_string_member(p, "zone"), !=, "visitors");
+}
+
 gint
 main(gint argc, gchar *argv[])
 {
@@ -594,6 +630,8 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office/discover-skips-refused", test_discover_skips_refused);
     g_test_add_func("/office/choreography-layers", test_choreography_layers);
     g_test_add_func("/office/director-places", test_director_places);
+    g_test_add_func("/office/director-seats-a-visitor-from-another-fleet",
+                    test_director_seats_a_visitor_from_another_fleet);
     g_test_add_func("/office/daemon", test_daemon_office);
     g_test_add_func("/office/daemon-file-stays-in-the-pack", test_daemon_file_stays_in_the_pack);
 

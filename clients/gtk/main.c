@@ -13,6 +13,7 @@
  */
 
 #include "clawt-gtk.h"
+#include "clawt-window-private.h"
 
 #include <stdlib.h>
 
@@ -24,6 +25,7 @@ static gchar *opt_token = NULL;
 static gboolean opt_version = FALSE;
 static gboolean opt_license = FALSE;
 static gchar *opt_open = NULL;
+static gboolean opt_office = FALSE;
 
 static GOptionEntry entries[] = {
     {
@@ -50,6 +52,10 @@ static GOptionEntry entries[] = {
         "open", 'o', 0, G_OPTION_ARG_STRING, &opt_open,
         "Open an agent's chat, a peer conversation or a group room "
         "(in the running window, if there is one)", "ROOM"
+    },
+    {
+        "office", 0, 0, G_OPTION_ARG_NONE, &opt_office,
+        "Open on the Office page: who is where, and the office drawn", NULL
     },
     {
         "version", 'V', 0, G_OPTION_ARG_NONE, &opt_version,
@@ -83,6 +89,7 @@ static const gchar *description_text =
     "  # which is what an org-mode link hands over\n"
     "  clawtilla-gtk --open chief\n"
     "  clawtilla-gtk --open standup\n"
+    "  clawtilla-gtk --office\n"
     "  clawtilla-gtk --open clawtilla:dm:chief:lead\n"
     "\n"
     "--open goes to the window that is already running when there is\n"
@@ -130,6 +137,12 @@ on_activate(AdwApplication *app, gpointer user_data)
         g_autofree gchar *target = g_steal_pointer(&opt_open);
 
         clawt_window_open_target(window, target);
+    }
+
+    /* --office: straight to the Office page, once, like --open */
+    if (opt_office) {
+        opt_office = FALSE;
+        clawt_gtk_show_page(window, CLAWT_PAGE_OFFICE);
     }
 }
 

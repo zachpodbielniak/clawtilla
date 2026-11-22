@@ -87,6 +87,31 @@ void clawt_office_scene_set_color(ClawtOfficeScene *self, const gchar *id,
                                   const gchar *color);
 
 /**
+ * clawt_office_scene_set_character:
+ * @self: a scene
+ * @id: an agent's id
+ * @sheet_path: its sprite sheet, a local PNG
+ * @character: its layout, as `office.characters` gives it
+ *
+ * Draws @id with its own character instead of the default body (in 2D;
+ * the 3D view keeps the shared body with its face).  The texture is
+ * loaded at the next clawt_office_scene_prepare().
+ */
+void clawt_office_scene_set_character(ClawtOfficeScene *self, const gchar *id,
+                                      const gchar *sheet_path, JsonObject *character);
+
+/**
+ * clawt_office_scene_set_usage:
+ * @self: a scene
+ * @usage: (nullable): `usage.providers`' answer, or %NULL for none
+ *
+ * What each provider login has left, drawn on the wall the pack tags
+ * `usage_board` -- the same meters as the Fleet page, from the same
+ * library calls.  A pack with no such wall draws none.
+ */
+void clawt_office_scene_set_usage(ClawtOfficeScene *self, JsonObject *usage);
+
+/**
  * clawt_office_scene_set_mode:
  * @self: a scene
  * @mode: 2D or 3D

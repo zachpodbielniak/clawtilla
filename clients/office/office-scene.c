@@ -80,6 +80,25 @@ actor_free(Actor *a)
     g_free(a);
 }
 
+/* An agent's own character: its sheet, and which row is which animation. */
+typedef struct {
+    gchar      *path;
+    JsonObject *layout;
+    Texture2D   texture;
+    gboolean    loaded;
+    gboolean    failed;
+} Sheet;
+
+static void
+sheet_free(Sheet *sheet)
+{
+    if (sheet->loaded)
+        UnloadTexture(sheet->texture);
+    g_free(sheet->path);
+    g_clear_pointer(&sheet->layout, json_object_unref);
+    g_free(sheet);
+}
+
 struct _ClawtOfficeScene {
     ClawtOfficeSceneMode  mode;
     gboolean              has_2d;
@@ -100,8 +119,13 @@ struct _ClawtOfficeScene {
     GHashTable           *actors;     /* id -> Actor */
     GHashTable           *colors;     /* id -> "#rrggbb" */
     GHashTable           *beams;      /* "a|b" -> LrgBeam */
+    GHashTable           *sheets;     /* id -> Sheet */
     gchar                *status;
     gchar                *hovered;
+    JsonObject           *usage;      /* usage.providers, for the board */
+    gboolean              has_board;
+    gfloat                board_x;    /* the usage_board's first anchor */
+    gfloat                board_y;
     Camera2D              camera2d;
     RenderTexture2D       baked;      /* the map at 1:1, drawn once */
     gfloat                person_scale;
@@ -171,6 +195,8 @@ clawt_office_scene_new(void)
                                          (GDestroyNotify)actor_free);
     self->colors = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     self->beams = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
+    self->sheets = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                         (GDestroyNotify)sheet_free);
     self->tile = 32.0f;
     self->person_scale = PERSON_SCALE;
     self->orbit = 0.65f;
@@ -187,6 +213,7 @@ clawt_office_scene_free(ClawtOfficeScene *self)
     g_hash_table_unref(self->actors);
     g_hash_table_unref(self->colors);
     g_hash_table_unref(self->beams);
+    g_hash_table_unref(self->sheets);
     g_ptr_array_unref(self->tilemaps);
     if (self->baked_ok)
         UnloadRenderTexture(self->baked);
@@ -197,6 +224,7 @@ clawt_office_scene_free(ClawtOfficeScene *self)
     g_clear_object(&self->lcamera);
     g_free(self->status);
     g_free(self->hovered);
+    g_clear_pointer(&self->usage, json_object_unref);
     g_free(self);
 }
 
@@ -312,6 +340,9 @@ clawt_office_scene_load_world(ClawtOfficeScene  *self,
         self->map_w = 44 * 32;
         self->map_h = 40 * 32;
     }
+
+    /* the wall the allowances are drawn on, if the pack has one */
+    self->has_board = zone_anchor(world, "usage_board", &self->board_x, &self->board_y);
 
     /* where newcomers walk in from, and leavers walk out to */
     if (!zone_anchor(world, "entrance", &self->entrance_x, &self->entrance_y)) {
@@ -511,6 +542,28 @@ clawt_office_scene_set_color(ClawtOfficeScene *self, const gchar *id, const gcha
 }
 
 void
+clawt_office_scene_set_usage(ClawtOfficeScene *self, JsonObject *usage)
+{
+    g_clear_pointer(&self->usage, json_object_unref);
+    if (usage != NULL)
+        self->usage = json_object_ref(usage);
+}
+
+void
+clawt_office_scene_set_character(ClawtOfficeScene *self, const gchar *id,
+                                 const gchar *sheet_path, JsonObject *character)
+{
+    Sheet *sheet;
+
+    if (id == NULL || sheet_path == NULL || character == NULL)
+        return;
+    sheet = g_new0(Sheet, 1);
+    sheet->path = g_strdup(sheet_path);
+    sheet->layout = json_object_ref(character);
+    g_hash_table_replace(self->sheets, g_strdup(id), sheet);
+}
+
+void
 clawt_office_scene_set_mode(ClawtOfficeScene *self, ClawtOfficeSceneMode mode)
 {
     if (mode == CLAWT_OFFICE_SCENE_3D && self->map != NULL && !self->has_3d)
@@ -558,7 +611,29 @@ clawt_office_scene_prepare(ClawtOfficeScene *self)
      * host's own render texture -- raylib texture modes do not nest -- so
      * update() calls it, and a host that draws inside one calls it first.
      */
-    if (!self->has_2d || self->baked_ok || !IsWindowReady())
+    if (!IsWindowReady())
+        return;
+
+    /* characters' sheets, loaded where a GL context is current */
+    {
+        GHashTableIter iter;
+        gpointer value;
+
+        g_hash_table_iter_init(&iter, self->sheets);
+        while (g_hash_table_iter_next(&iter, NULL, &value)) {
+            Sheet *sheet = value;
+
+            if (sheet->loaded || sheet->failed)
+                continue;
+            sheet->texture = LoadTexture(sheet->path);
+            sheet->loaded = sheet->texture.id != 0;
+            sheet->failed = !sheet->loaded;
+            if (sheet->loaded)
+                SetTextureFilter(sheet->texture, TEXTURE_FILTER_POINT);
+        }
+    }
+
+    if (!self->has_2d || self->baked_ok)
         return;
     self->baked = LoadRenderTexture((gint)self->map_w, (gint)self->map_h);
     SetTextureFilter(self->baked.texture, TEXTURE_FILTER_BILINEAR);
@@ -761,6 +836,84 @@ draw_person_2d(Actor *a, gfloat x, gfloat y, gboolean hovered)
     }
 }
 
+/*
+ * The row a character draws now: walking picks the direction it is
+ * going, otherwise the pose (sit, type, read, phone, present), otherwise
+ * idle -- and whatever the sheet lacks falls back to idle, then to its
+ * first row, so a partial sheet still draws.
+ */
+static JsonObject *
+pick_animation(JsonObject *animations, Actor *a, gboolean walking, gfloat dx, gfloat dy)
+{
+    const gchar *want = NULL;
+
+    if (walking)
+        want = fabsf(dx) > fabsf(dy) ? (dx > 0.0f ? "walk_right" : "walk_left")
+                                     : (dy > 0.0f ? "walk_down" : "walk_up");
+    else if (a->pose != NULL && g_strcmp0(a->pose, "stand") != 0)
+        want = a->pose;
+    if (want != NULL && json_object_has_member(animations, want))
+        return json_object_get_object_member(animations, want);
+    if (walking && json_object_has_member(animations, "walk_down"))
+        return json_object_get_object_member(animations, "walk_down");
+    if (json_object_has_member(animations, "idle"))
+        return json_object_get_object_member(animations, "idle");
+    {
+        GList *names = json_object_get_members(animations);
+        JsonObject *first = names != NULL
+            ? json_object_get_object_member(animations, names->data) : NULL;
+
+        g_list_free(names);
+        return first;
+    }
+}
+
+/*
+ * A person drawn from their own sheet, feet at (@x, @y), about as tall
+ * as the default body.  A still pose holds its first frame: the sheet
+ * animates walking and what a pose names, never an idle bob.
+ */
+static gboolean
+draw_character_2d(ClawtOfficeScene *self, Actor *a, Sheet *sheet, gfloat x, gfloat y)
+{
+    JsonArray *frame = json_object_get_array_member(sheet->layout, "frame");
+    JsonObject *animations = json_object_get_object_member(sheet->layout, "animations");
+    gboolean walking = fabsf(a->tx - a->x) + fabsf(a->ty - a->y) > ARRIVED_PIXELS;
+    JsonObject *anim;
+    gdouble fw;
+    gdouble fh;
+    gint64 frames;
+    gdouble fps;
+    gint64 index = 0;
+    gfloat height = 34.0f;
+    gfloat width;
+
+    if (!sheet->loaded || frame == NULL || json_array_get_length(frame) < 2 ||
+        animations == NULL)
+        return FALSE;
+    fw = (gdouble)json_array_get_int_element(frame, 0);
+    fh = (gdouble)json_array_get_int_element(frame, 1);
+    anim = pick_animation(animations, a, walking, a->tx - a->x, a->ty - a->y);
+    if (anim == NULL || fw <= 0.0 || fh <= 0.0)
+        return FALSE;
+    frames = MAX(1, json_object_get_int_member_with_default(anim, "frames", 1));
+    fps = json_object_get_double_member_with_default(anim, "fps", 0.0);
+    if (fps > 0.0 && (walking || (a->pose != NULL && g_strcmp0(a->pose, "stand") != 0 &&
+                                  g_strcmp0(a->pose, "sit") != 0)))
+        index = (gint64)(self->clock * fps) % frames;
+    width = height * (gfloat)(fw / fh);
+    DrawEllipse((gint)x, (gint)(y + 7.0f), width * 0.45f, 4.0f,
+                with_alpha((Color){ 0, 0, 0, 70 }, a->fade));
+    DrawTexturePro(sheet->texture,
+                   (Rectangle){ (gfloat)(index * fw),
+                                (gfloat)(json_object_get_int_member_with_default(anim, "row", 0) *
+                                         fh),
+                                (gfloat)fw, (gfloat)fh },
+                   (Rectangle){ x - width / 2.0f, y + 8.0f - height, width, height },
+                   (Vector2){ 0.0f, 0.0f }, 0.0f, with_alpha(WHITE, a->fade));
+    return TRUE;
+}
+
 /* The overlays over one person, at its screen position. */
 static void
 draw_overlays(ClawtOfficeScene *self, Actor *a, Vector2 at, gfloat scale)
@@ -776,6 +929,129 @@ draw_overlays(ClawtOfficeScene *self, Actor *a, Vector2 at, gfloat scale)
     if (lrg_world_widget_get_alpha(LRG_WORLD_WIDGET(a->bubble)) > 0.01f)
         lrg_world_widget_draw_at(LRG_WORLD_WIDGET(a->bubble), at.x,
                                  at.y - above - 14.0f * scale);
+}
+
+/*
+ * Text for raylib's default font, which has ASCII and nothing else: the
+ * dashes and quotes libclawt's labels use become their ASCII cousins,
+ * anything else a '?', rather than a box per character.
+ */
+static gchar *
+ascii_for_font(const gchar *text)
+{
+    GString *out = g_string_new(NULL);
+    const gchar *p;
+
+    for (p = text != NULL ? text : ""; *p != '\0'; p = g_utf8_next_char(p)) {
+        gunichar c = g_utf8_get_char(p);
+
+        if (c < 0x80)
+            g_string_append_c(out, (gchar)c);
+        else if (c == 0x2014 || c == 0x2013 || c == 0x2212)
+            g_string_append_c(out, '-');
+        else if (c == 0x2018 || c == 0x2019)
+            g_string_append_c(out, '\'');
+        else if (c == 0x201c || c == 0x201d)
+            g_string_append_c(out, '"');
+        else if (c == 0x00b7 || c == 0x2022)
+            g_string_append_c(out, '.');
+        else if (c == 0x2026)
+            g_string_append(out, "...");
+        else
+            g_string_append_c(out, '?');
+    }
+    return g_string_free(out, FALSE);
+}
+
+/* A tone's colour, as the clients paint clawt_allowance_level_tone(). */
+static Color
+tone_color(const gchar *tone)
+{
+    if (g_strcmp0(tone, "bad") == 0)
+        return (Color){ 224, 27, 36, 255 };
+    if (g_strcmp0(tone, "warn") == 0)
+        return (Color){ 229, 165, 10, 255 };
+    if (g_strcmp0(tone, "good") == 0)
+        return (Color){ 46, 194, 126, 255 };
+    return (Color){ 120, 174, 237, 255 };
+}
+
+/*
+ * The usage board: one block per provider login, its title and a meter
+ * per window -- the same remaining, level and labels the Fleet page shows
+ * (clawt_usage_*), screen space at the board's place on the map.  A login
+ * that reports nothing says so rather than drawing an empty meter.
+ */
+static void
+draw_usage_board(ClawtOfficeScene *self, Vector2 at, gfloat scale)
+{
+    JsonArray *logins = self->usage != NULL && json_object_has_member(self->usage, "logins")
+        ? json_object_get_array_member(self->usage, "logins") : NULL;
+    gfloat width = 260.0f * scale;
+    gfloat line = 13.0f * scale;
+    gfloat x = at.x - width / 2.0f;
+    gfloat y = at.y - 8.0f * scale;
+    gfloat height = 0.0f;
+    gint font = MAX(8, (gint)(10.0f * scale));
+    guint i;
+    guint w;
+
+    if (logins == NULL || json_array_get_length(logins) == 0)
+        return;
+    for (i = 0; i < json_array_get_length(logins) && i < 4; i++) {
+        JsonObject *login = json_array_get_object_element(logins, i);
+        JsonArray *windows = json_object_has_member(login, "windows")
+            ? json_object_get_array_member(login, "windows") : NULL;
+
+        height += line * (1.0f + (gfloat)MIN(windows != NULL
+                                             ? json_array_get_length(windows) : 1, 2));
+    }
+    height += line * 0.6f;
+    /* kept on screen: a wall near the edge would push the board off it */
+    x = CLAMP(x, 4.0f, MAX(4.0f, (gfloat)self->last_w - width - 4.0f));
+    DrawRectangleRounded((Rectangle){ x, y - height, width, height }, 0.08f, 6,
+                         (Color){ 18, 20, 26, 225 });
+    y = y - height + line * 0.3f;
+    for (i = 0; i < json_array_get_length(logins) && i < 4; i++) {
+        JsonObject *login = json_array_get_object_element(logins, i);
+        JsonArray *windows = json_object_has_member(login, "windows")
+            ? json_object_get_array_member(login, "windows") : NULL;
+        g_autofree gchar *raw = clawt_usage_login_title(login);
+        g_autofree gchar *title = ascii_for_font(raw);
+
+        DrawText(title, (gint)(x + 6.0f * scale), (gint)y, font, RAYWHITE);
+        y += line;
+        if (windows == NULL || json_array_get_length(windows) == 0) {
+            DrawText("reports no plan limits", (gint)(x + 6.0f * scale), (gint)y, font,
+                     (Color){ 170, 175, 190, 255 });
+            y += line;
+            continue;
+        }
+        for (w = 0; w < json_array_get_length(windows) && w < 2; w++) {
+            JsonObject *window = json_array_get_object_element(windows, w);
+            g_autofree gchar *raw_value = clawt_usage_window_value_label(window);
+            g_autofree gchar *value = ascii_for_font(raw_value);
+            g_autofree gchar *label = ascii_for_font(
+                json_object_get_string_member_with_default(window, "label", "window"));
+            gdouble left = 0.0;
+            gfloat bar_x = x + 96.0f * scale;
+            gfloat bar_w = width - 160.0f * scale;
+            Color fill = tone_color(clawt_allowance_level_tone(
+                clawt_usage_window_level(window)));
+
+            DrawText(label, (gint)(x + 6.0f * scale), (gint)y, font,
+                     (Color){ 190, 195, 210, 255 });
+            DrawRectangleRec((Rectangle){ bar_x, y + 2.0f * scale, bar_w, 7.0f * scale },
+                             (Color){ 60, 64, 76, 255 });
+            if (clawt_usage_window_remaining(window, &left))
+                DrawRectangleRec((Rectangle){ bar_x, y + 2.0f * scale,
+                                              bar_w * (gfloat)CLAMP(left / 100.0, 0.0, 1.0),
+                                              7.0f * scale }, fill);
+            DrawText(value != NULL ? value : "", (gint)(bar_x + bar_w + 6.0f * scale), (gint)y,
+                     font, RAYWHITE);
+            y += line;
+        }
+    }
 }
 
 /* People drawn top to bottom, so a nearer one stands in front. */
@@ -842,10 +1118,19 @@ draw_2d(ClawtOfficeScene *self, gint width, gint height)
         rlPushMatrix();
         rlTranslatef(a->x, a->y, 0.0f);
         rlScalef(self->person_scale, self->person_scale, 1.0f);
-        draw_person_2d(a, 0.0f, 0.0f, g_strcmp0(self->hovered, a->id) == 0);
+        {
+            Sheet *sheet = g_hash_table_lookup(self->sheets, a->id);
+
+            if (sheet == NULL || !draw_character_2d(self, a, sheet, 0.0f, 0.0f))
+                draw_person_2d(a, 0.0f, 0.0f, g_strcmp0(self->hovered, a->id) == 0);
+        }
         rlPopMatrix();
     }
     EndMode2D();
+
+    if (self->has_board)
+        draw_usage_board(self, GetWorldToScreen2D((Vector2){ self->board_x, self->board_y },
+                                                  self->camera2d), MAX(zoom * 1.4f, 0.75f));
 
     /* text in screen space, so it stays legible at any zoom */
     for (i = 0; i < people->len; i++) {

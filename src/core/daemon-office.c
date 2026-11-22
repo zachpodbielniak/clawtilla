@@ -828,6 +828,84 @@ clawt_daemon_handle_office(ClawtDaemon *self,
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    /*
+     * The characters the custodial team has made, for a renderer: each
+     * one with a sheet and its layout.  One still being made (no sheet
+     * yet) is left out -- the agent keeps the default body until it is
+     * whole.
+     */
+    if (g_strcmp0(kind, "office.characters") == 0) {
+        g_autofree gchar *root = clawt_daemon_office_characters_dir(self);
+        g_autoptr(GDir) dir = g_dir_open(root, 0, NULL);
+        const gchar *name;
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "characters");
+        json_builder_begin_array(builder);
+        while (dir != NULL && (name = g_dir_read_name(dir)) != NULL) {
+            g_autofree gchar *one = g_build_filename(root, name, NULL);
+            g_autoptr(ClawtOfficeCharacter) c = clawt_office_character_load(one, NULL);
+
+            /* only a whole one, and only for an agent that exists */
+            if (c == NULL || c->sheet == NULL || c->animations->len == 0 ||
+                clawt_config_get_agent(self->config, name) == NULL)
+                continue;
+            g_free(c->agent);
+            c->agent = g_strdup(name);
+            json_builder_add_value(builder, clawt_office_character_to_json(c));
+        }
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /* One file of a character, by agent and path, resolved as office.file is. */
+    if (g_strcmp0(kind, "office.character_file") == 0) {
+        const gchar *agent = clawt_ipc_payload_string(payload, "agent");
+        const gchar *relative = clawt_ipc_payload_string(payload, "path");
+        g_autofree gchar *root = clawt_daemon_office_characters_dir(self);
+        g_autofree gchar *dir = NULL;
+        g_autofree gchar *full = NULL;
+        g_autofree gchar *real = NULL;
+        g_autofree gchar *real_dir = NULL;
+        g_autofree gchar *prefix = NULL;
+        g_autofree gchar *data = NULL;
+        g_autofree gchar *encoded = NULL;
+        gsize length = 0;
+
+        if (agent == NULL || !clawt_office_pack_path_is_safe(agent) ||
+            strchr(agent, '/') != NULL || relative == NULL ||
+            !clawt_office_pack_path_is_safe(relative))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "an agent and a path inside its character are required");
+        dir = g_build_filename(root, agent, NULL);
+        full = g_build_filename(dir, relative, NULL);
+        real = realpath(full, NULL);
+        real_dir = realpath(dir, NULL);
+        if (real == NULL || real_dir == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "that character has no such file");
+        prefix = g_strconcat(real_dir, G_DIR_SEPARATOR_S, NULL);
+        if (!g_str_has_prefix(real, prefix))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_PERMISSION_DENIED,
+                                       "that path is outside the character");
+        if (!g_file_get_contents(real, &data, &length, &error))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND, error->message);
+        if (length > 32 * 1024 * 1024)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "that file is larger than 32 MiB");
+        encoded = g_base64_encode((const guchar *)data, length);
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "path");
+        json_builder_add_string_value(builder, relative);
+        json_builder_set_member_name(builder, "size");
+        json_builder_add_int_value(builder, (gint64)length);
+        json_builder_set_member_name(builder, "base64");
+        json_builder_add_string_value(builder, encoded);
+        json_builder_end_object(builder);
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     /* A character commissioned again, by hand. */
     if (g_strcmp0(kind, "office.character") == 0) {
         g_autofree gchar *task = clawt_daemon_office_commission_character(self,

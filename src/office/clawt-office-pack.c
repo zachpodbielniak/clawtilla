@@ -20,6 +20,7 @@
 #include "office/clawt-office-world.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -439,4 +440,358 @@ clawt_office_character_import_asset(const gchar  *characters,
     }
     return import_into(dir, "character.yaml", source_path, relative, license, provenance,
                        out_sha256, error);
+}
+
+/* ── Characters ──────────────────────────────────────────────────── */
+
+static void
+animation_free(ClawtOfficeAnimation *animation)
+{
+    g_free(animation->name);
+    g_free(animation);
+}
+
+static ClawtOfficeCharacter *
+character_new(void)
+{
+    ClawtOfficeCharacter *c = g_new0(ClawtOfficeCharacter, 1);
+
+    c->animations = g_ptr_array_new_with_free_func((GDestroyNotify)animation_free);
+    return c;
+}
+
+ClawtOfficeCharacter *
+clawt_office_character_copy(const ClawtOfficeCharacter *character)
+{
+    ClawtOfficeCharacter *c;
+    guint i;
+
+    g_return_val_if_fail(character != NULL, NULL);
+
+    c = character_new();
+    c->agent = g_strdup(character->agent);
+    c->sheet = g_strdup(character->sheet);
+    c->sheet_sha256 = g_strdup(character->sheet_sha256);
+    c->frame_width = character->frame_width;
+    c->frame_height = character->frame_height;
+    for (i = 0; i < character->animations->len; i++) {
+        const ClawtOfficeAnimation *from = g_ptr_array_index(character->animations, i);
+        ClawtOfficeAnimation *to = g_new0(ClawtOfficeAnimation, 1);
+
+        *to = *from;
+        to->name = g_strdup(from->name);
+        g_ptr_array_add(c->animations, to);
+    }
+    return c;
+}
+
+void
+clawt_office_character_free(ClawtOfficeCharacter *character)
+{
+    if (character == NULL)
+        return;
+    g_free(character->agent);
+    g_free(character->sheet);
+    g_free(character->sheet_sha256);
+    g_ptr_array_unref(character->animations);
+    g_free(character);
+}
+
+G_DEFINE_BOXED_TYPE(ClawtOfficeCharacter, clawt_office_character,
+                    clawt_office_character_copy, clawt_office_character_free)
+
+gboolean
+clawt_office_png_size(const gchar *path, guint *width, guint *height)
+{
+    static const guchar signature[8] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n' };
+    guchar head[24];
+    FILE *f;
+    gsize got;
+
+    g_return_val_if_fail(path != NULL && width != NULL && height != NULL, FALSE);
+
+    f = fopen(path, "rb");
+    if (f == NULL)
+        return FALSE;
+    got = fread(head, 1, sizeof(head), f);
+    fclose(f);
+    /* the signature, then IHDR first, as the format requires */
+    if (got != sizeof(head) || memcmp(head, signature, 8) != 0 || memcmp(head + 12, "IHDR", 4) != 0)
+        return FALSE;
+    *width = ((guint)head[16] << 24) | ((guint)head[17] << 16) | ((guint)head[18] << 8) | head[19];
+    *height = ((guint)head[20] << 24) | ((guint)head[21] << 16) | ((guint)head[22] << 8) | head[23];
+    return *width > 0 && *height > 0;
+}
+
+/* A YAML scalar member as a number, or @fallback. */
+static gdouble
+number_member(YamlMapping *mapping, const gchar *name, gdouble fallback)
+{
+    YamlNode *node;
+    const gchar *text;
+    gchar *end = NULL;
+    gdouble value;
+
+    if (mapping == NULL || !yaml_mapping_has_member(mapping, name))
+        return fallback;
+    node = yaml_mapping_get_member(mapping, name);
+    if (node == NULL || yaml_node_get_node_type(node) != YAML_NODE_SCALAR)
+        return fallback;
+    text = yaml_node_get_string(node);
+    value = text != NULL ? g_ascii_strtod(text, &end) : fallback;
+    return end != NULL && end != text && *end == '\0' ? value : fallback;
+}
+
+ClawtOfficeCharacter *
+clawt_office_character_load(const gchar *dir, GError **error)
+{
+    g_autofree gchar *path = NULL;
+    g_autoptr(YamlParser) parser = yaml_parser_new();
+    g_autoptr(ClawtOfficeCharacter) c = NULL;
+    YamlNode *root;
+    YamlMapping *top;
+    YamlMapping *animations;
+    YamlSequence *frame;
+    YamlSequence *assets;
+    guint i;
+
+    g_return_val_if_fail(dir != NULL, NULL);
+
+    path = g_build_filename(dir, "character.yaml", NULL);
+    if (!yaml_parser_load_from_file(parser, path, error))
+        return NULL;
+    root = yaml_parser_get_root(parser);
+    if (root == NULL || yaml_node_get_node_type(root) != YAML_NODE_MAPPING) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID, "%s is not a mapping", path);
+        return NULL;
+    }
+    top = yaml_node_get_mapping(root);
+    c = character_new();
+    c->agent = g_strdup(yaml_mapping_get_string_member(top, "agent"));
+    c->sheet = g_strdup(yaml_mapping_get_string_member(top, "sheet"));
+    if (c->sheet != NULL && !clawt_office_pack_path_is_safe(c->sheet)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                    "%s: sheet is not a path inside the character", path);
+        return NULL;
+    }
+    frame = yaml_mapping_has_member(top, "frame")
+        ? yaml_mapping_get_sequence_member(top, "frame") : NULL;
+    if (frame != NULL && yaml_sequence_get_length(frame) == 2) {
+        c->frame_width = (guint)g_ascii_strtoull(yaml_sequence_get_string_element(frame, 0),
+                                                 NULL, 10);
+        c->frame_height = (guint)g_ascii_strtoull(yaml_sequence_get_string_element(frame, 1),
+                                                  NULL, 10);
+    }
+    animations = yaml_mapping_has_member(top, "animations")
+        ? yaml_mapping_get_mapping_member(top, "animations") : NULL;
+    for (i = 0; animations != NULL && i < yaml_mapping_get_size(animations); i++) {
+        const gchar *name = yaml_mapping_get_key(animations, i);
+        YamlNode *value = yaml_mapping_get_value(animations, i);
+        YamlMapping *m;
+        ClawtOfficeAnimation *a;
+
+        if (value == NULL || yaml_node_get_node_type(value) != YAML_NODE_MAPPING)
+            continue;
+        m = yaml_node_get_mapping(value);
+        a = g_new0(ClawtOfficeAnimation, 1);
+        a->name = g_strdup(name);
+        a->row = (guint)MAX(0.0, number_member(m, "row", 0.0));
+        a->frames = (guint)MAX(1.0, number_member(m, "frames", 1.0));
+        a->fps = MAX(0.0, number_member(m, "fps", 0.0));
+        g_ptr_array_add(c->animations, a);
+    }
+    /* the sheet's checksum, from the assets the importer recorded */
+    assets = yaml_mapping_has_member(top, "assets")
+        ? yaml_mapping_get_sequence_member(top, "assets") : NULL;
+    for (i = 0; c->sheet != NULL && assets != NULL && i < yaml_sequence_get_length(assets); i++) {
+        YamlNode *node = yaml_sequence_get_element(assets, i);
+        YamlMapping *m;
+
+        if (node == NULL || yaml_node_get_node_type(node) != YAML_NODE_MAPPING)
+            continue;
+        m = yaml_node_get_mapping(node);
+        if (g_strcmp0(yaml_mapping_get_string_member(m, "path"), c->sheet) == 0)
+            c->sheet_sha256 = g_strdup(yaml_mapping_get_string_member(m, "sha256"));
+    }
+    return g_steal_pointer(&c);
+}
+
+JsonNode *
+clawt_office_character_to_json(const ClawtOfficeCharacter *character)
+{
+    g_autoptr(JsonBuilder) b = json_builder_new();
+    guint i;
+
+    g_return_val_if_fail(character != NULL, NULL);
+
+    json_builder_begin_object(b);
+    json_builder_set_member_name(b, "agent");
+    json_builder_add_string_value(b, character->agent);
+    if (character->sheet != NULL) {
+        json_builder_set_member_name(b, "sheet");
+        json_builder_add_string_value(b, character->sheet);
+    }
+    if (character->sheet_sha256 != NULL) {
+        json_builder_set_member_name(b, "sheet_sha256");
+        json_builder_add_string_value(b, character->sheet_sha256);
+    }
+    json_builder_set_member_name(b, "frame");
+    json_builder_begin_array(b);
+    json_builder_add_int_value(b, character->frame_width);
+    json_builder_add_int_value(b, character->frame_height);
+    json_builder_end_array(b);
+    json_builder_set_member_name(b, "animations");
+    json_builder_begin_object(b);
+    for (i = 0; i < character->animations->len; i++) {
+        const ClawtOfficeAnimation *a = g_ptr_array_index(character->animations, i);
+
+        json_builder_set_member_name(b, a->name);
+        json_builder_begin_object(b);
+        json_builder_set_member_name(b, "row");
+        json_builder_add_int_value(b, a->row);
+        json_builder_set_member_name(b, "frames");
+        json_builder_add_int_value(b, a->frames);
+        json_builder_set_member_name(b, "fps");
+        json_builder_add_double_value(b, a->fps);
+        json_builder_end_object(b);
+    }
+    json_builder_end_object(b);
+    json_builder_end_object(b);
+    return json_builder_get_root(b);
+}
+
+/* An animation name is a word: lower-case letters, digits and underscores. */
+static gboolean
+animation_name_is_valid(const gchar *name)
+{
+    const gchar *p;
+
+    if (name == NULL || *name == '\0' || strlen(name) > 32)
+        return FALSE;
+    for (p = name; *p != '\0'; p++)
+        if (!g_ascii_islower(*p) && !g_ascii_isdigit(*p) && *p != '_')
+            return FALSE;
+    return TRUE;
+}
+
+gboolean
+clawt_office_character_set_sheet(const gchar  *characters,
+                                 const gchar  *agent_id,
+                                 const gchar  *sheet,
+                                 guint         frame_width,
+                                 guint         frame_height,
+                                 JsonObject   *animations,
+                                 GError      **error)
+{
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *manifest = NULL;
+    g_autofree gchar *image = NULL;
+    g_autoptr(ClawtOfficeCharacter) current = NULL;
+    g_autoptr(YamlParser) parser = yaml_parser_new();
+    g_autoptr(YamlGenerator) generator = NULL;
+    g_autoptr(YamlMapping) rows = yaml_mapping_new();
+    g_autoptr(YamlSequence) frame = yaml_sequence_new();
+    g_autofree gchar *text = NULL;
+    YamlNode *root;
+    YamlMapping *top;
+    JsonObjectIter iter;
+    const gchar *name;
+    JsonNode *value;
+    guint width = 0;
+    guint height = 0;
+    gsize length = 0;
+    guint count = 0;
+
+    g_return_val_if_fail(characters != NULL, FALSE);
+
+    if (agent_id == NULL || !clawt_office_pack_path_is_safe(agent_id) ||
+        strchr(agent_id, '/') != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT, "'%s' is not an agent id",
+                    agent_id != NULL ? agent_id : "");
+        return FALSE;
+    }
+    dir = g_build_filename(characters, agent_id, NULL);
+    manifest = g_build_filename(dir, "character.yaml", NULL);
+    current = clawt_office_character_load(dir, NULL);
+    if (current == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "%s has no character yet: import its sprite sheet first "
+                    "(clawtilla_office_asset_import, character \"%s\")", agent_id, agent_id);
+        return FALSE;
+    }
+    if (sheet == NULL || !clawt_office_pack_path_is_safe(sheet)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "the sheet must be a path inside the character");
+        return FALSE;
+    }
+    image = g_build_filename(dir, sheet, NULL);
+    if (!parent_is_inside(dir, image, error))
+        return FALSE;
+    if (!clawt_office_png_size(image, &width, &height)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "%s is not a PNG in %s's character; import it first", sheet, agent_id);
+        return FALSE;
+    }
+    if (frame_width < 8 || frame_height < 8 || frame_width > 512 || frame_height > 512) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "a frame is 8 to 512 pixels on each side");
+        return FALSE;
+    }
+
+    /* every row and frame inside the image, or a renderer reads past it */
+    json_object_iter_init(&iter, animations);
+    while (json_object_iter_next(&iter, &name, &value)) {
+        JsonObject *a = JSON_NODE_HOLDS_OBJECT(value) ? json_node_get_object(value) : NULL;
+        gint64 row = a != NULL ? json_object_get_int_member_with_default(a, "row", -1) : -1;
+        gint64 frames = a != NULL ? json_object_get_int_member_with_default(a, "frames", 1) : 0;
+        gdouble fps = a != NULL ? json_object_get_double_member_with_default(a, "fps", 0.0) : 0;
+        g_autoptr(YamlMapping) entry = yaml_mapping_new();
+
+        if (!animation_name_is_valid(name) || a == NULL || row < 0 || frames < 1 ||
+            fps < 0.0 || fps > 60.0) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "animation '%s' needs a name of lower-case letters, digits and '_', "
+                        "a row from 0, frames from 1 and fps from 0 to 60", name);
+            return FALSE;
+        }
+        if ((guint64)(row + 1) * frame_height > height || (guint64)frames * frame_width > width) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "animation '%s' (row %" G_GINT64_FORMAT ", %" G_GINT64_FORMAT
+                        " frames of %ux%u) runs past the %ux%u sheet", name, row, frames,
+                        frame_width, frame_height, width, height);
+            return FALSE;
+        }
+        yaml_mapping_set_int_member(entry, "row", row);
+        yaml_mapping_set_int_member(entry, "frames", frames);
+        yaml_mapping_set_double_member(entry, "fps", fps);
+        yaml_mapping_set_mapping_member(rows, name, entry);
+        count++;
+    }
+    if (count == 0) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "name at least one animation (idle, at the least)");
+        return FALSE;
+    }
+
+    /* the layout written into the manifest; its agent and assets kept */
+    if (!yaml_parser_load_from_file(parser, manifest, error))
+        return FALSE;
+    root = yaml_parser_get_root(parser);
+    if (root == NULL || yaml_node_get_node_type(root) != YAML_NODE_MAPPING) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID, "%s is not a mapping",
+                    manifest);
+        return FALSE;
+    }
+    top = yaml_node_get_mapping(root);
+    yaml_mapping_set_string_member(top, "sheet", sheet);
+    yaml_sequence_add_int_element(frame, frame_width);
+    yaml_sequence_add_int_element(frame, frame_height);
+    yaml_mapping_set_sequence_member(top, "frame", frame);
+    yaml_mapping_set_mapping_member(top, "animations", rows);
+    generator = yaml_generator_new();
+    yaml_generator_set_root(generator, root);
+    text = yaml_generator_to_data(generator, &length, error);
+    if (text == NULL)
+        return FALSE;
+    return clawt_office_pack_write_file(dir, "character.yaml", text, length, error);
 }

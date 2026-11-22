@@ -172,7 +172,23 @@ on_status(const gchar *text, gpointer user_data)
                                   : NULL);
 }
 
-static const ClawtOfficeFeedFuncs feed_funcs = { on_world, on_layout, on_color, on_status };
+static void
+on_character(const gchar *agent, const gchar *sheet_path, JsonObject *character,
+             gpointer user_data)
+{
+    clawt_office_scene_set_character(((Office *)user_data)->scene, agent, sheet_path,
+                                     character);
+}
+
+static void
+on_usage(JsonObject *usage, gpointer user_data)
+{
+    clawt_office_scene_set_usage(((Office *)user_data)->scene, usage);
+}
+
+static const ClawtOfficeFeedFuncs feed_funcs = {
+    on_world, on_layout, on_color, on_status, on_character, on_usage
+};
 
 /* The world, loaded once a GL context exists; the pack's own words on failure. */
 static void

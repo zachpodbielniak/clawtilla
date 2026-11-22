@@ -1456,7 +1456,7 @@ on_index(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     if (first != NULL) {
         g_autofree gchar *url = clawt_web_agent_url(first,
-                                                    CLAWT_PAGE_CHAT);
+                                                    clawt_web_app_get_landing_page(app));
 
         return clawt_web_redirect(request, url);
     }

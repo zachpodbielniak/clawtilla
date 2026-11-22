@@ -17,6 +17,7 @@
 
 static gchar *opt_socket_path = NULL;
 static gchar *opt_profile = NULL;
+static gboolean opt_office = FALSE;
 static gchar *opt_host = NULL;
 static gint opt_port = 0;
 static gchar *opt_token = NULL;
@@ -57,6 +58,10 @@ static GOptionEntry entries[] = {
         "ROOM"
     },
     {
+        "office", 0, 0, G_OPTION_ARG_NONE, &opt_office,
+        "Open on the Office page: who is where, and the office drawn", NULL
+    },
+    {
         "version", 'V', 0, G_OPTION_ARG_NONE, &opt_version,
         "Print version information and exit", NULL
     },
@@ -78,6 +83,9 @@ static const gchar *description_text =
     "\n"
     "  # Start on a connection saved with `clawtilla remote add`\n"
     "  clawtilla-lrg --profile workstation\n"
+    "\n"
+    "  # Open on the Office page\n"
+    "  clawtilla-lrg --office\n"
     "\n"
     "  # Start on a daemon reached over a tailnet\n"
     "  clawtilla-lrg --host 100.72.0.41 --token \"$(ssh box clawtilla "
@@ -193,6 +201,7 @@ main(int argc, char *argv[])
     client = clawt_connection_create_client(connection);
     app = clawt_lrg_app_new(client, connection);
     app->open_target = g_steal_pointer(&opt_open);
+    app->open_office = opt_office;
 
     /*
      * Whether the daemon came from memory (the banner's Use Local) and

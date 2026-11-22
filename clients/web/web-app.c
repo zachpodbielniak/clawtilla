@@ -17,6 +17,7 @@ struct _ClawtWebApp {
     GObject      parent_instance;
 
     ClawtClient *client;
+    ClawtPage    landing;     /* where `/` goes: chat, or the office (--office) */
     GPtrArray   *streams;     /* HtmxSseConnection*, owned */
     gchar       *last_error;
     gchar       *last_refusal;
@@ -580,6 +581,22 @@ clawt_web_app_get_viewing_room(ClawtWebApp *self)
     return self->viewing_room;
 }
 
+void
+clawt_web_app_set_landing_page(ClawtWebApp *self, ClawtPage page)
+{
+    g_return_if_fail(CLAWT_IS_WEB_APP(self));
+
+    self->landing = page;
+}
+
+ClawtPage
+clawt_web_app_get_landing_page(ClawtWebApp *self)
+{
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), CLAWT_PAGE_CHAT);
+
+    return self->landing;
+}
+
 ClawtClient *
 clawt_web_app_get_client(ClawtWebApp *self)
 {
@@ -1074,6 +1091,7 @@ clawt_web_app_class_init(ClawtWebAppClass *klass)
 static void
 clawt_web_app_init(ClawtWebApp *self)
 {
+    self->landing = CLAWT_PAGE_CHAT;
     self->connection_status = g_hash_table_new_full(
         g_str_hash, g_str_equal, g_free,
         (GDestroyNotify)clawt_connection_status_free);

@@ -37,7 +37,7 @@ GType clawt_param_info_get_type(void) G_GNUC_CONST;
 /**
  * ClawtParamInfo:
  * @name: the parameter's name
- * @type_name: "string", "integer", "boolean" or "number"
+ * @type_name: "string", "integer", "boolean", "number" or "object"
  * @description: what it is for
  * @required: whether the tool cannot run without it
  */

@@ -589,6 +589,11 @@ on_agents(ClawtLrgApp *app, JsonNode *reply, const GError *error,
         if (agents != NULL && json_array_get_length(agents) > 0) {
             clawt_lrg_select_agent(app, clawt_ipc_payload_string(
                 json_array_get_object_element(agents, 0), "id"));
+            /* --office: the Office page, once, over the first agent */
+            if (app->open_office) {
+                app->open_office = FALSE;
+                clawt_lrg_show_page(app, CLAWT_PAGE_OFFICE);
+            }
             return;
         }
     }

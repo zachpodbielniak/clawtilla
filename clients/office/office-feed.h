@@ -29,6 +29,10 @@ typedef struct _ClawtOfficeFeed ClawtOfficeFeed;
  * @layout: who sits where now
  * @color: an agent's colour, from agent.list (@color may be %NULL)
  * @status: a line for the host to show, or %NULL to clear it
+ * @character: an agent's character sheet is cached at @sheet_path and
+ *   @character says how it is laid out (`office.characters`); may be %NULL
+ * @usage: what each provider login has left (`usage.providers`, as it
+ *   stands -- the board never asks for a fresh read); may be %NULL
  *
  * What the feed tells its host.  Called on the host's main context.
  */
@@ -37,6 +41,9 @@ typedef struct {
     void (*layout)(JsonObject *layout, gpointer user_data);
     void (*color)(const gchar *id, const gchar *color, gpointer user_data);
     void (*status)(const gchar *text, gpointer user_data);
+    void (*character)(const gchar *agent, const gchar *sheet_path, JsonObject *character,
+                      gpointer user_data);
+    void (*usage)(JsonObject *usage, gpointer user_data);
 } ClawtOfficeFeedFuncs;
 
 /**
