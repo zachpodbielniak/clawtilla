@@ -678,7 +678,22 @@ typedef struct {
     gboolean         ok;
     gchar           *message;
     gint64           settled_at;
+    GCancellable    *redirect_cancel;  /* its loopback wait, while it has one */
 } ConnectorFlow;
+
+/*
+ * What a loopback wait is handed instead of the flow: the flow is looked
+ * up again when the wait ends, because a newer sign-in may have replaced
+ * it, and the daemon may be gone by the time the cancelled wait reports.
+ */
+typedef struct {
+    GWeakRef  daemon;
+    gchar    *flow_id;
+} ConnectorRedirectRef;
+
+ConnectorRedirectRef *clawt_daemon_connector_redirect_ref_new(ClawtDaemon *self,
+                                                              const gchar *flow_id);
+void clawt_daemon_connector_cancel_redirects(ClawtDaemon *self, const gchar *except_id);
 
 /*
  * The client waiting to be shown a user code.

@@ -1137,3 +1137,58 @@ clawt_office_character_key_background(guint8      *rgba,
     }
     return cleared;
 }
+
+gboolean
+clawt_office_character_opaque_bounds(const guint8 *rgba,
+                                     guint         width,
+                                     guint         height,
+                                     gsize         stride,
+                                     guint         frame_width,
+                                     guint         frame_height,
+                                     guint        *out_x,
+                                     guint        *out_y,
+                                     guint        *out_width,
+                                     guint        *out_height)
+{
+    guint left = G_MAXUINT;
+    guint top = G_MAXUINT;
+    guint right = 0;
+    guint bottom = 0;
+    gboolean any = FALSE;
+    guint fx;
+    guint fy;
+    guint x;
+    guint y;
+
+    g_return_val_if_fail(out_x != NULL && out_y != NULL && out_width != NULL &&
+                         out_height != NULL, FALSE);
+
+    if (rgba == NULL || width == 0 || height == 0)
+        return FALSE;
+    if (frame_width == 0 || frame_width > width)
+        frame_width = width;
+    if (frame_height == 0 || frame_height > height)
+        frame_height = height;
+
+    for (fy = 0; fy + frame_height <= height; fy += frame_height)
+        for (fx = 0; fx + frame_width <= width; fx += frame_width)
+            for (y = 0; y < frame_height; y++)
+                for (x = 0; x < frame_width; x++) {
+                    const guint8 *p = rgba + (gsize)(fy + y) * stride + (gsize)(fx + x) * 4;
+
+                    if (p[3] == 0)
+                        continue;
+                    any = TRUE;
+                    left = MIN(left, x);
+                    top = MIN(top, y);
+                    right = MAX(right, x);
+                    bottom = MAX(bottom, y);
+                }
+    if (!any)
+        return FALSE;
+    *out_x = left;
+    *out_y = top;
+    *out_width = right - left + 1;
+    *out_height = bottom - top + 1;
+    return TRUE;
+}

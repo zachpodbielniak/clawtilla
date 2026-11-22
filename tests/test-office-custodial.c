@@ -1162,6 +1162,27 @@ test_key_background(void)
 
     /* nothing asked, nothing done */
     g_assert_cmpuint(clawt_office_character_key_background(px, W, H, W * 4, 8, 8, NULL), ==, 0);
+
+    /*
+     * The visible part, one rectangle over both frames: frame 0's body
+     * (x 2..5, y 2..7) and frame 1's one remaining corner (7, 7).
+     */
+    {
+        guint bx = 0;
+        guint by = 0;
+        guint bw = 0;
+        guint bh = 0;
+
+        g_assert_true(clawt_office_character_opaque_bounds(px, W, H, W * 4, 8, 8,
+                                                           &bx, &by, &bw, &bh));
+        g_assert_cmpuint(bx, ==, 2);
+        g_assert_cmpuint(by, ==, 2);
+        g_assert_cmpuint(bw, ==, 6);
+        g_assert_cmpuint(bh, ==, 6);
+        memset(px, 0, sizeof px);
+        g_assert_false(clawt_office_character_opaque_bounds(px, W, H, W * 4, 8, 8,
+                                                            &bx, &by, &bw, &bh));
+    }
 #undef AT
 }
 

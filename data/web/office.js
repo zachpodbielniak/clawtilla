@@ -351,7 +351,10 @@
 			img = new Image();
 			have = { def: c, img: img, key: key, sheet: null };
 			img.onload = function () {
-				have.sheet = keyed_sheet(img, c);
+				var keyed = keyed_sheet(img, c);
+
+				have.sheet = keyed.sheet;
+				have.trim = keyed.trim;
 				last_paint = 0;
 			};
 			img.src = c.src;
@@ -429,10 +432,10 @@
 		var canvas, cx, data, px, fw, fh, fx, fy, fixed = null;
 
 		if (!bg || !w || !h)
-			return img;
+			return { sheet: img, trim: null };
 		if (bg !== 'corners') {
 			if (!/^#[0-9a-fA-F]{6}$/.test(bg))
-				return img;
+				return { sheet: img, trim: null };
 			fixed = [parseInt(bg.substr(1, 2), 16), parseInt(bg.substr(3, 2), 16),
 			         parseInt(bg.substr(5, 2), 16)];
 		}
@@ -444,7 +447,7 @@
 		try {
 			data = cx.getImageData(0, 0, w, h);
 		} catch (e) {
-			return img;
+			return { sheet: img, trim: null };
 		}
 		px = data.data;
 		fw = def.frame[0] > 0 && def.frame[0] <= w ? def.frame[0] : w;
@@ -490,7 +493,30 @@
 			}
 		}
 		cx.putImageData(data, 0, 0);
-		return canvas;
+		return { sheet: canvas, trim: opaque_bounds(px, w, h, fw, fh) };
+	}
+
+	/*
+	 * The visible part of every frame, as one rectangle in a frame's own
+	 * coordinates -- clawt_office_character_opaque_bounds() in libclawt.
+	 * What was backdrop is margin once keyed, and drawn whole the frame
+	 * makes the person half the height of everybody else.
+	 */
+	function opaque_bounds(px, w, h, fw, fh) {
+		var l = Infinity, t = Infinity, r = -1, b = -1, fx, fy, x, y;
+
+		for (fy = 0; fy + fh <= h; fy += fh)
+			for (fx = 0; fx + fw <= w; fx += fw)
+				for (y = 0; y < fh; y++)
+					for (x = 0; x < fw; x++) {
+						if (!px[((fy + y) * w + fx + x) * 4 + 3])
+							continue;
+						if (x < l) l = x;
+						if (y < t) t = y;
+						if (x > r) r = x;
+						if (y > b) b = y;
+					}
+		return r < 0 ? null : { x: l, y: t, w: r - l + 1, h: b - t + 1 };
 	}
 
 	/*
@@ -501,18 +527,28 @@
 		var def = ch.def;
 		var fw = def.frame[0], fh = def.frame[1];
 		var pick = pick_animation(def.animations, s);
-		var height = 48 * s.u, width, index = 0, row;
+		var height = 48 * s.u, width, index = 0, row, sx, sy, sw, sh;
 
 		if (!pick || !(fw > 0) || !(fh > 0))
 			return false;
 		row = pick.a.row || 0;
 		if (character_animates(s, pick))
 			index = Math.floor(now / 1000 * pick.a.fps) % Math.max(1, pick.a.frames || 1);
-		width = height * fw / fh;
+		sx = index * fw;
+		sy = row * fh;
+		sw = fw;
+		sh = fh;
+		if (ch.trim) {
+			sx += ch.trim.x;
+			sy += ch.trim.y;
+			sw = ch.trim.w;
+			sh = ch.trim.h;
+		}
+		width = height * sw / sh;
 		c.save();
 		c.globalAlpha = s.alpha;
 		c.imageSmoothingEnabled = false;
-		c.drawImage(ch.sheet, index * fw, row * fh, fw, fh,
+		c.drawImage(ch.sheet, sx, sy, sw, sh,
 		            Math.round(s.x - width / 2), Math.round(s.y - height), width, height);
 		if (s.hover) {
 			c.strokeStyle = ink.info;

@@ -6297,7 +6297,51 @@ connector_flow_free(ConnectorFlow *flow)
     g_free(flow->redirect_uri);
     g_free(flow->resource);
     g_free(flow->message);
+    if (flow->redirect_cancel != NULL) {
+        /* the port goes with the flow; the wait reports to nobody */
+        g_cancellable_cancel(flow->redirect_cancel);
+        g_object_unref(flow->redirect_cancel);
+    }
     g_free(flow);
+}
+
+ConnectorRedirectRef *
+clawt_daemon_connector_redirect_ref_new(ClawtDaemon *self, const gchar *flow_id)
+{
+    ConnectorRedirectRef *ref = g_new0(ConnectorRedirectRef, 1);
+
+    g_weak_ref_init(&ref->daemon, self);
+    ref->flow_id = g_strdup(flow_id);
+    return ref;
+}
+
+static void
+connector_redirect_ref_free(ConnectorRedirectRef *ref)
+{
+    g_weak_ref_clear(&ref->daemon);
+    g_free(ref->flow_id);
+    g_free(ref);
+}
+
+/*
+ * Every sign-in listens on the one redirect port, so only one can wait
+ * at a time.  A person who asks again has given up on the earlier link:
+ * its wait is cancelled, which closes the port before this returns.
+ */
+void
+clawt_daemon_connector_cancel_redirects(ClawtDaemon *self, const gchar *except_id)
+{
+    GHashTableIter iter;
+    gpointer value;
+
+    g_hash_table_iter_init(&iter, self->connector_flows);
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        ConnectorFlow *flow = value;
+
+        if (flow->redirect_cancel != NULL && !flow->settled &&
+            g_strcmp0(flow->id, except_id) != 0)
+            g_cancellable_cancel(flow->redirect_cancel);
+    }
 }
 
 /*
@@ -6800,14 +6844,27 @@ void
 clawt_daemon_on_connector_redirected(GObject *source, GAsyncResult *result,
                                      gpointer user_data)
 {
-    ConnectorFlow *flow = user_data;
+    ConnectorRedirectRef *ref = user_data;
+    g_autoptr(ClawtDaemon) self = g_weak_ref_get(&ref->daemon);
+    ConnectorFlow *flow = NULL;
     g_autofree gchar *code = NULL;
     g_autoptr(GError) error = NULL;
 
     code = clawt_oauth_await_redirect_finish(result, &error);
+    if (self != NULL)
+        flow = g_hash_table_lookup(self->connector_flows, ref->flow_id);
+    connector_redirect_ref_free(ref);
+
+    /* the flow went with its daemon, or was dropped: nobody to tell */
+    if (flow == NULL)
+        return;
+    g_clear_object(&flow->redirect_cancel);
 
     if (code == NULL) {
-        connector_flow_settle(flow, FALSE, error->message);
+        connector_flow_settle(flow, FALSE,
+                              g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)
+                              ? "replaced by a newer sign-in: only the newest link works"
+                              : error->message);
         return;
     }
 

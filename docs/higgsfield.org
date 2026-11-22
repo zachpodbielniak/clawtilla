@@ -31,7 +31,7 @@ Or in any client: Settings, Connectors, Add, Higgsfield, then Sign in.
 
 The catalogue entry names only the server, =https://mcp.higgsfield.ai/mcp=, and no OAuth endpoints, so the sign-in is asked of the server itself (RFC 9728 protected-resource metadata, RFC 8414 authorization-server metadata and, with no ~client_id~ configured, RFC 7591 dynamic registration) -- the same path any remote MCP server takes (see [[file:connectors.org][connectors.org]]).  Nothing has to be registered in a Higgsfield console, and there is no key in ~clawtilla.yaml~: the token lives under =secrets.dir= as every connector credential does, renewed before it expires.
 
-Higgsfield's MCP server needs a *paid* Higgsfield plan; a free account signs in and then has its calls refused.
+A free Higgsfield account works as well as a paid one: it signs in, lists the tools, reads its balance, estimates for nothing and spends its credits like any other.  (An earlier version of this page said a free account's calls were refused; a live run on 2026-11-22 showed otherwise.)  What the account sees is the server's whole catalogue -- 217 tools on that day, from ~generate_image~ to website deployment and GPU rental -- so narrow it with ~tools:~ to the handful an agent needs, e.g. ~--tools generate_image,estimate_image_cost,job_status,balance~.
 
 ** Who gets it
 :PROPERTIES:
@@ -61,6 +61,16 @@ Higgsfield's generations are jobs, not answers.  A call returns a request id at 
 1. submit, and keep the request id;
 2. ask the job's status until it says completed or failed -- a turn that waits should do other work between checks rather than spin;
 3. fetch the result into its exchange directory (~computer.exchange~) or workspace, because a result URL on Higgsfield's CDN is not forever.
+
+What the server's tools want, as of 2026-11-22 -- the names are not the ones a model guesses, and a wrong one is refused with an input validation error rather than ignored:
+
+- ~estimate_image_cost~ takes the same ~params~ as ~generate_image~ (~model~, ~prompt~, ~aspect_ratio~, ...), costs nothing, and answers with the exact credits and a ~quote_ref~; sending ~{"params": {"ref": "quote:..."}}~ to ~generate_image~ submits exactly the quoted request.  A quote names a model family: ~nano_banana_2~ was rendered by ~nano_banana_flash~.
+- ~job_status~ takes ~jobId~ (camel case), and ~sync: true~ to wait for it; a finished job carries ~results.rawUrl~, a PNG on Higgsfield's CDN.
+- ~jobs_wait~ takes ~jobs~ and waits at most 15 seconds a call.
+- ~balance~ answers credits and plan, free.
+
+#+caption: kudu's character from Higgsfield (1.5 credits), and drawn in the office with its backdrop keyed and its margin trimmed
+[[file:images/office/office-higgsfield-character.png]]
 
 A result that is a large blob of JSON is held by the relay's result budget like any other (see [[file:connectors.org::*Results bigger than the budget][Results bigger than the budget]]).
 

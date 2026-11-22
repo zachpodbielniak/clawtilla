@@ -23,6 +23,7 @@
 
 #include <glib.h>
 #include <glib/gstdio.h>
+#include <string.h>
 #include <libsoup/soup.h>
 #include <sys/stat.h>
 
@@ -676,6 +677,175 @@ test_an_empty_access_token_is_refused(void)
     g_assert_nonnull(error);
 }
 
+typedef struct {
+    gboolean done;
+    GError  *error;
+    gchar   *code;
+} RedirectDone;
+
+static void
+on_redirect_done(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    RedirectDone *done = user_data;
+
+    done->code = clawt_oauth_await_redirect_finish(result, &done->error);
+    done->done = TRUE;
+}
+
+static gboolean
+redirect_watchdog(gpointer user_data)
+{
+    g_error("the redirect wait never reported");
+    return G_SOURCE_REMOVE;
+}
+
+typedef struct {
+    guint16   port;
+    gchar    *target;
+    gchar    *status;     /* the response's status line */
+    gboolean  done;
+} RedirectHit;
+
+/* A browser landing on the callback, on its own thread: the listener runs on the test's loop. */
+static gpointer
+redirect_hit_thread(gpointer user_data)
+{
+    RedirectHit *hit = user_data;
+    g_autoptr(GSocketClient) client = g_socket_client_new();
+    g_autoptr(GSocketConnection) connection = NULL;
+    g_autofree gchar *request = NULL;
+    gchar buffer[256] = { 0 };
+    gssize got;
+
+    connection = g_socket_client_connect_to_host(client, "127.0.0.1", hit->port, NULL, NULL);
+    if (connection != NULL) {
+        request = g_strdup_printf("GET %s HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", hit->target);
+        g_output_stream_write_all(g_io_stream_get_output_stream(G_IO_STREAM(connection)),
+                                  request, strlen(request), NULL, NULL, NULL);
+        got = g_input_stream_read(g_io_stream_get_input_stream(G_IO_STREAM(connection)),
+                                  buffer, sizeof buffer - 1, NULL, NULL);
+        if (got > 0)
+            hit->status = g_strndup(buffer, strcspn(buffer, "\r\n"));
+    }
+    g_atomic_int_set(&hit->done, TRUE);
+    return NULL;
+}
+
+static gchar *
+hit_redirect(GMainContext *context, guint16 port, const gchar *target)
+{
+    RedirectHit hit = { 0 };
+    GThread *thread;
+
+    hit.port = port;
+    hit.target = (gchar *)target;
+    thread = g_thread_new("redirect-hit", redirect_hit_thread, &hit);
+    while (!g_atomic_int_get(&hit.done))
+        g_main_context_iteration(context, FALSE);
+    g_thread_join(thread);
+    return hit.status;
+}
+
+/*
+ * Every sign-in listens on one loopback port, and a wait used to hold it
+ * for its whole ten minutes with no way to stop it: a person who
+ * abandoned one sign-in and asked again was told the port was in use --
+ * by the daemon itself.  Cancelling a wait frees the port before
+ * g_cancellable_cancel() returns, so the next wait binds it on the very
+ * next line, and the cancelled one reports G_IO_ERROR_CANCELLED.  A
+ * reply carrying another sign-in's state is refused and the wait goes
+ * on.  Behind CLAWT_TEST_INTEGRATION: it binds 127.0.0.1.
+ */
+static void
+test_a_cancelled_redirect_frees_the_port(void)
+{
+    g_autoptr(GMainContext) context = NULL;
+    g_autoptr(GSocketListener) probe = NULL;
+    g_autoptr(GCancellable) first_cancel = NULL;
+    g_autoptr(GCancellable) second_cancel = NULL;
+    RedirectDone first = { 0 };
+    RedirectDone second = { 0 };
+    RedirectDone clash = { 0 };
+    guint16 port;
+    GSource *watchdog;
+    gint i;
+
+    if (g_getenv("CLAWT_TEST_INTEGRATION") == NULL) {
+        g_test_skip("set CLAWT_TEST_INTEGRATION=1 to bind a loopback port");
+        return;
+    }
+
+    /* a free port, found by binding 0 and letting it go */
+    probe = g_socket_listener_new();
+    port = g_socket_listener_add_any_inet_port(probe, NULL, NULL);
+    g_assert_cmpuint(port, !=, 0);
+    g_socket_listener_close(probe);
+
+    context = g_main_context_new();
+    g_main_context_push_thread_default(context);
+    watchdog = g_timeout_source_new_seconds(20);
+    g_source_set_callback(watchdog, redirect_watchdog, NULL, NULL);
+    g_source_attach(watchdog, context);
+
+    first_cancel = g_cancellable_new();
+    clawt_oauth_await_redirect_async(port, "first", 600, first_cancel, on_redirect_done,
+                                     &first);
+
+    /* while it waits, the port is taken */
+    clawt_oauth_await_redirect_async(port, "clash", 600, NULL, on_redirect_done, &clash);
+    while (!clash.done)
+        g_main_context_iteration(context, TRUE);
+    g_assert_error(clash.error, CLAWT_ERROR, CLAWT_ERROR_FAILED);
+    g_clear_error(&clash.error);
+
+    /* cancelled, and bound again at once */
+    g_cancellable_cancel(first_cancel);
+    second_cancel = g_cancellable_new();
+    clawt_oauth_await_redirect_async(port, "second", 600, second_cancel, on_redirect_done,
+                                     &second);
+    while (!first.done)
+        g_main_context_iteration(context, TRUE);
+    g_assert_error(first.error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+    g_clear_error(&first.error);
+    for (i = 0; i < 10; i++)
+        g_main_context_iteration(context, FALSE);
+    g_assert_false(second.done);
+
+    /*
+     * The old tab reloading the old callback -- someone else's state --
+     * is refused, and the wait goes on: it used to end it, with
+     * "Connected" on the page.
+     */
+    {
+        g_autofree gchar *status = hit_redirect(context, port,
+                                                "/callback?code=old&state=first");
+
+        g_assert_nonnull(status);
+        g_assert_nonnull(strstr(status, " 409 "));
+        for (i = 0; i < 10; i++)
+            g_main_context_iteration(context, FALSE);
+        g_assert_false(second.done);
+    }
+    /* and the right one still lands */
+    {
+        g_autofree gchar *status = hit_redirect(context, port,
+                                                "/callback?code=good&state=second");
+
+        g_assert_nonnull(strstr(status, " 200 "));
+        while (!second.done)
+            g_main_context_iteration(context, TRUE);
+        g_assert_no_error(second.error);
+        g_assert_cmpstr(second.code, ==, "good");
+        g_clear_pointer(&second.code, g_free);
+    }
+
+    g_source_destroy(watchdog);
+    g_source_unref(watchdog);
+    while (g_main_context_iteration(context, FALSE))
+        ;
+    g_main_context_pop_thread_default(context);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -728,6 +898,8 @@ main(int argc, char *argv[])
     g_test_add_func("/oauth/device-flow-completes",
                     test_a_device_flow_runs_to_a_grant);
     g_test_add_func("/oauth/refresh", test_a_token_is_renewed);
+    g_test_add_func("/oauth/cancelled-redirect-frees-the-port",
+                    test_a_cancelled_redirect_frees_the_port);
 
     return g_test_run();
 }

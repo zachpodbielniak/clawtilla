@@ -407,6 +407,10 @@ gboolean clawt_oauth_parse_redirect(const gchar  *target,
  * Binds the loopback address only.  A redirect carries an authorization
  * code in a URL, and a listener on every interface offers that code to
  * whoever on the network reaches the port first.
+ *
+ * Cancelling @cancellable closes the listener at once -- the port is free
+ * when g_cancellable_cancel() returns, so a newer wait may bind it on the
+ * next line -- and the wait then fails with %G_IO_ERROR_CANCELLED.
  */
 void clawt_oauth_await_redirect_async(guint                port,
                                       const gchar         *expected_state,

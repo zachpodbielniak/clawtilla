@@ -98,6 +98,8 @@ typedef struct {
     gfloat          model_floor;
     gboolean        model_loaded;
     gboolean        model_failed;
+    gboolean        trimmed;    /* keyed: draw from trim, not the whole frame */
+    Rectangle       trim;       /* the visible part, in a frame's coordinates */
 } Sheet;
 
 /*
@@ -122,13 +124,26 @@ load_sheet_texture(Sheet *sheet)
     if (image.data == NULL)
         return LoadTexture(sheet->path);
     ImageFormat(&image, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
-    clawt_office_character_key_background((guint8 *)image.data, (guint)image.width,
-        (guint)image.height, (gsize)image.width * 4,
-        frame != NULL && json_array_get_length(frame) == 2
-            ? (guint)json_array_get_int_element(frame, 0) : 0,
-        frame != NULL && json_array_get_length(frame) == 2
-            ? (guint)json_array_get_int_element(frame, 1) : 0,
-        background);
+    {
+        guint fw = frame != NULL && json_array_get_length(frame) == 2
+            ? (guint)json_array_get_int_element(frame, 0) : 0;
+        guint fh = frame != NULL && json_array_get_length(frame) == 2
+            ? (guint)json_array_get_int_element(frame, 1) : 0;
+        guint tx;
+        guint ty;
+        guint tw;
+        guint th;
+
+        clawt_office_character_key_background((guint8 *)image.data, (guint)image.width,
+                                              (guint)image.height, (gsize)image.width * 4,
+                                              fw, fh, background);
+        /* what was backdrop is margin now: draw the person, not the frame */
+        sheet->trimmed = clawt_office_character_opaque_bounds((const guint8 *)image.data,
+            (guint)image.width, (guint)image.height, (gsize)image.width * 4, fw, fh,
+            &tx, &ty, &tw, &th);
+        if (sheet->trimmed)
+            sheet->trim = (Rectangle){ (gfloat)tx, (gfloat)ty, (gfloat)tw, (gfloat)th };
+    }
     texture = LoadTextureFromImage(image);
     UnloadImage(image);
     return texture;
@@ -1237,7 +1252,13 @@ character_frame(ClawtOfficeScene *self, Actor *a, Sheet *sheet, Rectangle *out_s
                                (gfloat)(json_object_get_int_member_with_default(anim, "row", 0) *
                                         fh),
                                (gfloat)fw, (gfloat)fh };
-    *out_aspect = (gfloat)(fw / fh);
+    if (sheet->trimmed) {
+        out_source->x += sheet->trim.x;
+        out_source->y += sheet->trim.y;
+        out_source->width = sheet->trim.width;
+        out_source->height = sheet->trim.height;
+    }
+    *out_aspect = out_source->width / out_source->height;
     return TRUE;
 }
 

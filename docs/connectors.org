@@ -161,6 +161,17 @@ The listener binds 127.0.0.1 only.  A redirect carries an authorization
 code in a URL, and a listener on every interface offers that code to
 whoever on the network reaches the port first.
 
+Every sign-in shares that one port, so only the newest waits: asking
+again (the same connector or another) closes the older sign-in's
+listener at once and tells it /replaced by a newer sign-in: only the
+newest link works/.  A redirect carrying another sign-in's =state= -- a
+browser tab reloading an older link, which browsers do on their own
+once something listens on the port again, or a forged one -- gets a
+page saying so and the wait goes on.  Each waits ten minutes; a
+sign-in finished after that lands on a closed port, and the remedy is
+to connect again.  Run from a script or a pipe, ~clawtilla connector
+connect~ still shows the link at once.
+
 *** Signing in where the server says
 
 For a remote MCP server, the URL is all a connector needs:

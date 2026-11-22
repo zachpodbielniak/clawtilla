@@ -1110,6 +1110,9 @@ typedef struct {
     GTask          *task;
     gboolean        settled;
     gint            refs;
+    GCancellable   *cancellable;
+    gulong          cancelled_id;
+    GMainContext   *context;      /* where the wait was started */
 } RedirectWait;
 
 static RedirectWait *
@@ -1128,6 +1131,8 @@ redirect_wait_unref(RedirectWait *self)
 
     g_free(self->expected_state);
     g_clear_object(&self->task);
+    g_clear_object(&self->cancellable);
+    g_clear_pointer(&self->context, g_main_context_unref);
 
     g_free(self);
 }
@@ -1151,7 +1156,54 @@ redirect_wait_settle(RedirectWait *self)
         g_clear_object(&self->service);
     }
 
+    /* never from inside the handler: settling on cancel goes through an idle */
+    if (self->cancelled_id != 0) {
+        g_cancellable_disconnect(self->cancellable, self->cancelled_id);
+        self->cancelled_id = 0;
+    }
+
     redirect_wait_unref(self);
+}
+
+/* The wait's failure, from an idle: a "cancelled" handler may not disconnect itself. */
+static gboolean
+redirect_cancelled_idle(gpointer user_data)
+{
+    RedirectWait *wait = user_data;
+
+    if (!wait->settled) {
+        wait->settled = TRUE;
+        g_task_return_new_error(wait->task, G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                "a newer sign-in took the redirect port");
+        redirect_wait_settle(wait);
+    }
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * Cancelled: the port is closed here and now, synchronously, because the
+ * reason to cancel is almost always to bind it again on the next line.
+ * A wait nobody could cancel held 127.0.0.1:<redirect_port> for its full
+ * ten minutes, so a person who abandoned one sign-in and asked again was
+ * told the port was in use -- by the daemon itself.
+ */
+static void
+on_redirect_cancelled(GCancellable *cancellable, gpointer user_data)
+{
+    RedirectWait *wait = user_data;
+    GSource *idle;
+
+    if (wait->settled)
+        return;
+    if (wait->service != NULL) {
+        g_socket_service_stop(wait->service);
+        g_socket_listener_close(G_SOCKET_LISTENER(wait->service));
+    }
+    idle = g_idle_source_new();
+    g_source_set_callback(idle, redirect_cancelled_idle, redirect_wait_ref(wait),
+                          (GDestroyNotify)redirect_wait_unref);
+    g_source_attach(idle, wait->context);
+    g_source_unref(idle);
 }
 
 static const gchar *const PAGE_OK =
@@ -1170,6 +1222,16 @@ static const gchar *const PAGE_NOT_FOUND =
     "Connection: close\r\n"
     "\r\n"
     "not the redirect\n";
+
+static const gchar *const PAGE_STALE =
+    "HTTP/1.1 409 Conflict\r\n"
+    "Content-Type: text/html; charset=utf-8\r\n"
+    "Connection: close\r\n"
+    "\r\n"
+    "<!doctype html><meta charset=utf-8><title>Not this sign-in</title>"
+    "<body style=\"font-family:system-ui;margin:4rem;text-align:center\">"
+    "<h1>Not this sign-in</h1><p>This link belongs to an older or different "
+    "sign-in, so clawtilla ignored it. Use the newest link it printed.</p>";
 
 static void
 respond(GOutputStream *out, const gchar *page)
@@ -1217,6 +1279,25 @@ on_request_line(GObject *source, GAsyncResult *result, gpointer user_data)
         return;
     }
 
+    /*
+     * The state check is the whole reason state exists: without it any
+     * page the browser visits can hand this listener a code from
+     * somebody else's authorization and have clawtilla store it as the
+     * person's own account.
+     *
+     * And a reply that is not ours is refused *without ending the wait*.
+     * It used to end it, answered with "Connected": the browser's own
+     * error page for an older sign-in's callback reloads itself once
+     * something listens on the port again, so a person retrying a sign-in
+     * had their new one killed by their old tab before they could click
+     * Continue -- and a forged request could do the same on purpose.
+     */
+    if (g_strcmp0(state, wait->expected_state) != 0) {
+        respond(out, PAGE_STALE);
+        redirect_wait_unref(wait);
+        return;
+    }
+
     wait->settled = TRUE;
     respond(out, failure != NULL ? PAGE_NOT_FOUND : PAGE_OK);
 
@@ -1224,20 +1305,6 @@ on_request_line(GObject *source, GAsyncResult *result, gpointer user_data)
         g_task_return_new_error(wait->task, CLAWT_ERROR,
                                 CLAWT_ERROR_PERMISSION_DENIED,
                                 "the request was refused: %s", failure);
-        redirect_wait_settle(wait);
-        redirect_wait_unref(wait);
-        return;
-    }
-
-    /*
-     * The state check is the whole reason state exists: without it any
-     * page the browser visits can hand this listener a code from
-     * somebody else's authorization and have clawtilla store it as the
-     * person's own account.
-     */
-    if (g_strcmp0(state, wait->expected_state) != 0) {
-        g_task_return_new_error(wait->task, CLAWT_ERROR, CLAWT_ERROR_FAILED,
-                                "the reply did not belong to this request");
         redirect_wait_settle(wait);
         redirect_wait_unref(wait);
         return;
@@ -1332,6 +1399,15 @@ clawt_oauth_await_redirect_async(guint                port,
 
     g_signal_connect(wait->service, "incoming", G_CALLBACK(on_incoming), wait);
     g_socket_service_start(wait->service);
+
+    /* the context the timer below attaches to, captured where it is attached */
+    wait->context = g_main_context_ref_thread_default();
+    if (cancellable != NULL) {
+        wait->cancellable = g_object_ref(cancellable);
+        wait->cancelled_id = g_cancellable_connect(cancellable,
+                                                   G_CALLBACK(on_redirect_cancelled),
+                                                   wait, NULL);
+    }
 
     wait->timer = clawt_timeout_add_seconds(timeout_seconds,
                                             on_redirect_timeout, wait);

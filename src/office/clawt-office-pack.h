@@ -343,6 +343,41 @@ guint clawt_office_character_key_background(guint8      *rgba,
                                             const gchar *background);
 
 /**
+ * clawt_office_character_opaque_bounds:
+ * @rgba: (array): the sheet's pixels, 8-bit RGBA
+ * @width: the sheet's width in pixels
+ * @height: the sheet's height in pixels
+ * @stride: bytes per row
+ * @frame_width: one frame's width (0: the whole sheet is one frame)
+ * @frame_height: one frame's height (0: the whole sheet is one frame)
+ * @out_x: (out): the bounds' left edge, inside a frame
+ * @out_y: (out): the bounds' top edge, inside a frame
+ * @out_width: (out): the bounds' width
+ * @out_height: (out): the bounds' height
+ *
+ * The smallest rectangle, in a frame's own coordinates, that holds every
+ * visible pixel of every frame -- one rectangle for the whole sheet, so
+ * an animation does not wobble as its frames' extents differ.  A
+ * generator frames a full-body portrait with a wide margin, which once
+ * keyed is transparent, and a renderer that scales the whole frame to a
+ * person's height then draws the person at half of it.  Renderers draw
+ * a keyed sheet from these bounds; a sheet made transparent by its
+ * author keeps the author's framing.
+ *
+ * Returns: %FALSE when no pixel is visible
+ */
+gboolean clawt_office_character_opaque_bounds(const guint8 *rgba,
+                                              guint         width,
+                                              guint         height,
+                                              gsize         stride,
+                                              guint         frame_width,
+                                              guint         frame_height,
+                                              guint        *out_x,
+                                              guint        *out_y,
+                                              guint        *out_width,
+                                              guint        *out_height);
+
+/**
  * clawt_office_character_is_whole:
  * @character: a character
  *

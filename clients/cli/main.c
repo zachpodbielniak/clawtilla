@@ -8160,6 +8160,14 @@ connector_connect(ClawtClient *client, const gchar *name)
 
     g_print("\nWaiting...\n");
 
+    /*
+     * The link is useless until somebody reads it, and the wait below
+     * can last minutes.  Piped -- a script, `tee`, a client running us
+     * -- stdout is block-buffered, so without this the URL sat in the
+     * buffer for the whole wait and appeared only after it had timed out.
+     */
+    fflush(stdout);
+
     return await_connector_flow(client, flow);
 }
 

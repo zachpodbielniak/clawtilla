@@ -65,9 +65,12 @@ start_pkce(ClawtDaemon   *self,
      * listening on, and the browser would show a connection refused for
      * an authorization that in fact succeeded.
      */
+    clawt_daemon_connector_cancel_redirects(self, flow->id);
+    flow->redirect_cancel = g_cancellable_new();
     clawt_oauth_await_redirect_async(
-        (guint)port, state, 600, NULL,
-        clawt_daemon_on_connector_redirected, flow);
+        (guint)port, state, 600, flow->redirect_cancel,
+        clawt_daemon_on_connector_redirected,
+        clawt_daemon_connector_redirect_ref_new(self, flow->id));
 
     json_builder_begin_object(builder);
     clawt_daemon_add_string_member(builder, "flow", flow->id);
