@@ -1436,6 +1436,7 @@ gchar   *clawt_daemon_office_store_api_key(ClawtDaemon  *self,
 gboolean clawt_daemon_office_generate_ask(ClawtDaemon  *self,
                                           const gchar  *agent_id,
                                           GError      **error);
+void     clawt_daemon_office_generate_start(ClawtDaemon *self, const gchar *agent_id);
 gboolean clawt_daemon_office_generate_settle(ClawtDaemon   *self,
                                              ClawtDecision *decision,
                                              const gchar   *how);

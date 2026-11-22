@@ -732,6 +732,7 @@ typedef struct {
     GObject parent_instance;
     guint   estimates;
     guint   submits;
+    gint64  price;          /* what the estimate says, micro-USD; 0 is free */
 } MockGenerator;
 
 typedef struct {
@@ -766,7 +767,7 @@ mock_estimate_async(AiMediaGenerator *self, AiMediaRequest *request, GCancellabl
 
     (void)request;
     ((MockGenerator *)self)->estimates++;
-    g_task_return_int(task, 40000);
+    g_task_return_int(task, ((MockGenerator *)self)->price);
 }
 
 static gboolean
@@ -906,6 +907,7 @@ test_direct_generation(void)
 
     daemon_setup(&fixture, "");
     the_mock = g_object_new(mock_generator_get_type(), NULL);
+    the_mock->price = 40000;
     fixture.daemon->office_generator_factory = mock_factory;
     fixture.daemon->office_generate_poll_ms = 5;
     chars = clawt_daemon_office_characters_dir(fixture.daemon);
@@ -950,6 +952,48 @@ test_direct_generation(void)
     daemon_teardown(&fixture);
 }
 
+/*
+ * A generation that costs nothing (a self-hosted ComfyUI says 0) has
+ * nothing to approve: it is made at once and no card is posted.
+ */
+static void
+test_free_generation_needs_no_card(void)
+{
+    DaemonFixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *chars = NULL;
+    g_autofree gchar *kudu = NULL;
+    g_autoptr(ClawtOfficeCharacter) made = NULL;
+    gint64 deadline;
+
+    daemon_setup(&fixture, "");
+    the_mock = g_object_new(mock_generator_get_type(), NULL);
+    the_mock->price = 0;
+    fixture.daemon->office_generator_factory = mock_factory;
+    fixture.daemon->office_generate_poll_ms = 5;
+    chars = clawt_daemon_office_characters_dir(fixture.daemon);
+    kudu = g_build_filename(chars, "kudu", NULL);
+
+    g_assert_true(clawt_daemon_office_generate_ask(fixture.daemon, "kudu", &error));
+    deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+    while (g_get_monotonic_time() < deadline) {
+        g_clear_pointer(&made, clawt_office_character_free);
+        made = clawt_office_character_load(kudu, NULL);
+        if (made != NULL && made->sheet != NULL)
+            break;
+        g_main_context_iteration(fixture.context, FALSE);
+    }
+    g_assert_nonnull(made);
+    g_assert_cmpuint(the_mock->submits, ==, 1);
+    {
+        g_autoptr(GPtrArray) open = clawt_decision_store_list(fixture.daemon->decisions, TRUE);
+
+        g_assert_cmpuint(open->len, ==, 0);
+    }
+    g_clear_object(&the_mock);
+    daemon_teardown(&fixture);
+}
+
 /* The key is stored as a file, 0600, and never given back. */
 static void
 test_api_key(void)
@@ -964,6 +1008,10 @@ test_api_key(void)
                                                     &error));
     g_clear_error(&error);
     g_assert_null(clawt_daemon_office_store_api_key(fixture.daemon, "elsewhere", "a:b",
+                                                    &error));
+    g_clear_error(&error);
+    /* a ComfyUI proxy token is one line */
+    g_assert_null(clawt_daemon_office_store_api_key(fixture.daemon, "comfyui", "a\nb",
                                                     &error));
     g_clear_error(&error);
     path = clawt_daemon_office_store_api_key(fixture.daemon, "higgsfield", "id:sup3rsecret",
@@ -1009,6 +1057,8 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office-custodial/daemon-characters", test_daemon_characters);
     g_test_add_func("/office-custodial/direct-generation", test_direct_generation);
     g_test_add_func("/office-custodial/api-key", test_api_key);
+    g_test_add_func("/office-custodial/free-generation-needs-no-card",
+                    test_free_generation_needs_no_card);
 
     return g_test_run();
 }

@@ -53,14 +53,22 @@ clawt_daemon_office_store_api_key(ClawtDaemon  *self,
     g_autofree gchar *path = NULL;
     g_autofree gchar *dir = NULL;
 
-    if (g_strcmp0(service, "higgsfield") != 0) {
+    if (g_strcmp0(service, "higgsfield") != 0 && g_strcmp0(service, "comfyui") != 0) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
-                    "the office can make characters itself through higgsfield only "
+                    "the office makes characters itself through higgsfield or comfyui "
                     "(office.asset_api)");
         return NULL;
     }
-    if (key == NULL || strchr(key, ':') == NULL || key[0] == ':' ||
-        key[strlen(key) - 1] == ':') {
+    /* a ComfyUI behind an auth proxy takes a bearer token: any one line */
+    if (g_strcmp0(service, "comfyui") == 0 &&
+        (key == NULL || *key == '\0' || strpbrk(key, "\r\n") != NULL)) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "a ComfyUI token is one line: the bearer token its proxy expects");
+        return NULL;
+    }
+    if (g_strcmp0(service, "higgsfield") == 0 &&
+        (key == NULL || strchr(key, ':') == NULL || key[0] == ':' ||
+         key[strlen(key) - 1] == ':')) {
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
                             "a Higgsfield key is KEY_ID:KEY_SECRET, from console.higgsfield.ai");
         return NULL;
@@ -89,10 +97,41 @@ generator_for(ClawtDaemon *self, GError **error)
 
     if (self->office_generator_factory != NULL)
         return self->office_generator_factory(self);
+
+    /*
+     * A self-hosted ComfyUI: the FOSS road.  The workflow is the
+     * person's own, exported in API format with {{prompt}} (and
+     * {{image}}, {{seed}}) where the office's values go; a token only
+     * when an auth proxy sits in front of it.
+     */
+    if (g_strcmp0(service, "comfyui") == 0) {
+        g_autofree gchar *workflow_path = clawt_config_get_path_value(self->config,
+                                                                      "office.comfyui_workflow");
+        g_autofree gchar *workflow = NULL;
+        g_autoptr(AiComfyuiClient) client = ai_comfyui_client_new(
+            clawt_config_get_string(self->config, "office.comfyui_url"));
+        g_autofree gchar *token = NULL;
+
+        if (workflow_path == NULL || !g_file_get_contents(workflow_path, &workflow, NULL, NULL)) {
+            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                                "office.comfyui_workflow must name a workflow exported in "
+                                "API format (docs/office-custodial-team.org)");
+            return NULL;
+        }
+        if (!ai_comfyui_client_set_workflow(client, workflow, error))
+            return NULL;
+        path = key_path(self, service);
+        if (g_file_get_contents(path, &token, NULL, NULL)) {
+            g_strstrip(token);
+            ai_comfyui_client_set_token(client, token);
+            memset(token, 0, strlen(token));
+        }
+        return AI_MEDIA_GENERATOR(g_steal_pointer(&client));
+    }
     if (g_strcmp0(service, "higgsfield") != 0) {
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
                             "no service is set to make characters directly "
-                            "(office.asset_api: higgsfield)");
+                            "(office.asset_api: comfyui or higgsfield)");
         return NULL;
     }
     path = key_path(self, service);
@@ -164,8 +203,18 @@ on_estimate(GObject *source, GAsyncResult *result, gpointer user_data)
     g_autofree gchar *question = NULL;
     gint64 micro = -1;
 
-    if (!ai_media_generator_estimate_finish(AI_MEDIA_GENERATOR(source), result, &micro,
-                                            &error) || micro < 0) {
+    if (ai_media_generator_estimate_finish(AI_MEDIA_GENERATOR(source), result, &micro,
+                                           &error) && micro == 0) {
+        /*
+         * Free -- a self-hosted ComfyUI says so -- so there is nothing to
+         * approve: the card exists to keep a model or a click from
+         * spending money, and none is spent.
+         */
+        clawt_daemon_office_generate_start(self, ask->agent);
+        ask_free(ask);
+        return;
+    }
+    if (error != NULL || micro < 0) {
         /* no estimate is not a free generation: the card says so */
         g_message("office: no estimate for %s's character: %s", ask->agent,
                   error != NULL ? error->message : "the service gave none");
@@ -214,6 +263,7 @@ clawt_daemon_office_generate_ask(ClawtDaemon  *self,
     generator = generator_for(self, error);
     if (generator == NULL)
         return FALSE;
+
     request = request_for(self, agent);
     ask = g_new0(Ask, 1);
     ask->self = g_object_ref(self);
@@ -293,10 +343,14 @@ on_downloaded(GObject *source, GAsyncResult *result, gpointer user_data)
         job_failed(job, "the result is not a PNG", error);
         return;
     }
-    provenance = g_strdup_printf(
-        "generated by Higgsfield (%s) for clawtilla's office%s; Higgsfield's terms apply "
-        "(docs/higgsfield.org)", ai_media_request_get_model(job->request),
-        job->cost >= 0 ? "" : ", cost unknown");
+    provenance = AI_IS_COMFYUI_CLIENT(job->generator)
+        ? g_strdup_printf("generated by a self-hosted ComfyUI (%s) with the operator's own "
+                          "workflow; the licence is that of the models it runs",
+                          ai_comfyui_client_get_base_url(AI_COMFYUI_CLIENT(job->generator)))
+        : g_strdup_printf("generated by Higgsfield (%s) for clawtilla's office%s; Higgsfield's "
+                          "terms apply (docs/higgsfield.org)",
+                          ai_media_request_get_model(job->request),
+                          job->cost >= 0 ? "" : ", cost unknown");
     json_object_set_int_member(idle, "row", 0);
     json_object_set_int_member(idle, "frames", 1);
     json_object_set_object_member(animations, "idle", idle);
@@ -377,9 +431,27 @@ on_uploaded(GObject *source, GAsyncResult *result, gpointer user_data)
     submit(job);
 }
 
-/* Approved: upload the agent's own picture if it has a PNG one, then submit. */
 static void
-start(ClawtDaemon *self, const gchar *agent_id)
+on_comfyui_uploaded(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    Job *job = user_data;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *name = ai_comfyui_client_upload_finish(AI_COMFYUI_CLIENT(source), result,
+                                                             &error);
+
+    /* the name in the server's input folder is what {{image}} becomes */
+    if (name != NULL)
+        ai_media_request_set_image_url(job->request, name);
+    else
+        g_message("office: %s's picture was not uploaded, so the character is made from "
+                  "the description alone: %s", job->agent,
+                  error != NULL ? error->message : "no reason given");
+    submit(job);
+}
+
+/* Approved (or free): upload the agent's own picture if it has a PNG one, then submit. */
+void
+clawt_daemon_office_generate_start(ClawtDaemon *self, const gchar *agent_id)
 {
     ClawtAgentConfig *agent = clawt_config_get_agent(self->config, agent_id);
     g_autoptr(GError) error = NULL;
@@ -420,6 +492,20 @@ start(ClawtDaemon *self, const gchar *agent_id)
             goto out;
         }
     }
+    if (avatar != NULL && AI_IS_COMFYUI_CLIENT(generator) &&
+        clawt_office_png_size(avatar, &w, &h)) {
+        g_autofree gchar *data = NULL;
+        gsize length = 0;
+
+        if (g_file_get_contents(avatar, &data, &length, NULL)) {
+            g_autoptr(GBytes) bytes = g_bytes_new_take(g_steal_pointer(&data), length);
+            g_autofree gchar *filename = g_strdup_printf("clawtilla-%s.png", agent_id);
+
+            ai_comfyui_client_upload_async(AI_COMFYUI_CLIENT(generator), bytes, filename,
+                                           NULL, on_comfyui_uploaded, job);
+            goto out;
+        }
+    }
     submit(job);
 out:
     if (self->main_context != NULL)
@@ -441,6 +527,6 @@ clawt_daemon_office_generate_settle(ClawtDaemon   *self,
     /* only the exact word spends money -- "maybe later" is not a yes */
     if (g_strcmp0(how, "answered") == 0 &&
         g_ascii_strcasecmp(answer != NULL ? answer : "", "approve") == 0)
-        start(self, clawt_decision_get_agent(decision));
+        clawt_daemon_office_generate_start(self, clawt_decision_get_agent(decision));
     return TRUE;
 }

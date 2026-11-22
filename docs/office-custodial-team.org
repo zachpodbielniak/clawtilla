@@ -111,18 +111,40 @@ Higgsfield makes images and video and no 3D models, so the 3D view draws a chara
 :CUSTOM_ID: direct
 :END:
 
-The road above has a model deciding what to ask a generator for.  The other road has none: with =office.asset_api= set to ~higgsfield~ and its key stored, the daemon makes a character itself through Higgsfield's REST API (ai-glib's =AiHiggsfieldClient=).
+The road above has a model deciding what to ask a generator for.  The other road has none: with =office.asset_api= set, the daemon makes a character itself -- one image, from the agent's description and its own picture -- and imports it as a one-frame character.
 
 #+begin_src bash
-clawtilla office api-key higgsfield          # KEY_ID:KEY_SECRET from console.higgsfield.ai, read with the echo off
 clawtilla office character kudu --direct
 #+end_src
 
+*** ComfyUI, self-hosted (the FOSS road)
+
+#+begin_src yaml
+office:
+  asset_api: comfyui
+  comfyui_url: http://127.0.0.1:8188          # your ComfyUI
+  comfyui_workflow: ~/office/character.json   # exported in API format
+#+end_src
+
+1. Build a workflow in ComfyUI that makes the picture you want -- a pixel-art checkpoint or LoRA for sprites suits the shipped worlds -- and export it in *API format* (/Export (API)/ in current frontends, /Save (API format)/ with the old dev mode).  The ordinary save is refused: it is the editor's layout, not the graph.
+2. Put placeholders in its text inputs: ={{prompt}}= where the description goes (the CLIPTextEncode node's text), optionally ={{negative_prompt}}=, ={{seed}}= (a whole input becomes a number), and ={{image}}= in a LoadImage node to start from the agent's own picture.
+3. Point =office.comfyui_workflow= at the file.  Behind an auth proxy, store its bearer token: ~clawtilla office api-key comfyui~.
+
+A self-hosted server costs nothing -- its estimate is 0 -- so nothing is put to you: the character is made at once.  The placeholders are filled by walking the parsed graph, so a description with quotes or braces stays one string; results are only fetched from the server's own =/view= under the configured URL.  The licence of what comes out is that of the models you run, and the provenance says which server made it.  ai-glib's =AiComfyuiClient= does the work (=docs/providers/comfyui.org= there).
+
+*** Higgsfield, hosted and paid
+
+#+begin_src bash
+clawtilla office api-key higgsfield          # KEY_ID:KEY_SECRET from console.higgsfield.ai, read with the echo off
+#+end_src
+
+with =office.asset_api: higgsfield= (and =office.asset_model= for the model):
+
 1. The daemon asks Higgsfield for an *estimate* -- behind the reply; nothing waits on the network -- and puts it to you as a decision: /Make a character for kudu with Higgsfield (model)?  It costs about $0.04, from your Higgsfield balance./  It has no deadline and no default but decline: nothing is ever spent because nobody answered.
-2. On *approve* (the exact word; anything else typed is not a yes), it uploads the agent's own picture when it has a PNG one, submits one image -- the agent described by its name, description and colour, the picture as the reference -- waits for the job, downloads the result and imports it as a one-frame character (=generated/portrait.png=, provenance naming the model and Higgsfield's terms).
+2. On *approve* (the exact word; anything else typed is not a yes), it uploads the agent's own picture when it has a PNG one, submits one image, waits for the job, downloads the result and imports it as =generated/portrait.png=, provenance naming the model and Higgsfield's terms.
 3. Decline, dismiss or delete spends nothing.
 
-The key is a file under =secrets.dir/office/= (0600); the reply names the file and never the value, and it is read when a generation starts, never kept.  =office.asset_model= picks the model.  A one-frame character stands still in every pose -- a walk cycle needs a sheet, which is the custodial team's road.
+Keys and tokens are files under =secrets.dir/office/= (0600); a reply names the file and never the value, and a key is read when a generation starts, never kept.  A one-frame character stands still in every pose -- a walk cycle needs a sheet, which is the custodial team's road.
 
 ** Generators
 :PROPERTIES:
@@ -132,7 +154,7 @@ The key is a file under =secrets.dir/office/= (0600); the reply names the file a
 =office.asset_generator= is the name of a connector the asset steward holds:
 
 - [[file:higgsfield.org][Higgsfield]] -- hosted, paid per call, images and video, closed;
-- a self-hosted ComfyUI behind an MCP server, added as any connector (~--provider remote --url ...~ or ~--provider api-key --command ...~) -- the FOSS route, with whatever open models you run (a pixel-art model for sprites, TRELLIS for meshes), and the licence of each model is yours to check.
+- a self-hosted ComfyUI behind an MCP server, added as any connector (~--provider remote --url ...~ or ~--provider api-key --command ...~), for the custodial team to drive -- or, with no model in the loop, ComfyUI's own API through =office.asset_api: comfyui= ([[#direct][made by the daemon itself]]).  The licence of each model is yours to check.
 
 Grant the connector to the asset steward (~--scope selected --agents facilities-assets~) and to nobody who has no use for it.
 

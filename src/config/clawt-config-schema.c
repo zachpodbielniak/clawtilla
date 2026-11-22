@@ -2713,12 +2713,26 @@ static const ClawtSchemaEntry schema[] = {
   "which are also the format. See docs/office-choreography.org.", "0.56.0" },
 
 { "office.asset_api", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
-  "A service the daemon makes characters with itself, through its REST\n"
-  "API and with no model deciding what to ask: `higgsfield`, or empty for\n"
-  "none. Its key is stored with `clawtilla office api-key higgsfield`.\n"
-  "`clawtilla office character AGENT --direct` then puts the service's\n"
-  "estimate to you as a decision and spends nothing until you approve.\n"
+  "A service the daemon makes characters with itself, with no model\n"
+  "deciding what to ask: `comfyui` (self-hosted, free: office.comfyui_url\n"
+  "and office.comfyui_workflow), `higgsfield` (paid: its key stored with\n"
+  "`clawtilla office api-key higgsfield`), or empty for none.\n"
+  "`clawtilla office character AGENT --direct` makes one; a paid service's\n"
+  "estimate is put to you as a decision and nothing is spent until you\n"
+  "approve.\n"
   "See docs/office-custodial-team.org.", "0.60.0" },
+
+{ "office.comfyui_url", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "http://127.0.0.1:8188", NULL,
+  "The ComfyUI server office.asset_api: comfyui makes characters with --\n"
+  "your own, self-hosted. A token for an auth proxy in front of it is\n"
+  "stored with `clawtilla office api-key comfyui`.", "0.61.0" },
+
+{ "office.comfyui_workflow", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The ComfyUI workflow characters are made with, exported in API format,\n"
+  "with {{prompt}} where the description goes and, if you like,\n"
+  "{{image}} (the agent's picture, uploaded), {{seed}} and\n"
+  "{{negative_prompt}}. See docs/office-custodial-team.org.", "0.61.0" },
 
 { "office.asset_model", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   "higgsfield-ai/soul/v2/standard", NULL,

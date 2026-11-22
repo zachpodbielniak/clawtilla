@@ -4903,10 +4903,11 @@ cmd_office(int argc, char *argv[])
         JsonObject *answer;
 
         if (argc < 4) {
-            g_printerr("Usage: clawtilla office api-key <higgsfield>\n");
+            g_printerr("Usage: clawtilla office api-key <higgsfield|comfyui>\n");
             return EXIT_FAILURE;
         }
-        key = read_secret("Key (KEY_ID:KEY_SECRET): ");
+        key = read_secret(g_strcmp0(argv[3], "higgsfield") == 0
+                          ? "Key (KEY_ID:KEY_SECRET): " : "Token: ");
         if (key == NULL || *key == '\0') {
             g_printerr("clawtilla: no key was given\n");
             return EXIT_FAILURE;

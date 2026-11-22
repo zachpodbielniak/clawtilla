@@ -2484,13 +2484,26 @@ office:
   # which are also the format. See docs/office-choreography.org.
   choreography: null
 
-  # A service the daemon makes characters with itself, through its REST
-  # API and with no model deciding what to ask: `higgsfield`, or empty for
-  # none. Its key is stored with `clawtilla office api-key higgsfield`.
-  # `clawtilla office character AGENT --direct` then puts the service's
-  # estimate to you as a decision and spends nothing until you approve.
+  # A service the daemon makes characters with itself, with no model
+  # deciding what to ask: `comfyui` (self-hosted, free: office.comfyui_url
+  # and office.comfyui_workflow), `higgsfield` (paid: its key stored with
+  # `clawtilla office api-key higgsfield`), or empty for none.
+  # `clawtilla office character AGENT --direct` makes one; a paid service's
+  # estimate is put to you as a decision and nothing is spent until you
+  # approve.
   # See docs/office-custodial-team.org.
   asset_api: null
+
+  # The ComfyUI server office.asset_api: comfyui makes characters with --
+  # your own, self-hosted. A token for an auth proxy in front of it is
+  # stored with `clawtilla office api-key comfyui`.
+  comfyui_url: "http://127.0.0.1:8188"
+
+  # The ComfyUI workflow characters are made with, exported in API format,
+  # with {{prompt}} where the description goes and, if you like,
+  # {{image}} (the agent's picture, uploaded), {{seed}} and
+  # {{negative_prompt}}. See docs/office-custodial-team.org.
+  comfyui_workflow: null
 
   # The model office.asset_api makes characters with: the service's own
   # id for it (for Higgsfield, the endpoint path on its model page).
