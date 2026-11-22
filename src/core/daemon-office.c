@@ -847,7 +847,7 @@ clawt_daemon_handle_office(ClawtDaemon *self,
             g_autoptr(ClawtOfficeCharacter) c = clawt_office_character_load(one, NULL);
 
             /* only a whole one, and only for an agent that exists */
-            if (c == NULL || c->sheet == NULL || c->animations->len == 0 ||
+            if (c == NULL || !clawt_office_character_is_whole(c) ||
                 clawt_config_get_agent(self->config, name) == NULL)
                 continue;
             g_free(c->agent);

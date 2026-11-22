@@ -336,4 +336,4 @@ zones:
 assets:
   - { path: tiles.png, sha256: 477e1a6317d6f37f006c69bf93170a17fa7090feb1e949d4c2ba37663645865b, source: "tools/clawt-office-genworld.c" }
   - { path: map.tmj, sha256: e998e987f3b3267358fabb7b6438edf1ab8c627c5d883d8009af0c7c05ba78af, source: "tools/clawt-office-genworld.c" }
-  - { path: office.rlevel, sha256: 3e4f34912828e13224a6797f77b3f0ca2fd660d3b09e5aba803431120e295b83, source: "tools/clawt-office-genworld.c" }
+  - { path: office.rlevel, sha256: 8b819b5809375961392251d01f8f72c204e847aeeaa73519b0ee6d88c2d2cbb5, source: "tools/clawt-office-genworld.c" }

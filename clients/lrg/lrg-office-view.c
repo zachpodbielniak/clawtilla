@@ -75,10 +75,10 @@ on_status(const gchar *text, gpointer user_data)
 }
 
 static void
-on_character(const gchar *agent, const gchar *sheet_path, JsonObject *character,
+on_character(const gchar *agent, const gchar *dir, JsonObject *character,
              gpointer user_data)
 {
-    clawt_office_scene_set_character(view.scene, agent, sheet_path, character);
+    clawt_office_scene_set_character(view.scene, agent, dir, character);
     /* the texture loads here, in the drain, outside the viewport's texture mode */
     clawt_office_scene_prepare(view.scene);
     clawt_lrg_app_wake(user_data);

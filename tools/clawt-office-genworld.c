@@ -863,7 +863,23 @@ write_rlevel(const World *world, Grid *g, const gchar *path, GError **error)
                 node(out, name, cx, 0.9, cz, 0.8, 1.8, 0.8, "cube", 0x2e3440);
                 break;
             case T_BOOTH:
-                node(out, name, cx, 1.0, cz, 0.9, 2.0, 0.9, "cube", 0x88c0d0);
+                /*
+                 * An open shell -- back, two sides and a roof, open to the
+                 * room -- not a solid block: the seat is inside it, and a
+                 * block hid whoever was on the phone from every camera.
+                 */
+                {
+                    g_autofree gchar *back = g_strconcat(name, "-back", NULL);
+                    g_autofree gchar *left = g_strconcat(name, "-left", NULL);
+                    g_autofree gchar *right = g_strconcat(name, "-right", NULL);
+                    g_autofree gchar *roof = g_strconcat(name, "-roof", NULL);
+
+                    /* taller than a person (the figures stand about 2.5) */
+                    node(out, back, cx, 1.4, cz - 0.42, 0.9, 2.8, 0.06, "cube", 0x88c0d0);
+                    node(out, left, cx - 0.42, 1.4, cz, 0.06, 2.8, 0.9, "cube", 0x88c0d0);
+                    node(out, right, cx + 0.42, 1.4, cz, 0.06, 2.8, 0.9, "cube", 0x88c0d0);
+                    node(out, roof, cx, 2.83, cz, 0.9, 0.06, 0.9, "cube", 0x6f9fb0);
+                }
                 break;
             case T_MONITOR:
                 node(out, name, cx, 0.6, cz, 0.7, 0.4, 0.08, "cube", 0x4c566a);

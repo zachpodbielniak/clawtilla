@@ -80,7 +80,7 @@ Stated plainly so the choice is made with open eyes; check Higgsfield's current 
 
 - *It is closed.*  The service, its models and its MCP server are proprietary.  clawtilla's FOSS default for assets is self-hosted generation (ComfyUI, see the custodial team in [[file:office.org][office.org]]); Higgsfield is the optional alternative.
 - *It costs credits on every call*, whatever the plan, and the MCP server needs a paid plan.
-- *Images and video only.*  There is no 3D model output, so in the office's 3D view a character is its picture on a billboard facing the camera, not a mesh.
+- *Images and video only.*  There is no 3D model output: a character's model, for the office's 3D view, comes from elsewhere (see the custodial team's characters); without one the picture is drawn on a billboard facing the camera.
 - *Free-tier outputs carry a watermark.*
 - *Your inputs and outputs may be used for training* on anything below Higgsfield's enterprise plan.
 - *Commercial use of outputs is allowed* on paid plans.

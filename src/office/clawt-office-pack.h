@@ -167,6 +167,9 @@ typedef struct {
  * @frame_width: one frame's width in pixels
  * @frame_height: one frame's height in pixels
  * @animations: (element-type ClawtOfficeAnimation): its rows
+ * @mesh: (nullable): a 3D model of the character (glb, obj, vox, iqm or
+ *   m3d), relative to the character's directory, for the 3D view
+ * @mesh_sha256: (nullable): its checksum, from the manifest's `assets`
  *
  * An agent's character as the custodial team made it
  * (`<state_dir>/office/characters/<agent>/character.yaml`).
@@ -178,6 +181,8 @@ typedef struct {
     guint      frame_width;
     guint      frame_height;
     GPtrArray *animations;
+    gchar     *mesh;
+    gchar     *mesh_sha256;
 } ClawtOfficeCharacter;
 
 GType clawt_office_character_get_type(void) G_GNUC_CONST;
@@ -244,6 +249,36 @@ gboolean clawt_office_character_set_sheet(const gchar  *characters,
                                           guint         frame_height,
                                           JsonObject   *animations,
                                           GError      **error);
+
+/**
+ * clawt_office_character_set_mesh:
+ * @characters: the characters directory, `<state_dir>/office/characters`
+ * @agent_id: whose character
+ * @mesh: the model, relative to the character's directory; it must have
+ *   been imported (clawt_office_character_import_asset()) and be a
+ *   self-contained glb, obj, vox, iqm or m3d -- a .gltf names other files
+ *   and is refused
+ * @error: return location for a #GError
+ *
+ * Gives the character a 3D model, which the 3D view draws instead of the
+ * sheet's billboard.  A character may have a mesh and no sheet.
+ *
+ * Returns: %TRUE when the manifest was written
+ */
+gboolean clawt_office_character_set_mesh(const gchar  *characters,
+                                         const gchar  *agent_id,
+                                         const gchar  *mesh,
+                                         GError      **error);
+
+/**
+ * clawt_office_character_is_whole:
+ * @character: a character
+ *
+ * Whether a renderer can draw it: a laid-out sheet, or a mesh.
+ *
+ * Returns: %TRUE when it is drawable
+ */
+gboolean clawt_office_character_is_whole(const ClawtOfficeCharacter *character);
 
 /**
  * clawt_office_png_size:

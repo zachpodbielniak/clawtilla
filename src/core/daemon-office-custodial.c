@@ -798,6 +798,22 @@ tool_character_layout(ClawtDaemon *self, JsonObject *args, gboolean *is_error)
 }
 
 static gchar *
+tool_character_mesh(ClawtDaemon *self, JsonObject *args, gboolean *is_error)
+{
+    const gchar *agent = clawt_ipc_payload_string(args, "agent");
+    g_autofree gchar *root = clawt_daemon_office_characters_dir(self);
+    g_autoptr(GError) error = NULL;
+
+    if (!clawt_office_character_set_mesh(root, agent, clawt_ipc_payload_string(args, "mesh"),
+                                         &error)) {
+        *is_error = TRUE;
+        return g_strdup(error->message);
+    }
+    clawt_event_bus_emit(self->bus, "office.changed", agent);
+    return g_strdup_printf("%s has a 3D model now: the 3D view draws it.", agent);
+}
+
+static gchar *
 tool_custodians_install(ClawtDaemon *self, const gchar *agent_id, JsonObject *args,
                         gboolean *is_error)
 {
@@ -845,6 +861,8 @@ hook_call(const gchar *agent_id,
         return tool_preview(self, arguments, is_error);
     if (g_strcmp0(tool, "clawtilla_office_asset_import") == 0)
         return tool_asset_import(self, agent_id, arguments, is_error);
+    if (g_strcmp0(tool, "clawtilla_office_character_mesh") == 0)
+        return tool_character_mesh(self, arguments, is_error);
     if (g_strcmp0(tool, "clawtilla_office_character_layout") == 0)
         return tool_character_layout(self, arguments, is_error);
     if (g_strcmp0(tool, "clawtilla_office_custodians_install") == 0)

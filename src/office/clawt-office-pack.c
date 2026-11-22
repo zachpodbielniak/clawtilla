@@ -472,6 +472,8 @@ clawt_office_character_copy(const ClawtOfficeCharacter *character)
     c->agent = g_strdup(character->agent);
     c->sheet = g_strdup(character->sheet);
     c->sheet_sha256 = g_strdup(character->sheet_sha256);
+    c->mesh = g_strdup(character->mesh);
+    c->mesh_sha256 = g_strdup(character->mesh_sha256);
     c->frame_width = character->frame_width;
     c->frame_height = character->frame_height;
     for (i = 0; i < character->animations->len; i++) {
@@ -493,6 +495,8 @@ clawt_office_character_free(ClawtOfficeCharacter *character)
     g_free(character->agent);
     g_free(character->sheet);
     g_free(character->sheet_sha256);
+    g_free(character->mesh);
+    g_free(character->mesh_sha256);
     g_ptr_array_unref(character->animations);
     g_free(character);
 }
@@ -569,6 +573,13 @@ clawt_office_character_load(const gchar *dir, GError **error)
     c = character_new();
     c->agent = g_strdup(yaml_mapping_get_string_member(top, "agent"));
     c->sheet = g_strdup(yaml_mapping_get_string_member(top, "sheet"));
+    c->mesh = g_strdup(yaml_mapping_has_member(top, "mesh")
+                       ? yaml_mapping_get_string_member(top, "mesh") : NULL);
+    if (c->mesh != NULL && !clawt_office_pack_path_is_safe(c->mesh)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                    "%s: mesh is not a path inside the character", path);
+        return NULL;
+    }
     if (c->sheet != NULL && !clawt_office_pack_path_is_safe(c->sheet)) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
                     "%s: sheet is not a path inside the character", path);
@@ -600,18 +611,22 @@ clawt_office_character_load(const gchar *dir, GError **error)
         a->fps = MAX(0.0, number_member(m, "fps", 0.0));
         g_ptr_array_add(c->animations, a);
     }
-    /* the sheet's checksum, from the assets the importer recorded */
+    /* the sheet's and the mesh's checksums, from the assets the importer recorded */
     assets = yaml_mapping_has_member(top, "assets")
         ? yaml_mapping_get_sequence_member(top, "assets") : NULL;
-    for (i = 0; c->sheet != NULL && assets != NULL && i < yaml_sequence_get_length(assets); i++) {
+    for (i = 0; assets != NULL && i < yaml_sequence_get_length(assets); i++) {
         YamlNode *node = yaml_sequence_get_element(assets, i);
         YamlMapping *m;
 
         if (node == NULL || yaml_node_get_node_type(node) != YAML_NODE_MAPPING)
             continue;
         m = yaml_node_get_mapping(node);
-        if (g_strcmp0(yaml_mapping_get_string_member(m, "path"), c->sheet) == 0)
+        if (c->sheet != NULL &&
+            g_strcmp0(yaml_mapping_get_string_member(m, "path"), c->sheet) == 0)
             c->sheet_sha256 = g_strdup(yaml_mapping_get_string_member(m, "sha256"));
+        if (c->mesh != NULL &&
+            g_strcmp0(yaml_mapping_get_string_member(m, "path"), c->mesh) == 0)
+            c->mesh_sha256 = g_strdup(yaml_mapping_get_string_member(m, "sha256"));
     }
     return g_steal_pointer(&c);
 }
@@ -634,6 +649,14 @@ clawt_office_character_to_json(const ClawtOfficeCharacter *character)
     if (character->sheet_sha256 != NULL) {
         json_builder_set_member_name(b, "sheet_sha256");
         json_builder_add_string_value(b, character->sheet_sha256);
+    }
+    if (character->mesh != NULL) {
+        json_builder_set_member_name(b, "mesh");
+        json_builder_add_string_value(b, character->mesh);
+    }
+    if (character->mesh_sha256 != NULL) {
+        json_builder_set_member_name(b, "mesh_sha256");
+        json_builder_add_string_value(b, character->mesh_sha256);
     }
     json_builder_set_member_name(b, "frame");
     json_builder_begin_array(b);
@@ -789,6 +812,109 @@ clawt_office_character_set_sheet(const gchar  *characters,
     yaml_sequence_add_int_element(frame, frame_height);
     yaml_mapping_set_sequence_member(top, "frame", frame);
     yaml_mapping_set_mapping_member(top, "animations", rows);
+    generator = yaml_generator_new();
+    yaml_generator_set_root(generator, root);
+    text = yaml_generator_to_data(generator, &length, error);
+    if (text == NULL)
+        return FALSE;
+    return clawt_office_pack_write_file(dir, "character.yaml", text, length, error);
+}
+
+gboolean
+clawt_office_character_is_whole(const ClawtOfficeCharacter *character)
+{
+    g_return_val_if_fail(character != NULL, FALSE);
+
+    return (character->sheet != NULL && character->animations->len > 0) ||
+           character->mesh != NULL;
+}
+
+/* Model files raylib loads whole: nothing they name lives beside them. */
+static gboolean
+mesh_kind_is_known(const gchar *path)
+{
+    static const gchar *const kinds[] = { ".glb", ".obj", ".vox", ".iqm", ".m3d", NULL };
+    g_autofree gchar *lower = g_ascii_strdown(path, -1);
+    guint i;
+
+    for (i = 0; kinds[i] != NULL; i++)
+        if (g_str_has_suffix(lower, kinds[i]))
+            return TRUE;
+    return FALSE;
+}
+
+gboolean
+clawt_office_character_set_mesh(const gchar  *characters,
+                                const gchar  *agent_id,
+                                const gchar  *mesh,
+                                GError      **error)
+{
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *manifest = NULL;
+    g_autofree gchar *file = NULL;
+    g_autoptr(ClawtOfficeCharacter) current = NULL;
+    g_autoptr(YamlParser) parser = yaml_parser_new();
+    g_autoptr(YamlGenerator) generator = NULL;
+    g_autofree gchar *text = NULL;
+    YamlNode *root;
+    gboolean recorded = FALSE;
+    YamlSequence *assets;
+    gsize length = 0;
+    guint i;
+
+    g_return_val_if_fail(characters != NULL, FALSE);
+
+    if (agent_id == NULL || !clawt_office_pack_path_is_safe(agent_id) ||
+        strchr(agent_id, '/') != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT, "'%s' is not an agent id",
+                    agent_id != NULL ? agent_id : "");
+        return FALSE;
+    }
+    if (mesh == NULL || !clawt_office_pack_path_is_safe(mesh) || !mesh_kind_is_known(mesh)) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "the mesh must be a .glb, .obj, .vox, .iqm or .m3d inside the "
+                            "character (a .gltf names other files; export a .glb)");
+        return FALSE;
+    }
+    dir = g_build_filename(characters, agent_id, NULL);
+    current = clawt_office_character_load(dir, NULL);
+    if (current == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "%s has no character yet: import its mesh first "
+                    "(clawtilla_office_asset_import, character \"%s\")", agent_id, agent_id);
+        return FALSE;
+    }
+    file = g_build_filename(dir, mesh, NULL);
+    if (!parent_is_inside(dir, file, error))
+        return FALSE;
+    manifest = g_build_filename(dir, "character.yaml", NULL);
+    if (!yaml_parser_load_from_file(parser, manifest, error))
+        return FALSE;
+    root = yaml_parser_get_root(parser);
+    if (root == NULL || yaml_node_get_node_type(root) != YAML_NODE_MAPPING) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID, "%s is not a mapping",
+                    manifest);
+        return FALSE;
+    }
+
+    /* imported, so it has a checksum and a provenance */
+    assets = yaml_mapping_has_member(yaml_node_get_mapping(root), "assets")
+        ? yaml_mapping_get_sequence_member(yaml_node_get_mapping(root), "assets") : NULL;
+    for (i = 0; assets != NULL && i < yaml_sequence_get_length(assets); i++) {
+        YamlNode *node = yaml_sequence_get_element(assets, i);
+
+        if (node != NULL && yaml_node_get_node_type(node) == YAML_NODE_MAPPING &&
+            g_strcmp0(yaml_mapping_get_string_member(yaml_node_get_mapping(node), "path"),
+                      mesh) == 0)
+            recorded = TRUE;
+    }
+    if (!recorded || !g_file_test(file, G_FILE_TEST_IS_REGULAR)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "%s is not an imported file of %s's character; import it first", mesh,
+                    agent_id);
+        return FALSE;
+    }
+    yaml_mapping_set_string_member(yaml_node_get_mapping(root), "mesh", mesh);
     generator = yaml_generator_new();
     yaml_generator_set_root(generator, root);
     text = yaml_generator_to_data(generator, &length, error);

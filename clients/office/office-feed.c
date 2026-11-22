@@ -43,10 +43,14 @@ typedef struct {
     guint            generation;
 } FileRequest;
 
+/* One character's files, fetched one after another; announced once all are here. */
 typedef struct {
     ClawtOfficeFeed *feed;
     JsonObject      *character;
-    gchar           *local;
+    gchar           *dir;
+    GQueue           files;      /* "sheet" / "mesh": which member names the next file */
+    guint            generation;
+    gboolean         failed;
 } SheetRequest;
 
 static void fetch_next(ClawtOfficeFeed *self);
@@ -331,52 +335,89 @@ on_agents(GObject *source, GAsyncResult *result, gpointer user_data)
 
 /* ── Characters ─────────────────────────────────────────────────── */
 
+static void fetch_character_file(SheetRequest *req);
+
+static void
+sheet_request_free(SheetRequest *req)
+{
+    json_object_unref(req->character);
+    g_free(req->dir);
+    g_queue_clear_full(&req->files, g_free);
+    g_free(req);
+}
+
 /*
- * A character's sheet, fetched over office.character_file into the
- * cache and checked against the checksum its manifest recorded: a sheet
- * that does not match is not drawn, rather than drawn wrong.
+ * A character's file, fetched over office.character_file into the cache
+ * and checked against the checksum its manifest recorded: a file that
+ * does not match fails the character, which is then not drawn, rather
+ * than drawn wrong.
  */
 static void
-on_sheet(GObject *source, GAsyncResult *result, gpointer user_data)
+on_character_file(GObject *source, GAsyncResult *result, gpointer user_data)
 {
     SheetRequest *req = user_data;
     ClawtOfficeFeed *self = req->feed;
     g_autoptr(GError) error = NULL;
     g_autoptr(JsonNode) node = NULL;
+    g_autofree gchar *member = g_queue_pop_head(&req->files);
+    g_autofree gchar *sum_member = g_strconcat(member, "_sha256", NULL);
+    const gchar *relative = json_object_get_string_member_with_default(req->character, member,
+                                                                       NULL);
+    const gchar *want = json_object_get_string_member_with_default(req->character, sum_member,
+                                                                   NULL);
     JsonObject *reply;
     const gchar *encoded;
-    const gchar *want;
     g_autofree guchar *data = NULL;
     g_autofree gchar *sum = NULL;
+    g_autofree gchar *local = NULL;
     g_autofree gchar *parent = NULL;
     gsize length = 0;
 
-    if (g_cancellable_is_cancelled(self->cancellable))
-        goto done;
+    if (g_cancellable_is_cancelled(self->cancellable)) {
+        sheet_request_free(req);
+        return;
+    }
     reply = finish(source, result, &node, &error);
     encoded = reply != NULL ? json_object_get_string_member_with_default(reply, "base64", NULL)
                             : NULL;
-    if (encoded == NULL)
-        goto done;
-    data = g_base64_decode(encoded, &length);
-    want = json_object_get_string_member_with_default(req->character, "sheet_sha256", NULL);
-    sum = g_compute_checksum_for_data(G_CHECKSUM_SHA256, data, length);
-    if (want != NULL && g_ascii_strcasecmp(want, sum) != 0) {
-        g_warning("office: %s's sheet does not match its manifest; not drawn",
-                  json_object_get_string_member_with_default(req->character, "agent", "?"));
-        goto done;
+    if (encoded == NULL) {
+        req->failed = TRUE;
+    } else {
+        data = g_base64_decode(encoded, &length);
+        sum = g_compute_checksum_for_data(G_CHECKSUM_SHA256, data, length);
+        if (want != NULL && g_ascii_strcasecmp(want, sum) != 0) {
+            g_warning("office: %s's %s does not match its manifest; not drawn",
+                      json_object_get_string_member_with_default(req->character, "agent", "?"),
+                      member);
+            req->failed = TRUE;
+        } else {
+            local = g_build_filename(req->dir, relative, NULL);
+            parent = g_path_get_dirname(local);
+            g_mkdir_with_parents(parent, 0700);
+            if (!g_file_set_contents(local, (const gchar *)data, (gssize)length, NULL))
+                req->failed = TRUE;
+        }
     }
-    parent = g_path_get_dirname(req->local);
-    g_mkdir_with_parents(parent, 0700);
-    if (g_file_set_contents(req->local, (const gchar *)data, (gssize)length, NULL) &&
-        self->funcs.character != NULL)
-        self->funcs.character(json_object_get_string_member(req->character, "agent"),
-                              req->local, req->character, self->user_data);
+    fetch_character_file(req);
+}
 
-done:
-    json_object_unref(req->character);
-    g_free(req->local);
-    g_free(req);
+static void
+fetch_character_file(SheetRequest *req)
+{
+    ClawtOfficeFeed *self = req->feed;
+    const gchar *member = g_queue_peek_head(&req->files);
+    const gchar *agent = json_object_get_string_member(req->character, "agent");
+
+    if (member == NULL) {
+        if (!req->failed && req->generation == self->generation && self->funcs.character != NULL)
+            self->funcs.character(agent, req->dir, req->character, self->user_data);
+        sheet_request_free(req);
+        return;
+    }
+    request(self, "office.character_file",
+            clawt_ipc_payload_new("agent", agent, "path",
+                                  json_object_get_string_member(req->character, member), NULL),
+            on_character_file, req);
 }
 
 static void
@@ -397,19 +438,26 @@ on_characters(GObject *source, GAsyncResult *result, gpointer user_data)
     for (i = 0; list != NULL && i < json_array_get_length(list); i++) {
         JsonObject *c = json_array_get_object_element(list, i);
         const gchar *agent = json_object_get_string_member_with_default(c, "agent", NULL);
-        const gchar *sheet = json_object_get_string_member_with_default(c, "sheet", NULL);
+        static const gchar *const members[] = { "sheet", "mesh", NULL };
         SheetRequest *req;
+        guint m;
 
-        if (agent == NULL || sheet == NULL || !clawt_office_pack_path_is_safe(agent) ||
-            strchr(agent, '/') != NULL || !clawt_office_pack_path_is_safe(sheet))
+        if (agent == NULL || !clawt_office_pack_path_is_safe(agent) || strchr(agent, '/') != NULL)
             continue;
         req = g_new0(SheetRequest, 1);
         req->feed = self;
         req->character = json_object_ref(c);
-        req->local = g_build_filename(g_get_user_cache_dir(), "clawtilla", "office",
-                                      "characters", agent, sheet, NULL);
-        request(self, "office.character_file",
-                clawt_ipc_payload_new("agent", agent, "path", sheet, NULL), on_sheet, req);
+        req->generation = self->generation;
+        req->dir = g_build_filename(g_get_user_cache_dir(), "clawtilla", "office",
+                                    "characters", agent, NULL);
+        g_queue_init(&req->files);
+        for (m = 0; members[m] != NULL; m++) {
+            const gchar *path = json_object_get_string_member_with_default(c, members[m], NULL);
+
+            if (path != NULL && clawt_office_pack_path_is_safe(path))
+                g_queue_push_tail(&req->files, g_strdup(members[m]));
+        }
+        fetch_character_file(req);
     }
 }
 

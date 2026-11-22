@@ -149,6 +149,7 @@ clawtilla-office --screenshot office.png --width 1600 --height 900
 | ~--screenshot FILE~ | draw offscreen until the office has loaded and people have walked to their seats (~--frames~, default 90), write a PNG, exit; 30 seconds without a world or a layout is a failure that says so |
 | ~--embed FD~ | stream frames over the socket =FD= for a host that does not link libregnum (the GTK client); see below |
 | ~--width~, ~--height~ | the size, 64 to 8192 pixels |
+| ~--focus ID~ | the 3D camera follows this participant, close up |
 
 In a window: Tab switches 2D and 3D, the arrow keys or a right-drag turn the 3D camera, the wheel zooms, Escape quits, and a click on somebody prints ~{"event":"open_agent","agent":"<id>"}~ on stdout.
 
@@ -167,7 +168,10 @@ The lrg client draws the same scene in its own process, into an =LrgViewport= on
 
 *** Characters
 
-An agent the custodial team has made a character for ([[file:office-custodial-team.org::#characters][characters]]) is drawn from its own sprite sheet instead of the shared body: walking picks the row for the direction it is going, a pose (sit, type, read, phone, present) its own row, a still pose holds a frame.  A sheet is fetched with ~office.character_file~ and checked against the sha256 its manifest recorded -- one that does not match is not drawn.  In the 3D view the same frame is drawn on a billboard that faces the camera, standing where the body would; a generated 3D mesh per agent is not made yet.
+An agent the custodial team has made a character for ([[file:office-custodial-team.org::#characters][characters]]) is drawn from its own sprite sheet instead of the shared body: walking picks the row for the direction it is going, a pose (sit, type, read, phone, present) its own row, a still pose holds a frame.  A sheet is fetched with ~office.character_file~ and checked against the sha256 its manifest recorded -- one that does not match is not drawn.  In the 3D view a character with a *model* (a =.glb=, =.obj=, =.vox=, =.iqm= or =.m3d= the custodial team attached with ~clawtilla_office_character_mesh~) is drawn as that model -- scaled to the body's height, stood on the floor by its own bounding box, turned the way it walks, and playing an animation whose name says /walk/ while it walks (a still one holds its first frame).  One with only a sheet is its current frame on a billboard facing the camera.  The web canvas draws the office from above and uses the sheet.
+
+#+caption: kudu's own model in a phone booth, the camera following it (=--focus kudu=)
+[[file:images/office/office-mesh.png]]
 
 #+caption: kudu drawn from its sheet, on a call with the chief
 [[file:images/office/office-character.png]]
@@ -234,7 +238,7 @@ Which zone, pose, prop and emote each activity gets.  Three layers, each replaci
 | ~office.layout~ (~world~ optional) | the director's ~placements~ (each ~id~, ~activity~, ~zone~, ~zone_tag~, ~seat~, ~x~/~y~, ~x3~/~z3~, ~pose~, ~prop~, ~emote~, ~facing~, ~fallback~) plus ~participants~ and ~now~ |
 | ~office.file~ (~world~, ~path~) | one file of a pack as ~base64~, at most 32 MiB, only inside the pack -- for a renderer not on the daemon's machine |
 | ~office.set~ (~enabled~, ~world~, ~renderer~, each optional) | writes them to clawtilla.yaml and applies them at once; answers the new ~enabled~, ~world~, ~renderer~; a world that does not exist is refused |
-| ~office.characters~ | ~characters~: each agent the custodial team has made a whole character for -- ~agent~, ~sheet~, ~sheet_sha256~, ~frame~ ([w, h]) and ~animations~ (~{name: {row, frames, fps}}~) (since 0.60.0) |
+| ~office.characters~ | ~characters~: each agent the custodial team has made a whole character for -- ~agent~, ~sheet~, ~sheet_sha256~, ~frame~ ([w, h]) and ~animations~ (~{name: {row, frames, fps}}~) (since 0.60.0), and ~mesh~ and ~mesh_sha256~ for one with a model (since 0.62.0) |
 | ~office.character_file~ (~agent~, ~path~) | one file of a character as ~base64~, resolved by the kernel inside =<state_dir>/office/characters/<agent>/= |
 | ~office.custodians~ | ~team~ (the team tagged ~office-custodial~, or null) and ~generator~ (=office.asset_generator=) -- whether a client offers the install (since 0.58.0) |
 | ~office.custodians_install~ (~team~, ~start~ optional) | makes the custodial team and its three agents, started unless ~start: false~; answers ~team~ and ~agents~; refused when a team already carries the tag |

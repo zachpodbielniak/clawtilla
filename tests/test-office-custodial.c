@@ -330,6 +330,54 @@ test_character_layout(void)
     clawt_test_remove_tree(root);
 }
 
+/*
+ * A model is attached only once imported, only as a file that carries
+ * all of itself (a .gltf names other files and is refused), and a
+ * character with a model and no sheet is whole.
+ */
+static void
+test_character_mesh(void)
+{
+    g_autofree gchar *root = g_dir_make_tmp("clawt-mesh-XXXXXX", NULL);
+    g_autofree gchar *source = g_build_filename(root, "kudu.glb", NULL);
+    g_autofree gchar *kudu = g_build_filename(root, "kudu", NULL);
+    g_autoptr(ClawtOfficeCharacter) loaded = NULL;
+    g_autoptr(GError) error = NULL;
+
+    g_assert_true(g_file_set_contents(source, "glTF-not-really", -1, NULL));
+    g_assert_false(clawt_office_character_set_mesh(root, "kudu", "models/kudu.glb", &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND);
+    g_clear_error(&error);
+
+    g_assert_true(clawt_office_character_import_asset(root, "kudu", source, "models/kudu.glb",
+                                                      "CC0-1.0", "a test", NULL, &error));
+    g_assert_false(clawt_office_character_set_mesh(root, "kudu", "models/kudu.gltf", &error));
+    g_clear_error(&error);
+    g_assert_false(clawt_office_character_set_mesh(root, "kudu", "models/other.glb", &error));
+    g_clear_error(&error);
+    g_assert_false(clawt_office_character_set_mesh(root, "kudu", "../kudu.glb", &error));
+    g_clear_error(&error);
+
+    loaded = clawt_office_character_load(kudu, &error);
+    g_assert_false(clawt_office_character_is_whole(loaded));
+    g_clear_pointer(&loaded, clawt_office_character_free);
+
+    g_assert_true(clawt_office_character_set_mesh(root, "kudu", "models/kudu.glb", &error));
+    g_assert_no_error(error);
+    loaded = clawt_office_character_load(kudu, &error);
+    g_assert_cmpstr(loaded->mesh, ==, "models/kudu.glb");
+    g_assert_nonnull(loaded->mesh_sha256);
+    g_assert_null(loaded->sheet);
+    g_assert_true(clawt_office_character_is_whole(loaded));
+    {
+        g_autoptr(JsonNode) json = clawt_office_character_to_json(loaded);
+
+        g_assert_cmpstr(json_object_get_string_member(json_node_get_object(json), "mesh"), ==,
+                        "models/kudu.glb");
+    }
+    clawt_test_remove_tree(root);
+}
+
 /* ── The daemon ─────────────────────────────────────────────────── */
 
 typedef struct {
@@ -1046,6 +1094,7 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office-custodial/fork", test_fork);
     g_test_add_func("/office-custodial/import-asset", test_import_asset);
     g_test_add_func("/office-custodial/character-layout", test_character_layout);
+    g_test_add_func("/office-custodial/character-mesh", test_character_mesh);
     g_test_add_func("/office-custodial/tools-gated", test_tools_gated);
     g_test_add_func("/office-custodial/write-copies-under-state", test_write_copies_under_state);
     g_test_add_func("/office-custodial/import-only-from-own-workspace",

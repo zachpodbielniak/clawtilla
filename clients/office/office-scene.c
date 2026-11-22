@@ -52,6 +52,7 @@ typedef struct {
     gfloat           x, y;        /* where they are, map pixels */
     gfloat           tx, ty;      /* where they are going */
     gfloat           walk_phase;
+    gfloat           heading;     /* degrees round y, the way it last walked (3D models) */
     gboolean         placed;      /* has a position at all */
     gboolean         seen;        /* in the latest layout */
     gboolean         leaving;
@@ -83,11 +84,20 @@ actor_free(Actor *a)
 
 /* An agent's own character: its sheet, and which row is which animation. */
 typedef struct {
-    gchar      *path;
-    JsonObject *layout;
-    Texture2D   texture;
-    gboolean    loaded;
-    gboolean    failed;
+    gchar          *path;       /* the sheet, or NULL */
+    gchar          *mesh_path;  /* the model, or NULL */
+    JsonObject     *layout;
+    Texture2D       texture;
+    gboolean        loaded;
+    gboolean        failed;
+    Model           model;
+    ModelAnimation *animations;
+    gint            n_animations;
+    gint            walk_anim;  /* -1: none */
+    gfloat          model_scale;
+    gfloat          model_floor;
+    gboolean        model_loaded;
+    gboolean        model_failed;
 } Sheet;
 
 static void
@@ -95,6 +105,11 @@ sheet_free(Sheet *sheet)
 {
     if (sheet->loaded)
         UnloadTexture(sheet->texture);
+    if (sheet->animations != NULL)
+        UnloadModelAnimations(sheet->animations, sheet->n_animations);
+    if (sheet->model_loaded)
+        UnloadModel(sheet->model);
+    g_free(sheet->mesh_path);
     g_free(sheet->path);
     g_clear_pointer(&sheet->layout, json_object_unref);
     g_free(sheet);
@@ -123,6 +138,7 @@ struct _ClawtOfficeScene {
     GHashTable           *sheets;     /* id -> Sheet */
     gchar                *status;
     gchar                *hovered;
+    gchar                *focus;      /* who the 3D camera follows, or NULL */
     JsonObject           *usage;      /* usage.providers, for the board */
     LrgWorldAdapter      *adapter;    /* a world adapter drawing the office, or NULL */
     gchar                *adapter_name;
@@ -231,6 +247,7 @@ clawt_office_scene_free(ClawtOfficeScene *self)
     g_clear_object(&self->lcamera);
     g_free(self->status);
     g_free(self->hovered);
+    g_free(self->focus);
     g_clear_pointer(&self->usage, json_object_unref);
     g_hash_table_unref(self->handles);
     g_clear_object(&self->adapter);
@@ -736,14 +753,23 @@ clawt_office_scene_set_usage(ClawtOfficeScene *self, JsonObject *usage)
 
 void
 clawt_office_scene_set_character(ClawtOfficeScene *self, const gchar *id,
-                                 const gchar *sheet_path, JsonObject *character)
+                                 const gchar *dir, JsonObject *character)
 {
     Sheet *sheet;
+    const gchar *sheet_name;
+    const gchar *mesh_name;
 
-    if (id == NULL || sheet_path == NULL || character == NULL)
+    if (id == NULL || dir == NULL || character == NULL)
         return;
+    sheet_name = json_object_get_string_member_with_default(character, "sheet", NULL);
+    mesh_name = json_object_get_string_member_with_default(character, "mesh", NULL);
     sheet = g_new0(Sheet, 1);
-    sheet->path = g_strdup(sheet_path);
+    sheet->walk_anim = -1;
+    sheet->path = sheet_name != NULL && json_object_has_member(character, "animations")
+        ? g_build_filename(dir, sheet_name, NULL) : NULL;
+    sheet->mesh_path = mesh_name != NULL ? g_build_filename(dir, mesh_name, NULL) : NULL;
+    sheet->failed = sheet->path == NULL;
+    sheet->model_failed = sheet->mesh_path == NULL;
     sheet->layout = json_object_ref(character);
     g_hash_table_replace(self->sheets, g_strdup(id), sheet);
 }
@@ -772,6 +798,12 @@ guint
 clawt_office_scene_n_participants(ClawtOfficeScene *self)
 {
     return g_hash_table_size(self->actors);
+}
+
+void
+clawt_office_scene_set_focus(ClawtOfficeScene *self, const gchar *id)
+{
+    replace(&self->focus, id);
 }
 
 void
@@ -815,6 +847,46 @@ clawt_office_scene_prepare(ClawtOfficeScene *self)
             sheet->failed = !sheet->loaded;
             if (sheet->loaded)
                 SetTextureFilter(sheet->texture, TEXTURE_FILTER_POINT);
+        }
+
+        /*
+         * Its model, scaled to the shared body's height and stood on the
+         * floor from its own bounding box -- a mesh made by a generator
+         * comes in whatever units and origin it likes.  An animation
+         * whose name says walk is the walk; the rest are left alone.
+         */
+        g_hash_table_iter_init(&iter, self->sheets);
+        while (g_hash_table_iter_next(&iter, NULL, &value)) {
+            Sheet *sheet = value;
+            BoundingBox box;
+            gfloat height;
+            gint n;
+
+            if (sheet->model_loaded || sheet->model_failed)
+                continue;
+            sheet->model = LoadModel(sheet->mesh_path);
+            sheet->model_loaded = sheet->model.meshCount > 0;
+            sheet->model_failed = !sheet->model_loaded;
+            if (!sheet->model_loaded)
+                continue;
+            box = GetModelBoundingBox(sheet->model);
+            height = box.max.y - box.min.y;
+            sheet->model_scale = height > 0.0001f ? 2.4f / height : 1.0f;
+            sheet->model_floor = box.min.y;
+            if (g_str_has_suffix(sheet->mesh_path, ".glb") ||
+                g_str_has_suffix(sheet->mesh_path, ".iqm") ||
+                g_str_has_suffix(sheet->mesh_path, ".m3d")) {
+                sheet->animations = LoadModelAnimations(sheet->mesh_path,
+                                                        &sheet->n_animations);
+                for (n = 0; sheet->animations != NULL && n < sheet->n_animations; n++) {
+                    g_autofree gchar *lower = g_ascii_strdown(sheet->animations[n].name, -1);
+
+                    if (strstr(lower, "walk") != NULL || strstr(lower, "run") != NULL) {
+                        sheet->walk_anim = n;
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -1165,8 +1237,50 @@ draw_character_2d(ClawtOfficeScene *self, Actor *a, Sheet *sheet, gfloat x, gflo
  * picture that turns to face you reads better than a body that is not
  * them.
  */
+/*
+ * A character's own model, standing where the body would, turned the way
+ * it is walking (or holding the last way it walked).  A walk animation
+ * plays while it walks; standing, it holds the first frame -- no idle
+ * loop, so a still office is still.
+ */
+static gboolean
+draw_model_3d(ClawtOfficeScene *self, Actor *a, Sheet *sheet, Vector3 feet)
+{
+    gfloat dx = a->tx - a->x;
+    gfloat dy = a->ty - a->y;
+    gboolean walking = fabsf(dx) + fabsf(dy) > ARRIVED_PIXELS;
+    gfloat s = sheet->model_scale;
+
+    if (!sheet->model_loaded)
+        return FALSE;
+    if (walking)
+        a->heading = atan2f(dx, dy) * RAD2DEG;
+    if (sheet->walk_anim >= 0) {
+        ModelAnimation *walk = &sheet->animations[sheet->walk_anim];
+        gint frame = walking ? (gint)(self->clock * 30.0f) % MAX(walk->keyframeCount, 1) : 0;
+
+        UpdateModelAnimation(sheet->model, *walk, (gfloat)frame);
+    }
+    DrawModelEx(sheet->model,
+                (Vector3){ feet.x, feet.y - sheet->model_floor * s, feet.z },
+                (Vector3){ 0.0f, 1.0f, 0.0f }, a->heading, (Vector3){ s, s, s },
+                with_alpha(WHITE, a->fade));
+    return TRUE;
+}
+
+static gboolean draw_billboard_3d(ClawtOfficeScene *self, Actor *a, Sheet *sheet,
+                                  Vector3 feet);
+
 static gboolean
 draw_character_3d(ClawtOfficeScene *self, Actor *a, Sheet *sheet, Vector3 feet)
+{
+    if (draw_model_3d(self, a, sheet, feet))
+        return TRUE;
+    return draw_billboard_3d(self, a, sheet, feet);
+}
+
+static gboolean
+draw_billboard_3d(ClawtOfficeScene *self, Actor *a, Sheet *sheet, Vector3 feet)
 {
     Rectangle source;
     gfloat aspect = 1.0f;
@@ -1414,6 +1528,14 @@ place_camera_3d(ClawtOfficeScene *self, gint width, gint height)
     gfloat cx = self->map_w / self->tile / 2.0f;
     gfloat cz = self->map_h / self->tile / 2.0f;
     gfloat reach = MAX(cx, cz) * 1.2f * self->distance;
+    Actor *followed = self->focus != NULL ? g_hash_table_lookup(self->actors, self->focus) : NULL;
+
+    /* following somebody: centred on them, close enough to see their face */
+    if (followed != NULL && followed->placed) {
+        cx = followed->x / self->tile;
+        cz = followed->y / self->tile;
+        reach = 7.0f * self->distance;
+    }
     Vector3 eye = { cx + cosf(self->orbit) * reach, reach * 0.95f,
                     cz + sinf(self->orbit) * reach };
 

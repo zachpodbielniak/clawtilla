@@ -942,6 +942,14 @@ static const ClawtParamInfo office_character_layout_params[] = {
       "Checked against the image: a row or frame past its edge is refused.", TRUE }
 };
 
+static const ClawtParamInfo office_character_mesh_params[] = {
+    { "agent", "string", "Whose character.", TRUE },
+    { "mesh", "string",
+      "The model, already imported into the character "
+      "(clawtilla_office_asset_import): a .glb (rigged, with walk and idle "
+      "animations if it has them), .obj, .vox, .iqm or .m3d.", TRUE }
+};
+
 static const ClawtParamInfo office_custodians_params[] = {
     { "team", "string",
       "The team's id; it may be named anything, it is found by its "
@@ -1038,6 +1046,12 @@ static const ToolDefinition tools[] = {
          "size and which row is which animation -- after which the office "
          "draws that agent with it instead of the default body.",
          NEEDS_OFFICE, office_character_layout_params, CLAWT_ACTION_WRITE),
+
+    TOOL("clawtilla_office_character_mesh",
+         "Give an agent's character a 3D model, imported first: the office's "
+         "3D view draws it instead of the sheet's billboard, turned the way "
+         "it walks.",
+         NEEDS_OFFICE, office_character_mesh_params, CLAWT_ACTION_WRITE),
 
     TOOL("clawtilla_office_custodians_install",
          "Install the office's custodial team: a lead, an asset steward and a "

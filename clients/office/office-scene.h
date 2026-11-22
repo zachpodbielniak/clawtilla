@@ -116,15 +116,16 @@ void clawt_office_scene_set_color(ClawtOfficeScene *self, const gchar *id,
  * clawt_office_scene_set_character:
  * @self: a scene
  * @id: an agent's id
- * @sheet_path: its sprite sheet, a local PNG
+ * @dir: a local directory holding its files at the paths @character names
  * @character: its layout, as `office.characters` gives it
  *
- * Draws @id with its own character instead of the default body: as a
- * sprite in 2D, and in 3D as a billboard facing the camera.  The texture is
+ * Draws @id with its own character instead of the default body: its
+ * sheet as a sprite in 2D; in 3D its mesh when it has one, otherwise the
+ * sheet's frame on a billboard facing the camera.  The texture is
  * loaded at the next clawt_office_scene_prepare().
  */
 void clawt_office_scene_set_character(ClawtOfficeScene *self, const gchar *id,
-                                      const gchar *sheet_path, JsonObject *character);
+                                      const gchar *dir, JsonObject *character);
 
 /**
  * clawt_office_scene_set_usage:
@@ -216,6 +217,16 @@ const gchar *clawt_office_scene_pointer(ClawtOfficeScene *self, gfloat x, gfloat
  * @zoom: a zoom step: positive in, negative out, 0 for none
  */
 void clawt_office_scene_orbit(ClawtOfficeScene *self, gfloat dx, gfloat zoom);
+
+/**
+ * clawt_office_scene_set_focus:
+ * @self: a scene
+ * @id: (nullable): a participant to follow, or %NULL for the whole office
+ *
+ * The 3D camera centres on @id and comes in close, following it as it
+ * walks; 2D always shows the whole map.
+ */
+void clawt_office_scene_set_focus(ClawtOfficeScene *self, const gchar *id);
 
 /**
  * clawt_office_scene_n_participants:
