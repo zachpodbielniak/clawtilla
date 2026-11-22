@@ -170,6 +170,10 @@ typedef struct {
  * @mesh: (nullable): a 3D model of the character (glb, obj, vox, iqm or
  *   m3d), relative to the character's directory, for the 3D view
  * @mesh_sha256: (nullable): its checksum, from the manifest's `assets`
+ * @background: (nullable): the sheet's background colour, which a
+ *   renderer makes transparent: `corners` (whatever colour all four
+ *   corners of a frame share) or `#rrggbb`; %NULL when the sheet is
+ *   already transparent
  *
  * An agent's character as the custodial team made it
  * (`<state_dir>/office/characters/<agent>/character.yaml`).
@@ -183,6 +187,7 @@ typedef struct {
     GPtrArray *animations;
     gchar     *mesh;
     gchar     *mesh_sha256;
+    gchar     *background;
 } ClawtOfficeCharacter;
 
 GType clawt_office_character_get_type(void) G_GNUC_CONST;
@@ -269,6 +274,73 @@ gboolean clawt_office_character_set_mesh(const gchar  *characters,
                                          const gchar  *agent_id,
                                          const gchar  *mesh,
                                          GError      **error);
+
+/**
+ * clawt_office_character_background_is_valid:
+ * @background: (nullable): a background as clawt_office_character_set_background() takes it
+ *
+ * Returns: %TRUE for %NULL, `corners` and `#rrggbb`
+ */
+gboolean clawt_office_character_background_is_valid(const gchar *background);
+
+/**
+ * clawt_office_character_set_background:
+ * @characters: the characters directory, `<state_dir>/office/characters`
+ * @agent_id: whose character
+ * @background: (nullable): `corners`, `#rrggbb`, or %NULL for a sheet that
+ *   is already transparent
+ * @error: return location for a #GError
+ *
+ * Says what colour the sheet's background is, so a renderer can key it
+ * out: a generator draws a portrait on a plain backdrop, and drawn as it
+ * stands that backdrop is a box around the person.  Renderers remove
+ * pixels within a small tolerance of the colour; `corners` takes the
+ * colour every corner of a frame agrees on, and does nothing to a frame
+ * whose corners differ.
+ *
+ * Returns: %TRUE when the manifest was written
+ */
+gboolean clawt_office_character_set_background(const gchar  *characters,
+                                               const gchar  *agent_id,
+                                               const gchar  *background,
+                                               GError      **error);
+
+/**
+ * CLAWT_OFFICE_BACKGROUND_TOLERANCE:
+ *
+ * How far (the largest channel difference) a pixel may be from the
+ * backdrop colour and still be backdrop.  A generator's backdrop is
+ * never one exact colour.
+ */
+#define CLAWT_OFFICE_BACKGROUND_TOLERANCE (32)
+
+/**
+ * clawt_office_character_key_background:
+ * @rgba: (array): the sheet's pixels, 8-bit RGBA, changed in place
+ * @width: the sheet's width in pixels
+ * @height: the sheet's height in pixels
+ * @stride: bytes per row
+ * @frame_width: one frame's width (0: the whole sheet is one frame)
+ * @frame_height: one frame's height (0: the whole sheet is one frame)
+ * @background: (nullable): `corners`, `#rrggbb`, or %NULL to do nothing
+ *
+ * Makes a sheet's backdrop transparent, frame by frame: the pixels near
+ * the backdrop colour that are *connected to the frame's edge*.  A
+ * colour match alone would also punch out the whites of a pair of eyes,
+ * which sit as close to a cream backdrop as the backdrop's own noise.
+ * With `corners`, a frame whose four corners do not share one opaque
+ * colour is left alone -- it has no plain backdrop to remove.  Both
+ * renderers apply this one rule (the web client's office.js mirrors it).
+ *
+ * Returns: how many pixels were made transparent
+ */
+guint clawt_office_character_key_background(guint8      *rgba,
+                                            guint        width,
+                                            guint        height,
+                                            gsize        stride,
+                                            guint        frame_width,
+                                            guint        frame_height,
+                                            const gchar *background);
 
 /**
  * clawt_office_character_is_whole:

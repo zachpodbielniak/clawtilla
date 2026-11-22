@@ -341,16 +341,21 @@
 			if (!c || !c.agent || !c.src || !Array.isArray(c.frame) || !c.animations)
 				return;
 			seen[c.agent] = true;
-			key = c.sheet_sha256 || c.src;
+			/* a new backdrop is a new picture, the same as new bytes */
+			key = (c.sheet_sha256 || c.src) + '|' + (c.background || '');
 			have = characters[c.agent];
 			if (have && have.key === key) {
 				have.def = c;
 				return;
 			}
 			img = new Image();
-			img.onload = function () { last_paint = 0; };
+			have = { def: c, img: img, key: key, sheet: null };
+			img.onload = function () {
+				have.sheet = keyed_sheet(img, c);
+				last_paint = 0;
+			};
 			img.src = c.src;
-			characters[c.agent] = { def: c, img: img, key: key };
+			characters[c.agent] = have;
 		});
 		Object.keys(characters).forEach(function (id) {
 			if (!seen[id])
@@ -400,9 +405,92 @@
 	function character_of(s) {
 		var ch = characters[s.id];
 
-		if (!ch || !ch.img.complete || !ch.img.naturalWidth)
+		if (!ch || !ch.sheet)
 			return null;
 		return ch;
+	}
+
+	/*
+	 * The sheet with its backdrop made transparent, when the character
+	 * says it has one (a generator's portrait on a plain colour) -- the
+	 * rule of clawt_office_character_key_background() in libclawt, so
+	 * both renderers cut the same pixels: per frame, the pixels within
+	 * BACKDROP_TOLERANCE of the backdrop colour that connect to the
+	 * frame's edge (the whites of the eyes are as close to a cream
+	 * backdrop as its own noise, and are not connected to it); with
+	 * "corners", a frame whose corners disagree is left alone.  Without a
+	 * backdrop, or if the canvas will not give its pixels, the image as
+	 * it is.
+	 */
+	var BACKDROP_TOLERANCE = 32;
+
+	function keyed_sheet(img, def) {
+		var bg = def.background, w = img.naturalWidth, h = img.naturalHeight;
+		var canvas, cx, data, px, fw, fh, fx, fy, fixed = null;
+
+		if (!bg || !w || !h)
+			return img;
+		if (bg !== 'corners') {
+			if (!/^#[0-9a-fA-F]{6}$/.test(bg))
+				return img;
+			fixed = [parseInt(bg.substr(1, 2), 16), parseInt(bg.substr(3, 2), 16),
+			         parseInt(bg.substr(5, 2), 16)];
+		}
+		canvas = document.createElement('canvas');
+		canvas.width = w;
+		canvas.height = h;
+		cx = canvas.getContext('2d');
+		cx.drawImage(img, 0, 0);
+		try {
+			data = cx.getImageData(0, 0, w, h);
+		} catch (e) {
+			return img;
+		}
+		px = data.data;
+		fw = def.frame[0] > 0 && def.frame[0] <= w ? def.frame[0] : w;
+		fh = def.frame[1] > 0 && def.frame[1] <= h ? def.frame[1] : h;
+
+		function near(i, k) {
+			return px[i + 3] >= 250 &&
+			       Math.abs(px[i] - k[0]) <= BACKDROP_TOLERANCE &&
+			       Math.abs(px[i + 1] - k[1]) <= BACKDROP_TOLERANCE &&
+			       Math.abs(px[i + 2] - k[2]) <= BACKDROP_TOLERANCE;
+		}
+
+		for (fy = 0; fy + fh <= h; fy += fh) {
+			for (fx = 0; fx + fw <= w; fx += fw) {
+				var at = function (x, y) { return ((fy + y) * w + fx + x) * 4; };
+				var tl = at(0, 0), k, stack = [], i, x, y, n;
+
+				if (fixed)
+					k = fixed;
+				else {
+					k = [px[tl], px[tl + 1], px[tl + 2]];
+					if (px[tl + 3] < 250 || !near(at(fw - 1, 0), k) ||
+					    !near(at(0, fh - 1), k) || !near(at(fw - 1, fh - 1), k))
+						continue;
+				}
+				for (i = 0; i < fw; i++)
+					stack.push(i, (fh - 1) * fw + i);
+				for (i = 1; i + 1 < fh; i++)
+					stack.push(i * fw, i * fw + fw - 1);
+				while (stack.length) {
+					n = stack.pop();
+					x = n % fw;
+					y = (n - x) / fw;
+					i = at(x, y);
+					if (!near(i, k))
+						continue;
+					px[i] = px[i + 1] = px[i + 2] = px[i + 3] = 0;
+					if (x > 0) stack.push(n - 1);
+					if (x + 1 < fw) stack.push(n + 1);
+					if (y > 0) stack.push(n - fw);
+					if (y + 1 < fh) stack.push(n + fw);
+				}
+			}
+		}
+		cx.putImageData(data, 0, 0);
+		return canvas;
 	}
 
 	/*
@@ -424,7 +512,7 @@
 		c.save();
 		c.globalAlpha = s.alpha;
 		c.imageSmoothingEnabled = false;
-		c.drawImage(ch.img, index * fw, row * fh, fw, fh,
+		c.drawImage(ch.sheet, index * fw, row * fh, fw, fh,
 		            Math.round(s.x - width / 2), Math.round(s.y - height), width, height);
 		if (s.hover) {
 			c.strokeStyle = ink.info;

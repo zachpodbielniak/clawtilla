@@ -927,16 +927,22 @@ clawt_daemon_handle_office(ClawtDaemon *self,
     /*
      * A character made by the daemon itself (`direct`): the estimate is
      * fetched behind the reply and put to the operator as a decision; the
-     * reply says only that it was asked.
+     * reply says only that it was asked, and of which service -- a
+     * self-hosted ComfyUI costs nothing and starts without a card.
      */
     if (g_strcmp0(kind, "office.character") == 0 &&
         clawt_ipc_payload_boolean(payload, "direct", FALSE)) {
+        g_autofree gchar *service = NULL;
+
         if (!clawt_daemon_office_generate_ask(self, clawt_ipc_payload_string(payload, "agent"),
-                                              &error))
+                                              &service, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "asked");
         json_builder_add_boolean_value(builder, TRUE);
+        /* which road: a self-hosted one starts without a card */
+        json_builder_set_member_name(builder, "service");
+        json_builder_add_string_value(builder, service);
         json_builder_end_object(builder);
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }

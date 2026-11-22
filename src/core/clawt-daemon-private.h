@@ -1419,6 +1419,7 @@ JsonNode *clawt_daemon_office_layout(ClawtDaemon *self, const gchar *world_id,
 void     clawt_daemon_office_custodial_setup(ClawtDaemon *self);
 gchar   *clawt_daemon_office_custodial_team(ClawtDaemon *self);
 gchar   *clawt_daemon_office_characters_dir(ClawtDaemon *self);
+gchar   *clawt_daemon_office_agent_picture(ClawtAgentConfig *agent);
 gboolean clawt_daemon_office_custodians_install(ClawtDaemon  *self,
                                                 const gchar  *team,
                                                 gboolean      start,
@@ -1435,6 +1436,7 @@ gchar   *clawt_daemon_office_store_api_key(ClawtDaemon  *self,
                                            GError      **error);
 gboolean clawt_daemon_office_generate_ask(ClawtDaemon  *self,
                                           const gchar  *agent_id,
+                                          gchar       **out_service,
                                           GError      **error);
 void     clawt_daemon_office_generate_start(ClawtDaemon *self, const gchar *agent_id);
 gboolean clawt_daemon_office_generate_settle(ClawtDaemon   *self,

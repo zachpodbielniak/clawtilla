@@ -962,7 +962,7 @@ test_direct_generation(void)
     kudu = g_build_filename(chars, "kudu", NULL);
 
     /* asked, not spent: a decision with the cost in it */
-    g_assert_true(clawt_daemon_office_generate_ask(fixture.daemon, "kudu", &error));
+    g_assert_true(clawt_daemon_office_generate_ask(fixture.daemon, "kudu", NULL, &error));
     g_assert_no_error(error);
     first = wait_for_generation_decision(&fixture);
     g_assert_nonnull(first);
@@ -978,7 +978,7 @@ test_direct_generation(void)
     g_assert_false(g_file_test(kudu, G_FILE_TEST_EXISTS));
 
     /* approved: spent once, and the character is whole */
-    g_assert_true(clawt_daemon_office_generate_ask(fixture.daemon, "kudu", &error));
+    g_assert_true(clawt_daemon_office_generate_ask(fixture.daemon, "kudu", NULL, &error));
     second = wait_for_generation_decision(&fixture);
     g_assert_nonnull(second);
     answer(&fixture, second, "approve");
@@ -994,6 +994,8 @@ test_direct_generation(void)
     g_assert_cmpstr(made->sheet, ==, "generated/portrait.png");
     g_assert_cmpuint(made->frame_width, ==, 64);
     g_assert_cmpuint(made->frame_height, ==, 96);
+    /* a generator paints a backdrop, and the character says so */
+    g_assert_cmpstr(made->background, ==, "corners");
     g_assert_cmpuint(the_mock->submits, ==, 1);
 
     g_clear_object(&the_mock);
@@ -1022,7 +1024,7 @@ test_free_generation_needs_no_card(void)
     chars = clawt_daemon_office_characters_dir(fixture.daemon);
     kudu = g_build_filename(chars, "kudu", NULL);
 
-    g_assert_true(clawt_daemon_office_generate_ask(fixture.daemon, "kudu", &error));
+    g_assert_true(clawt_daemon_office_generate_ask(fixture.daemon, "kudu", NULL, &error));
     deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
     while (g_get_monotonic_time() < deadline) {
         g_clear_pointer(&made, clawt_office_character_free);
@@ -1040,6 +1042,127 @@ test_free_generation_needs_no_card(void)
     }
     g_clear_object(&the_mock);
     daemon_teardown(&fixture);
+}
+
+/*
+ * A ComfyUI workflow that loads the agent's picture ({{image}}) needs
+ * one.  An agent without a picture is refused where the person asking
+ * can read why -- it used to reach the estimate with no image, fail
+ * there, and turn into a money card about Higgsfield for a server that
+ * charges nothing.  And the picture is the one every client draws: the
+ * profile picture a client stores in the workspace, not only a PNG named
+ * by agents.avatar.  Nothing here reaches the network: the refusal comes
+ * before the estimate.
+ */
+static void
+test_comfyui_needs_a_picture(void)
+{
+    DaemonFixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *workflow = NULL;
+    g_autofree gchar *picture = NULL;
+    g_autofree gchar *workspace = NULL;
+    ClawtAgentConfig *kudu;
+    /* the smallest PNG the avatar code will sniff as one */
+    static const guchar png[] = {
+        0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 13, 'I', 'H', 'D', 'R',
+        0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0
+    };
+    const gchar *graph = "{\"1\":{\"class_type\":\"LoadImage\",\"inputs\":{\"image\":\"{{image}}\"}},"
+                         "\"2\":{\"class_type\":\"SaveImage\",\"inputs\":{\"images\":[\"1\",0],"
+                         "\"filename_prefix\":\"t\"}}}";
+
+    daemon_setup(&fixture, "");
+    workflow = g_build_filename(fixture.dir, "workflow.json", NULL);
+    g_assert_true(g_file_set_contents(workflow, graph, -1, NULL));
+    g_assert_true(clawt_config_set_string(fixture.daemon->config, "office.asset_api",
+                                          "comfyui"));
+    g_assert_true(clawt_config_set_string(fixture.daemon->config, "office.comfyui_url",
+                                          "http://127.0.0.1:1"));
+    g_assert_true(clawt_config_set_string(fixture.daemon->config, "office.comfyui_workflow",
+                                          workflow));
+
+    /* no picture: refused, naming the remedy, and no card */
+    g_assert_false(clawt_daemon_office_generate_ask(fixture.daemon, "kudu", NULL, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+    g_assert_nonnull(strstr(error->message, "agent avatar set kudu"));
+    g_clear_error(&error);
+    {
+        g_autoptr(GPtrArray) open = clawt_decision_store_list(fixture.daemon->decisions, TRUE);
+
+        g_assert_cmpuint(open->len, ==, 0);
+    }
+
+    /* a picture stored the way a client stores one is the agent's picture */
+    kudu = clawt_config_get_agent(fixture.daemon->config, "kudu");
+    g_assert_null(clawt_daemon_office_agent_picture(kudu));
+    workspace = clawt_agent_config_get_workspace(kudu);
+    g_assert_true(g_mkdir_with_parents(workspace, 0700) == 0);
+    g_assert_true(clawt_avatar_write(workspace, png, sizeof png, NULL, &error));
+    g_assert_no_error(error);
+    picture = clawt_daemon_office_agent_picture(kudu);
+    g_assert_nonnull(picture);
+    g_assert_true(g_str_has_suffix(picture, "profile-picture.png"));
+
+    daemon_teardown(&fixture);
+}
+
+/*
+ * A generated portrait's backdrop is made transparent where it touches
+ * the frame's edge, and nowhere else: white eyes inside a cream
+ * backdrop are within the tolerance of it, and must survive.  A frame
+ * whose corners disagree has no plain backdrop and is left alone; a
+ * fixed colour keys only that colour.  This is the rule both renderers
+ * apply (office-scene.c and office.js).
+ */
+static void
+test_key_background(void)
+{
+    /* two 8x8 frames side by side */
+    enum { W = 16, H = 8 };
+    guint8 px[W * H * 4];
+    guint x;
+    guint y;
+    guint cleared;
+    const guint8 cream[4] = { 0xf4, 0xef, 0xe6, 0xff };
+    const guint8 blue[4] = { 0x3b, 0x82, 0xc4, 0xff };
+    const guint8 white[4] = { 0xff, 0xff, 0xff, 0xff };
+#define AT(xx, yy) (px + ((yy) * W + (xx)) * 4)
+
+    /* frame 0: cream, a blue body (x 2..5, y 2..7) with a white eye at (3,3) */
+    for (y = 0; y < H; y++)
+        for (x = 0; x < W; x++)
+            memcpy(AT(x, y), cream, 4);
+    for (y = 2; y < H; y++)
+        for (x = 2; x < 6; x++)
+            memcpy(AT(x, y), blue, 4);
+    memcpy(AT(3, 3), white, 4);
+    /* frame 1: one blue corner, so no shared backdrop */
+    memcpy(AT(15, 7), blue, 4);
+
+    g_assert_true(clawt_office_character_background_is_valid("corners"));
+    g_assert_true(clawt_office_character_background_is_valid("#A0b1C2"));
+    g_assert_true(clawt_office_character_background_is_valid(NULL));
+    g_assert_false(clawt_office_character_background_is_valid("#a0b1c"));
+    g_assert_false(clawt_office_character_background_is_valid("white"));
+
+    cleared = clawt_office_character_key_background(px, W, H, W * 4, 8, 8, "corners");
+    /* frame 0's 64 pixels less the 24 of the body; frame 1 untouched */
+    g_assert_cmpuint(cleared, ==, 64 - 24);
+    g_assert_cmpuint(AT(0, 0)[3], ==, 0);
+    g_assert_cmpuint(AT(7, 7)[3], ==, 0);
+    g_assert_cmpuint(AT(2, 2)[3], ==, 0xff);
+    g_assert_cmpmem(AT(3, 3), 4, white, 4);
+    g_assert_cmpuint(AT(8, 0)[3], ==, 0xff);
+
+    /* a fixed colour reaches frame 1's cream from its edge, not the blue corner */
+    cleared = clawt_office_character_key_background(px, W, H, W * 4, 8, 8, "#f4efe6");
+    g_assert_cmpuint(cleared, ==, 63);
+    g_assert_cmpuint(AT(15, 7)[3], ==, 0xff);
+
+    /* nothing asked, nothing done */
+    g_assert_cmpuint(clawt_office_character_key_background(px, W, H, W * 4, 8, 8, NULL), ==, 0);
+#undef AT
 }
 
 /* The key is stored as a file, 0600, and never given back. */
@@ -1106,6 +1229,9 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office-custodial/daemon-characters", test_daemon_characters);
     g_test_add_func("/office-custodial/direct-generation", test_direct_generation);
     g_test_add_func("/office-custodial/api-key", test_api_key);
+    g_test_add_func("/office-custodial/key-background", test_key_background);
+    g_test_add_func("/office-custodial/comfyui-needs-a-picture",
+                    test_comfyui_needs_a_picture);
     g_test_add_func("/office-custodial/free-generation-needs-no-card",
                     test_free_generation_needs_no_card);
 

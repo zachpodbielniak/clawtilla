@@ -4967,6 +4967,11 @@ cmd_office(int argc, char *argv[])
             g_autofree gchar *text = json_to_string(reply, TRUE);
 
             g_print("%s\n", text);
+        } else if (character && json_object_has_member(answer, "asked") &&
+                   g_strcmp0(member_or(answer, "service", ""), "comfyui") == 0) {
+            g_print("Making %s's character on your ComfyUI: it costs nothing, so no card. "
+                    "It is drawn in the office when it is done; the daemon log says why if "
+                    "it is not.\n", argv[3]);
         } else if (character && json_object_has_member(answer, "asked")) {
             g_print("Asked: the estimate for %s's character will be in your decisions; "
                     "nothing is spent until you approve it.\n", argv[3]);

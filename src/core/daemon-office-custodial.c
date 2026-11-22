@@ -358,6 +358,24 @@ character_maker(ClawtDaemon *self)
 }
 
 /*
+ * The file an agent's picture is in, or NULL: agents.avatar, else the
+ * profile picture a client stored in its workspace -- the answer every
+ * client's sidebar draws.  Both roads to a character ask this; each
+ * used to read agents.avatar alone, so a picture set from a client was
+ * never the one a character was made from.
+ */
+gchar *
+clawt_daemon_office_agent_picture(ClawtAgentConfig *agent)
+{
+    g_autofree gchar *workspace = clawt_agent_config_get_workspace(agent);
+
+    if (workspace == NULL)
+        return NULL;
+    return clawt_avatar_resolve_path(clawt_agent_config_get_string(agent, "avatar"),
+                                     workspace);
+}
+
+/*
  * The picture a character is made from: the agent's own avatar when it
  * has one, otherwise its generated face as an SVG -- the same face every
  * client draws, so the character looks like the agent people know.
@@ -368,9 +386,9 @@ reference_picture(ClawtAgentConfig *agent, gchar **out_name, gchar **out_data,
                   gsize *out_length, GError **error)
 {
     const gchar *id = clawt_agent_config_get_id(agent);
-    g_autofree gchar *avatar = clawt_agent_config_get_path_value(agent, "avatar");
+    g_autofree gchar *avatar = clawt_daemon_office_agent_picture(agent);
 
-    if (avatar != NULL && g_file_test(avatar, G_FILE_TEST_IS_REGULAR)) {
+    if (avatar != NULL) {
         if (!g_file_get_contents(avatar, out_data, out_length, error))
             return FALSE;
         *out_name = g_path_get_basename(avatar);
@@ -781,15 +799,24 @@ tool_character_layout(ClawtDaemon *self, JsonObject *args, gboolean *is_error)
     g_autofree gchar *root = clawt_daemon_office_characters_dir(self);
     g_autoptr(GError) error = NULL;
 
+    const gchar *background = clawt_ipc_payload_string(args, "background");
+
     if (agent == NULL || animations == NULL) {
         *is_error = TRUE;
         return g_strdup("agent, sheet, frame_width, frame_height and animations are required.");
     }
+    /* refused before anything is written, so a bad colour leaves the old layout */
+    if (!clawt_office_character_background_is_valid(background)) {
+        *is_error = TRUE;
+        return g_strdup_printf("background must be corners or #rrggbb, not '%s'.", background);
+    }
+    /* the backdrop is the sheet's, so a new sheet says its own (or has none) */
     if (!clawt_office_character_set_sheet(root, agent,
             clawt_ipc_payload_string(args, "sheet"),
             (guint)json_object_get_int_member_with_default(args, "frame_width", 0),
             (guint)json_object_get_int_member_with_default(args, "frame_height", 0),
-            animations, &error)) {
+            animations, &error) ||
+        !clawt_office_character_set_background(root, agent, background, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }

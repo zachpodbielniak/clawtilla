@@ -85,7 +85,7 @@ How writes stay safe (~src/office/clawt-office-pack.c~, so every caller gets the
 
 With the office on and =office.asset_generator= naming a generator, creating an agent files a task: *Office character for <agent>*, to the custodial lead -- or, with no custodial team, to the chief when its ~tools.office~ is on.  Nothing is generated without that task, nothing about the new agent waits on it, and an ephemeral helper gets none.
 
-The daemon puts the reference picture where the maker can read it, in its own workspace under ~office-characters/<agent>/~: the agent's =agents.avatar= when it has one, otherwise its generated face as an SVG -- the face every client already draws.  The task asks for a turnaround, short clips per action (walk, idle, sit and type, phone, present) and a sprite sheet cut from them, each imported with ~clawtilla_office_asset_import~ under ~character~.  They land in ~<state_dir>/office/characters/<agent>/~ beside a ~character.yaml~ listing each file's checksum and provenance.  The steward then says how the sheet is laid out with ~clawtilla_office_character_layout~ -- the frame size and a row per animation:
+The daemon puts the reference picture where the maker can read it, in its own workspace under ~office-characters/<agent>/~: the agent's own picture when it has one -- =agents.avatar=, or the profile picture a client stored in its workspace, the picture every sidebar draws -- otherwise its generated face as an SVG -- the face every client already draws.  The task asks for a turnaround, short clips per action (walk, idle, sit and type, phone, present) and a sprite sheet cut from them, each imported with ~clawtilla_office_asset_import~ under ~character~.  They land in ~<state_dir>/office/characters/<agent>/~ beside a ~character.yaml~ listing each file's checksum and provenance.  The steward then says how the sheet is laid out with ~clawtilla_office_character_layout~ -- the frame size and a row per animation:
 
 #+begin_src json
 {"agent": "kudu", "sheet": "sprites/sheet.png", "frame_width": 32, "frame_height": 48,
@@ -98,6 +98,11 @@ The daemon puts the reference picture where the maker can read it, in its own wo
 #+end_src
 
 Every row and frame is checked against the image, so a layout that runs past the sheet is refused and the manifest left as it was; the sheet must have been imported first, so it has its checksum and provenance.  From then on every renderer draws the agent from it (see [[file:office.org::#drawn][the drawn office]]); until then the agent is drawn with the default body and its own face.
+
+A sheet painted on a plain backdrop -- what an image generator gives back -- says so with ~background~: ="corners"= (the colour all four corners of a frame share) or ="#rrggbb"=.  Each renderer then makes that backdrop transparent, frame by frame, but only the part *connected to the frame's edge*: the whites of a pair of eyes sit as close to a cream backdrop as the backdrop's own noise, and keying by colour alone punched them out.  A frame whose corners disagree is left as it is.  The rule is one function, ~clawt_office_character_key_background()~, which the web client's ~office.js~ mirrors; a new layout without ~background~ clears an old one, since the backdrop belongs to the sheet.  A character the daemon makes itself ([[#direct][below]]) is marked ="corners"= for you.
+
+#+caption: kudu, made by ComfyUI from its picture (left), drawn with its backdrop keyed out (right)
+[[file:images/office/office-comfyui-character.png]]
 
 To ask again (a new picture, a better generator):
 
@@ -131,7 +136,26 @@ office:
 2. Put placeholders in its text inputs: ={{prompt}}= where the description goes (the CLIPTextEncode node's text), optionally ={{negative_prompt}}=, ={{seed}}= (a whole input becomes a number), and ={{image}}= in a LoadImage node to start from the agent's own picture.
 3. Point =office.comfyui_workflow= at the file.  Behind an auth proxy, store its bearer token: ~clawtilla office api-key comfyui~.
 
-A self-hosted server costs nothing -- its estimate is 0 -- so nothing is put to you: the character is made at once.  The placeholders are filled by walking the parsed graph, so a description with quotes or braces stays one string; results are only fetched from the server's own =/view= under the configured URL.  The licence of what comes out is that of the models you run, and the provenance says which server made it.  ai-glib's =AiComfyuiClient= does the work (=docs/providers/comfyui.org= there).
+A self-hosted server costs nothing -- its estimate is 0 -- so nothing is put to you: the character is made at once, and ~clawtilla office character AGENT --direct~ says so.  A workflow with ={{image}}= needs the agent to have a picture (=agents.avatar= or one set with ~clawtilla agent avatar set~, PNG, JPEG or WebP); an agent with none is refused there and then, naming that remedy, rather than failing out of sight.  A request the server's workflow will not take is a warning in the daemon log, never a card: there is no money to ask about.  The placeholders are filled by walking the parsed graph, so a description with quotes or braces stays one string; results are only fetched from the server's own =/view= under the configured URL.  The licence of what comes out is that of the models you run, and the provenance says which server made it.  ai-glib's =AiComfyuiClient= does the work (=docs/providers/comfyui.org= there).
+
+A workflow that was run end to end against ComfyUI 0.46.0 on CPU in podman, with CommonCanvas-S-C (CC BY-SA 4.0, trained on Creative Commons images; ~commoncanvas_s_c.safetensors~ in ~models/checkpoints~): the agent's picture, re-imagined from the description at 0.72 denoise and scaled to a 192-pixel frame.
+
+#+begin_src json
+{
+  "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "commoncanvas_s_c.safetensors"}},
+  "2": {"class_type": "LoadImage", "inputs": {"image": "{{image}}"}},
+  "3": {"class_type": "ImageScale", "inputs": {"image": ["2", 0], "upscale_method": "bilinear", "width": 512, "height": 512, "crop": "center"}},
+  "4": {"class_type": "VAEEncode", "inputs": {"pixels": ["3", 0], "vae": ["1", 2]}},
+  "5": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{prompt}}", "clip": ["1", 1]}},
+  "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "blurry, text, watermark, photo, realistic", "clip": ["1", 1]}},
+  "7": {"class_type": "KSampler", "inputs": {"model": ["1", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["4", 0], "seed": "{{seed}}", "steps": 16, "cfg": 7.0, "sampler_name": "euler_ancestral", "scheduler": "normal", "denoise": 0.72}},
+  "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["1", 2]}},
+  "9": {"class_type": "ImageScale", "inputs": {"image": ["8", 0], "upscale_method": "bilinear", "width": 192, "height": 192, "crop": "disabled"}},
+  "10": {"class_type": "SaveImage", "inputs": {"images": ["9", 0], "filename_prefix": "clawtilla"}}
+}
+#+end_src
+
+The provenance then names a CC BY-SA model's output: the character carries that licence's attribution and share-alike terms, which the pack's ~character.yaml~ is the place to record.
 
 *** Higgsfield, hosted and paid
 
@@ -142,7 +166,7 @@ clawtilla office api-key higgsfield          # KEY_ID:KEY_SECRET from console.hi
 with =office.asset_api: higgsfield= (and =office.asset_model= for the model):
 
 1. The daemon asks Higgsfield for an *estimate* -- behind the reply; nothing waits on the network -- and puts it to you as a decision: /Make a character for kudu with Higgsfield (model)?  It costs about $0.04, from your Higgsfield balance./  It has no deadline and no default but decline: nothing is ever spent because nobody answered.
-2. On *approve* (the exact word; anything else typed is not a yes), it uploads the agent's own picture when it has a PNG one, submits one image, waits for the job, downloads the result and imports it as =generated/portrait.png=, provenance naming the model and Higgsfield's terms.
+2. On *approve* (the exact word; anything else typed is not a yes), it uploads the agent's own picture when it has one (PNG, JPEG or WebP), submits one image, waits for the job, downloads the result and imports it as =generated/portrait.png=, provenance naming the model and Higgsfield's terms.
 3. Decline, dismiss or delete spends nothing.
 
 Keys and tokens are files under =secrets.dir/office/= (0600); a reply names the file and never the value, and a key is read when a generation starts, never kept.  A one-frame character stands still in every pose -- a walk cycle needs a sheet, which is the custodial team's road.

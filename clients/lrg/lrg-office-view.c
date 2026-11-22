@@ -187,9 +187,20 @@ clawt_lrg_office_view_add(ClawtLrgApp *app, LrgWidget *parent)
     g_signal_connect(view.viewport, "pointer-scroll", G_CALLBACK(on_pointer_scroll), app);
 
     clawt_lrg_take(bar, clawt_lrg_button("2D / 3D", "flat", G_CALLBACK(on_mode), app));
-    clawt_lrg_take(bar, clawt_lrg_label(
-        "Click somebody to open their conversation; drag or scroll to turn the 3D view.",
-        "muted"));
+    {
+        /*
+         * One line beside a fixed button: it takes the row's slack and
+         * ellipsizes, or at the minimum window it pushed past the edge
+         * (/lrgui/widgets/every-page-fits).
+         */
+        LrgWidget *hint = clawt_lrg_label(
+            "Click somebody to open their conversation; drag or scroll to turn the 3D view.",
+            "muted");
+
+        lrg_label_set_ellipsize(LRG_LABEL(hint), TRUE);
+        lrg_widget_set_fill_weight(hint, 1.0f);
+        clawt_lrg_take(bar, hint);
+    }
     clawt_lrg_take(box, bar);
     clawt_lrg_add(box, LRG_WIDGET(view.viewport));
     g_object_unref(view.viewport);

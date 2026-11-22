@@ -150,6 +150,51 @@ generator_for(ClawtDaemon *self, GError **error)
     return AI_MEDIA_GENERATOR(ai_higgsfield_client_new_with_credentials(parts[0], parts[1]));
 }
 
+/*
+ * The agent's own picture, as bytes, with the name it is uploaded under
+ * ("clawtilla-<agent>.<ext>").  Any format the avatar code accepts, from
+ * agents.avatar or the auto-detected profile picture alike: a PNG
+ * named in the config was the only one ever read, so a picture set from
+ * a client -- written to the workspace, not the config -- was never the
+ * likeness a character was made from.  FALSE, quietly, for an agent with
+ * no picture.
+ */
+static gboolean
+agent_picture(ClawtAgentConfig *agent, GBytes **out_bytes, gchar **out_name,
+              gchar **out_mime)
+{
+    g_autofree gchar *path = clawt_daemon_office_agent_picture(agent);
+    g_autofree gchar *data = NULL;
+    const gchar *mime;
+    const gchar *ext;
+    gsize length = 0;
+
+    if (path == NULL || !g_file_get_contents(path, &data, &length, NULL))
+        return FALSE;
+    mime = clawt_avatar_sniff_mime_type((const guchar *)data, length);
+    ext = clawt_avatar_extension_for_mime_type(mime);
+    if (mime == NULL || ext == NULL)
+        return FALSE;
+    if (out_name != NULL)
+        *out_name = g_strdup_printf("clawtilla-%s.%s", clawt_agent_config_get_id(agent), ext);
+    if (out_mime != NULL)
+        *out_mime = g_strdup(mime);
+    if (out_bytes != NULL)
+        *out_bytes = g_bytes_new_take(g_steal_pointer(&data), length);
+    return TRUE;
+}
+
+/* The service's name as the card and the reply say it. */
+static const gchar *
+service_label(AiMediaGenerator *generator)
+{
+    if (AI_IS_COMFYUI_CLIENT(generator))
+        return "ComfyUI";
+    if (AI_IS_HIGGSFIELD_CLIENT(generator))
+        return "Higgsfield";
+    return G_OBJECT_TYPE_NAME(generator);
+}
+
 /* What is asked for: the agent, as the sidebar knows it, as a person. */
 static AiMediaRequest *
 request_for(ClawtDaemon *self, ClawtAgentConfig *agent)
@@ -178,6 +223,8 @@ typedef struct {
     ClawtDaemon *self;
     gchar       *agent;
     gchar       *model;
+    gchar       *service;
+    gboolean     self_hosted;
 } Ask;
 
 static void
@@ -186,6 +233,7 @@ ask_free(Ask *ask)
     g_object_unref(ask->self);
     g_free(ask->agent);
     g_free(ask->model);
+    g_free(ask->service);
     g_free(ask);
 }
 
@@ -214,6 +262,19 @@ on_estimate(GObject *source, GAsyncResult *result, gpointer user_data)
         ask_free(ask);
         return;
     }
+    if (ask->self_hosted) {
+        /*
+         * A self-hosted server's estimate is zero or a refusal of the
+         * request -- its workflow will not take what the office fills
+         * in.  A card about money would be about nothing: say why, and
+         * ask nobody.
+         */
+        g_warning("office: %s's character was not made: %s refused the request: %s",
+                  ask->agent, ask->service,
+                  error != NULL ? error->message : "it named a cost");
+        ask_free(ask);
+        return;
+    }
     if (error != NULL || micro < 0) {
         /* no estimate is not a free generation: the card says so */
         g_message("office: no estimate for %s's character: %s", ask->agent,
@@ -223,10 +284,10 @@ on_estimate(GObject *source, GAsyncResult *result, gpointer user_data)
         cost = g_strdup_printf("about $%.2f", (gdouble)micro / 1e6);
     }
     question = g_strdup_printf(
-        "Make a character for %s with Higgsfield (%s)?  It costs %s, from your "
-        "Higgsfield balance.  Approve submits one image from %s's picture and imports it "
+        "Make a character for %s with %s (%s)?  It costs %s, from your "
+        "%s balance.  Approve submits one image from %s's picture and imports it "
         "as its character; decline spends nothing.",
-        ask->agent, ask->model, cost, ask->agent);
+        ask->agent, ask->service, ask->model, cost, ask->service, ask->agent);
     decision = clawt_decision_new(id, ask->agent, question);
     clawt_decision_set_options(decision, options);
     /* no deadline: nothing spends money but a person's yes */
@@ -248,6 +309,7 @@ on_estimate(GObject *source, GAsyncResult *result, gpointer user_data)
 gboolean
 clawt_daemon_office_generate_ask(ClawtDaemon  *self,
                                  const gchar  *agent_id,
+                                 gchar       **out_service,
                                  GError      **error)
 {
     ClawtAgentConfig *agent = clawt_config_get_agent(self->config, agent_id);
@@ -265,10 +327,38 @@ clawt_daemon_office_generate_ask(ClawtDaemon  *self,
         return FALSE;
 
     request = request_for(self, agent);
+
+    /*
+     * A ComfyUI workflow that loads the agent's picture ({{image}}) is
+     * estimated with the name the upload will give it: the estimate
+     * builds the graph, and a graph missing its image is refused --
+     * which is the right answer for an agent with no picture, and is
+     * given here, where the person asking can still read it.
+     */
+    if (AI_IS_COMFYUI_CLIENT(generator)) {
+        const gchar *workflow = ai_comfyui_client_get_workflow(AI_COMFYUI_CLIENT(generator));
+        g_autofree gchar *name = NULL;
+
+        if (workflow != NULL && strstr(workflow, "{{image}}") != NULL) {
+            if (!agent_picture(agent, NULL, &name, NULL)) {
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "the ComfyUI workflow loads the agent's picture ({{image}}) and "
+                            "%s has none: give it one (`clawtilla agent avatar set %s FILE`) "
+                            "or use a workflow without {{image}}", agent_id, agent_id);
+                return FALSE;
+            }
+            ai_media_request_set_image_url(request, name);
+        }
+    }
+
     ask = g_new0(Ask, 1);
     ask->self = g_object_ref(self);
     ask->agent = g_strdup(agent_id);
     ask->model = g_strdup(ai_media_request_get_model(request));
+    ask->service = g_strdup(service_label(generator));
+    ask->self_hosted = AI_IS_COMFYUI_CLIENT(generator);
+    if (out_service != NULL)
+        *out_service = g_ascii_strdown(ask->service, -1);
 
     /* on the daemon's context: the estimate is a network call */
     if (self->main_context != NULL)
@@ -357,7 +447,9 @@ on_downloaded(GObject *source, GAsyncResult *result, gpointer user_data)
     if (!clawt_office_character_import_asset(root, job->agent, tmp, "generated/portrait.png",
                                              NULL, provenance, NULL, &error) ||
         !clawt_office_character_set_sheet(root, job->agent, "generated/portrait.png",
-                                          width, height, animations, &error)) {
+                                          width, height, animations, &error) ||
+        /* a generator paints a backdrop; drawn as it is, it is a box round the person */
+        !clawt_office_character_set_background(root, job->agent, "corners", &error)) {
         g_unlink(tmp);
         job_failed(job, "it could not be imported", error);
         return;
@@ -449,15 +541,15 @@ on_comfyui_uploaded(GObject *source, GAsyncResult *result, gpointer user_data)
     submit(job);
 }
 
-/* Approved (or free): upload the agent's own picture if it has a PNG one, then submit. */
+/* Approved (or free): upload the agent's own picture if it has one, then submit. */
 void
 clawt_daemon_office_generate_start(ClawtDaemon *self, const gchar *agent_id)
 {
     ClawtAgentConfig *agent = clawt_config_get_agent(self->config, agent_id);
     g_autoptr(GError) error = NULL;
-    g_autofree gchar *avatar = NULL;
-    guint w = 0;
-    guint h = 0;
+    g_autoptr(GBytes) picture = NULL;
+    g_autofree gchar *name = NULL;
+    g_autofree gchar *mime = NULL;
     Job *job;
     AiMediaGenerator *generator;
 
@@ -478,31 +570,15 @@ clawt_daemon_office_generate_start(ClawtDaemon *self, const gchar *agent_id)
 
     if (self->main_context != NULL)
         g_main_context_push_thread_default(self->main_context);
-    avatar = clawt_agent_config_get_path_value(agent, "avatar");
-    if (avatar != NULL && AI_IS_HIGGSFIELD_CLIENT(generator) &&
-        clawt_office_png_size(avatar, &w, &h)) {
-        g_autofree gchar *data = NULL;
-        gsize length = 0;
-
-        if (g_file_get_contents(avatar, &data, &length, NULL)) {
-            g_autoptr(GBytes) bytes = g_bytes_new_take(g_steal_pointer(&data), length);
-
-            ai_higgsfield_client_upload_async(AI_HIGGSFIELD_CLIENT(generator), bytes,
-                                              "image/png", NULL, on_uploaded, job);
+    if (agent_picture(agent, &picture, &name, &mime)) {
+        if (AI_IS_HIGGSFIELD_CLIENT(generator)) {
+            ai_higgsfield_client_upload_async(AI_HIGGSFIELD_CLIENT(generator), picture, mime,
+                                              NULL, on_uploaded, job);
             goto out;
         }
-    }
-    if (avatar != NULL && AI_IS_COMFYUI_CLIENT(generator) &&
-        clawt_office_png_size(avatar, &w, &h)) {
-        g_autofree gchar *data = NULL;
-        gsize length = 0;
-
-        if (g_file_get_contents(avatar, &data, &length, NULL)) {
-            g_autoptr(GBytes) bytes = g_bytes_new_take(g_steal_pointer(&data), length);
-            g_autofree gchar *filename = g_strdup_printf("clawtilla-%s.png", agent_id);
-
-            ai_comfyui_client_upload_async(AI_COMFYUI_CLIENT(generator), bytes, filename,
-                                           NULL, on_comfyui_uploaded, job);
+        if (AI_IS_COMFYUI_CLIENT(generator)) {
+            ai_comfyui_client_upload_async(AI_COMFYUI_CLIENT(generator), picture, name, NULL,
+                                           on_comfyui_uploaded, job);
             goto out;
         }
     }

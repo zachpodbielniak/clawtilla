@@ -474,6 +474,7 @@ clawt_office_character_copy(const ClawtOfficeCharacter *character)
     c->sheet_sha256 = g_strdup(character->sheet_sha256);
     c->mesh = g_strdup(character->mesh);
     c->mesh_sha256 = g_strdup(character->mesh_sha256);
+    c->background = g_strdup(character->background);
     c->frame_width = character->frame_width;
     c->frame_height = character->frame_height;
     for (i = 0; i < character->animations->len; i++) {
@@ -497,6 +498,7 @@ clawt_office_character_free(ClawtOfficeCharacter *character)
     g_free(character->sheet_sha256);
     g_free(character->mesh);
     g_free(character->mesh_sha256);
+    g_free(character->background);
     g_ptr_array_unref(character->animations);
     g_free(character);
 }
@@ -580,6 +582,13 @@ clawt_office_character_load(const gchar *dir, GError **error)
                     "%s: mesh is not a path inside the character", path);
         return NULL;
     }
+    c->background = g_strdup(yaml_mapping_has_member(top, "background")
+                             ? yaml_mapping_get_string_member(top, "background") : NULL);
+    if (!clawt_office_character_background_is_valid(c->background)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                    "%s: background is neither corners nor #rrggbb", path);
+        return NULL;
+    }
     if (c->sheet != NULL && !clawt_office_pack_path_is_safe(c->sheet)) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
                     "%s: sheet is not a path inside the character", path);
@@ -657,6 +666,10 @@ clawt_office_character_to_json(const ClawtOfficeCharacter *character)
     if (character->mesh_sha256 != NULL) {
         json_builder_set_member_name(b, "mesh_sha256");
         json_builder_add_string_value(b, character->mesh_sha256);
+    }
+    if (character->background != NULL) {
+        json_builder_set_member_name(b, "background");
+        json_builder_add_string_value(b, character->background);
     }
     json_builder_set_member_name(b, "frame");
     json_builder_begin_array(b);
@@ -921,4 +934,206 @@ clawt_office_character_set_mesh(const gchar  *characters,
     if (text == NULL)
         return FALSE;
     return clawt_office_pack_write_file(dir, "character.yaml", text, length, error);
+}
+
+gboolean
+clawt_office_character_background_is_valid(const gchar *background)
+{
+    guint i;
+
+    if (background == NULL || g_strcmp0(background, "corners") == 0)
+        return TRUE;
+    if (strlen(background) != 7 || background[0] != '#')
+        return FALSE;
+    for (i = 1; i < 7; i++)
+        if (!g_ascii_isxdigit(background[i]))
+            return FALSE;
+    return TRUE;
+}
+
+gboolean
+clawt_office_character_set_background(const gchar  *characters,
+                                      const gchar  *agent_id,
+                                      const gchar  *background,
+                                      GError      **error)
+{
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *manifest = NULL;
+    g_autoptr(ClawtOfficeCharacter) current = NULL;
+    g_autoptr(YamlParser) parser = yaml_parser_new();
+    g_autoptr(YamlGenerator) generator = NULL;
+    g_autofree gchar *text = NULL;
+    YamlNode *root;
+    gsize length = 0;
+
+    g_return_val_if_fail(characters != NULL, FALSE);
+
+    if (agent_id == NULL || !clawt_office_pack_path_is_safe(agent_id) ||
+        strchr(agent_id, '/') != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT, "'%s' is not an agent id",
+                    agent_id != NULL ? agent_id : "");
+        return FALSE;
+    }
+    if (!clawt_office_character_background_is_valid(background)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "the background must be corners or #rrggbb, not '%s'", background);
+        return FALSE;
+    }
+    dir = g_build_filename(characters, agent_id, NULL);
+    current = clawt_office_character_load(dir, NULL);
+    if (current == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "%s has no character yet: import its sheet first", agent_id);
+        return FALSE;
+    }
+    manifest = g_build_filename(dir, "character.yaml", NULL);
+    if (!yaml_parser_load_from_file(parser, manifest, error))
+        return FALSE;
+    root = yaml_parser_get_root(parser);
+    if (root == NULL || yaml_node_get_node_type(root) != YAML_NODE_MAPPING) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID, "%s is not a mapping",
+                    manifest);
+        return FALSE;
+    }
+    if (background != NULL)
+        yaml_mapping_set_string_member(yaml_node_get_mapping(root), "background", background);
+    else if (yaml_mapping_has_member(yaml_node_get_mapping(root), "background"))
+        yaml_mapping_remove_member(yaml_node_get_mapping(root), "background");
+    generator = yaml_generator_new();
+    yaml_generator_set_root(generator, root);
+    text = yaml_generator_to_data(generator, &length, error);
+    if (text == NULL)
+        return FALSE;
+    return clawt_office_pack_write_file(dir, "character.yaml", text, length, error);
+}
+
+/* Is the pixel at @p opaque and within the tolerance of @key? */
+static gboolean
+is_backdrop(const guint8 *p, const guint8 *key)
+{
+    return p[3] >= 250 &&
+           (guint)ABS((gint)p[0] - key[0]) <= CLAWT_OFFICE_BACKGROUND_TOLERANCE &&
+           (guint)ABS((gint)p[1] - key[1]) <= CLAWT_OFFICE_BACKGROUND_TOLERANCE &&
+           (guint)ABS((gint)p[2] - key[2]) <= CLAWT_OFFICE_BACKGROUND_TOLERANCE;
+}
+
+/* One frame's flood fill, from every edge pixel that is backdrop. */
+static guint
+key_frame(guint8 *rgba, gsize stride, guint x0, guint y0, guint w, guint h,
+          const guint8 *key)
+{
+    g_autoptr(GArray) stack = g_array_new(FALSE, FALSE, sizeof(guint32));
+    guint cleared = 0;
+    guint i;
+
+    /* seed: the frame's border; the figure may touch an edge, the backdrop surrounds it */
+    for (i = 0; i < w; i++) {
+        guint32 top = i;
+        guint32 bottom = (guint32)((h - 1) * w + i);
+
+        g_array_append_val(stack, top);
+        g_array_append_val(stack, bottom);
+    }
+    for (i = 1; i + 1 < h; i++) {
+        guint32 left = (guint32)(i * w);
+        guint32 right = (guint32)(i * w + w - 1);
+
+        g_array_append_val(stack, left);
+        g_array_append_val(stack, right);
+    }
+    while (stack->len > 0) {
+        guint32 at = g_array_index(stack, guint32, stack->len - 1);
+        guint x = at % w;
+        guint y = at / w;
+        guint8 *p = rgba + (gsize)(y0 + y) * stride + (gsize)(x0 + x) * 4;
+
+        g_array_set_size(stack, stack->len - 1);
+        if (!is_backdrop(p, key))
+            continue;
+        /* the colour goes too, so filtering does not bleed the backdrop into an edge */
+        p[0] = p[1] = p[2] = p[3] = 0;
+        cleared++;
+        if (x > 0) {
+            guint32 n = at - 1;
+
+            g_array_append_val(stack, n);
+        }
+        if (x + 1 < w) {
+            guint32 n = at + 1;
+
+            g_array_append_val(stack, n);
+        }
+        if (y > 0) {
+            guint32 n = at - w;
+
+            g_array_append_val(stack, n);
+        }
+        if (y + 1 < h) {
+            guint32 n = at + w;
+
+            g_array_append_val(stack, n);
+        }
+    }
+    return cleared;
+}
+
+guint
+clawt_office_character_key_background(guint8      *rgba,
+                                      guint        width,
+                                      guint        height,
+                                      gsize        stride,
+                                      guint        frame_width,
+                                      guint        frame_height,
+                                      const gchar *background)
+{
+    guint8 fixed[3] = { 0, 0, 0 };
+    gboolean corners;
+    guint cleared = 0;
+    guint fx;
+    guint fy;
+
+    if (rgba == NULL || background == NULL || width == 0 || height == 0 ||
+        !clawt_office_character_background_is_valid(background))
+        return 0;
+    corners = g_strcmp0(background, "corners") == 0;
+    if (!corners) {
+        guint i;
+
+        for (i = 0; i < 3; i++) {
+            gchar pair[3] = { background[1 + 2 * i], background[2 + 2 * i], '\0' };
+
+            fixed[i] = (guint8)g_ascii_strtoull(pair, NULL, 16);
+        }
+    }
+    if (frame_width == 0 || frame_width > width)
+        frame_width = width;
+    if (frame_height == 0 || frame_height > height)
+        frame_height = height;
+
+    for (fy = 0; fy + frame_height <= height; fy += frame_height) {
+        for (fx = 0; fx + frame_width <= width; fx += frame_width) {
+            guint8 key[3];
+
+            if (corners) {
+                const guint8 *tl = rgba + (gsize)fy * stride + (gsize)fx * 4;
+                const guint8 *tr = tl + (gsize)(frame_width - 1) * 4;
+                const guint8 *bl = tl + (gsize)(frame_height - 1) * stride;
+                const guint8 *br = bl + (gsize)(frame_width - 1) * 4;
+
+                /* no shared, opaque corner colour: no plain backdrop here */
+                if (tl[3] < 250 || !is_backdrop(tr, tl) || !is_backdrop(bl, tl) ||
+                    !is_backdrop(br, tl))
+                    continue;
+                key[0] = tl[0];
+                key[1] = tl[1];
+                key[2] = tl[2];
+            } else {
+                key[0] = fixed[0];
+                key[1] = fixed[1];
+                key[2] = fixed[2];
+            }
+            cleared += key_frame(rgba, stride, fx, fy, frame_width, frame_height, key);
+        }
+    }
+    return cleared;
 }

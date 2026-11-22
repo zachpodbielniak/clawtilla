@@ -100,6 +100,40 @@ typedef struct {
     gboolean        model_failed;
 } Sheet;
 
+/*
+ * A sheet as a texture, its backdrop keyed out first when the character
+ * says it has one (a generator's portrait on a plain colour): drawn as
+ * it stands, the backdrop is a box round the person.  The rule is
+ * libclawt's, shared with the web client.
+ */
+static Texture2D
+load_sheet_texture(Sheet *sheet)
+{
+    const gchar *background = json_object_get_string_member_with_default(sheet->layout,
+                                                                         "background", NULL);
+    JsonArray *frame = json_object_has_member(sheet->layout, "frame")
+        ? json_object_get_array_member(sheet->layout, "frame") : NULL;
+    Image image;
+    Texture2D texture;
+
+    if (background == NULL)
+        return LoadTexture(sheet->path);
+    image = LoadImage(sheet->path);
+    if (image.data == NULL)
+        return LoadTexture(sheet->path);
+    ImageFormat(&image, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    clawt_office_character_key_background((guint8 *)image.data, (guint)image.width,
+        (guint)image.height, (gsize)image.width * 4,
+        frame != NULL && json_array_get_length(frame) == 2
+            ? (guint)json_array_get_int_element(frame, 0) : 0,
+        frame != NULL && json_array_get_length(frame) == 2
+            ? (guint)json_array_get_int_element(frame, 1) : 0,
+        background);
+    texture = LoadTextureFromImage(image);
+    UnloadImage(image);
+    return texture;
+}
+
 static void
 sheet_free(Sheet *sheet)
 {
@@ -842,7 +876,7 @@ clawt_office_scene_prepare(ClawtOfficeScene *self)
 
             if (sheet->loaded || sheet->failed)
                 continue;
-            sheet->texture = LoadTexture(sheet->path);
+            sheet->texture = load_sheet_texture(sheet);
             sheet->loaded = sheet->texture.id != 0;
             sheet->failed = !sheet->loaded;
             if (sheet->loaded)

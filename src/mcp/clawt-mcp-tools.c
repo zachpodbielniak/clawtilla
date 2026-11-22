@@ -939,7 +939,12 @@ static const ClawtParamInfo office_character_layout_params[] = {
     { "animations", "object",
       "Each animation's row: {\"idle\": {\"row\": 0, \"frames\": 1}, "
       "\"walk_down\": {\"row\": 1, \"frames\": 4, \"fps\": 8}, ...}. "
-      "Checked against the image: a row or frame past its edge is refused.", TRUE }
+      "Checked against the image: a row or frame past its edge is refused.", TRUE },
+    { "background", "string",
+      "The sheet's backdrop colour, made transparent when it is drawn: "
+      "\"corners\" (the colour a frame's four corners share) or \"#rrggbb\". "
+      "Omit it for a sheet that is already transparent; a new layout without "
+      "it clears an old one.", FALSE }
 };
 
 static const ClawtParamInfo office_character_mesh_params[] = {
