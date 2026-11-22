@@ -781,6 +781,7 @@ typedef struct {
     guint   estimates;
     guint   submits;
     gint64  price;          /* what the estimate says, micro-USD; 0 is free */
+    gboolean refuse;        /* the submit is refused, as a service out of credits is */
 } MockGenerator;
 
 typedef struct {
@@ -835,6 +836,11 @@ mock_submit_async(AiMediaGenerator *self, AiMediaRequest *request, GCancellable 
 
     (void)request;
     ((MockGenerator *)self)->submits++;
+    if (((MockGenerator *)self)->refuse) {
+        g_task_return_new_error(task, AI_ERROR, AI_ERROR_INVALID_REQUEST,
+                                "Higgsfield submit failed (HTTP 403): not_enough_credits");
+        return;
+    }
     g_task_return_pointer(task, g_strdup("job-1"), g_free);
 }
 
@@ -998,48 +1004,86 @@ test_direct_generation(void)
     g_assert_cmpstr(made->background, ==, "corners");
     g_assert_cmpuint(the_mock->submits, ==, 1);
 
+    /* and the person who approved it is told, in their conversation with kudu */
+    {
+        ClawtRoom *room = clawt_room_manager_get_direct(fixture.daemon->rooms, "user", "kudu");
+        g_autoptr(GPtrArray) history = NULL;
+        gboolean told = FALSE;
+        guint i;
+
+        g_assert_nonnull(room);
+        history = clawt_room_get_history(room, 0);
+        for (i = 0; history != NULL && i < history->len; i++)
+            told = told || strstr(clawt_message_get_body(g_ptr_array_index(history, i)),
+                                  "character is made") != NULL;
+        g_assert_true(told);
+    }
+
     g_clear_object(&the_mock);
     daemon_teardown(&fixture);
 }
 
 /*
- * A generation that costs nothing (a self-hosted ComfyUI says 0) has
- * nothing to approve: it is made at once and no card is posted.
+ * Only a self-hosted server skips the card.  A paid service's zero --
+ * a rounding of a tiny price, or free credits -- is still the person's
+ * to spend, and used to start a generation with nobody asked.  And a
+ * real sub-cent price is shown with its digits: Higgsfield's Soul
+ * portrait is $0.004, which the card printed as "about $0.00".
  */
 static void
-test_free_generation_needs_no_card(void)
+test_paid_zero_still_asks(void)
 {
     DaemonFixture fixture = { 0 };
     g_autoptr(GError) error = NULL;
-    g_autofree gchar *chars = NULL;
-    g_autofree gchar *kudu = NULL;
-    g_autoptr(ClawtOfficeCharacter) made = NULL;
-    gint64 deadline;
+    g_autoptr(ClawtDecision) zero = NULL;
+    g_autoptr(ClawtDecision) tiny = NULL;
 
     daemon_setup(&fixture, "");
     the_mock = g_object_new(mock_generator_get_type(), NULL);
     the_mock->price = 0;
     fixture.daemon->office_generator_factory = mock_factory;
     fixture.daemon->office_generate_poll_ms = 5;
-    chars = clawt_daemon_office_characters_dir(fixture.daemon);
-    kudu = g_build_filename(chars, "kudu", NULL);
 
     g_assert_true(clawt_daemon_office_generate_ask(fixture.daemon, "kudu", NULL, &error));
-    deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
-    while (g_get_monotonic_time() < deadline) {
-        g_clear_pointer(&made, clawt_office_character_free);
-        made = clawt_office_character_load(kudu, NULL);
-        if (made != NULL && made->sheet != NULL)
-            break;
-        g_main_context_iteration(fixture.context, FALSE);
-    }
-    g_assert_nonnull(made);
-    g_assert_cmpuint(the_mock->submits, ==, 1);
-    {
-        g_autoptr(GPtrArray) open = clawt_decision_store_list(fixture.daemon->decisions, TRUE);
+    zero = wait_for_generation_decision(&fixture);
+    g_assert_nonnull(zero);
+    g_assert_cmpuint(the_mock->submits, ==, 0);
+    answer(&fixture, zero, "decline");
 
-        g_assert_cmpuint(open->len, ==, 0);
+    the_mock->price = 4000;
+    g_assert_true(clawt_daemon_office_generate_ask(fixture.daemon, "kudu", NULL, &error));
+    tiny = wait_for_generation_decision(&fixture);
+    g_assert_nonnull(tiny);
+    g_assert_nonnull(strstr(clawt_decision_get_question(tiny), "$0.0040"));
+    g_assert_null(strstr(clawt_decision_get_question(tiny), "$0.00 "));
+    g_assert_cmpuint(the_mock->submits, ==, 0);
+
+    /*
+     * Approved, and the service refuses (Higgsfield's REST balance is not
+     * the app's credits): the person who approved it hears why, in their
+     * conversation with kudu -- it used to go to the daemon's log alone.
+     */
+    the_mock->refuse = TRUE;
+    answer(&fixture, tiny, "approve");
+    {
+        ClawtRoom *room = clawt_room_manager_get_direct(fixture.daemon->rooms, "user", "kudu");
+        gint64 deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+        gboolean told = FALSE;
+
+        g_assert_nonnull(room);
+        while (!told && g_get_monotonic_time() < deadline) {
+            g_autoptr(GPtrArray) history = clawt_room_get_history(room, 0);
+            guint i;
+
+            for (i = 0; i < history->len; i++)
+                told = told || strstr(clawt_message_get_body(g_ptr_array_index(history, i)),
+                                      "not_enough_credits") != NULL;
+            g_main_context_iteration(fixture.context, FALSE);
+        }
+        g_assert_true(told);
+        g_assert_cmpuint(the_mock->submits, ==, 1);
     }
+
     g_clear_object(&the_mock);
     daemon_teardown(&fixture);
 }
@@ -1253,8 +1297,7 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office-custodial/key-background", test_key_background);
     g_test_add_func("/office-custodial/comfyui-needs-a-picture",
                     test_comfyui_needs_a_picture);
-    g_test_add_func("/office-custodial/free-generation-needs-no-card",
-                    test_free_generation_needs_no_card);
+    g_test_add_func("/office-custodial/paid-zero-still-asks", test_paid_zero_still_asks);
 
     return g_test_run();
 }

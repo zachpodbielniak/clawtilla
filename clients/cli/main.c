@@ -4902,7 +4902,20 @@ cmd_office(int argc, char *argv[])
         g_autofree gchar *key = NULL;
         JsonObject *answer;
 
-        if (argc < 4) {
+        /*
+         * The service is checked before the prompt: `--help` or a typo
+         * used to be taken as the service, so the person was asked for
+         * a secret, typed it, and only then heard the name was wrong.
+         */
+        if (argc >= 4 && (g_strcmp0(argv[3], "-h") == 0 || g_strcmp0(argv[3], "--help") == 0)) {
+            g_print("Usage: clawtilla office api-key <higgsfield|comfyui>\n"
+                    "Reads the key from the terminal with echo off and stores it for the daemon.\n"
+                    "  higgsfield  KEY_ID:KEY_SECRET from console.higgsfield.ai\n"
+                    "  comfyui     a bearer token, for a ComfyUI behind an auth proxy\n");
+            return EXIT_SUCCESS;
+        }
+        if (argc < 4 || (g_strcmp0(argv[3], "higgsfield") != 0 &&
+                         g_strcmp0(argv[3], "comfyui") != 0)) {
             g_printerr("Usage: clawtilla office api-key <higgsfield|comfyui>\n");
             return EXIT_FAILURE;
         }

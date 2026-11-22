@@ -252,11 +252,13 @@ on_estimate(GObject *source, GAsyncResult *result, gpointer user_data)
     gint64 micro = -1;
 
     if (ai_media_generator_estimate_finish(AI_MEDIA_GENERATOR(source), result, &micro,
-                                           &error) && micro == 0) {
+                                           &error) && micro == 0 && ask->self_hosted) {
         /*
          * Free -- a self-hosted ComfyUI says so -- so there is nothing to
          * approve: the card exists to keep a model or a click from
-         * spending money, and none is spent.
+         * spending money, and none is spent.  Only a self-hosted server
+         * earns this: a paid service's zero is a rounding or free credits,
+         * which are still the person's to spend.
          */
         clawt_daemon_office_generate_start(self, ask->agent);
         ask_free(ask);
@@ -281,7 +283,13 @@ on_estimate(GObject *source, GAsyncResult *result, gpointer user_data)
                   error != NULL ? error->message : "the service gave none");
         cost = g_strdup("an amount the service would not estimate");
     } else {
-        cost = g_strdup_printf("about $%.2f", (gdouble)micro / 1e6);
+        /*
+         * Enough digits to be true: Higgsfield prices a Soul portrait at
+         * $0.004, which "%.2f" printed as "about $0.00" -- a card saying a
+         * real charge costs nothing.
+         */
+        cost = micro >= 10000 ? g_strdup_printf("about $%.2f", (gdouble)micro / 1e6)
+                              : g_strdup_printf("about $%.4f", (gdouble)micro / 1e6);
     }
     question = g_strdup_printf(
         "Make a character for %s with %s (%s)?  It costs %s, from your "
@@ -389,11 +397,42 @@ job_free(Job *job)
     g_free(job);
 }
 
+/*
+ * Tells the person what became of a generation they approved, in their
+ * own conversation with the agent: a warning in the daemon's log is a
+ * report nobody who pressed Approve will read.  Recorded, never sent --
+ * no mailbox, so no turn and no reply.
+ */
+static void
+tell_operator(ClawtDaemon *self, const gchar *agent_id, const gchar *body)
+{
+    g_autoptr(ClawtMessage) message = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtRoom *room;
+
+    if (self->router == NULL || self->rooms == NULL)
+        return;
+    room = clawt_room_manager_get_direct(self->rooms, "user", agent_id);
+    if (room == NULL)
+        return;
+    message = clawt_message_new(clawt_room_get_id(room), CLAWT_SYSTEM_SENDER, body);
+    clawt_message_set_depth(message, 0);
+    clawt_message_set_invites_reply(message, FALSE);
+    if (!clawt_mailbox_router_record(self->router, message, &error))
+        g_warning("office: could not record the outcome for %s: %s", agent_id,
+                  error->message);
+}
+
 static void
 job_failed(Job *job, const gchar *what, const GError *error)
 {
-    g_warning("office: %s's character was not made: %s: %s", job->agent, what,
-              error != NULL ? error->message : "no reason given");
+    g_autofree gchar *body = g_strdup_printf(
+        "%s's office character was not made: %s: %s.  Nothing was imported.",
+        job->agent, what, error != NULL ? error->message : "no reason given");
+
+    /* expected (a service out of credits), and the room note is the report */
+    g_message("office: %s", body);
+    tell_operator(job->self, job->agent, body);
     job_free(job);
 }
 
@@ -456,6 +495,13 @@ on_downloaded(GObject *source, GAsyncResult *result, gpointer user_data)
     }
     g_unlink(tmp);
     g_message("office: made %s's character", job->agent);
+    {
+        g_autofree gchar *body = g_strdup_printf(
+            "%s's office character is made (%s) and the office draws it now.", job->agent,
+            AI_IS_COMFYUI_CLIENT(job->generator) ? "on your ComfyUI" : "by Higgsfield");
+
+        tell_operator(self, job->agent, body);
+    }
     if (self->bus != NULL)
         clawt_event_bus_emit(self->bus, "office.changed", job->agent);
     job_free(job);

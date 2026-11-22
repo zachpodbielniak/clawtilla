@@ -168,6 +168,11 @@ with =office.asset_api: higgsfield= (and =office.asset_model= for the model):
 1. The daemon asks Higgsfield for an *estimate* -- behind the reply; nothing waits on the network -- and puts it to you as a decision: /Make a character for kudu with Higgsfield (model)?  It costs about $0.04, from your Higgsfield balance./  It has no deadline and no default but decline: nothing is ever spent because nobody answered.
 2. On *approve* (the exact word; anything else typed is not a yes), it uploads the agent's own picture when it has one (PNG, JPEG or WebP), submits one image, waits for the job, downloads the result and imports it as =generated/portrait.png=, provenance naming the model and Higgsfield's terms.
 3. Decline, dismiss or delete spends nothing.
+4. Whatever happens after an approval -- made, or refused by the service -- is said in your own conversation with that agent, as a system note that starts no turn; the daemon's log has it too.
+
+Only a self-hosted server skips the card.  A paid service that estimates zero -- a price too small to round, or free credits -- still asks, because what it spends is still yours.  Small prices are shown with their digits: Higgsfield's Soul v2 portrait is 0.05 credits, /about $0.0040/ on the card.
+
+Higgsfield's REST API (~api.higgsfield.ai~, the key pair from ~console.higgsfield.ai~) bills a balance of its own, separate from the credits the app, the ~hf~ CLI and the connector spend: on 2026-11-22 an account with 8.5 app credits was refused every submit with =HTTP 403 not_enough_credits=, and the note in the agent's conversation said exactly that.  Fund the API balance in the console to use this road; the connector road ([[file:higgsfield.org][higgsfield.org]]) spends the app's credits.
 
 Keys and tokens are files under =secrets.dir/office/= (0600); a reply names the file and never the value, and a key is read when a generation starts, never kept.  A one-frame character stands still in every pose -- a walk cycle needs a sheet, which is the custodial team's road.
 
