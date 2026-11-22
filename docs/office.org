@@ -31,9 +31,9 @@ It is a view of what the daemon already knows, and it never invents anything.  E
 | =clawtilla-office= | the renderer: 2D and 3D, on libregnum | =OFFICE=1= |
 | the lrg Office page | the same renderer inside the libregnum client | =OFFICE=1 LRG_BACKEND=1= |
 | the GTK Office page | the renderer embedded as a region of the window | =OFFICE=1= |
-| the web Office page | its own canvas renderer, the same layout | =OFFICE=1= |
+| the web Office page | its own canvas renderer of the same layout (=data/web/office.js=), with a tilted view and =?simulate=1=; see [[file:web-client.org::#office-drawn][web-client.org]] | always |
 
-The roster, the presence and the layout are in every build, because they cost nothing and every client should be able to say who is where.  Only the drawing needs =OFFICE=1=.
+The roster, the presence and the layout are in every build, because they cost nothing and every client should be able to say who is where.  The web client's drawing is in every build too: it needs a browser and nothing else.  Only the libregnum renderer and what embeds it need =OFFICE=1=.
 
 ** Turning it on
 :PROPERTIES:

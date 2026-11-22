@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-11-14 Sat]
+#+updated: [2026-11-21 Sat]
 #+version: 0.2.0
 
 * Clients
@@ -3890,7 +3890,7 @@ Under Work, after Grok, in all three graphical clients (=clients/gtk/gtk-office.
 
 - *The settings*: a switch for the office (=office.enabled=) and a picker of the world packs ~office.worlds~ lists, both sent with ~office.set~ and applied at once.
 - *Who keeps it* (since 0.58.0): the team tagged ~office-custodial~ and the asset generator, from ~office.custodians~ -- or, when there is none, *Create custodial team*, which sends ~office.custodians_install~.  See [[file:office-custodial-team.org][office-custodial-team.org]].
-- *The office drawn*, in an =OFFICE=1= build; a note saying how to get it otherwise.
+- *The office drawn*.  In the web client it heads the page in every build whenever the office is on: its own canvas renderer of ~office.layout~ over the pack's Tiled map -- faces from =clawt_web_face_svg()=, walking between placements, emotes, props, call arcs, meetings, handovers, a tilted view, and =?simulate=1= for a busy office invented in the browser -- with nothing at all when the office is off; see [[file:web-client.org::#office-drawn][web-client.org]].  In GTK and lrg, an =OFFICE=1= build; a note saying how to get it otherwise.
 - *Who is where*: one row per participant from ~office.snapshot~, the activity as a badge in =clawt_office_activity_tone()= and the line =clawt_office_roster_line()= writes ("on a call with kudu · since 2m"), with a /remote/ or /helper/ badge for a Grok bot or an ephemeral helper.  Re-read on ~office.presence~ (GTK, lrg) or every three seconds while visible (web).
 
 ~clawtilla office who~ prints the same roster.  See [[file:office.org][office.org]].

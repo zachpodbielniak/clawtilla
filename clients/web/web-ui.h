@@ -217,6 +217,25 @@ void clawt_web_face_note(const gchar *agent_id, const gchar *face);
 gint clawt_web_face_for(const gchar *agent_id);
 
 /**
+ * clawt_web_face_svg:
+ * @name: (nullable): the display name, for the derived colour
+ * @agent_id: (nullable): whose face; %NULL keys it on @name
+ * @color: (nullable): `agents.color`, as typed
+ * @size: the width and height the SVG declares
+ * @animated: whether to emit the classes the stylesheet blinks
+ *
+ * The generated face clawt_web_avatar() draws, as SVG markup: the shape
+ * clawt_web_face_for() resolves, painted in clawt_avatar_color().  The
+ * Office canvas draws its heads from this too, so a face in the office
+ * is the face in the sidebar rather than a second builder's idea of it.
+ *
+ * Returns: (transfer full) (nullable): the `<svg>`, or %NULL when the
+ *   face is the letter disc (%CLAWT_FACE_INITIALS)
+ */
+gchar *clawt_web_face_svg(const gchar *name, const gchar *agent_id,
+                          const gchar *color, guint size, gboolean animated);
+
+/**
  * clawt_web_face_picker:
  * @agent_id: (nullable): whose face; "automatic" shows its own
  * @face: (nullable): the value to start on: a shape name, `initials`,

@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-24 Mon]
-#+updated: [2026-11-14 Sat]
+#+updated: [2026-11-21 Sat]
 #+version: 0.2.0
 
 * The web client
@@ -290,6 +290,8 @@ answers with the page it did it on.
 | =/r/:id=                      | a group room; also the open-room link, which redirects an agent or a direct room to its chat and answers a name nobody has with 404 and a sentence (see [[file:clients.org::#open-room-links][open-room links]]) |
 | =/a/:id/exchange=, =/f/a/:id/exchange= | the exchange between two agents (~?with=<peer>~), as a page and as the side panel's fragment; registered with the chat routes, ahead of =/a/:id/:view= |
 | =/a/:id/app/:app=, =/a/:id/app/:app/frame=, =/a/:id/app/:app/call= | an MCP app shown in chat: its own page (what GTK and lrg link to), the fragment the chat's *Open app* swaps in, and its view's own ~tools/call~ (~POST~, JSON in and out); registered with the chat routes, ahead of =/a/:id/:view= |
+| =/office/set=, =/office/custodians=, =/f/office-roster= | the Office page's settings, its custodial-team button and its polled roster |
+| =/office/layout.json=, =/office/world.json=, =/office/file/:world?path== | the drawn office's poll (~office.layout~ plus faces and roster lines), a world pack with its map and tilesets inlined, and one pack file as bytes; see [[#office-drawn][The drawn office]] |
 | =/manifest.webmanifest=       | the web app manifest, ~application/manifest+json~ |
 | =/events=                     | the SSE stream                          |
 | =/static=                     | the vendored scripts and the app icons  |
@@ -602,6 +604,47 @@ Tested in ~test-web-render~ (~/web/face/...~):
 - the picker as a form;
 - the page script;
 - the Face form writing only what changed.
+
+*** The drawn office
+:PROPERTIES:
+:CUSTOM_ID: office-drawn
+:END:
+
+The Office page draws the office on a canvas whenever =office.enabled= is on, in every build: it needs a browser and nothing else, so unlike the GTK and lrg views it is not behind =OFFICE=1=.  With the office off it draws nothing at all -- the settings card under it already says how to turn it on.  The page is =clients/web/web-office.c=; the drawing is =clients/web/web-office-view.c= (what to draw) and =data/web/office.js= (drawing it), served from =/static= like the htmx scripts.
+
+**** Nothing is fetched to open it
+
+The page carries its first scene in a =<script type="application/json" id="office-scene">= block: the director's layout (~office.layout~), the world pack (~office.world~), the pack's Tiled map parsed server side with every tileset image inlined as a =data:= URI (each read through ~office.file~), a face per participant, each one's roster line and the activity words.  So opening the page loads nothing the page did not bring -- the same rule as everything else in this client, because it must work on a tailnet with no route out.  A tileset over 4 MiB is the exception: it is left as a URL to =/office/file= rather than inlined into every page.
+
+The data block is somebody's words in a =<script>= element: a tool step's detail could hold =</script>=.  =office_json_for_script()= writes every =<=, =>= and =&= as its =\u= escape, which JSON reads as the same character and the HTML parser does not read at all.
+
+After that the script polls =/office/layout.json= every 2.5 seconds while the tab is visible (=visibilitychange= resumes it at once), and asks =/office/world.json?world== only when the layout names a world other than the one it holds -- so =clawtilla office use cozy-town= redraws an open page in place.  A poll that answers ~enabled: false~ hides the view and stops.
+
+**** What it draws
+
+- *The floor*: the map's tile layers, drawn once into an offscreen canvas and blitted with smoothing off, so pixel art stays crisp at any scale.  Tiled's flip bits are masked off; an external tileset (=source=) is merged in server side.  The rectangles of the map's zones layer are named on the floor (the *Rooms* toggle).  A pack with no 2D map gets a plain floor with its zones' anchors.
+- *Everybody at their placement*: a body in the agent's colour and its face for a head -- =clawt_web_face_svg()=, the function =clawt_web_avatar()= draws the sidebar's faces with, or the picture from =/a/<id>/avatar=, or the initial on its colour -- with a nameplate under it (the full name on hover).  Nameplates that would cover one another are stepped down.  People are drawn larger than the map's own scale on a small screen (up to 1.9x), or a face is a dot.
+- *Moving*: a changed placement is walked to -- eased, at a walking pace -- and legs move only while walking.  Nobody bobs while standing still.  A new participant fades in; one who left fades out.
+- *Activity*: the emote over the head (a pulsing question mark and a ring on the floor for =waiting_on_you=, the loudest thing on the page; an alert for =error=; three cycling dots for =thinking=), the prop in hand (laptop, phone at the ear, book, marker, folder, terminal, screen, coffee), an animated dashed arc between the two people on a call (=facing=), a pool of light and the room's name round a meeting, a folder flying from the deliverer to the assignee for =delivering=, and a speech bubble with the =detail= of the four most recent active people.  A Grok bot carries a /remote/ badge and an ephemeral helper a /helper/ badge.
+- *Who is this*: hovering shows the name, the activity's label and libclawt's roster line; clicking an agent or a helper opens =/a/<id>/chat=.
+- *Tilt*: the *Tilt* toggle leans the floor back with a CSS =perspective()= / =rotateX()= transform and stands everybody upright over it, at the points the same transform puts their seats -- =project()= in the script is that transform written out, so nobody floats off their chair at any angle.  It eases over 650 ms and is remembered per browser (=localStorage=, harmless to lose); =?tilt=1= opens tilted without changing the setting.
+- *Light*: a vignette, and a tint for the hour on the viewer's machine (warm in the morning and evening, blue at night) between the floor and the people, so it never dims a face or a name.  The chrome (bubbles, tooltip) reads the page's own colour tokens, so it follows the light and dark themes.
+
+The activity words and tones are walked from libclawt's enumeration (=clawt_office_activity_count()=, =_label()=, =_tone()=) into the scene, never a list in the script.  Everything else the script decides is how to draw, not where: positions are the director's.
+
+**** Simulation
+
+=?simulate=1= on the Office page invents plausible activity for the real participants -- stopped agents included -- in the browser: a call in the phone booths, a meeting round the smallest table that fits, somebody waiting on you, a handover, now and then a broken turn, the rest working, thinking or resting, re-rolled every six seconds.  A *Simulation* label shows and the stage gets a dashed outline; nothing invented is sent anywhere, and the real poll goes on underneath for the participant list.  It is how to see a busy office on a quiet fleet, and how the screenshots in a review are made.
+
+**** The routes
+
+| Route | Answers |
+|-------+---------|
+| =GET /office/layout.json= (=?world== optional) | =layout= (~office.layout~), =faces= (per participant ~color~ and ~svg~, ~img~ or ~initial~), =lines= (roster lines), =enabled=; or ~{"enabled": false}~ when the office is off, and 502 with ~error~ when the daemon did not answer |
+| =GET /office/world.json= (=?world== optional) | =world= (~office.world~) and =map= (the parsed =.tmj=, each tileset with ~src~) |
+| =GET /office/file/:world?path== | one pack file as bytes, by its extension: PNG, JPEG, GIF, WebP, JSON for =.tmj= / =.tsj= / =.json=, plain text for YAML, and =application/octet-stream= for everything else -- SVG included, since a pack is written by agents and an SVG served as an image from this origin can run script.  Always =nosniff= |
+
+A path the pack rule refuses (=clawt_office_pack_path_is_safe()=: absolute, =..=, hidden, a doubled or back slash) is a 403 before the daemon is asked; the daemon checks containment again on the canonical path, since it is the one that knows where the pack is.  All three are registered with the office routes, ahead of =/a/:id/:view=.  =tests/test-web-office.c= drives them against a fixture daemon with the shipped packs.
 
 *** Editing workspace files
 

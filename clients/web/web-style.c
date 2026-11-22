@@ -1328,6 +1328,40 @@ clawt_web_stylesheet(void)
     ".stack>*+*{margin-top:12px}"
     ".htmx-request .htmx-hide{opacity:.5}"
 
+    /* ── The drawn office (web-office-view.c, data/web/office.js) ── */
+    /*
+     * Two canvases stacked in one stage: the floor, which leans back
+     * under a CSS transform when tilted, and the people over it.  The
+     * stage clips, because a tilted floor's near edge is wider than the
+     * flat one.  The light sits between them: the hour tints the floor
+     * and the vignette darkens its edges, and neither dims a face or a
+     * nameplate.
+     */
+    ".office-view{margin:0 0 28px}"
+    ".office-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;"
+      "margin:0 0 10px}"
+    ".office-world-name{font-weight:700;font-size:1.05rem;margin-right:auto}"
+    ".office-toggle[aria-pressed=\"true\"]{background:var(--ink);color:var(--canvas);"
+      "border-color:var(--ink)}"
+    ".office-stage{position:relative;overflow:hidden;border-radius:var(--radius);"
+      "border:1px solid var(--line);background:radial-gradient(ellipse at 50% 30%,"
+      "var(--surface-2),var(--canvas));min-height:240px}"
+    ".office-floor{position:absolute;top:0;image-rendering:pixelated;"
+      "transform-origin:50% 50%;box-shadow:0 30px 60px -30px rgba(0,0,0,.45)}"
+    ".office-actors{position:absolute;inset:0 auto auto 0}"
+    ".office-light{position:absolute;inset:0;pointer-events:none;"
+      "background:radial-gradient(ellipse at 50% 45%,transparent 55%,"
+      "rgba(0,0,0,.28) 100%),linear-gradient(var(--office-tint,transparent),"
+      "var(--office-tint,transparent))}"
+    ".office-tip{position:absolute;z-index:2;max-width:18rem;pointer-events:none;"
+      "background:var(--surface);color:var(--ink);border:1px solid var(--line-strong);"
+      "border-radius:var(--radius-sm);padding:6px 9px;font-size:12px;"
+      "box-shadow:0 6px 18px rgba(0,0,0,.18);display:flex;flex-direction:column;gap:2px}"
+    ".office-tip[hidden],.office-sim[hidden]{display:none}"
+    ".office-tip em{font-style:normal;color:var(--muted)}"
+    ".office-tip small{color:var(--info-fg)}"
+    ".office-simulated .office-stage{outline:2px dashed var(--warn-fg);outline-offset:3px}"
+
     /* ── The drawer's memory ── */
     /*
      * The checkbox is never seen; it is the drawer's memory.

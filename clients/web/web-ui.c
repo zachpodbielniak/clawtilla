@@ -515,6 +515,20 @@ clawt_web_face_picker(const gchar *agent_id, const gchar *face,
     return HTMX_ELEMENT(g_steal_pointer(&fieldset));
 }
 
+gchar *
+clawt_web_face_svg(const gchar *name, const gchar *agent_id,
+                   const gchar *color, guint size, gboolean animated)
+{
+    const gchar *key = (agent_id != NULL) ? agent_id : name;
+    gint shape = clawt_web_face_for(key);
+
+    if (shape == CLAWT_FACE_INITIALS)
+        return NULL;
+
+    return clawt_face_svg(shape, clawt_avatar_color(agent_id, name, color),
+                          size, NULL, clawt_face_seed(key), animated);
+}
+
 HtmxElement *
 clawt_web_avatar(const gchar *name, const gchar *agent_id,
                  gboolean has_avatar, const gchar *color,
@@ -547,9 +561,8 @@ clawt_web_avatar(const gchar *name, const gchar *agent_id,
 
         if (shape != CLAWT_FACE_INITIALS) {
             g_autoptr(HtmxSpan) holder = htmx_span_new();
-            g_autofree gchar *svg = clawt_face_svg(
-                shape, clawt_avatar_color(agent_id, name, color), 32, NULL,
-                clawt_face_seed(key), TRUE);
+            g_autofree gchar *svg = clawt_web_face_svg(name, agent_id, color,
+                                                       32, TRUE);
 
             htmx_element_add_class(HTMX_ELEMENT(holder), css_class);
             htmx_element_add_class(HTMX_ELEMENT(holder), "web-face");
