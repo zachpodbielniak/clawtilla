@@ -229,6 +229,33 @@ static const ClawtConnectorInfo builtin[] = {
       "answerable, and so does whether a person or a rule did" },
 
     /*
+     * Image and video generation, for any agent the operator grants it.
+     *
+     * Compiled in because it is first-party in the sense that matters:
+     * the office's asset steward is built to use it, and an entry
+     * somebody has to discover in a registry is one the office's setup
+     * cannot name.  It names the server and nothing else -- PKCE with no
+     * endpoints is the discovered sign-in (RFC 9728, 8414, 7591; see
+     * clawt-mcp-auth.h), so nothing is registered in a console and
+     * Higgsfield can move its authorization server without a release
+     * here.  The REST API (a key id and secret) is ai-glib's
+     * AiHiggsfieldClient and belongs to the daemon, not to this entry.
+     */
+    { "higgsfield", "Higgsfield",
+      "Image and video generation across Higgsfield's model catalogue; "
+      "paid, every call spends credits.", "Media generation",
+      CLAWT_CONNECTOR_AUTH_PKCE,
+      NULL, NULL, NULL, NULL,
+      "nothing to register: the server says how to sign in; a paid "
+      "Higgsfield plan is required",
+      "https://higgsfield.ai/mcp",
+      NULL,
+      NULL, NULL, CLAWT_HIGGSFIELD_MCP_URL,
+      NULL,
+      CLAWT_CREDENTIAL_PLACEMENT_HEADER, "Authorization", "Bearer %s",
+      NULL, NULL, NULL },
+
+    /*
      * The two that make the catalogue open rather than closed.
      *
      * Most MCP servers are not behind OAuth at all -- they want a key

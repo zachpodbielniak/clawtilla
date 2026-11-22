@@ -51,6 +51,14 @@ G_BEGIN_DECLS
 #define CLAWT_CONNECTOR_PROVIDER_REMOTE "remote"
 
 /**
+ * CLAWT_HIGGSFIELD_MCP_URL:
+ *
+ * Higgsfield's hosted MCP server, the one thing the built-in `higgsfield`
+ * catalogue entry names: its sign-in is discovered from the server.
+ */
+#define CLAWT_HIGGSFIELD_MCP_URL "https://mcp.higgsfield.ai/mcp"
+
+/**
  * clawt_connector_name_for_url:
  * @url: a remote MCP server's URL
  *

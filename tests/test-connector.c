@@ -47,13 +47,16 @@ test_the_builtin_catalogue_is_whole(void)
         /*
          * An OAuth connector with no endpoints cannot start a flow --
          * unless it discovers them, which only a server reached by URL
-         * can, so such an entry must name no stdio server either.
+         * can, so such an entry must name no stdio server either, and
+         * must be the generic remote entry or name its server's URL
+         * (higgsfield does) -- anything else has nobody to ask.
          */
         if ((builtin[i].auth == CLAWT_CONNECTOR_AUTH_DEVICE ||
              builtin[i].auth == CLAWT_CONNECTOR_AUTH_PKCE) &&
             (builtin[i].auth_url == NULL || builtin[i].token_url == NULL)) {
-            g_assert_cmpstr(builtin[i].id, ==,
-                            CLAWT_CONNECTOR_PROVIDER_REMOTE);
+            g_assert_true(g_strcmp0(builtin[i].id,
+                                    CLAWT_CONNECTOR_PROVIDER_REMOTE) == 0 ||
+                          builtin[i].server_url != NULL);
             g_assert_null(builtin[i].server_command);
             g_assert_cmpint(builtin[i].placement, ==,
                             CLAWT_CREDENTIAL_PLACEMENT_HEADER);
@@ -1460,6 +1463,80 @@ test_the_gitlab_pack_puts_its_credential_in_a_header_not_argv(void)
     clawt_test_remove_tree(dir);
 }
 
+/*
+ * Higgsfield is compiled in and names only its server: the sign-in is
+ * discovered, so it must carry no endpoints (a copy would go stale the
+ * day Higgsfield moves its authorization server), and its token, like
+ * every HTTP connector's, must reach the Authorization header and
+ * nothing else.  A connector added with no `url` reaches the catalogue's
+ * own server -- the integration does not have to know it.
+ */
+static void
+test_higgsfield_is_discovered_and_kept_in_a_header(void)
+{
+    gsize n = 0;
+    const ClawtConnectorInfo *builtin = clawt_connector_catalog_builtin(&n);
+    const ClawtConnectorInfo *higgsfield = NULL;
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-higgsfield-XXXXXX", NULL);
+    g_autofree gchar *yaml = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = NULL;
+    ClawtIntegrationConfig *instance;
+    g_autoptr(ClawtIntegrationBinding) binding = NULL;
+    g_autoptr(ClawtConnectorPlan) plan = NULL;
+    gsize i;
+
+    for (i = 0; i < n; i++)
+        if (g_strcmp0(builtin[i].id, "higgsfield") == 0)
+            higgsfield = &builtin[i];
+
+    g_assert_nonnull(higgsfield);
+    g_assert_cmpint(higgsfield->auth, ==, CLAWT_CONNECTOR_AUTH_PKCE);
+    g_assert_null(higgsfield->auth_url);
+    g_assert_null(higgsfield->token_url);
+    g_assert_null(higgsfield->server_command);
+    g_assert_cmpstr(higgsfield->server_url, ==, CLAWT_HIGGSFIELD_MCP_URL);
+
+    /* the name a pasted URL resolves to is this entry's id */
+    {
+        g_autofree gchar *named =
+            clawt_connector_name_for_url(CLAWT_HIGGSFIELD_MCP_URL);
+
+        g_assert_cmpstr(named, ==, "higgsfield");
+    }
+
+    yaml = g_strdup_printf(
+        "daemon:\n"
+        "  state_dir: \"%s/state\"\n"
+        "integrations:\n"
+        "  - name: hf\n"
+        "    type: connector\n"
+        "    provider: higgsfield\n",
+        dir);
+
+    config = clawt_config_load_from_string(yaml, &error);
+    g_assert_no_error(error);
+
+    instance = clawt_config_get_integration(config, "hf");
+    g_assert_nonnull(instance);
+
+    binding = clawt_integration_binding_for_instance(
+        instance, clawt_integration_find("connector"), NULL);
+
+    plan = clawt_connector_plan_new(higgsfield, binding, "sup3rsecret",
+                                    &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpstr(plan->url, ==, CLAWT_HIGGSFIELD_MCP_URL);
+    g_assert_cmpstr(plan->header_name, ==, "Authorization");
+    g_assert_cmpstr(plan->header_value, ==, "Bearer sup3rsecret");
+    g_assert_null(plan->argv);
+    g_assert_false(argv_contains(plan->argv, "sup3rsecret"));
+    g_assert_null(plan->envp);
+
+    clawt_test_remove_tree(dir);
+}
+
 /* ── What a connector's credential is doing ──────────────────────── */
 
 /*
@@ -1572,6 +1649,8 @@ main(int argc, char *argv[])
 
     g_test_add_func("/connector/credential-not-in-argv",
                     test_the_credential_goes_in_the_environment_not_the_argv);
+    g_test_add_func("/connector/higgsfield",
+                    test_higgsfield_is_discovered_and_kept_in_a_header);
     g_test_add_func("/connector/credential-in-header",
                     test_a_header_connector_puts_it_in_a_header);
     g_test_add_func("/connector/integration-overrides-catalogue",

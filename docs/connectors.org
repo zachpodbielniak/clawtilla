@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-23 Sat]
-#+updated: [2026-11-15 Sun]
+#+updated: [2026-11-21 Sat]
 #+version: 0.6.0
 
 * Connectors
@@ -343,6 +343,15 @@ every such service.
 #+begin_src bash
 clawtilla connector add weather --provider api-key \
     --command weather-mcp --credential-name OPENWEATHER_KEY
+#+end_src
+
+*** Higgsfield
+
+~higgsfield~ is compiled in and names only its server, =https://mcp.higgsfield.ai/mcp=: the sign-in is discovered from it, exactly as for a ~remote~ connector, so nothing is registered in a console and no endpoint is copied here to go stale.  It is the one closed, paid service in the table -- every call spends credits -- so [[file:higgsfield.org][higgsfield.org]] has the terms, the approval rule worth adding, and how its asynchronous jobs work.
+
+#+begin_src bash
+clawtilla connector add hf --provider higgsfield --scope selected --agents designer
+clawtilla connector connect hf
 #+end_src
 
 ** VENTURE, and the writes it holds back
