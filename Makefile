@@ -773,6 +773,13 @@ endif
 $(OUTDIR)/tests/test-web-app: $(WEB_SRCDIR)/web-app.c $(WEB_SRCDIR)/web-files.c \
                               $(WEB_SRCDIR)/web-pages.h $(WEB_SRCDIR)/clawt-web.h
 
+# test-web-office.c #includes the office view and what it is drawn with.
+$(OUTDIR)/tests/test-web-office: $(WEB_SRCDIR)/web-office-view.c \
+                                 $(WEB_SRCDIR)/web-app.c $(WEB_SRCDIR)/web-files.c \
+                                 $(WEB_SRCDIR)/web-ui.c $(WEB_SRCDIR)/web-style.c \
+                                 $(WEB_SRCDIR)/web-ui.h $(WEB_SRCDIR)/web-pages.h \
+                                 $(WEB_SRCDIR)/clawt-web.h
+
 $(OUTDIR)/tests/test-web-render: $(WEB_SRCDIR)/web-ui.c \
                                  $(WEB_SRCDIR)/web-navigation.c \
                                  $(WEB_SRCDIR)/web-style.c \

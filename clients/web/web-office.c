@@ -11,8 +11,8 @@
  * visible -- office.presence is an edge, and a poll that short draws it
  * near enough to when it happened.  Each line is libclawt's
  * (clawt_office_roster_line()) and each badge clawt_office_activity_tone(),
- * so the three clients agree.  With OFFICE=1 the drawn office sits above
- * it (web-office-view.c).
+ * so the three clients agree.  The drawn office (web-office-view.c) heads
+ * the page whenever the office is on, in every build.
  */
 
 #include "web-pages.h"
@@ -210,9 +210,10 @@ clawt_web_office_body(ClawtWebApp *app, const gchar *agent_id)
     htmx_element_add_class(view, "view");
     htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
     clawt_web_add(pad, clawt_web_section_title("Office"));
+    /* the drawing first: it is what the page is for once the office is on */
+    clawt_web_office_view_add(app, HTMX_ELEMENT(pad));
     htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(settings_card(app)));
     htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(custodians_card(app)));
-    clawt_web_office_view_add(app, HTMX_ELEMENT(pad));
     clawt_web_add(pad, clawt_web_text("Who is where", "limits-title"));
     htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(roster_panel(app)));
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));

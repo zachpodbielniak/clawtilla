@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-24 Mon]
-#+updated: [2026-11-14 Sat]
+#+updated: [2026-11-21 Sat]
 #+version: 0.1.0
 
 * Vendored web assets
@@ -13,6 +13,7 @@
 | =htmx.min.js=        | https://htmx.org          | 2.0.4   | BSD-2   |
 | =htmx-ext-sse.js=    | htmx-ext-sse              | 2.2.3   | BSD-2   |
 | =icons/clawtilla-*.png= | =data/logo.png=, this repository | -- | AGPL-3.0-or-later, with the rest of clawtilla |
+| =office.js=          | this repository           | --      | AGPL-3.0-or-later, with the rest of clawtilla |
 
 Checked in rather than fetched at build time, and served by
 =clawtilla-web= from its own directory rather than from a CDN.
@@ -36,8 +37,10 @@ Three reasons, in order of how much they matter:
 To update one, replace the file, note the new version here, and record
 its checksum below.
 
+=office.js= is not vendored: it is clawtilla's own canvas renderer for the Office page (=clients/web/web-office-view.c= serves it its data), kept as a file rather than a C string because it is a program, not a snippet.  It changes with the code, so it has no checksum here, and it is excluded from the command below.  It is served from this directory for the same reasons as the rest, and fetches nothing but this server's own =/office/*.json=.
+
 #+begin_src bash
-sha256sum data/web/*.js data/web/icons/*.png
+sha256sum data/web/htmx*.js data/web/icons/*.png
 #+end_src
 
 #+begin_example
