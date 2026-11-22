@@ -1286,6 +1286,28 @@ with itself depending on the order the agents happened to be visited in.
 
 Since 0.8.0 it also takes ~days~ (1 to 92) and ~sort~ (~"cost"~, most first; otherwise the fleet's own order), and every agent carries ~last_turn_at~ (unix seconds, 0 for never), ~idle~ and ~idle_tone~ (=clawt_usage_idle_label()= and =clawt_usage_idle_tone()=, so a client does not decide what idle means), ~state~, ~idle_stop_hours~ and ~asleep~ (stopped by the daemon for being idle, and woken by the next message). An agent running on one of its fallbacks also carries ~failover~ and ~failover_message~, exactly as in ~agent.list~ (one daemon function writes both), so the Fleet page can badge it.  With ~days~, each agent has a ~daily~ array of cost per day and the reply a ~days~ array of ~{start, cost_micros}~, oldest first, the last being today from local midnight. The reply also carries ~now~ (the daemon's clock, for ages), ~idle_hours~ and ~daily_fleet_budget_micros~. A client older than this reads none of them and loses nothing.
 
+~usage.providers~ (since 0.54.0; ~refresh~, boolean) → ~now~ (the
+daemon's clock, unix seconds) and ~logins~, one object per login the
+fleet uses: ~id~ (=<cli>:<account>= or =<cli>:default=), ~provider~
+(the libreclaw CLI type), ~account~ (absent for a CLI's default login),
+~description~, ~pay_per_use~, ~state~ (~idle~ for never asked,
+~pending~, ~ok~, ~unsupported~, ~error~), ~message~ (why, for the last
+two), ~read_at~ (unix seconds of the last answer, absent for none), and
+from the last good report ~plan~, ~source~, ~detail~, ~partial~,
+~collected_at~ and ~windows~.  Each window has ~label~ and ~unit~
+(~percent~, ~tokens~ or ~USD~) and only the members the provider
+reported: ~remaining_percent~ (when the source gave a direction),
+~percent~ (a figure with no direction), ~used~, ~limit~, ~remaining~,
+~window_minutes~, ~cost_usd~, ~model~, ~reset_at~ (unix seconds, an
+exact instant only) and ~reset_text~ (the source's own words, or a date
+with no time).  An unknown value is absent, never zero.  The handler
+never waits on a provider: ~refresh~ starts a read of each login
+*behind* the reply (at most once a minute per login), and each answer
+is announced as ~usage.providers_changed~ (subject the login's id;
+detail ~state~), which is ephemeral like ~turn.step~.  Re-read without
+~refresh~ on it, or a login that keeps failing loops.  See
+[[file:provider-usage.org][provider-usage.org]].
+
 ~task.tree_budget~ (since 0.18.0) is published once when a task tree
 uses =orchestration.tree_message_budget=, and not again until a task in
 it settles.  Subject the root task's id; details ~tree~ (what to call

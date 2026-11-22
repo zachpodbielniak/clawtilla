@@ -5904,6 +5904,8 @@ release_components(ClawtDaemon *self)
     clawt_daemon_grok_stop(self);
     clawt_daemon_triggers_stop(self);
     clawt_daemon_venture_stop(self);
+    /* allowance reads in flight answer into nothing once this is gone */
+    clawt_daemon_provider_usage_stop(self);
 
     /*
      * The routine tick and the pods for the same reason -- both start
@@ -11210,6 +11212,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_wait,
     clawt_daemon_handle_trigger,
     clawt_daemon_handle_grok,
+    clawt_daemon_handle_provider_usage,
     clawt_daemon_handle_config,
     clawt_daemon_handle_skill_tests,
     clawt_daemon_handle_skill,

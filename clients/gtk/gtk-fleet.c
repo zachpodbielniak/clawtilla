@@ -13,6 +13,12 @@
  * that is running and doing nothing, and "Stop the idle ones" for all of
  * them.  The text is libclawt's (clawt_usage_fleet_*), shared with the
  * web and libregnum clients.
+ *
+ * Above the spend, the plan allowances (usage.providers): one card per
+ * login with a meter per window -- what is *left*, coloured by
+ * clawt_usage_window_level(), with when it resets.  Spend answers "what
+ * did it cost", the allowance answers "how long can it keep going", and
+ * on a subscription the second is the one that stops the fleet.
  */
 
 #include "clawt-window-private.h"
@@ -149,6 +155,166 @@ agent_row(ClawtWindow *self, JsonObject *agent, gint64 total, gint64 now,
     return row;
 }
 
+/* One allowance window: label, a meter of what is left, the figure, the reset. */
+static GtkWidget *
+limit_window_row(JsonObject *window, gint64 now)
+{
+    GtkWidget *row = gtk_list_box_row_new();
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *label = gtk_label_new(clawt_json_string(window, "label", "?"));
+    GtkWidget *meter = gtk_progress_bar_new();
+    GtkWidget *figures = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    g_autofree gchar *value = clawt_usage_window_value_label(window);
+    g_autofree gchar *reset = clawt_usage_window_reset_label(window, now);
+    GtkWidget *value_label = gtk_label_new(value);
+    gdouble left = 0.0;
+    ClawtAllowanceLevel level = clawt_usage_window_level(window);
+
+    gtk_widget_set_margin_top(box, 8);
+    gtk_widget_set_margin_bottom(box, 8);
+    gtk_widget_set_margin_start(box, 12);
+    gtk_widget_set_margin_end(box, 12);
+
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_label_set_width_chars(GTK_LABEL(label), 16);
+    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+    gtk_widget_set_valign(label, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(box), label);
+
+    /* filled for what is left, so a full bar is good news */
+    gtk_widget_set_hexpand(meter, TRUE);
+    gtk_widget_set_valign(meter, GTK_ALIGN_CENTER);
+    gtk_widget_add_css_class(meter, "clawt-meter");
+    gtk_widget_add_css_class(meter,
+        clawt_gtk_tone_class(clawt_allowance_level_tone(level)));
+    if (clawt_usage_window_remaining(window, &left))
+        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(meter), left / 100.0);
+    else
+        /* no direction, no meter: an empty bar would read as "used up" */
+        gtk_widget_set_opacity(meter, 0.0);
+    gtk_box_append(GTK_BOX(box), meter);
+
+    gtk_widget_add_css_class(value_label, "heading");
+    gtk_label_set_xalign(GTK_LABEL(value_label), 1.0f);
+    gtk_box_append(GTK_BOX(figures), value_label);
+    if (reset != NULL) {
+        GtkWidget *reset_label = gtk_label_new(reset);
+
+        gtk_widget_add_css_class(reset_label, "caption");
+        gtk_widget_add_css_class(reset_label, "dim-label");
+        gtk_label_set_xalign(GTK_LABEL(reset_label), 1.0f);
+        gtk_box_append(GTK_BOX(figures), reset_label);
+    }
+    gtk_widget_set_size_request(figures, 170, -1);
+    gtk_widget_set_valign(figures, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(box), figures);
+
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), box);
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+    return row;
+}
+
+/* One login: a card titled with the CLI and account, its windows inside. */
+static GtkWidget *
+limit_login_card(JsonObject *login, gint64 now)
+{
+    GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget *head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *titles = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    g_autofree gchar *title = clawt_usage_login_title(login);
+    g_autofree gchar *status = clawt_usage_login_status_label(login, now);
+    GtkWidget *title_label = gtk_label_new(title);
+    GtkWidget *status_label = gtk_label_new(status);
+    JsonArray *windows = json_object_has_member(login, "windows")
+        ? json_object_get_array_member(login, "windows") : NULL;
+    ClawtAllowanceLevel level = clawt_usage_login_level(login);
+    guint i;
+
+    gtk_widget_add_css_class(title_label, "heading");
+    gtk_label_set_xalign(GTK_LABEL(title_label), 0.0f);
+    gtk_label_set_wrap(GTK_LABEL(title_label), TRUE);
+    gtk_widget_add_css_class(status_label, "dim-label");
+    gtk_widget_add_css_class(status_label, "caption");
+    gtk_label_set_xalign(GTK_LABEL(status_label), 0.0f);
+    gtk_label_set_wrap(GTK_LABEL(status_label), TRUE);
+    gtk_box_append(GTK_BOX(titles), title_label);
+    gtk_box_append(GTK_BOX(titles), status_label);
+    gtk_widget_set_hexpand(titles, TRUE);
+    gtk_box_append(GTK_BOX(head), titles);
+
+    if (level == CLAWT_ALLOWANCE_LOW || level == CLAWT_ALLOWANCE_CRITICAL)
+        gtk_box_append(GTK_BOX(head),
+            clawt_gtk_badge(level == CLAWT_ALLOWANCE_CRITICAL ? "nearly out" : "running low",
+                            clawt_gtk_tone_class(clawt_allowance_level_tone(level)),
+                            "The most used of this login's windows"));
+    gtk_box_append(GTK_BOX(card), head);
+
+    if (windows != NULL && json_array_get_length(windows) > 0) {
+        GtkWidget *list = gtk_list_box_new();
+
+        gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
+        gtk_widget_add_css_class(list, "boxed-list");
+        for (i = 0; i < json_array_get_length(windows); i++)
+            gtk_list_box_append(GTK_LIST_BOX(list),
+                limit_window_row(json_array_get_object_element(windows, i), now));
+        gtk_box_append(GTK_BOX(card), list);
+    }
+    return card;
+}
+
+static void
+refresh_limits_once(ClawtWindow *self, gboolean ask)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *root;
+    JsonArray *logins;
+    GtkWidget *child;
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+    guint i;
+
+    while ((child = gtk_widget_get_first_child(self->fleet_limits)) != NULL)
+        gtk_box_remove(GTK_BOX(self->fleet_limits), child);
+
+    reply = clawt_window_request(self, "usage.providers",
+        clawt_build_payload("refresh", ask ? "true" : "false", NULL));
+    if (reply == NULL)
+        return;
+
+    root = clawt_payload_of(reply);
+    now = clawt_json_int(root, "now", now);
+    logins = json_object_has_member(root, "logins")
+        ? json_object_get_array_member(root, "logins") : NULL;
+
+    if (logins == NULL || json_array_get_length(logins) == 0) {
+        GtkWidget *none = gtk_label_new("No agent runs a CLI provider, so there is no "
+                                        "plan allowance to show.");
+
+        gtk_widget_add_css_class(none, "dim-label");
+        gtk_label_set_xalign(GTK_LABEL(none), 0.0f);
+        gtk_label_set_wrap(GTK_LABEL(none), TRUE);
+        gtk_box_append(GTK_BOX(self->fleet_limits), none);
+        return;
+    }
+
+    for (i = 0; i < json_array_get_length(logins); i++)
+        gtk_box_append(GTK_BOX(self->fleet_limits),
+            limit_login_card(json_array_get_object_element(logins, i), now));
+}
+
+void
+clawt_gtk_refresh_limits(ClawtWindow *self, gboolean ask)
+{
+    if (self->fleet_limits == NULL)
+        return;
+    refresh_limits_once(self, ask);
+}
+
+static void
+on_limits_refresh(GtkButton *button, gpointer user_data)
+{
+    clawt_gtk_refresh_limits(user_data, TRUE);
+}
+
 static void
 refresh_fleet_once(ClawtWindow *self)
 {
@@ -244,6 +410,26 @@ clawt_gtk_build_fleet_page(ClawtWindow *self)
     gtk_widget_set_margin_bottom(box, 12);
     gtk_widget_set_margin_start(box, 12);
     gtk_widget_set_margin_end(box, 12);
+
+    /* the plan allowances, before the spend: they say how long it can go on */
+    {
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        GtkWidget *heading = gtk_label_new("Plan allowances");
+        GtkWidget *refresh = gtk_button_new_from_icon_name("view-refresh-symbolic");
+
+        gtk_widget_add_css_class(heading, "title-4");
+        gtk_label_set_xalign(GTK_LABEL(heading), 0.0f);
+        gtk_widget_set_hexpand(heading, TRUE);
+        gtk_widget_add_css_class(refresh, "flat");
+        gtk_widget_set_tooltip_text(refresh, "Read every login again");
+        g_signal_connect(refresh, "clicked", G_CALLBACK(on_limits_refresh), self);
+        gtk_box_append(GTK_BOX(row), heading);
+        gtk_box_append(GTK_BOX(row), refresh);
+        gtk_box_append(GTK_BOX(box), row);
+
+        self->fleet_limits = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
+        gtk_box_append(GTK_BOX(box), self->fleet_limits);
+    }
 
     self->fleet_period = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(self->fleet_period), "Period");

@@ -4608,6 +4608,136 @@ cmd_room(int argc, char *argv[])
 }
 
 
+/* Whether any login in a usage.providers reply is still being read. */
+static gboolean
+limits_pending(JsonObject *root)
+{
+    JsonArray *logins = json_object_get_array_member(root, "logins");
+    guint i;
+
+    for (i = 0; logins != NULL && i < json_array_get_length(logins); i++)
+        if (g_strcmp0(member_or(json_array_get_object_element(logins, i),
+                                "state", NULL), "pending") == 0)
+            return TRUE;
+    return FALSE;
+}
+
+/*
+ * clawtilla limits -- what each provider login has left of its plan.
+ *
+ * The daemon reads a login by running its CLI, behind the reply, so this
+ * asks for a refresh and then re-reads until nothing is pending -- a
+ * person at a terminal wants the answer, not "asking the provider...".
+ * Every line is the library's (clawt_usage_window_*), so the figures
+ * here are the ones the Fleet page shows.
+ */
+static gint
+cmd_limits(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    gboolean wait = TRUE;
+    gboolean json = FALSE;
+    JsonObject *root;
+    JsonArray *logins;
+    gint64 now;
+    gint64 deadline;
+    gint i;
+
+    for (i = 2; i < argc; i++) {
+        if (g_strcmp0(argv[i], "--cached") == 0) {
+            wait = FALSE;
+        } else if (g_strcmp0(argv[i], "--json") == 0) {
+            json = TRUE;
+        } else if (g_strcmp0(argv[i], "-h") == 0 || g_strcmp0(argv[i], "--help") == 0) {
+            g_print("Usage: clawtilla limits [--cached] [--json]\n"
+                    "\n"
+                    "What each provider login has left of its plan: the\n"
+                    "five-hour and weekly windows, credit balances, and\n"
+                    "when each one resets.  A login is one CLI signed in\n"
+                    "one way -- the default login of each CLI an agent\n"
+                    "uses, plus every entry under accounts: -- so agents\n"
+                    "sharing a login share one row.\n"
+                    "\n"
+                    "Each login is read by running its CLI, which takes a\n"
+                    "few seconds; this waits for the answers (up to 60s)\n"
+                    "unless --cached, which prints what the daemon already\n"
+                    "knows.  \"Reports no plan limits\" (an API key, a CLI\n"
+                    "with no reporting interface) is an answer, not a\n"
+                    "failure, and an unknown figure is never shown as 0.\n"
+                    "\n"
+                    "Examples:\n"
+                    "  clawtilla limits            # read every login now\n"
+                    "  clawtilla limits --cached   # what is known, instantly\n"
+                    "  clawtilla limits --json     # the usage.providers reply\n");
+            return EXIT_SUCCESS;
+        } else {
+            g_printerr("clawtilla limits: unknown option '%s'\n", argv[i]);
+            return EXIT_FAILURE;
+        }
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    reply = call(client, "usage.providers",
+                 build_payload("refresh", wait ? "true" : "false", NULL));
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    /* each CLI answers in its own time; re-read until none is pending */
+    deadline = g_get_monotonic_time() + 60 * G_USEC_PER_SEC;
+    while (wait && limits_pending(json_node_get_object(reply)) &&
+           g_get_monotonic_time() < deadline) {
+        g_usleep(G_USEC_PER_SEC / 2);
+        g_clear_pointer(&reply, json_node_unref);
+        reply = call(client, "usage.providers", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+    }
+
+    if (json) {
+        g_autofree gchar *text = json_to_string(reply, TRUE);
+
+        g_print("%s\n", text);
+        return EXIT_SUCCESS;
+    }
+
+    root = json_node_get_object(reply);
+    now = json_object_get_int_member_with_default(root, "now",
+                                                  g_get_real_time() / G_USEC_PER_SEC);
+    logins = json_object_get_array_member(root, "logins");
+    if (logins == NULL || json_array_get_length(logins) == 0) {
+        g_print("(no logins: no agent runs a CLI provider)\n");
+        return EXIT_SUCCESS;
+    }
+
+    for (i = 0; i < (gint)json_array_get_length(logins); i++) {
+        JsonObject *login = json_array_get_object_element(logins, (guint)i);
+        JsonArray *windows = json_object_get_array_member(login, "windows");
+        g_autofree gchar *title = clawt_usage_login_title(login);
+        g_autofree gchar *status = clawt_usage_login_status_label(login, now);
+        guint w;
+
+        g_print("%s%s\n  %s\n", i > 0 ? "\n" : "", title, status);
+        for (w = 0; windows != NULL && w < json_array_get_length(windows); w++) {
+            JsonObject *window = json_array_get_object_element(windows, w);
+            g_autofree gchar *value = clawt_usage_window_value_label(window);
+            g_autofree gchar *reset = clawt_usage_window_reset_label(window, now);
+            g_autofree gchar *bar = NULL;
+            gdouble left = 0.0;
+
+            bar = clawt_usage_window_remaining(window, &left)
+                ? clawt_usage_meter_text(left, 20)
+                : g_strnfill(22, ' ');
+            g_print("  %-18s %s  %-24s %s\n", member_or(window, "label", "?"),
+                    bar, value, reset != NULL ? reset : "");
+        }
+    }
+    return EXIT_SUCCESS;
+}
+
 /*
  * clawtilla cost --by / --csv -- the ledger, grouped.
  *
@@ -12502,6 +12632,9 @@ static const ClawtVerb verbs[] = {
     { "cost",    "[--days N] [--by GROUP] [--csv]",
       "What the fleet has spent, per agent, model, origin or day",
       cmd_cost },
+    { "limits",  "[--cached] [--json]",
+      "What each provider login has left of its plan",
+      cmd_limits },
     { "memory",  "<verb>",   "What an agent has written down",
       cmd_memory },
     { "sentinel", "[--output FILE|-]", "Scan the event log for recurring trouble (read-only)",

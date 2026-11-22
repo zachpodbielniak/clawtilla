@@ -8,6 +8,8 @@
 
 * Spending
 
+/A subscription's limit is not a cost: what each provider login has left of its plan -- the five-hour and weekly windows -- is in [[file:provider-usage.org][provider-usage.org]]./
+
 A fleet of agents is a fleet of paid API calls.  Every agent is a
 libreclaw process, and libreclaw records one row per AI turn --  tokens
 and cost -- into that agent's own database.  clawtilla reads those rows

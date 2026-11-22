@@ -89,6 +89,16 @@ static const gchar CLAWT_STRUCTURE_CSS[] =
      * it was written; the plain coloured caption is the one that was
      * left at book weight.
      */
+    /*
+     * An allowance meter, in the tone clawt_allowance_level_tone() chose:
+     * the progress bar's own accent would paint a nearly spent window in
+     * the same blue as a fresh one.
+     */
+    ".clawt-meter > trough > progress { min-height: 8px; border-radius: 4px; }\n"
+    ".clawt-meter > trough { min-height: 8px; border-radius: 4px; }\n"
+    ".clawt-meter.success > trough > progress { background-color: @success_bg_color; }\n"
+    ".clawt-meter.warning > trough > progress { background-color: @warning_bg_color; }\n"
+    ".clawt-meter.error > trough > progress { background-color: @error_bg_color; }\n"
     ".clawt-badge {\n"
     "  font-weight: bold;\n"
     "}\n"

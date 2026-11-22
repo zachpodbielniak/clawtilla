@@ -91,6 +91,165 @@ agent_element(JsonObject *agent, gint64 total, gint64 now)
     return HTMX_ELEMENT(g_steal_pointer(&row));
 }
 
+/* One window: label, meter, figure and reset, as a row of the card. */
+static HtmxElement *
+limit_window_element(JsonObject *window, gint64 now)
+{
+    g_autoptr(HtmxDiv) row = htmx_div_new();
+    g_autoptr(HtmxDiv) meter = htmx_div_new();
+    g_autoptr(HtmxDiv) figures = htmx_div_new();
+    g_autofree gchar *value = clawt_usage_window_value_label(window);
+    g_autofree gchar *reset = clawt_usage_window_reset_label(window, now);
+    ClawtAllowanceLevel level = clawt_usage_window_level(window);
+    g_autofree gchar *tone = g_strdup_printf("meter-%s", clawt_allowance_level_tone(level));
+    gdouble left = 0.0;
+
+    htmx_element_add_class(HTMX_ELEMENT(row), "limit-window");
+    clawt_web_add(row, clawt_web_text(clawt_web_member(window, "label", "?"),
+                                      "limit-label"));
+
+    htmx_element_add_class(HTMX_ELEMENT(meter), "meter");
+    htmx_element_add_class(HTMX_ELEMENT(meter), tone);
+    if (clawt_usage_window_remaining(window, &left)) {
+        g_autoptr(HtmxSpan) fill = htmx_span_new();
+        g_autofree gchar *style = g_strdup_printf("width:%.1f%%", left);
+        g_autofree gchar *now_text = g_strdup_printf("%.0f", left);
+
+        htmx_element_set_attribute(HTMX_ELEMENT(fill), "style", style);
+        htmx_node_add_child(HTMX_NODE(meter), HTMX_NODE(fill));
+        htmx_element_set_attribute(HTMX_ELEMENT(meter), "role", "meter");
+        htmx_element_set_attribute(HTMX_ELEMENT(meter), "aria-valuemin", "0");
+        htmx_element_set_attribute(HTMX_ELEMENT(meter), "aria-valuemax", "100");
+        htmx_element_set_attribute(HTMX_ELEMENT(meter), "aria-valuenow", now_text);
+        htmx_element_set_attribute(HTMX_ELEMENT(meter), "aria-label", value);
+    } else {
+        /* no direction, no meter: an empty bar would read as "used up" */
+        htmx_element_add_class(HTMX_ELEMENT(meter), "meter-none");
+    }
+    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(meter));
+
+    htmx_element_add_class(HTMX_ELEMENT(figures), "limit-figures");
+    clawt_web_add(figures, clawt_web_text(value, "limit-value"));
+    if (reset != NULL)
+        clawt_web_add(figures, clawt_web_text(reset, "list-item-sub"));
+    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(figures));
+
+    return HTMX_ELEMENT(g_steal_pointer(&row));
+}
+
+/* One login: the CLI and account, how fresh, and its windows. */
+static HtmxElement *
+limit_login_element(JsonObject *login, gint64 now)
+{
+    g_autoptr(HtmxDiv) card = htmx_div_new();
+    g_autoptr(HtmxDiv) head = htmx_div_new();
+    g_autofree gchar *title = clawt_usage_login_title(login);
+    g_autofree gchar *status = clawt_usage_login_status_label(login, now);
+    JsonArray *windows = clawt_web_member_array(login, "windows");
+    ClawtAllowanceLevel level = clawt_usage_login_level(login);
+    guint i;
+
+    htmx_element_add_class(HTMX_ELEMENT(card), "limit-card");
+    htmx_element_add_class(HTMX_ELEMENT(head), "list-item-head");
+    {
+        g_autoptr(HtmxSpan) label = htmx_span_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(label), "list-item-title");
+        htmx_node_set_text_content(HTMX_NODE(label), title);
+        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(label));
+    }
+    if (level == CLAWT_ALLOWANCE_LOW || level == CLAWT_ALLOWANCE_CRITICAL)
+        clawt_web_add(head, clawt_web_badge(
+            level == CLAWT_ALLOWANCE_CRITICAL ? "nearly out" : "running low",
+            clawt_allowance_level_tone(level)));
+    htmx_node_add_child(HTMX_NODE(card), HTMX_NODE(head));
+    clawt_web_add(card, clawt_web_text(status, "list-item-sub"));
+
+    for (i = 0; windows != NULL && i < json_array_get_length(windows); i++)
+        htmx_node_add_child(HTMX_NODE(card), HTMX_NODE(
+            limit_window_element(json_array_get_object_element(windows, i), now)));
+
+    return HTMX_ELEMENT(g_steal_pointer(&card));
+}
+
+static gboolean
+limits_pending(JsonArray *logins)
+{
+    guint i;
+
+    for (i = 0; logins != NULL && i < json_array_get_length(logins); i++)
+        if (g_strcmp0(clawt_web_member(json_array_get_object_element(logins, i),
+                                       "state", NULL), "pending") == 0)
+            return TRUE;
+    return FALSE;
+}
+
+/*
+ * The allowances panel.  @ask has the daemon read the logins again
+ * behind its reply, which it throttles; while any login is still being
+ * read the panel comes back in two seconds without asking again.
+ */
+static HtmxElement *
+limits_panel(ClawtWebApp *app, gboolean ask)
+{
+    g_autoptr(HtmxDiv) panel = htmx_div_new();
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *root;
+    JsonArray *logins;
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+    gboolean pending;
+    guint i;
+
+    clawt_web_payload_set(payload, "refresh", ask ? "true" : "false");
+    reply = clawt_web_app_call(app, "usage.providers",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+    root = clawt_web_root(reply);
+    logins = clawt_web_member_array(root, "logins");
+    pending = limits_pending(logins);
+    now = clawt_web_member_int(root, "now", now);
+
+    htmx_element_set_id(HTMX_ELEMENT(panel), "fleet-limits-panel");
+    htmx_element_add_class(HTMX_ELEMENT(panel), "limits");
+    htmx_element_set_attribute(HTMX_ELEMENT(panel), "hx-get",
+                               pending ? "/f/fleet-limits" : "/f/fleet-limits?ask=1");
+    htmx_element_set_attribute(HTMX_ELEMENT(panel), "hx-trigger",
+                               pending ? "load delay:2s" : "every 60s [!document.hidden]");
+    htmx_element_set_attribute(HTMX_ELEMENT(panel), "hx-swap", "outerHTML");
+
+    {
+        g_autoptr(HtmxDiv) head = htmx_div_new();
+        g_autoptr(HtmxButton) again = htmx_button_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(head), "limits-head");
+        clawt_web_add(head, clawt_web_text("Plan allowances", "limits-title"));
+        htmx_element_add_class(HTMX_ELEMENT(again), "btn");
+        htmx_node_set_text_content(HTMX_NODE(again), "Read again");
+        htmx_element_set_attribute(HTMX_ELEMENT(again), "hx-get", "/f/fleet-limits?ask=1");
+        htmx_element_set_attribute(HTMX_ELEMENT(again), "hx-target", "#fleet-limits-panel");
+        htmx_element_set_attribute(HTMX_ELEMENT(again), "hx-swap", "outerHTML");
+        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(again));
+        htmx_node_add_child(HTMX_NODE(panel), HTMX_NODE(head));
+    }
+
+    if (reply == NULL || root == NULL) {
+        clawt_web_add(panel, clawt_web_empty("The allowances are unavailable",
+            "Check the daemon connection, then reopen Fleet to retry."));
+        return HTMX_ELEMENT(g_steal_pointer(&panel));
+    }
+    if (logins == NULL || json_array_get_length(logins) == 0) {
+        clawt_web_add(panel, clawt_web_text("No agent runs a CLI provider, so there is "
+                                            "no plan allowance to show.", "lede"));
+        return HTMX_ELEMENT(g_steal_pointer(&panel));
+    }
+
+    for (i = 0; i < json_array_get_length(logins); i++)
+        htmx_node_add_child(HTMX_NODE(panel), HTMX_NODE(
+            limit_login_element(json_array_get_object_element(logins, i), now)));
+
+    return HTMX_ELEMENT(g_steal_pointer(&panel));
+}
+
 /* The part that reloads itself: the period tabs and everything below. */
 static HtmxElement *
 fleet_panel(ClawtWebApp *app, guint period)
@@ -193,6 +352,7 @@ clawt_web_fleet_usage_body(ClawtWebApp *app, const gchar *agent_id)
     clawt_web_add(pad, clawt_web_text(
         "What each agent costs, and which sit idle. An idle agent that is "
         "running still holds its process and its computer.", "lede"));
+    htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(limits_panel(app, TRUE)));
     htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(
         fleet_panel(app, CLAWT_USAGE_PERIOD_DEFAULT)));
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
@@ -207,6 +367,16 @@ on_fleet_usage_fragment(HtmxRequest *request, GHashTable *params, gpointer user_
 {
     g_autoptr(HtmxElement) panel = fleet_panel(user_data,
         period_of(htmx_request_get_query_param(request, "period")));
+
+    (void)params;
+    return clawt_web_fragment_response(panel);
+}
+
+static HtmxResponse *
+on_fleet_limits_fragment(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    g_autoptr(HtmxElement) panel = limits_panel(user_data,
+        g_strcmp0(htmx_request_get_query_param(request, "ask"), "1") == 0);
 
     (void)params;
     return clawt_web_fragment_response(panel);
@@ -272,6 +442,7 @@ void
 clawt_web_register_fleet_usage(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_get(router, "/f/fleet-usage", on_fleet_usage_fragment, app);
+    htmx_router_get(router, "/f/fleet-limits", on_fleet_limits_fragment, app);
     htmx_router_post(router, "/fleet-usage/stop-idle", on_fleet_usage_stop_idle, app);
     htmx_router_post(router, "/fleet-usage/:agent/stop", on_fleet_usage_stop, app);
 }

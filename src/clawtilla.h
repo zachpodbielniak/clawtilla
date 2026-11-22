@@ -211,6 +211,7 @@
 #include "usage/clawt-usage-ledger.h"
 #include "usage/clawt-task-sources.h"
 #include "usage/clawt-usage.h"
+#include "usage/clawt-provider-usage.h"
 #include "browser/clawt-browser.h"
 #include "browser/clawt-secret-vault.h"
 #include "browser/clawt-totp.h"

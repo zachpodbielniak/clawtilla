@@ -824,6 +824,28 @@ clawt_lrg_theme_yaml(ClawtAppearance *appearance, gboolean system_dark,
              */
             rule_begin(out, NULL, klass, "label", NULL);
             rule_color(out, "foreground", rgba_mix(tone, text, 0.25));
+
+            /*
+             * An allowance meter in the same tone: the bar's own accent
+             * would paint a nearly spent window the colour of a fresh one.
+             */
+            {
+                g_autofree gchar *meter = g_strdup_printf("clawt-meter-%s", tones[i]);
+
+                /*
+                 * The gradient too: LrgProgressBar's defaults paint the
+                 * fill as an ACCENT gradient, and a gradient wins over a
+                 * background, so a background alone left every meter blue.
+                 */
+                rule_begin(out, NULL, meter, "fill", NULL);
+                rule_color(out, "background", tone);
+                g_string_append(out, "    gradient:\n      kind: linear\n      start: ");
+                append_color(out, tone);
+                g_string_append(out, "\n      end: ");
+                append_color(out, rgba_mix(tone, (Rgba){ 1.0, 1.0, 1.0, 1.0 }, 0.18));
+                g_string_append(out, "\n      angle: 0\n");
+                rule_color(out, "glow", rgba_with_alpha(tone, 0.30));
+            }
         }
     }
 

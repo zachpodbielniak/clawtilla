@@ -59,6 +59,20 @@ typedef gboolean (*ClawtDaemonRebuildFunc)(ClawtDaemon  *daemon,
                                            gpointer      user_data,
                                            GError      **error);
 
+typedef struct _ClawtProviderUsageLogin ClawtProviderUsageLogin;
+
+/*
+ * How a login's usage is read.  NULL means the login's own CLI through
+ * ai-glib; a test sets one that answers from a fixture, because make test
+ * must not spawn a provider CLI.  The function answers by calling
+ * clawt_daemon_provider_usage_landed(), now or later.
+ */
+typedef void (*ClawtProviderUsageQuery)(ClawtDaemon  *self,
+                                        const gchar  *login_id,
+                                        const gchar  *provider,
+                                        const gchar  *config_dir,
+                                        GCancellable *cancellable);
+
 struct _ClawtDaemon {
     GObject parent_instance;
 
@@ -276,6 +290,14 @@ struct _ClawtDaemon {
      */
     GHashTable *model_cache;     /* provider id -> GStrv (owned) */
     gint64      model_cache_at;  /* monotonic, when it was last warmed */
+
+    /*
+     * usage.providers: login id -> ClawtProviderUsageLogin, made on the
+     * first request and refreshed only when a client asks, so a daemon
+     * nobody looks at never spawns a CLI to read an allowance.
+     */
+    GHashTable              *provider_usage;
+    ClawtProviderUsageQuery  provider_usage_query;
 
     /*
      * Who to tell when something is worth interrupting somebody for.
@@ -1341,6 +1363,23 @@ gchar *clawt_daemon_grok_handle(ClawtDaemon        *self,
                                 gsize               body_length,
                                 guint              *out_status,
                                 const gchar       **out_content_type);
+
+JsonNode *clawt_daemon_handle_provider_usage(ClawtDaemon *self,
+                                             const gchar *kind,
+                                             JsonNode    *request,
+                                             JsonObject  *payload,
+                                             gboolean    *handled);
+
+/*
+ * Stores one login's answer (a usage report, or why there is none) and
+ * publishes usage.providers_changed.  Called by the query when it lands.
+ */
+void clawt_daemon_provider_usage_landed(ClawtDaemon  *self,
+                                        const gchar  *login_id,
+                                        JsonNode     *report,
+                                        const GError *error);
+void clawt_provider_usage_login_free(ClawtProviderUsageLogin *login);
+void clawt_daemon_provider_usage_stop(ClawtDaemon *self);
 
 JsonNode *clawt_daemon_handle_grok(ClawtDaemon *self,
                                    const gchar *kind,

@@ -649,6 +649,7 @@ struct _ClawtWindow {
     GtkWidget         *fleet_budget;
     GtkWidget         *fleet_strip;
     GtkWidget         *fleet_stop_idle;
+    GtkWidget         *fleet_limits;   /* a box of login cards */
 
     /* The Grok page (gtk-grok.c). */
     GtkWidget         *grok_status;
@@ -1511,6 +1512,14 @@ clawt_gtk_build_fleet_page(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_fleet(ClawtWindow *self);
+
+/*
+ * The Fleet page's plan allowances.  @ask has the daemon read the logins
+ * again behind its reply; the usage.providers_changed that follows is
+ * answered with @ask FALSE, or a login that keeps failing would loop.
+ */
+void
+clawt_gtk_refresh_limits(ClawtWindow *self, gboolean ask);
 
 /* ── Defined in gtk-grok.c: the Grok bots and their jobs ─────────── */
 

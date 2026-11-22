@@ -1,0 +1,139 @@
+#+title: Plan allowances
+#+description: What each provider login has left of its plan, how it is read, and how to read the meters
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-11-21 Sat]
+#+updated: [2026-11-21 Sat]
+#+version: 0.1.0
+
+* Plan allowances
+:PROPERTIES:
+:CUSTOM_ID: plan-allowances
+:END:
+
+A subscription CLI does not bill per turn; it stops.  Claude Code has a five-hour session window and a weekly cap, Codex has named rate-limit pools, Grok has a monthly allowance and a prepaid balance.  When one runs out, every agent signed in that way stops answering until it resets.  The spend figures in [[file:spending.org][spending.org]] answer "what did it cost"; the allowances answer "how long can it keep going", and on a subscription the second is the one that stops the fleet.
+
+The Fleet tab in all three graphical clients shows them above the spend, and ~clawtilla limits~ prints them.
+
+** What a login is
+:PROPERTIES:
+:CUSTOM_ID: logins
+:END:
+
+A *login* is one CLI signed in one way.  The fleet's logins are:
+
+- every entry under =accounts:= (a CLI pointed at its own =config_dir=), and
+- the default login of each CLI that some agent runs on without =agents.model.account= -- the one the CLI keeps under the daemon's =$HOME=.
+
+Agents that share a login share one allowance, so the page lists *logins, not agents*.  Listing agents would show the same five-hour window three times and invite somebody to add the three together.  The login's id is =<cli>:<account>= or =<cli>:default= (=claude-code:work=, =codex-cli:default=).
+
+** How it is read
+:PROPERTIES:
+:CUSTOM_ID: reading
+:END:
+
+Each login is read by its own CLI, through ai-glib's report API (=ai_cli_client_query_report()=, documented in ai-glib's =docs/cli-reporting.org=).  The query sends no prompt, uses no model allowance and writes no transcript:
+
+| CLI | Where the figures come from |
+|-----+-----------------------------|
+| Claude Code (=claude-code=, =claude-tmux=) | the stream-json =get_usage= control request: the numbers =/usage= draws, as data.  Windows: Session (5h), Weekly, and the per-model weekly caps the account has |
+| Codex (=codex-cli=) | the app-server's =account/rateLimits/read=, every named pool |
+| Grok CLI (=grok-build=) | ACP =_x.ai/billing=: the allowance percentage, and dollar amounts and balances when the response has them |
+| Antigravity | its interactive =/usage= panel, captured in a private tmux server; marked /partial/ |
+| OpenCode, Cursor, ACP | nothing to read: shown as "Reports no plan limits" |
+
+An account's query runs with the account's =config_dir= applied exactly as its agents' turns are, so it reads the allowance those agents spend.
+
+Reading a login takes a few seconds and starts a CLI process, so the daemon never does it while a client waits:
+
+- ~usage.providers~ answers at once from what it already knows.
+- With ~refresh: true~ it also starts a read of each login *behind* the reply, at most once a minute per login (throttled on the last attempt, so a CLI that keeps failing is not respawned on every refresh).
+- Each answer that lands is stored and announced as ~usage.providers_changed~; the clients redraw on it without asking again.
+- Nothing is read at daemon start.  A daemon nobody looks at never spawns a CLI to read an allowance, and ~make test~ never spawns one at all.
+
+The clients ask with ~refresh~ when the Fleet tab is shown and when *Read again* (web), the refresh button (GTK) or *Refresh* (libregnum) is pressed.  ~clawtilla limits~ asks and then waits for the answers, up to a minute.
+
+** Reading the meters
+:PROPERTIES:
+:CUSTOM_ID: meters
+:END:
+
+Every meter is filled for what is *left*, in every client and in the CLI, so a full bar is always good news.  The direction rule is the library's (=clawt_provider_usage_normalize()=), one decision for every client:
+
+- a source that said how much is *left* is shown as given;
+- a source that said how much is *used* (Codex's =usedPercent=, Claude's =utilization=) becomes 100 minus that;
+- a window given as amounts in a unit (dollars, tokens) with a limit becomes remaining over limit;
+- a percentage the source printed *without saying which way it points* (some native panels) is shown as "40% (direction not reported)", with no meter and no colour.  A guessed direction is a meter that reads "plenty" at the moment the limit is hit.
+
+The colour comes from =clawt_usage_window_level()=:
+
+| Left | Level | Colour |
+|------+-------+--------|
+| more than 25% | plenty | green |
+| 25% or less | low | amber, and the login is badged "running low" |
+| 10% or less | critical | red, and the login is badged "nearly out" |
+| unknown | unknown | neutral, never green |
+
+A login's badge is its most worrying window.
+
+The figure beside the meter is "62% left" for a percentage window, and the amounts for a money or token window ("$3.20 of $10.00 used", "1,234,567 tokens used").  The reset is phrased from the client's own clock when the source gave an exact time -- "resets in 2h 41m" within a day, "resets Tue 14:00" within a week, "resets 3 Dec" beyond that -- so a page left open never says "in 2h" for an hour.  When the source gave only a date, or words of its own ("Tue 9am"), those are shown as given rather than turned into midnight UTC.
+
+** What the status line means
+:PROPERTIES:
+:CUSTOM_ID: status
+:END:
+
+Under each login's title:
+
+| Line | Meaning |
+|------+---------|
+| Not read yet | nobody has asked since the daemon started |
+| Asking the provider… | the first read is in flight |
+| Read 3m ago | the figures are from then |
+| Read 3m ago, refreshing | a newer read is in flight; the figures shown are the last good ones |
+| Read … from the CLI's own panel; partial | the source was a native panel capture, not a data interface |
+| Reports no plan limits: … | an answer, not a failure: an API-key login, a Bedrock or Vertex login, or a CLI with no reporting interface.  Pay-per-use spend is on the spend list below instead |
+| Could not be read: … | the CLI failed, timed out, or printed something ai-glib could not parse.  The last good figures, if any, stay on screen |
+
+An unknown value is never shown as zero.  ai-glib's report keeps every unknown field null, and clawtilla leaves it out rather than writing a 0 nobody measured.
+
+** Setting it up
+:PROPERTIES:
+:CUSTOM_ID: setup
+:END:
+
+There is nothing to configure: every login an agent uses is listed.  For a login to have figures:
+
+- the CLI must be installed on the daemon's machine and signed in (=claude=, =codex=, =grok=, ...) -- the same requirement its agents have;
+- for Claude Code, the CLI must be new enough to answer =get_usage=; an older one falls back to the =/usage= panel, which needs =tmux= and a workspace the CLI already trusts;
+- for Antigravity, =tmux= must be installed (Fedora: =tmux=).
+
+To give a separate subscription its own row, declare it under =accounts:= and point the agents at it with =agents.model.account= -- ~clawtilla account add work claude-code ~/.claude-work~ declares it, ~clawtilla account login work~ signs it in, and ~clawtilla agent set <agent> model.account work~ moves an agent onto it.
+
+** The wire
+:PROPERTIES:
+:CUSTOM_ID: wire
+:END:
+
+~usage.providers~ and ~usage.providers_changed~ are documented in [[file:ipc-protocol.org::*usage.*][ipc-protocol.org]].  A client draws a login with these library calls, never its own copies of the rules:
+
+| Call | Gives |
+|------+-------|
+| =clawt_usage_login_title()= | "Claude Code — work (max)" |
+| =clawt_usage_login_status_label()= | the status line above |
+| =clawt_usage_login_level()= | the login's badge level |
+| =clawt_usage_window_remaining()= | the meter's fill, or that there is none |
+| =clawt_usage_window_level()= and =clawt_allowance_level_tone()= | the colour |
+| =clawt_usage_window_value_label()= | "62% left" |
+| =clawt_usage_window_reset_label()= | "resets in 2h 41m" |
+| =clawt_usage_meter_text()= | a text bar, for the CLI |
+
+** Troubleshooting
+:PROPERTIES:
+:CUSTOM_ID: troubleshooting
+:END:
+
+- *A login is missing.*  No agent uses it and it is not under =accounts:=.  A login exists because something runs on it.
+- *Every Claude login says "Could not be read: … permission denied".*  The CLI fell back to its interactive panel (it is older than =get_usage=) and the workspace-trust prompt is in front of it.  Update Claude Code, or open =claude= once in the daemon's working directory and trust it.
+- *"Reports no plan limits" on a subscription.*  The CLI is signed in with an API key, or through Bedrock or Vertex, where plan limits do not apply.  Check =claude /status= (or the CLI's equivalent) as the daemon's user.
+- *Figures that disagree with the CLI's own =/usage=.*  Compare against ~clawtilla limits --json~, which is the reply verbatim.  The ~source~ member says which interface was read; a ~partial~ reading came from a panel capture.

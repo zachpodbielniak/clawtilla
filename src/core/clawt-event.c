@@ -631,5 +631,11 @@ clawt_event_is_ephemeral(ClawtEvent *event)
     if (kind == NULL)
         return FALSE;
 
-    return g_strcmp0(kind, "turn.step") == 0;
+    /*
+     * usage.providers_changed only says "read usage.providers again":
+     * a client that connects reads it anyway, so replaying a stale one
+     * would only make it read twice.
+     */
+    return g_strcmp0(kind, "turn.step") == 0 ||
+           g_strcmp0(kind, "usage.providers_changed") == 0;
 }

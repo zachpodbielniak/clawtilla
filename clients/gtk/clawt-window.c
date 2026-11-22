@@ -2194,6 +2194,11 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
          g_strcmp0(kind, "spending.limit-reached") == 0))
         clawt_gtk_refresh_fleet(self);
 
+    /* a login's allowance was read: redraw the cards, ask for nothing */
+    if (clawt_gtk_current_page(self) == CLAWT_PAGE_FLEET &&
+        g_strcmp0(kind, "usage.providers_changed") == 0)
+        clawt_gtk_refresh_limits(self, FALSE);
+
     /*
      * A conversation was read -- here, in another client, or from the
      * CLI.  Its pill takes the daemon's number, so reading in one window
@@ -6296,6 +6301,7 @@ on_page_shown(ClawtWindow *self)
     }
     if (clawt_gtk_current_page(self) == CLAWT_PAGE_FLEET) {
         clawt_gtk_refresh_fleet(self);
+        clawt_gtk_refresh_limits(self, TRUE);
         return;
     }
     if (clawt_gtk_current_page(self) == CLAWT_PAGE_GROK) {

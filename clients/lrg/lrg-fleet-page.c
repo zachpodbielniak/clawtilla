@@ -14,6 +14,12 @@
  * doing nothing, and "Stop the idle ones" for all of them at once.
  * Every line of text is libclawt's (clawt_usage_fleet_*), so the three
  * clients say the same thing.
+ *
+ * Above the spend, the plan allowances (usage.providers), as in GTK: a
+ * card per login, a meter per window filled for what is left, coloured
+ * by clawt_usage_window_level().  Read with `refresh` when the page is
+ * shown or Refresh pressed; usage.providers_changed redraws without
+ * asking again, or a login that keeps failing would loop.
  */
 
 #include "clawt-lrg.h"
@@ -32,6 +38,8 @@ static struct {
     LrgWidget   *strip;
     LrgWidget   *list;
     LrgWidget   *stop_idle;
+    LrgWidget   *limits;        /* the allowance cards */
+    guint        limits_generation;
     GPtrArray   *stoppable;     /* agent ids Stop the idle ones would stop */
     guint        generation;
     gboolean     in_flight;
@@ -196,6 +204,125 @@ on_summary(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     }
 }
 
+/* ── Plan allowances ──────────────────────────────────────────────── */
+
+static LrgWidget *
+limit_window_row(JsonObject *window, gint64 now)
+{
+    LrgWidget *row = clawt_lrg_hbox(12.0f);
+    LrgWidget *figures = clawt_lrg_vbox(2.0f);
+    LrgWidget *label = clawt_lrg_label(clawt_ipc_payload_string(window, "label"), NULL);
+    g_autofree gchar *value = clawt_usage_window_value_label(window);
+    g_autofree gchar *reset = clawt_usage_window_reset_label(window, now);
+    g_autofree gchar *meter_class = g_strdup_printf(
+        "clawt-meter-%s", clawt_allowance_level_tone(clawt_usage_window_level(window)));
+    gdouble left = 0.0;
+
+    lrg_widget_set_min_size(label, 150.0f, 0.0f);
+    lrg_widget_set_valign(label, LRG_ALIGN_CENTER);
+    clawt_lrg_take(row, label);
+
+    /* filled for what is left; no direction, no meter -- empty reads "used up" */
+    if (clawt_usage_window_remaining(window, &left)) {
+        LrgProgressBar *bar = lrg_progress_bar_new();
+
+        lrg_progress_bar_set_max(bar, 1.0);
+        lrg_progress_bar_set_value(bar, left / 100.0);
+        lrg_widget_add_class(LRG_WIDGET(bar), meter_class);
+        lrg_widget_set_min_size(LRG_WIDGET(bar), 120.0f, 8.0f);
+        lrg_widget_set_valign(LRG_WIDGET(bar), LRG_ALIGN_CENTER);
+        lrg_widget_set_fill_weight(LRG_WIDGET(bar), 1.0f);
+        clawt_lrg_take(row, LRG_WIDGET(bar));
+    } else {
+        LrgWidget *spacer = clawt_lrg_label("", NULL);
+
+        lrg_widget_set_fill_weight(spacer, 1.0f);
+        clawt_lrg_take(row, spacer);
+    }
+
+    clawt_lrg_take(figures, clawt_lrg_label(value, "heading"));
+    if (reset != NULL)
+        clawt_lrg_take(figures, clawt_lrg_label(reset, "caption"));
+    lrg_widget_set_min_size(figures, 170.0f, 0.0f);
+    clawt_lrg_take(row, figures);
+    return row;
+}
+
+static LrgWidget *
+limit_login_card(JsonObject *login, gint64 now)
+{
+    LrgWidget *box = clawt_lrg_vbox(6.0f);
+    LrgWidget *head = clawt_lrg_hbox(8.0f);
+    LrgWidget *title_label;
+    g_autofree gchar *title = clawt_usage_login_title(login);
+    g_autofree gchar *status = clawt_usage_login_status_label(login, now);
+    JsonArray *windows = clawt_lrg_settings_member_array(login, "windows");
+    ClawtAllowanceLevel level = clawt_usage_login_level(login);
+    guint i;
+
+    title_label = clawt_lrg_label(title, "heading");
+    lrg_widget_set_fill_weight(title_label, 1.0f);
+    clawt_lrg_take(head, title_label);
+    if (level == CLAWT_ALLOWANCE_LOW || level == CLAWT_ALLOWANCE_CRITICAL)
+        clawt_lrg_take(head, clawt_lrg_badge(
+            level == CLAWT_ALLOWANCE_CRITICAL ? "nearly out" : "running low",
+            clawt_allowance_level_tone(level)));
+    clawt_lrg_take(box, head);
+    clawt_lrg_take(box, clawt_lrg_label(status, "muted"));
+
+    for (i = 0; windows != NULL && i < json_array_get_length(windows); i++)
+        clawt_lrg_take(box, limit_window_row(json_array_get_object_element(windows, i),
+                                             now));
+    return clawt_lrg_card(box);
+}
+
+static void
+on_limits(ClawtLrgApp *app, JsonNode *reply, const GError *error, gpointer user_data)
+{
+    JsonObject *root = clawt_ipc_reply_object(reply);
+    JsonArray *logins;
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+    guint i;
+
+    /* a newer read was asked for while this one was in flight */
+    if (GPOINTER_TO_UINT(user_data) != fleet.limits_generation ||
+        fleet.limits == NULL || root == NULL)
+        return;
+
+    now = clawt_ipc_payload_int(root, "now", now);
+    logins = clawt_lrg_settings_member_array(root, "logins");
+    clawt_lrg_clear(fleet.limits);
+    clawt_lrg_take(fleet.limits, clawt_lrg_label("Plan allowances", "title"));
+
+    if (logins == NULL || json_array_get_length(logins) == 0)
+        clawt_lrg_take(fleet.limits, clawt_lrg_label(
+            "No agent runs a CLI provider, so there is no plan allowance to show.",
+            "muted"));
+    for (i = 0; logins != NULL && i < json_array_get_length(logins); i++)
+        clawt_lrg_take(fleet.limits,
+                       limit_login_card(json_array_get_object_element(logins, i), now));
+    clawt_lrg_app_wake(app);
+}
+
+static void
+request_limits(ClawtLrgApp *app, gboolean ask)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+
+    if (fleet.limits == NULL)
+        return;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "refresh");
+    json_builder_add_boolean_value(builder, ask);
+    json_builder_end_object(builder);
+
+    fleet.limits_generation++;
+    clawt_lrg_request(app, "usage.providers", json_builder_get_root(builder),
+                      CLAWT_LRG_QUIET, on_limits,
+                      GUINT_TO_POINTER(fleet.limits_generation), NULL);
+}
+
 static void
 request_fleet(ClawtLrgApp *app)
 {
@@ -235,6 +362,7 @@ static void
 on_refresh_clicked(LrgButton *button, gpointer user_data)
 {
     request_fleet(user_data);
+    request_limits(user_data, TRUE);
 }
 
 /* ── The page ─────────────────────────────────────────────────────── */
@@ -286,6 +414,11 @@ build(ClawtLrgApp *app)
     clawt_lrg_add(top, fleet.strip);
     g_object_unref(fleet.strip);
 
+    /* the plan allowances, before the spend: they say how long it can go on */
+    fleet.limits = clawt_lrg_vbox(10.0f);
+    clawt_lrg_add(clawt_lrg_page_body(fleet.page), fleet.limits);
+    g_object_unref(fleet.limits);
+
     clawt_lrg_take(clawt_lrg_page_body(fleet.page), clawt_lrg_card(top));
 
     fleet.list = clawt_lrg_vbox(6.0f);
@@ -307,6 +440,7 @@ static void
 refresh(ClawtLrgApp *app)
 {
     request_fleet(app);
+    request_limits(app, TRUE);
 }
 
 static void
@@ -324,6 +458,10 @@ event(ClawtLrgApp *app, ClawtEvent *event)
         g_strcmp0(kind, "agent.failover") == 0 ||
         g_strcmp0(kind, "spending.limit-reached") == 0)
         request_fleet(app);
+
+    /* a login was read: redraw, ask for nothing */
+    if (g_strcmp0(kind, "usage.providers_changed") == 0)
+        request_limits(app, FALSE);
 }
 
 static const ClawtLrgPage page_impl = {

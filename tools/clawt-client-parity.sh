@@ -323,6 +323,16 @@ declare -A AFFORDANCES=(
     ["stop an idle agent"]="on_fleet_stop|/fleet-usage/%s/stop|on_stop_clicked"
     ["stop the idle ones"]="on_stop_idle_confirmed|/fleet-usage/stop-idle|on_stop_idle_confirmed"
     #
+    # The plan allowances above the spend (usage.providers): a meter per
+    # window coloured by its level, the reset in words, and a re-read.
+    # Each client calls the library for all three, so a client that drew
+    # the windows and forgot the meter or the reset is caught here.
+    #
+    ["allowance meter level"]="clawt_usage_window_level|clawt_usage_window_level|clawt_usage_window_level"
+    ["allowance reset label"]="clawt_usage_window_reset_label|clawt_usage_window_reset_label|clawt_usage_window_reset_label"
+    ["allowance login status"]="clawt_usage_login_status_label|clawt_usage_login_status_label|clawt_usage_login_status_label"
+    ["allowance read again"]="on_limits_refresh|/f/fleet-limits?ask=1|request_limits(user_data, TRUE)"
+    #
     # The Spending page's ledger: the grouping is a library enumeration,
     # so layer 3 already sees the selector -- but the unpriced-turn
     # sentence and the CSV export are each one call, sent no frame of

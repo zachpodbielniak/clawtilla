@@ -3105,6 +3105,7 @@ Below the turns, *Issues*: what keeps going wrong rather than what is running.  
 
 Under Work, after Activity. Activity is what the fleet is doing this minute; Fleet is what it has cost and who has stopped doing anything. One ~usage.summary~ read, asked for with ~days: 14~ and ~sort: "cost"~, drawn in all three clients from the same library lines (=clawt_usage_fleet_*()=), so a figure cannot read differently in two windows:
 
+- *Plan allowances*, first: one card per provider login (~usage.providers~), a meter per window -- the five-hour session, the weekly cap, a credit balance -- filled for what is *left* and coloured by =clawt_usage_window_level()= (green, amber at a quarter, red at a tenth, neutral when the source gave no direction), with the figure and when it resets.  A login badges "running low" or "nearly out" from its worst window.  Read when the tab is shown and on the refresh button (*Read again* on the web); each answer redraws the card as it lands.  See [[file:provider-usage.org][provider-usage.org]].
 - *The period*: All time, Today, Last 7 days, Last 30 days (=clawt_usage_period_*()=; the default is 7 days) and its total, "$4.12 across 318 turns".
 - *The day's cap*, only when =orchestration.daily_fleet_budget_micros= is set: "Today $0.42 of a $5.00 daily cap", or that it is reached and new work waits. This is the cap the router already enforces, not a second budget -- see [[file:spending.org::#daily-limits][the admission limits]].
 - *A strip of the last fourteen days*, one block character per day scaled to the busiest (=clawt_usage_sparkline()=), with =·= for a day that cost nothing so an empty day is not read as a small one.
@@ -3112,7 +3113,7 @@ Under Work, after Activity. Activity is what the fleet is doing this minute; Fle
 
 *Idle* is a label, not an action: an agent whose last turn is older than =orchestration.idle_hours= (72 by default) is idle, one that has never taken a turn is "never used", one that is stopped is stopped (=clawt_usage_idle_state()=, a switch with no default). An idle agent still holds its process, its ports and its computer; =agents.runtime.idle_stop_hours= is what stops one. An agent the daemon put to sleep that way is drawn "asleep" rather than "stopped", because it starts again by itself: the next message queued for it wakes it, and the message waits in its durable mailbox while it comes up. A mid-turn agent is never put to sleep, whatever its last recorded turn says.
 
-The page re-reads on ~message~, ~agent.state~, ~agent.idle_stopped~, ~agent.failover~ and ~spending.limit-reached~. ~clawtilla cost~ prints the same rows with LAST TURN and IDLE columns, and ~--by-day~ adds the days and the strip.
+The page re-reads on ~message~, ~agent.state~, ~agent.idle_stopped~, ~agent.failover~ and ~spending.limit-reached~. ~clawtilla cost~ prints the same rows with LAST TURN and IDLE columns, and ~--by-day~ adds the days and the strip.  ~clawtilla limits~ prints the allowances, with a text meter per window.
 
 The GTK client keeps a row you expanded open across refreshes. The web client polls the panel every four seconds while the tab is visible and draws the steps as plain lines, since a swap that frequent would close anything somebody had opened.
 

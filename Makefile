@@ -140,6 +140,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/usage/clawt-usage-ledger.h \
 	$(SRCDIR)/usage/clawt-task-sources.h \
 	$(SRCDIR)/usage/clawt-usage.h \
+	$(SRCDIR)/usage/clawt-provider-usage.h \
 	$(SRCDIR)/browser/clawt-browser.h \
 	$(SRCDIR)/browser/clawt-secret-vault.h \
 	$(SRCDIR)/browser/clawt-totp.h \
@@ -316,6 +317,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-venture.c \
 	$(SRCDIR)/core/daemon-venture-mirror.c \
 	$(SRCDIR)/core/daemon-grok.c \
+	$(SRCDIR)/core/daemon-provider-usage.c \
 	$(SRCDIR)/core/daemon-config.c \
 	$(SRCDIR)/core/daemon-skill.c \
 	$(SRCDIR)/core/daemon-skill-proposal.c \
@@ -368,6 +370,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/memory/clawt-operator-profile.c \
 	$(SRCDIR)/memory/clawt-memory-review.c \
 	$(SRCDIR)/usage/clawt-usage.c \
+	$(SRCDIR)/usage/clawt-provider-usage.c \
 	$(SRCDIR)/usage/clawt-usage-ledger.c \
 	$(SRCDIR)/usage/clawt-task-sources.c \
 	$(SRCDIR)/browser/clawt-browser.c \
