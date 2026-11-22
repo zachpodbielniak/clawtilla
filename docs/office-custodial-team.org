@@ -67,7 +67,7 @@ Offered to any agent with ~tools.office~ -- on for the chief of staff unless set
 | ~clawtilla_office_world_apply~ | draws the office in another world, for everybody |
 | ~clawtilla_office_preview~ | who would sit where, in what pose, in a world as it stands |
 | ~clawtilla_office_asset_import~ | copies a file from the agent's workspace into a pack or a character, with its checksum, licence and provenance |
-| ~clawtilla_office_character_layout~ | says how an imported sprite sheet is laid out; checked against the image |
+| ~clawtilla_office_character_layout~ | says how an imported sprite sheet is laid out -- the frame size and which row is which animation -- checked against the image, after which the office draws that agent from it |
 | ~clawtilla_office_custodians_install~ | installs this team (also needs ~tools.manage_fleet~) |
 
 How writes stay safe (~src/office/clawt-office-pack.c~, so every caller gets the same rules):

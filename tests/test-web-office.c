@@ -148,6 +148,18 @@ get(OfficeFixture *fixture, HtmxRouteCallback handler, const gchar *path,
     return handler(request, params, fixture->app);
 }
 
+/* GET @path through @handler, with @value as the route's :@name. */
+static HtmxResponse *
+get_param(OfficeFixture *fixture, HtmxRouteCallback handler, const gchar *path,
+          const gchar *name, const gchar *value)
+{
+    g_autoptr(HtmxRequest) request = htmx_request_new_for_path(HTMX_METHOD_GET, path);
+    g_autoptr(GHashTable) params = g_hash_table_new(g_str_hash, g_str_equal);
+
+    g_hash_table_insert(params, (gpointer)name, (gpointer)value);
+    return handler(request, params, fixture->app);
+}
+
 static JsonObject *
 parse_object(const gchar *text, JsonParser *parser)
 {
@@ -445,6 +457,314 @@ test_nothing_when_off(void)
     fixture_teardown(&fixture);
 }
 
+/* ── Characters ──────────────────────────────────────────────────── */
+
+/*
+ * A character for @agent the way clawtilla_office_asset_import and
+ * clawtilla_office_character_layout leave one: the shipped tileset as its
+ * sheet, and a character.yaml recording @sha (or the sheet's own sum).
+ * Returns the sheet's sum; @out_bytes its bytes.
+ */
+static gchar *
+put_character(OfficeFixture *fixture, const gchar *agent, const gchar *sha,
+              GBytes **out_bytes)
+{
+    g_autofree gchar *source = g_build_filename(CLAWT_TEST_SRCDIR, "data", "office", "worlds",
+                                                "modern-office", "tiles.png", NULL);
+    g_autofree gchar *dir = g_build_filename(fixture->dir, "state", "office", "characters",
+                                             agent, "sprites", NULL);
+    g_autofree gchar *sheet = g_build_filename(dir, "sheet.png", NULL);
+    g_autofree gchar *manifest = NULL;
+    g_autofree gchar *yaml = NULL;
+    g_autofree gchar *data = NULL;
+    gchar *sum;
+    gsize length = 0;
+
+    g_assert_true(g_file_get_contents(source, &data, &length, NULL));
+    g_assert_cmpint(g_mkdir_with_parents(dir, 0700), ==, 0);
+    g_assert_true(g_file_set_contents(sheet, data, (gssize)length, NULL));
+    sum = g_compute_checksum_for_data(G_CHECKSUM_SHA256, (const guchar *)data, length);
+    manifest = g_build_filename(fixture->dir, "state", "office", "characters", agent,
+                                "character.yaml", NULL);
+    yaml = g_strdup_printf(
+        "agent: %s\n"
+        "sheet: sprites/sheet.png\n"
+        "frame: [32, 32]\n"
+        "animations:\n"
+        "  idle: {row: 0, frames: 1, fps: 0}\n"
+        "  walk_down: {row: 1, frames: 4, fps: 8}\n"
+        "assets:\n"
+        "  - path: sprites/sheet.png\n"
+        "    sha256: \"%s\"\n",
+        agent, sha != NULL ? sha : sum);
+    g_assert_true(g_file_set_contents(manifest, yaml, -1, NULL));
+    if (out_bytes != NULL)
+        *out_bytes = g_bytes_new(data, length);
+    return sum;
+}
+
+/* @name's entry in a `characters` array, or NULL. */
+static JsonObject *
+find_character(JsonObject *body, const gchar *name)
+{
+    JsonArray *list = json_object_get_array_member(body, "characters");
+    guint i;
+
+    g_assert_nonnull(list);
+    for (i = 0; i < json_array_get_length(list); i++) {
+        JsonObject *c = json_array_get_object_element(list, i);
+
+        if (g_strcmp0(json_object_get_string_member(c, "agent"), name) == 0)
+            return c;
+    }
+    return NULL;
+}
+
+/*
+ * The sheet comes back byte for byte as a PNG; bytes that do not match
+ * the checksum the script sends are a 409, never an image.
+ */
+static void
+test_character_route(void)
+{
+    OfficeFixture fixture = { 0 };
+    g_autoptr(GBytes) expected = NULL;
+    g_autofree gchar *sum = NULL;
+    g_autofree gchar *with_sum = NULL;
+    g_autoptr(HtmxResponse) plain = NULL;
+    g_autoptr(HtmxResponse) checked = NULL;
+    g_autoptr(HtmxResponse) wrong = NULL;
+    g_autoptr(HtmxResponse) missing = NULL;
+    GBytes *bytes;
+
+    fixture_setup(&fixture, TRUE);
+    sum = put_character(&fixture, "ada", NULL, &expected);
+
+    plain = get_param(&fixture, on_character,
+                      "/office/character/ada?path=sprites%2Fsheet.png", "agent", "ada");
+    g_assert_cmpuint(htmx_response_get_status(plain), ==, SOUP_STATUS_OK);
+    bytes = htmx_response_get_bytes(plain);
+    g_assert_nonnull(bytes);
+    g_assert_true(g_bytes_equal(bytes, expected));
+    g_assert_true(memcmp(g_bytes_get_data(bytes, NULL), "\x89PNG\r\n\x1a\n", 8) == 0);
+    /* the route's type is office_file_type()'s, and that says PNG */
+    g_assert_cmpstr(office_file_type("sprites/sheet.png"), ==, "image/png");
+
+    with_sum = g_strdup_printf("/office/character/ada?path=sprites/sheet.png&sha256=%s", sum);
+    checked = get_param(&fixture, on_character, with_sum, "agent", "ada");
+    g_assert_cmpuint(htmx_response_get_status(checked), ==, SOUP_STATUS_OK);
+
+    wrong = get_param(&fixture, on_character,
+                      "/office/character/ada?path=sprites/sheet.png&sha256=00ff", "agent", "ada");
+    g_assert_cmpuint(htmx_response_get_status(wrong), ==, SOUP_STATUS_CONFLICT);
+    g_assert_null(htmx_response_get_bytes(wrong));
+
+    missing = get_param(&fixture, on_character,
+                        "/office/character/ada?path=sprites/nope.png", "agent", "ada");
+    g_assert_cmpuint(htmx_response_get_status(missing), ==, SOUP_STATUS_NOT_FOUND);
+
+    fixture_teardown(&fixture);
+}
+
+/* An agent id or path that could not name a character never reaches the daemon. */
+static void
+test_character_refused_without_asking(void)
+{
+    g_autoptr(ClawtClient) client = clawt_client_new("/nonexistent/clawt-test.sock");
+    g_autoptr(ClawtWebApp) app = clawt_web_app_new(client);
+    static const struct {
+        const gchar *agent;
+        const gchar *path;
+    } cases[] = {
+        { "ada",      "/office/character/ada?path=../mallory/sprites/sheet.png" },
+        { "ada",      "/office/character/ada?path=/etc/passwd" },
+        { "ada",      "/office/character/ada?path=.hidden.png" },
+        { "ada",      "/office/character/ada?path=a//b.png" },
+        { "ada",      "/office/character/ada" },
+        { "..",       "/office/character/x?path=sheet.png" },
+        { "..%2Fada", "/office/character/x?path=sheet.png" },
+        { "a%2Fb",    "/office/character/x?path=sheet.png" },
+        { ".hidden",  "/office/character/x?path=sheet.png" },
+    };
+    /* every call replaces the app's last error, so the same string is no call */
+    const gchar *before = clawt_web_app_last_error(app);
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autoptr(HtmxRequest) request = htmx_request_new_for_path(HTMX_METHOD_GET,
+                                                                   cases[i].path);
+        g_autoptr(GHashTable) params = g_hash_table_new(g_str_hash, g_str_equal);
+        g_autoptr(HtmxResponse) response = NULL;
+
+        g_hash_table_insert(params, (gpointer)"agent", (gpointer)cases[i].agent);
+        response = on_character(request, params, app);
+        g_assert_cmpuint(htmx_response_get_status(response), ==, SOUP_STATUS_FORBIDDEN);
+        g_assert_true(clawt_web_app_last_error(app) == before);
+    }
+}
+
+/*
+ * The page carries a matching sheet inline (it fetches nothing) and
+ * leaves out one that does not match its manifest; the poll names both
+ * by URL with the manifest's checksum, which the route holds them to.
+ */
+static void
+test_characters_in_scene(void)
+{
+    OfficeFixture fixture = { 0 };
+    g_autoptr(HtmxDiv) parent = htmx_div_new();
+    g_autoptr(HtmxResponse) response = NULL;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(JsonParser) poll_parser = json_parser_new();
+    g_autofree gchar *sum = NULL;
+    g_autofree gchar *html = NULL;
+    g_autofree gchar *json = NULL;
+    g_autofree gchar *want_url = NULL;
+    const gchar *start;
+    const gchar *end;
+    JsonObject *scene;
+    JsonObject *ada;
+    JsonObject *body;
+
+    fixture_setup(&fixture, TRUE);
+    sum = put_character(&fixture, "ada", NULL, NULL);
+    g_free(put_character(&fixture, "mallory",
+        "0000000000000000000000000000000000000000000000000000000000000000", NULL));
+
+    clawt_web_office_view_add(fixture.app, HTMX_ELEMENT(parent));
+    html = htmx_element_render(HTMX_ELEMENT(parent));
+    start = strstr(html, "id=\"office-scene\"");
+    g_assert_nonnull(start);
+    start = strchr(start, '>');
+    g_assert_nonnull(start);
+    start++;
+    end = strstr(start, "</script>");
+    g_assert_nonnull(end);
+    json = g_strndup(start, (gsize)(end - start));
+    scene = parse_object(json, parser);
+
+    ada = find_character(scene, "ada");
+    g_assert_nonnull(ada);
+    g_assert_true(g_str_has_prefix(json_object_get_string_member(ada, "src"),
+                                   "data:image/png;base64,"));
+    g_assert_cmpstr(json_object_get_string_member(ada, "sheet_sha256"), ==, sum);
+    g_assert_nonnull(json_object_get_object_member(
+        json_object_get_object_member(ada, "animations"), "walk_down"));
+    g_assert_null(find_character(scene, "mallory"));
+
+    response = get(&fixture, on_layout_json, "/office/layout.json", NULL);
+    body = parse_object(htmx_response_get_content(response), poll_parser);
+    ada = find_character(body, "ada");
+    g_assert_nonnull(ada);
+    want_url = g_strdup_printf("/office/character/ada?path=sprites%%2Fsheet.png&sha256=%s", sum);
+    g_assert_cmpstr(json_object_get_string_member(ada, "src"), ==, want_url);
+    g_assert_nonnull(find_character(body, "mallory"));
+
+    fixture_teardown(&fixture);
+}
+
+/* ── The usage board ─────────────────────────────────────────────── */
+
+/*
+ * The board's words are libclawt's, computed here: the title, each
+ * window's value label, how much is left and the tone of its level.  Up
+ * to four logins and two windows each; a login with none says so.
+ */
+static void
+test_usage_board(void)
+{
+    static const gchar *usage_json =
+        "{\"logins\": ["
+        " {\"provider\": \"claude-code\", \"account\": \"work\", \"plan\": \"max\","
+        "  \"windows\": ["
+        "   {\"label\": \"5-hour\", \"unit\": \"percent\", \"remaining_percent\": 62},"
+        "   {\"label\": \"weekly\", \"unit\": \"percent\", \"remaining_percent\": 4},"
+        "   {\"label\": \"opus weekly\", \"unit\": \"percent\", \"remaining_percent\": 90}]},"
+        " {\"provider\": \"opencode\", \"state\": \"unsupported\", \"windows\": []},"
+        " {\"provider\": \"cursor\", \"windows\": [{\"label\": \"tokens\", \"unit\": \"tokens\","
+        "   \"used\": 1200}]},"
+        " {\"provider\": \"grok-build\"},"
+        " {\"provider\": \"antigravity\"}"
+        "]}";
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(JsonObject) board = NULL;
+    JsonObject *usage;
+    JsonArray *in;
+    JsonArray *logins;
+    JsonArray *first;
+    guint i;
+
+    usage = parse_object(usage_json, parser);
+    in = json_object_get_array_member(usage, "logins");
+    board = office_usage_board(usage);
+    logins = json_object_get_array_member(board, "logins");
+    g_assert_cmpuint(json_array_get_length(logins), ==, OFFICE_BOARD_LOGINS);
+
+    for (i = 0; i < json_array_get_length(logins); i++) {
+        JsonObject *src = json_array_get_object_element(in, i);
+        JsonObject *out = json_array_get_object_element(logins, i);
+        JsonArray *src_windows = json_object_has_member(src, "windows")
+            ? json_object_get_array_member(src, "windows") : NULL;
+        JsonArray *windows = json_object_get_array_member(out, "windows");
+        g_autofree gchar *title = clawt_usage_login_title(src);
+        guint w;
+
+        g_assert_cmpstr(json_object_get_string_member(out, "title"), ==, title);
+        g_assert_cmpuint(json_array_get_length(windows), ==,
+                         MIN(src_windows != NULL ? json_array_get_length(src_windows) : 0,
+                             OFFICE_BOARD_WINDOWS));
+        if (json_array_get_length(windows) == 0)
+            g_assert_cmpstr(json_object_get_string_member(out, "note"), ==,
+                            "reports no plan limits");
+        else
+            g_assert_false(json_object_has_member(out, "note"));
+
+        for (w = 0; w < json_array_get_length(windows); w++) {
+            JsonObject *sw = json_array_get_object_element(src_windows, w);
+            JsonObject *ow = json_array_get_object_element(windows, w);
+            g_autofree gchar *value = clawt_usage_window_value_label(sw);
+            gdouble left = 0.0;
+
+            g_assert_cmpstr(json_object_get_string_member(ow, "label"), ==,
+                            json_object_get_string_member(sw, "label"));
+            g_assert_cmpstr(json_object_get_string_member(ow, "value"), ==, value);
+            g_assert_cmpstr(json_object_get_string_member(ow, "tone"), ==,
+                            clawt_allowance_level_tone(clawt_usage_window_level(sw)));
+            if (clawt_usage_window_remaining(sw, &left))
+                g_assert_cmpfloat_with_epsilon(json_object_get_double_member(ow, "remaining"),
+                                               left, 1e-9);
+            else
+                g_assert_false(json_object_has_member(ow, "remaining"));
+        }
+    }
+
+    /* 62% and 4% left are different levels, so the tones are not one constant */
+    first = json_object_get_array_member(json_array_get_object_element(logins, 0), "windows");
+    g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(first, 0),
+                                                  "tone"), !=,
+                    json_object_get_string_member(json_array_get_object_element(first, 1),
+                                                  "tone"));
+}
+
+/* The poll carries the board, from usage.providers as it stands. */
+static void
+test_board_in_poll(void)
+{
+    OfficeFixture fixture = { 0 };
+    g_autoptr(HtmxResponse) response = NULL;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    JsonObject *body;
+
+    fixture_setup(&fixture, TRUE);
+    response = get(&fixture, on_layout_json, "/office/layout.json", NULL);
+    body = parse_object(htmx_response_get_content(response), parser);
+    g_assert_true(json_object_has_member(body, "board"));
+    g_assert_nonnull(json_object_get_array_member(
+        json_object_get_object_member(body, "board"), "logins"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -459,6 +779,12 @@ main(int argc, char *argv[])
     g_test_add_func("/web-office/world-route", test_world_route);
     g_test_add_func("/web-office/markup-when-on", test_markup_when_on);
     g_test_add_func("/web-office/nothing-when-off", test_nothing_when_off);
+    g_test_add_func("/web-office/character-route", test_character_route);
+    g_test_add_func("/web-office/character-refused-without-asking",
+                    test_character_refused_without_asking);
+    g_test_add_func("/web-office/characters-in-scene", test_characters_in_scene);
+    g_test_add_func("/web-office/usage-board", test_usage_board);
+    g_test_add_func("/web-office/board-in-poll", test_board_in_poll);
 
     return g_test_run();
 }

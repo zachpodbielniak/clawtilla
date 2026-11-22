@@ -1301,7 +1301,10 @@ from a scan that found nothing (an empty ~issues~).  See
 ~office.snapshot~, ~office.worlds~, ~office.world~, ~office.layout~,
 ~office.file~ and ~office.set~ (since 0.56.0), ~office.custodians~,
 ~office.custodians_install~ and ~office.character~ (since 0.58.0),
-~office.characters~, ~office.character_file~ and ~office.api_key~ (since 0.60.0), and the events
+~office.characters~ (the whole characters: ~agent~, ~sheet~,
+~sheet_sha256~, ~frame~ and ~animations~), ~office.character_file~
+(~agent~, ~path~ → ~path~, ~size~, ~base64~, resolved inside
+=<state_dir>/office/characters/<agent>/=) and ~office.api_key~ (since 0.60.0), and the events
 ~office.presence~ (ephemeral, an edge per participant) and
 ~office.changed~.  Every member is listed in
 [[file:office.org::#wire][office.org]].  With =office.enabled= off,
