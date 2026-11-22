@@ -13,8 +13,9 @@
  * own.  When the office is off the page says how to turn it on, from the
  * daemon's own `why`.
  *
- * With OFFICE=1 the office itself is drawn above the roster
- * (gtk-office-view.c); this file is the part every build has.
+ * The office itself is drawn above the roster by clawtilla-office,
+ * embedded as a child (gtk-office-view.c); this file is the roster and
+ * the settings.
  */
 
 #include "clawt-window-private.h"
@@ -203,10 +204,14 @@ refresh_office_once(ClawtWindow *self)
     fill_controls(self);
     clawt_gtk_clear_list(self->office_list);
     reply = clawt_window_request(self, "office.snapshot", NULL);
-    if (reply == NULL)
+    if (reply == NULL) {
+        clawt_gtk_office_view_set_enabled(self, FALSE);
         return;
+    }
     root = clawt_payload_of(reply);
 
+    /* the drawing runs only while there is an office to draw */
+    clawt_gtk_office_view_set_enabled(self, clawt_json_boolean(root, "enabled", TRUE));
     if (!clawt_json_boolean(root, "enabled", TRUE)) {
         gtk_label_set_text(GTK_LABEL(self->office_status),
                            clawt_json_string(root, "why", "The office is off."));
@@ -261,7 +266,7 @@ clawt_gtk_build_office_page(ClawtWindow *self)
     gtk_widget_set_valign(GTK_WIDGET(self->office_controls), GTK_ALIGN_START);
     gtk_box_append(GTK_BOX(box), GTK_WIDGET(self->office_controls));
 
-    /* the drawn office goes first, when this build has one */
+    /* the drawn office goes first; it says how to build it when it is missing */
     self->office_view_slot = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_append(GTK_BOX(box), self->office_view_slot);
     clawt_gtk_office_view_attach(self);

@@ -656,7 +656,7 @@ struct _ClawtWindow {
     GtkListBox        *office_list;
     GtkListBox        *office_controls;
     GtkWidget         *office_status;
-    GtkWidget         *office_view_slot;  /* where OFFICE=1 embeds the drawing */
+    GtkWidget         *office_view_slot;  /* where clawtilla-office is embedded */
     gpointer           office_view;       /* gtk-office-view.c's state, or NULL */
 
     /* The Grok page (gtk-grok.c). */
@@ -1541,14 +1541,25 @@ void
 clawt_gtk_refresh_office(ClawtWindow *self);
 
 /*
- * The drawn office in the Office page's slot: clawtilla-office embedded
- * (gtk-office-view.c, OFFICE=1), or a line saying how to get it.
+ * The drawn office in the Office page's slot (gtk-office-view.c):
+ * clawtilla-office run as a child that streams frames over a socketpair,
+ * or a line saying how to build it.  The child runs only while the
+ * office is on (set_enabled, from each snapshot) and the slot is mapped
+ * (the Office page is on screen); attach builds the slot once, detach
+ * stops the child, dispose stops it and lets the state go with the
+ * window.
  */
 void
 clawt_gtk_office_view_attach(ClawtWindow *self);
 
 void
+clawt_gtk_office_view_set_enabled(ClawtWindow *self, gboolean enabled);
+
+void
 clawt_gtk_office_view_detach(ClawtWindow *self);
+
+void
+clawt_gtk_office_view_dispose(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_grok(ClawtWindow *self);

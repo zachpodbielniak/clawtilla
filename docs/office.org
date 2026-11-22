@@ -30,7 +30,7 @@ It is a view of what the daemon already knows, and it never invents anything.  E
 | the roster | a who-is-where list on every client's Office page and in ~clawtilla office who~ | always |
 | =clawtilla-office= | the renderer: 2D and 3D, on libregnum | =OFFICE=1= |
 | the lrg Office page | the same renderer inside the libregnum client | =OFFICE=1 LRG_BACKEND=1= |
-| the GTK Office page | =clawtilla-office= embedded as a region of the window | always; draws when =clawtilla-office= is installed |
+| the GTK Office page | =clawtilla-office= run as a child, its frames shown in the window ([[#gtk-embed][the GTK embed]]) | always; needs =clawtilla-office= at run time |
 | the web Office page | its own canvas renderer, the same layout | always |
 
 The roster, the presence and the layout are in every build, because they cost nothing and every client should be able to say who is where.  Only the libregnum renderer needs =OFFICE=1=; the GTK client runs it as a child and the web client draws its own, so neither links libregnum.
@@ -219,6 +219,38 @@ Which zone, pose, prop and emote each activity gets.  Three layers, each replaci
 
 ~office.changed~ is published after ~office.set~.  ~office.presence~ is published whenever what a participant should be drawn doing changes, and never for a repeat: subject the participant's id, details every member of the participant as strings, or ~activity: gone~ when a helper has walked out.  It is ephemeral like ~turn.step~: not replayed and not logged.  Read ~office.snapshot~ on connect.
 
+** The GTK embed
+:PROPERTIES:
+:CUSTOM_ID: gtk-embed
+:END:
+
+The GTK client never links libregnum, so it cannot draw the office itself.  It runs =clawtilla-office= as a child process instead: the child renders offscreen and streams frames over a unix socket, the window shows them and sends the pointer back.  The view is built in every build of the GTK client; only the child needs =make OFFICE=1 LRG_BACKEND=1=.
+
+*** How it works
+
+1. *Finding the renderer.*  =clawt_office_renderer_resolve()= looks beside the running binary (a checkout's =build/release/=), then at the install location (=<prefix>/bin=), then on =PATH=.  When none has it, the Office page shows a note naming all three places and the build command.
+2. *Starting it.*  The window makes a =socketpair()= and hands one end to the child as fd 3:
+
+   #+begin_src bash
+   clawtilla-office --embed=3 --socket /run/user/1000/clawtilla/daemon.sock --width 966 --height 420
+   clawtilla-office --embed=3 --profile workstation --width 966 --height 420
+   #+end_src
+
+   The connection argument reproduces the window's own: ~--socket PATH~ for a local daemon (nothing at all for the default socket), ~--profile NAME~ for a saved connection profile.  A remote daemon reached through a connection that is not saved cannot be followed -- its token would have to go in the argv, which every user on the machine can read -- so the page says to save it under Connections.  =clawt_office_renderer_embed_argv()= builds the line.  The child is given =PR_SET_PDEATHSIG= (=SIGTERM=) in its setup, so it dies with the window however the window ends.
+3. *Frames.*  The socket speaks libregnum's frame protocol, version 1 (libregnum's =docs/modules/remote/frame-protocol.org=): a 16-byte little-endian header (="LFRM"=, version, type, body size), a HELLO, then FRAME messages of RGBA8 pixels, inline or in a sealed memfd passed with =SCM_RIGHTS=.  =ClawtOfficeFrames= in libclawt is the host side, written from the specification rather than linked.  It is watched by a source on the window's main context; each frame becomes a =GdkMemoryTexture= in a =GtkPicture= 420 pixels tall and as wide as the page.  A memfd frame is shown straight from its read-only mapping, so it costs no copy -- which is why an unsealed memfd is refused: a file shrunk under a live mapping would be a =SIGBUS= in the window.
+4. *Input.*  Pointer motion, buttons and the wheel are sent back as POINTER_MOVE, POINTER_BUTTON and SCROLL in frame pixels (the letterbox subtracted, buttons renumbered to raylib's 0 left, 1 right, 2 middle, the wheel's sign flipped to the protocol's "positive away from the user").  When the page changes size a RESIZE follows once the size has held for 200 ms, at the display's scale factor, so the child draws at the size it is shown.  Keys are not forwarded yet; =clawt_office_frames_send_key()= exists for when they are.
+5. *Events.*  The child writes JSON lines on stdout.  ~{"event":"open_agent","agent":"kudu"}~ opens that agent's chat.  Anything else is ignored, and a line longer than 64 KiB is dropped rather than buffered.  Its stderr is kept, last line only, to explain an exit; with =G_MESSAGES_DEBUG=Clawtilla= every line is logged.
+
+*** When it runs
+
+Only while it can be seen: the office is on (the last ~office.snapshot~ said =enabled=) *and* the Office page is on screen.  Leaving the page, turning the office off and closing the window each stop the child -- =SIGTERM=, then =SIGKILL= if it has not gone within three seconds -- and coming back starts a fresh one.  A child is also restarted when the window switches to another daemon, since it was told about the old one.
+
+*** When it stops
+
+If the child exits, is killed or breaks the stream, the slot shows a banner -- /The office stopped drawing: clawtilla-office exited with status 3: <its last line on stderr>/ -- with *Restart*.  Nothing respawns it on its own, so a renderer that cannot start does not become a loop; leaving the page and coming back is a fresh try too.  The window is never affected.
+
+The receiver never accumulates past the message it is assembling: a header announcing more than 256 MiB is refused before its body is read, a frame whose sizes do not add up is refused at its 48-byte fixed part, and an unknown message type's body is read through a scratch buffer and dropped.  Input the socket will not take is queued (it is never dropped) up to 1 MiB, past which the child is declared stuck.
+
 ** Federation
 :PROPERTIES:
 :CUSTOM_ID: federation
@@ -244,4 +276,8 @@ Not built yet.  These invariants exist so it can be built without undoing anythi
 - *Everybody is in the lounge.*  Nobody is in a turn.  Send an agent a message and watch it walk to its desk.
 - *An agent stays at its desk long after it finished.*  A turn edge was never closed -- the agent's process died mid-turn, say.  It decays after =office.stale_seconds= (600 by default).
 - *A pack is missing from ~clawtilla office worlds~.*  It is listed under ~refused~ with the reason: no licence, a path outside the pack, or YAML that does not parse.
+- *The GTK Office page says clawtilla-office was not found.*  It names the three places it looked.  Build it with ~make OFFICE=1 LRG_BACKEND=1~ in the same checkout as =clawtilla-gtk= (it lands beside it), or install it.
+- *The GTK Office page says the office stopped drawing.*  The banner carries the exit status and the child's last line on stderr; run the command from [[#gtk-embed][the GTK embed]] by hand, with =--embed= left off, to see the rest.  /closed its frame socket/ means the child shut the socket and kept running; /does not add up/, /bad magic/ or /not sealed/ mean it is not speaking frame protocol version 1.  *Restart* tries again.
+- *The GTK Office page says a remote daemon can be followed only through a saved connection.*  The window was opened with ~--host~; save the connection (the connection menu), switch to it, and come back.
+- *The drawing is blank but nothing is reported.*  The child is running but has sent no frame yet; =G_MESSAGES_DEBUG=Clawtilla clawtilla-gtk= shows its stderr.
 - *Somebody is "at the lounge instead".*  The pack has no zone with the tag the choreography asked for; ~office.layout~ names the fallback.  Add the zone, or override the rule.

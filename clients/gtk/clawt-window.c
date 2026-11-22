@@ -7427,6 +7427,8 @@ clawt_window_dispose(GObject *object)
 {
     ClawtWindow *self = CLAWT_WINDOW(object);
 
+    /* the office's child dies with the window, not when GTK gets round to it */
+    clawt_gtk_office_view_dispose(self);
     g_clear_handle_id(&self->activity_tick, g_source_remove);
     g_clear_pointer(&self->activity_expanded, g_hash_table_unref);
 
