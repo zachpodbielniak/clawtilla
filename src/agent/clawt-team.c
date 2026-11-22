@@ -312,6 +312,11 @@ static const ClawtTeamTagInfo team_tags[] = {
       "Where ephemeral agents go: the temporary helpers an agent spawns "
       "with clawtilla_ephemeral_spawn and reaps when they are done.",
       TRUE },
+    { CLAWT_TEAM_TAG_OFFICE_CUSTODIAL, "Office custodians",
+      "The team that keeps the office: it is asked for changes to the "
+      "world, makes and imports assets, and makes each new agent's "
+      "character (clawtilla office custodians install).",
+      TRUE },
 };
 
 guint

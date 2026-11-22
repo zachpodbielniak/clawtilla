@@ -2712,6 +2712,15 @@ static const ClawtSchemaEntry schema[] = {
   "pack's own. `clawtilla office choreography` prints the built-in rules,\n"
   "which are also the format. See docs/office-choreography.org.", "0.56.0" },
 
+{ "office.asset_generator", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The connector the office's assets and characters are made with: the\n"
+  "name of one you added (`clawtilla connector add hf --provider\n"
+  "higgsfield`, or a self-hosted ComfyUI). Set, creating an agent while\n"
+  "the office is on files a task to the custodial team (or the chief) to\n"
+  "make its character from its picture, and installing the custodial team\n"
+  "makes every call to it ask you first. Empty, nothing is generated.\n"
+  "See docs/office-custodial-team.org.", "0.58.0" },
+
 { "routines", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing work: a prompt, an agent, and when to run it.\n"
   "\n"
@@ -4928,6 +4937,18 @@ static const ClawtSchemaEntry schema[] = {
   "its parent's. It stays, across restarts, until the agent that spawned\n"
   "it reaps it; only that agent or you can. See docs/ephemeral-agents.org.",
   "0.55.0" },
+
+{ "agents.tools.office", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "Whether this agent may read, change and apply the office's world packs\n"
+  "and import assets into them (clawtilla_office_*).\n"
+  "\n"
+  "On for the chief of staff unless set otherwise, so the chief can run\n"
+  "the office alone; on for the custodial team's agents, which are made\n"
+  "with it; off for every other agent, and never offered to an ephemeral\n"
+  "helper. Writes land only under the state directory, and a change that\n"
+  "would stop a pack loading is refused. See\n"
+  "docs/office-custodial-team.org.", "0.58.0" },
 
 { "agents.tools.schedule", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "true", NULL,

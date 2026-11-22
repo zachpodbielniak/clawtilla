@@ -41,6 +41,7 @@ These are the tags a feature of this clawtilla looks for.  The table is the libr
 | Tag | Unique | What it does |
 |-----+--------+--------------|
 | =ephemeral= | yes | Where ephemeral agents go: the temporary helpers an agent spawns with =clawtilla_ephemeral_spawn= and reaps when they are done.  If no team carries it, clawtilla makes one called /Ephemeral/ the first time a helper is spawned.  See [[file:ephemeral-agents.org][ephemeral-agents.org]]. |
+| =office-custodial= | yes | The team that keeps the office: it is asked for changes to the world, makes and imports assets, and makes each new agent's character.  Never made on its own: =clawtilla office custodians install=, the Office page, or the chief.  See [[file:office-custodial-team.org][office-custodial-team.org]]. |
 
 A tag is added to this table only with the feature that reads it, so nothing here names a feature that does not exist yet.
 

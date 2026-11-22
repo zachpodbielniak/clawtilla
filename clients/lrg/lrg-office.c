@@ -29,6 +29,8 @@ static struct {
 
 static void request_snapshot(ClawtLrgApp *app);
 static void request_worlds(ClawtLrgApp *app);
+static void on_custodians(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                          gpointer user_data);
 
 static void
 on_snapshot(ClawtLrgApp *app, JsonNode *reply, const GError *error, gpointer user_data)
@@ -159,6 +161,53 @@ on_worlds(ClawtLrgApp *app, JsonNode *reply, const GError *error, gpointer user_
                              clawt_ipc_payload_string(root, "current"));
     g_signal_connect(picker, "changed", G_CALLBACK(on_world), app);
     clawt_lrg_take(office.controls, picker);
+    clawt_lrg_request(app, "office.custodians", NULL, CLAWT_LRG_QUIET, on_custodians,
+                      NULL, NULL);
+    clawt_lrg_app_wake(app);
+}
+
+/* ── Who keeps the office ───────────────────────────────────────── */
+
+static void
+on_custodians_installed(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                        gpointer user_data)
+{
+    if (reply != NULL)
+        request_worlds(app);
+}
+
+static void
+on_install_custodians(LrgButton *button, gpointer user_data)
+{
+    clawt_lrg_request(user_data, "office.custodians_install", NULL,
+                      CLAWT_LRG_REQUEST_NONE, on_custodians_installed, NULL, NULL);
+}
+
+/*
+ * The team carrying the office-custodial tag and its generator, or the
+ * button that makes the team -- after the switch and the picker.
+ */
+static void
+on_custodians(ClawtLrgApp *app, JsonNode *reply, const GError *error, gpointer user_data)
+{
+    JsonObject *root = clawt_ipc_reply_object(reply);
+    const gchar *team;
+    const gchar *generator;
+
+    if (root == NULL || office.controls == NULL)
+        return;
+    team = clawt_ipc_payload_string(root, "team");
+    generator = clawt_ipc_payload_string(root, "generator");
+    if (team != NULL) {
+        g_autofree gchar *line = g_strdup_printf(
+            "Custodians: %s; characters with %s", team,
+            generator != NULL && *generator != '\0' ? generator : "nothing yet");
+
+        clawt_lrg_take(office.controls, clawt_lrg_label(line, "muted"));
+    } else {
+        clawt_lrg_take(office.controls, clawt_lrg_button(
+            "Create custodial team", "flat", G_CALLBACK(on_install_custodians), app));
+    }
     clawt_lrg_app_wake(app);
 }
 

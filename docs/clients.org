@@ -3889,6 +3889,7 @@ Since 0.55.0 every client's team editor has a *Tags* field beside the name and d
 Under Work, after Grok, in all three graphical clients (=clients/gtk/gtk-office.c=, =clients/web/web-office.c=, =clients/lrg/lrg-office.c=), since 0.56.0.  From top to bottom:
 
 - *The settings*: a switch for the office (=office.enabled=) and a picker of the world packs ~office.worlds~ lists, both sent with ~office.set~ and applied at once.
+- *Who keeps it* (since 0.58.0): the team tagged ~office-custodial~ and the asset generator, from ~office.custodians~ -- or, when there is none, *Create custodial team*, which sends ~office.custodians_install~.  See [[file:office-custodial-team.org][office-custodial-team.org]].
 - *The office drawn*, in an =OFFICE=1= build; a note saying how to get it otherwise.
 - *Who is where*: one row per participant from ~office.snapshot~, the activity as a badge in =clawt_office_activity_tone()= and the line =clawt_office_roster_line()= writes ("on a call with kudu · since 2m"), with a /remote/ or /helper/ badge for a Grok bot or an ephemeral helper.  Re-read on ~office.presence~ (GTK, lrg) or every three seconds while visible (web).
 

@@ -53,6 +53,7 @@ typedef enum {
     NEEDS_DISPLAY_SPAWN,
     NEEDS_EPHEMERAL_SPAWN,
     NEEDS_EPHEMERAL_PARENT,
+    NEEDS_OFFICE,
     NEEDS_NEVER
 } ToolRequirement;
 
@@ -876,6 +877,64 @@ static const ClawtParamInfo ephemeral_reap_params[] = {
       "false, which refuses and names the open tasks.", FALSE }
 };
 
+static const ClawtParamInfo office_world_params[] = {
+    { "world", "string",
+      "A world's id, from clawtilla_office_worlds. Defaults to the one the "
+      "office is drawn in.", FALSE }
+};
+
+static const ClawtParamInfo office_world_read_params[] = {
+    { "world", "string",
+      "A world's id. Defaults to the one the office is drawn in.", FALSE },
+    { "path", "string",
+      "A file inside the pack: office.yaml (the default), choreography.yaml, "
+      "a map. Text only.", FALSE }
+};
+
+static const ClawtParamInfo office_world_write_params[] = {
+    { "world", "string",
+      "The world's id. A shipped pack is copied under the state directory on "
+      "the first change; a new id makes a new pack (see from).", TRUE },
+    { "path", "string",
+      "The file inside the pack, e.g. office.yaml or choreography.yaml.", TRUE },
+    { "content", "string",
+      "The whole new file. office.yaml and choreography.yaml are checked: a "
+      "write that would stop the pack loading is undone and the reason "
+      "returned.", TRUE },
+    { "from", "string",
+      "For a new world id: the world to copy first, so you change a copy "
+      "rather than start from nothing. The operator's own packs can only "
+      "be changed this way.", FALSE }
+};
+
+static const ClawtParamInfo office_world_apply_params[] = {
+    { "world", "string", "The world to draw the office in.", TRUE }
+};
+
+static const ClawtParamInfo office_asset_import_params[] = {
+    { "world", "string",
+      "The world the asset is for. Give this or character, not both.", FALSE },
+    { "character", "string",
+      "The agent whose character this file is part of. Give this or world.",
+      FALSE },
+    { "source", "string",
+      "The file to import, inside your own workspace.", TRUE },
+    { "path", "string",
+      "Where it goes inside the pack, e.g. tiles/desk.png or "
+      "sprites/walk.png.", TRUE },
+    { "license", "string",
+      "Its licence when it is not the pack's own, e.g. CC0-1.0.", FALSE },
+    { "provenance", "string",
+      "Where it came from: a URL and author, or the generator, its model "
+      "and its terms. Required.", TRUE }
+};
+
+static const ClawtParamInfo office_custodians_params[] = {
+    { "team", "string",
+      "The team's id; it may be named anything, it is found by its "
+      "office-custodial tag. Defaults to facilities.", FALSE }
+};
+
 /* ── The tools ───────────────────────────────────────────────────── */
 
 #define TOOL(name_, desc_, req_, params_, action_) \
@@ -926,6 +985,46 @@ static const ToolDefinition tools[] = {
          "stopped and its workspace removed. Refused while it has work "
          "open unless force is true. Only you, its parent, can reap it.",
          NEEDS_EPHEMERAL_PARENT, ephemeral_reap_params, CLAWT_ACTION_FLEET_ADMIN),
+
+    TOOL("clawtilla_office_worlds",
+         "The office's world packs: which exist, which the office is drawn "
+         "in, whether each was refused and why, and which were written here "
+         "rather than shipped.",
+         NEEDS_OFFICE, no_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_office_world_read",
+         "Read one file of a world pack -- its office.yaml (zones, seats, "
+         "assets), choreography.yaml or a map -- with the loader's warnings.",
+         NEEDS_OFFICE, office_world_read_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_office_world_write",
+         "Write one file of a world pack. Read it first. A change to a "
+         "shipped pack is made to a copy, which the office then uses; a "
+         "manifest or choreography that would not load is refused and "
+         "undone.",
+         NEEDS_OFFICE, office_world_write_params, CLAWT_ACTION_WRITE),
+
+    TOOL("clawtilla_office_world_apply",
+         "Draw the office in another world, for everybody. Only when the "
+         "operator or the chief asked for it.",
+         NEEDS_OFFICE, office_world_apply_params, CLAWT_ACTION_WRITE),
+
+    TOOL("clawtilla_office_preview",
+         "Who would sit where, and in what pose, in a world as it stands -- "
+         "check a change with this before reporting it done.",
+         NEEDS_OFFICE, office_world_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_office_asset_import",
+         "Copy a file from your workspace into a world pack or an agent's "
+         "character, recording its checksum, licence and provenance. Every "
+         "asset needs its provenance.",
+         NEEDS_OFFICE, office_asset_import_params, CLAWT_ACTION_WRITE),
+
+    TOOL("clawtilla_office_custodians_install",
+         "Install the office's custodial team: a lead, an asset steward and a "
+         "set designer, on a team tagged office-custodial. Needs "
+         "tools.manage_fleet too. Refused when the office already has one.",
+         NEEDS_OFFICE, office_custodians_params, CLAWT_ACTION_FLEET_ADMIN),
 
     TOOL("clawtilla_get_agent",
          "Look up one agent: its description, state and what it can do.",
@@ -1598,6 +1697,9 @@ struct _ClawtMcpTools {
     GDestroyNotify          grok_destroy;
 
     ClawtMcpEphemeralHooks  ephemeral;
+    ClawtMcpOfficeHooks     office;
+    gpointer                office_data;
+    GDestroyNotify          office_destroy;
     gpointer                ephemeral_data;
     GDestroyNotify          ephemeral_destroy;
 
@@ -1751,6 +1853,26 @@ clawt_mcp_tools_set_grok_hooks(ClawtMcpTools           *self,
 
     self->grok_data = user_data;
     self->grok_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_office_hooks(ClawtMcpTools             *self,
+                                 const ClawtMcpOfficeHooks *hooks,
+                                 gpointer                   user_data,
+                                 GDestroyNotify             destroy)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    if (self->office_destroy != NULL && self->office_data != NULL)
+        self->office_destroy(self->office_data);
+
+    if (hooks != NULL)
+        self->office = *hooks;
+    else
+        memset(&self->office, 0, sizeof(self->office));
+
+    self->office_data = user_data;
+    self->office_destroy = destroy;
 }
 
 void
@@ -2963,6 +3085,19 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
                                             "tools.ephemeral") &&
             (self->ephemeral.has_children == NULL ||
              !self->ephemeral.has_children(agent_id, self->ephemeral_data)))
+            return FALSE;
+        break;
+
+    case NEEDS_OFFICE:
+        /*
+         * Asked of the agent's own config, so the chief's role default
+         * applies; and never a helper's, whose copy would inherit it.
+         */
+        if (self->office.call == NULL)
+            return FALSE;
+        if (clawt_agent_config_is_ephemeral(clawt_agent_get_config(agent)) ||
+            !clawt_agent_config_get_boolean(clawt_agent_get_config(agent),
+                                            "tools.office"))
             return FALSE;
         break;
 
@@ -10642,6 +10777,9 @@ tools_call(ClawtMcpTools *self,
     else if (g_strcmp0(tool_name, "clawtilla_ephemeral_reap") == 0)
         text = self->ephemeral.reap(agent_id, arguments, &is_error,
                                     self->ephemeral_data);
+    else if (g_str_has_prefix(tool_name, "clawtilla_office_"))
+        text = self->office.call(agent_id, tool_name, arguments, &is_error,
+                                 self->office_data);
     else if (g_strcmp0(tool_name, "clawtilla_get_agent") == 0)
         text = tool_get_agent(self, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_message_agent") == 0 ||
@@ -10940,6 +11078,11 @@ clawt_mcp_tools_dispose(GObject *object)
         self->ephemeral_destroy(self->ephemeral_data);
         self->ephemeral_destroy = NULL;
         self->ephemeral_data = NULL;
+    }
+    if (self->office_destroy != NULL && self->office_data != NULL) {
+        self->office_destroy(self->office_data);
+        self->office_destroy = NULL;
+        self->office_data = NULL;
     }
     if (self->grok_destroy != NULL && self->grok_data != NULL) {
         self->grok_destroy(self->grok_data);

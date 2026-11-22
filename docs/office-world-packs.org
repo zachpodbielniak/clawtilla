@@ -27,7 +27,7 @@ my-office/
 └── office.rlevel      a libregnum level, for the 3D view
 #+end_example
 
-The pack's id is its directory name.  Put it under one of the world directories: =office.world_dirs=, =<state_dir>/office/worlds/=, or the shipped =data/office/worlds/=, searched in that order.  A pack id found twice keeps the first, so a copy of =modern-office= in your own directory replaces the shipped one.
+The pack's id is its directory name.  Agents with the office tools (the chief, the custodial team) write only under =<state_dir>/office/worlds/=: a shipped pack is copied there on its first change, and one of yours is never written -- they make a new world from it instead; see [[file:office-custodial-team.org][office-custodial-team.org]].  Put it under one of the world directories: =office.world_dirs=, =<state_dir>/office/worlds/=, or the shipped =data/office/worlds/=, searched in that order.  A pack id found twice keeps the first, so a copy of =modern-office= in your own directory replaces the shipped one.
 
 ** office.yaml
 :PROPERTIES:

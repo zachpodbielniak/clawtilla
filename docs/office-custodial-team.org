@@ -1,0 +1,116 @@
+#+title: The office's custodial team
+#+description: The agents that keep the office -- its worlds, assets and characters -- and the tools they use
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-11-21 Sat]
+#+updated: [2026-11-21 Sat]
+#+version: 0.1.0
+
+* The custodial team
+:PROPERTIES:
+:CUSTOM_ID: custodial-team
+:END:
+
+The office is data -- world packs, choreography, characters -- and data can be kept by agents.  The custodial team is a team that does that: you ask it for a war room, a winter theme, or a character for the agent you just made, and it changes the packs, checks the result and tells you.  It is optional, never made without being asked, and the chief can do all of it alone.  The office itself is described in [[file:office.org][office.org]]; packs in [[file:office-world-packs.org][office-world-packs.org]].
+
+** Who is on it
+:PROPERTIES:
+:CUSTOM_ID: members
+:END:
+
+| Agent | Role | Does |
+|-------+------+------|
+| ~<team>-lead~ | lead | takes requests from you and the chief, hands each to the member whose work it is, checks the result with ~clawtilla_office_preview~ |
+| ~<team>-assets~ | member | the asset steward: makes and imports tiles, props and characters, with the configured generator, and records where every file came from |
+| ~<team>-designer~ | member | the set designer: edits ~office.yaml~ (zones, tags, seats), ~choreography.yaml~ and the maps |
+
+Each starts with that mission in its ~SOUL.org~, ~tools.office~ on, and the team's lead able to assign to the other two.  Change any of it afterwards like any agent.
+
+** The team is found by its tag, not its name
+:PROPERTIES:
+:CUSTOM_ID: tag
+:END:
+
+The custodial team is whichever team carries the ~office-custodial~ tag (see [[file:team-tags.org][team-tags.org]]).  Call it Facilities, Groundskeepers or the Town Council: rename it, or tag a team of your own instead, and the office still finds it.  The tag is unique -- a second team carrying it is a fleet warning, and the first in the team list wins.
+
+** Installing it
+:PROPERTIES:
+:CUSTOM_ID: install
+:END:
+
+Three ways, which all do the same thing (~clawt_daemon_office_custodians_install()~):
+
+#+begin_src bash
+clawtilla office custodians install                 # a team called facilities
+clawtilla office custodians install --team town-council
+#+end_src
+
+- in any client: the Office page, *Create custodial team*;
+- the chief, with ~clawtilla_office_custodians_install~ -- which also needs ~tools.manage_fleet~, because it creates agents.
+
+It is refused when a team already carries the tag (it names that team), and when the team id or any of the three agent ids is taken -- checked before anything is written, so a refusal leaves nothing half made.  The three agents are started at once.
+
+When ~office.asset_generator~ is set at install time, the asset steward is given an action rule for it, ~mcp__clawtilla-<generator>__*=ask~: every call to the generator becomes a decision card you approve, because a generator that charges must not spend because a model decided to.  Loosen it in the steward's ~policy.rules~ if you want; see [[file:security.org::*Action policy][Action policy]].
+
+** The office tools
+:PROPERTIES:
+:CUSTOM_ID: tools
+:END:
+
+Offered to any agent with ~tools.office~ -- on for the chief of staff unless set otherwise, on for the custodians, off for everybody else, never to an ephemeral helper:
+
+| Tool | Does |
+|------+------|
+| ~clawtilla_office_worlds~ | lists the packs: which is in use, which were refused and why, which were written here |
+| ~clawtilla_office_world_read~ | reads one text file of a pack, with the loader's warnings |
+| ~clawtilla_office_world_write~ | writes one file of a pack (see below) |
+| ~clawtilla_office_world_apply~ | draws the office in another world, for everybody |
+| ~clawtilla_office_preview~ | who would sit where, in what pose, in a world as it stands |
+| ~clawtilla_office_asset_import~ | copies a file from the agent's workspace into a pack or a character, with its checksum, licence and provenance |
+| ~clawtilla_office_custodians_install~ | installs this team (also needs ~tools.manage_fleet~) |
+
+How writes stay safe (~src/office/clawt-office-pack.c~, so every caller gets the same rules):
+
+- *Only under the state directory.*  A change to a shipped pack is made to a copy under ~<state_dir>/office/worlds/<id>/~, which the office then uses for that id (the state directory is searched before the shipped one).  A pack in your own =office.world_dirs= is never written: it is searched first, so a copy would never be drawn, and the write is refused with the way that works -- a new world copied from it (~from~) and applied.
+- *Only inside the pack.*  A path is relative, with no ~..~ and no hidden names, and the directory it lands in is resolved through any symbolic link and must still be inside the pack.
+- *Never a pack that will not load.*  A write to ~office.yaml~ or ~choreography.yaml~ is checked by loading the pack; a refusal puts the old file back and returns the loader's reason.
+- *An asset comes from the agent's own workspace*, and arrives with its provenance or not at all: the sha256 goes into the manifest's ~assets~, so a pack synced to another fleet can be verified (~clawt_office_world_verify_assets()~).
+
+** Characters from an agent's picture
+:PROPERTIES:
+:CUSTOM_ID: characters
+:END:
+
+With the office on and =office.asset_generator= naming a generator, creating an agent files a task: *Office character for <agent>*, to the custodial lead -- or, with no custodial team, to the chief when its ~tools.office~ is on.  Nothing is generated without that task, nothing about the new agent waits on it, and an ephemeral helper gets none.
+
+The daemon puts the reference picture where the maker can read it, in its own workspace under ~office-characters/<agent>/~: the agent's =agents.avatar= when it has one, otherwise its generated face as an SVG -- the face every client already draws.  The task asks for a turnaround, short clips per action (walk, idle, sit and type, phone, present) and a sprite sheet cut from them, each imported with ~clawtilla_office_asset_import~ under ~character~.  They land in ~<state_dir>/office/characters/<agent>/~ beside a ~character.yaml~ listing each file's checksum and provenance.  Until a sprite sheet is there the agent is drawn with the default body and its own face.
+
+To ask again (a new picture, a better generator):
+
+#+begin_src bash
+clawtilla office character <agent>
+#+end_src
+
+Higgsfield makes images and video and no 3D models, so a 3D office draws every character as the shared body wearing its generated face, whatever the generator.
+
+** Generators
+:PROPERTIES:
+:CUSTOM_ID: generators
+:END:
+
+=office.asset_generator= is the name of a connector the asset steward holds:
+
+- [[file:higgsfield.org][Higgsfield]] -- hosted, paid per call, images and video, closed;
+- a self-hosted ComfyUI behind an MCP server, added as any connector (~--provider remote --url ...~ or ~--provider api-key --command ...~) -- the FOSS route, with whatever open models you run (a pixel-art model for sprites, TRELLIS for meshes), and the licence of each model is yours to check.
+
+Grant the connector to the asset steward (~--scope selected --agents facilities-assets~) and to nobody who has no use for it.
+
+** Troubleshooting
+:PROPERTIES:
+:CUSTOM_ID: troubleshooting
+:END:
+
+- /No character task appears/: the office is off, =office.asset_generator= is empty, or nobody keeps the office (no custodial team and the chief's ~tools.office~ off).  ~clawtilla office character <agent>~ says which.
+- /A write is refused/: read the message -- it is the loader's reason the pack would not load, and the pack is as it was.
+- /The steward cannot see the picture/: it is in the *maker's* workspace; a lead that hands the task on should pass the path, or the steward reads it from the lead's message.
+- /Every generator call waits on me/: that is the action rule the install wrote; see [[#install][Installing it]].

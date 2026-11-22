@@ -128,6 +128,58 @@ settings_card(ClawtWebApp *app)
     return HTMX_ELEMENT(g_steal_pointer(&card));
 }
 
+/*
+ * Who keeps the office: the team carrying the office-custodial tag and
+ * its generator, or a form whose one button makes the team.
+ */
+static HtmxElement *
+custodians_card(ClawtWebApp *app)
+{
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "office.custodians", NULL);
+    JsonObject *root = clawt_web_root(reply);
+    const gchar *team = clawt_web_member(root, "team", NULL);
+    const gchar *generator = clawt_web_member(root, "generator", "");
+    g_autoptr(HtmxDiv) card = clawt_web_card("Custodial team", NULL);
+    HtmxElement *body = clawt_web_card_body(card);
+
+    if (team != NULL) {
+        g_autofree gchar *line = g_strdup_printf(
+            "%s keeps the office; characters are made with %s.", team,
+            *generator != '\0' ? generator : "nothing yet (office.asset_generator)");
+
+        clawt_web_add(body, clawt_web_text(line, "muted"));
+    } else {
+        g_autoptr(HtmxForm) form = clawt_web_form("/office/custodians");
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+        g_autoptr(HtmxButton) install = clawt_web_button("Create custodial team",
+                                                         "primary");
+
+        clawt_web_add(body, clawt_web_text(
+            "Nobody keeps the office: a lead, an asset steward and a set designer "
+            "would take your requests for it.", "muted"));
+        htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+        htmx_element_set_attribute(HTMX_ELEMENT(install), "type", "submit");
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(install));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+    }
+    return HTMX_ELEMENT(g_steal_pointer(&card));
+}
+
+static HtmxResponse *
+on_custodians(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "office.custodians_install", NULL);
+
+    (void)params;
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, NULL, CLAWT_PAGE_OFFICE,
+                                    clawt_web_app_last_error(app));
+    return clawt_web_after_action(app, request, NULL, CLAWT_PAGE_OFFICE,
+                                  "The custodial team is installed.");
+}
+
 static HtmxResponse *
 on_set(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -159,6 +211,7 @@ clawt_web_office_body(ClawtWebApp *app, const gchar *agent_id)
     htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
     clawt_web_add(pad, clawt_web_section_title("Office"));
     htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(settings_card(app)));
+    htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(custodians_card(app)));
     clawt_web_office_view_add(app, HTMX_ELEMENT(pad));
     clawt_web_add(pad, clawt_web_text("Who is where", "limits-title"));
     htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(roster_panel(app)));
@@ -181,5 +234,6 @@ clawt_web_register_office(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_get(router, "/f/office-roster", on_roster, app);
     htmx_router_post(router, "/office/set", on_set, app);
+    htmx_router_post(router, "/office/custodians", on_custodians, app);
     clawt_web_office_view_register(router, app);
 }

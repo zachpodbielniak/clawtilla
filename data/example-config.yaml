@@ -2484,6 +2484,15 @@ office:
   # which are also the format. See docs/office-choreography.org.
   choreography: null
 
+  # The connector the office's assets and characters are made with: the
+  # name of one you added (`clawtilla connector add hf --provider
+  # higgsfield`, or a self-hosted ComfyUI). Set, creating an agent while
+  # the office is on files a task to the custodial team (or the chief) to
+  # make its character from its picture, and installing the custodial team
+  # makes every call to it ask you first. Empty, nothing is generated.
+  # See docs/office-custodial-team.org.
+  asset_generator: null
+
 # Standing work: a prompt, an agent, and when to run it.
 #
 # A routine is the thing you would otherwise remember to ask for every
@@ -4511,6 +4520,17 @@ agents:
       # it reaps it; only that agent or you can. See docs/ephemeral-agents.org.
       # DANGEROUS: read docs/security.org before enabling this.
       ephemeral: false
+
+      # Whether this agent may read, change and apply the office's world packs
+      # and import assets into them (clawtilla_office_*).
+      #
+      # On for the chief of staff unless set otherwise, so the chief can run
+      # the office alone; on for the custodial team's agents, which are made
+      # with it; off for every other agent, and never offered to an ephemeral
+      # helper. Writes land only under the state directory, and a change that
+      # would stop a pack loading is refused. See
+      # docs/office-custodial-team.org.
+      office: false
 
       # Whether this agent may schedule its own routines.
       #

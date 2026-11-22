@@ -1408,6 +1408,21 @@ GStrv    clawt_daemon_office_world_dirs(ClawtDaemon *self);
 void     clawt_daemon_office_setup(ClawtDaemon *self);
 void     clawt_daemon_office_teardown(ClawtDaemon *self);
 void     clawt_daemon_office_reconfigure(ClawtDaemon *self);
+JsonNode *clawt_daemon_office_layout(ClawtDaemon *self, const gchar *world_id,
+                                     GError **error);
+
+/* The custodial team and the office tools (daemon-office-custodial.c, 0.58.0). */
+void     clawt_daemon_office_custodial_setup(ClawtDaemon *self);
+gchar   *clawt_daemon_office_custodial_team(ClawtDaemon *self);
+gchar   *clawt_daemon_office_characters_dir(ClawtDaemon *self);
+gboolean clawt_daemon_office_custodians_install(ClawtDaemon  *self,
+                                                const gchar  *team,
+                                                gboolean      start,
+                                                GPtrArray    *out_created,
+                                                GError      **error);
+gchar   *clawt_daemon_office_commission_character(ClawtDaemon  *self,
+                                                  const gchar  *agent_id,
+                                                  GError      **error);
 
 /* Ephemeral agents (daemon-ephemeral.c, 0.55.0). */
 JsonNode *clawt_daemon_handle_ephemeral(ClawtDaemon *self,

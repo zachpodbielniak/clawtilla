@@ -4792,7 +4792,8 @@ cmd_office(int argc, char *argv[])
     guint i;
 
     if (verb == NULL || g_strcmp0(verb, "-h") == 0 || g_strcmp0(verb, "--help") == 0) {
-        g_print("Usage: clawtilla office <who|worlds|layout|choreography|on|off|use|renderer|open>\n"
+        g_print("Usage: clawtilla office <who|worlds|layout|choreography|on|off|use|renderer|\n"
+                "                        custodians|character|open>\n"
                 "\n"
                 "The office draws the fleet as people in a building: at a desk\n"
                 "while a turn runs, on the phone while two agents message, round a\n"
@@ -4805,6 +4806,12 @@ cmd_office(int argc, char *argv[])
                 "  on, off       turn the office on or off, at once\n"
                 "  use WORLD     draw this world pack\n"
                 "  renderer R    auto, 2d or 3d\n"
+                "  custodians    who keeps the office, and the asset generator\n"
+                "  custodians install [--team NAME]\n"
+                "                make the custodial team: a lead, an asset steward\n"
+                "                and a set designer, tagged office-custodial\n"
+                "  character AGENT\n"
+                "                ask the custodians for AGENT's character again\n"
                 "  open          start clawtilla-office (built with OFFICE=1)\n"
                 "\n"
                 "Examples:\n"
@@ -4812,7 +4819,9 @@ cmd_office(int argc, char *argv[])
                 "  clawtilla office use cozy-town\n"
                 "  clawtilla office who\n"
                 "  clawtilla office worlds --json\n"
-                "  clawtilla office choreography > my-rules.yaml\n");
+                "  clawtilla office choreography > my-rules.yaml\n"
+                "  clawtilla office custodians install --team groundskeepers\n"
+                "  clawtilla office character wren\n");
         return verb == NULL ? EXIT_FAILURE : EXIT_SUCCESS;
     }
 
@@ -4877,6 +4886,64 @@ cmd_office(int argc, char *argv[])
                 json_object_get_boolean_member_with_default(answer, "enabled", FALSE)
                     ? "on" : "off",
                 member_or(answer, "world", "?"), member_or(answer, "renderer", "auto"));
+        return EXIT_SUCCESS;
+    }
+
+    /* the custodial team, and a character asked for again */
+    if (g_strcmp0(verb, "custodians") == 0 || g_strcmp0(verb, "character") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        gboolean install = g_strcmp0(verb, "custodians") == 0 && argc > 3 &&
+                           g_strcmp0(argv[3], "install") == 0;
+        gboolean character = g_strcmp0(verb, "character") == 0;
+        JsonObject *answer;
+        gint k;
+
+        if (character && (argc < 4 || argv[3][0] == '-')) {
+            g_printerr("Usage: clawtilla office character <agent>\n");
+            return EXIT_FAILURE;
+        }
+        json_builder_begin_object(builder);
+        if (character) {
+            json_builder_set_member_name(builder, "agent");
+            json_builder_add_string_value(builder, argv[3]);
+        }
+        for (k = 4; install && k + 1 < argc; k++)
+            if (g_strcmp0(argv[k], "--team") == 0) {
+                json_builder_set_member_name(builder, "team");
+                json_builder_add_string_value(builder, argv[++k]);
+            }
+        json_builder_end_object(builder);
+
+        client = connect_to_daemon();
+        if (client == NULL)
+            return EXIT_FAILURE;
+        reply = call(client, character ? "office.character"
+                             : install ? "office.custodians_install" : "office.custodians",
+                     json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        answer = json_node_get_object(reply);
+        if (json) {
+            g_autofree gchar *text = json_to_string(reply, TRUE);
+
+            g_print("%s\n", text);
+        } else if (character) {
+            g_print("Asked for %s's character: task %s.\n", argv[3],
+                    member_or(answer, "task", "?"));
+        } else if (install) {
+            JsonArray *made = json_object_get_array_member(answer, "agents");
+
+            g_print("Installed the custodial team %s:", member_or(answer, "team", "?"));
+            for (i = 0; made != NULL && i < json_array_get_length(made); i++)
+                g_print(" %s", json_array_get_string_element(made, i));
+            g_print(".\n");
+        } else {
+            const gchar *generator = member_or(answer, "generator", "");
+
+            g_print("Custodial team: %s\nAsset generator: %s\n",
+                    member_or(answer, "team", "none (clawtilla office custodians install)"),
+                    *generator != '\0' ? generator : "none (office.asset_generator)");
+        }
         return EXIT_SUCCESS;
     }
 

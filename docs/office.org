@@ -108,6 +108,29 @@ Packs are looked for, in order, in =office.world_dirs=, then =<state_dir>/office
 
 How to write one -- the manifest, the zone tags, a 2D map in Tiled, a 3D level in lrgeditor, assets and provenance -- is in [[file:office-world-packs.org][office-world-packs.org]].
 
+** Who keeps it
+:PROPERTIES:
+:CUSTOM_ID: custodians
+:END:
+
+Agents can keep the office for you.  The chief has the office tools by role (~tools.office~): it can list, read, change, preview and apply world packs and import assets.  A *custodial team* -- a lead, an asset steward and a set designer, on a team tagged ~office-custodial~ and named whatever you like -- takes requests for the office and makes each new agent's character from its picture with the generator you configure (=office.asset_generator=).  Nothing is installed or generated unasked: ~clawtilla office custodians install~, *Create custodial team* on the Office page, or the chief's ~clawtilla_office_custodians_install~.  See [[file:office-custodial-team.org][office-custodial-team.org]].
+
+*** The chief bootstraps the office in one conversation
+
+#+begin_example
+you:   Turn the office on and make it feel like a winter lodge.
+chief: (clawtilla_office_worlds) The office uses modern-office.  I'll make a
+       new world from cozy-town called winter-lodge ...
+       (clawtilla_office_world_write world=winter-lodge from=cozy-town
+        path=choreography.yaml: idle -> breakroom with coffee)
+       (clawtilla_office_preview world=winter-lodge) everybody seated; nobody
+       on a fallback.  Shall I apply it?
+you:   Yes.
+chief: (clawtilla_office_world_apply world=winter-lodge) Done.
+#+end_example
+
+Turning the office on is yours (~clawtilla office on~); everything after it can be the chief's, or the custodial team's once there is one.
+
 ** Choreography
 :PROPERTIES:
 :CUSTOM_ID: choreography
@@ -128,6 +151,9 @@ Which zone, pose, prop and emote each activity gets.  Three layers, each replaci
 | ~office.layout~ (~world~ optional) | the director's ~placements~ (each ~id~, ~activity~, ~zone~, ~zone_tag~, ~seat~, ~x~/~y~, ~x3~/~z3~, ~pose~, ~prop~, ~emote~, ~facing~, ~fallback~) plus ~participants~ and ~now~ |
 | ~office.file~ (~world~, ~path~) | one file of a pack as ~base64~, at most 32 MiB, only inside the pack -- for a renderer not on the daemon's machine |
 | ~office.set~ (~enabled~, ~world~, ~renderer~, each optional) | writes them to clawtilla.yaml and applies them at once; answers the new ~enabled~, ~world~, ~renderer~; a world that does not exist is refused |
+| ~office.custodians~ | ~team~ (the team tagged ~office-custodial~, or null) and ~generator~ (=office.asset_generator=) -- whether a client offers the install (since 0.58.0) |
+| ~office.custodians_install~ (~team~, ~start~ optional) | makes the custodial team and its three agents, started unless ~start: false~; answers ~team~ and ~agents~; refused when a team already carries the tag |
+| ~office.character~ (~agent~) | files the task that makes ~agent~'s character; answers its ~task~ id; refused with what is missing when there is no generator or nobody keeps the office |
 
 ~office.changed~ is published after ~office.set~.  ~office.presence~ is published whenever what a participant should be drawn doing changes, and never for a repeat: subject the participant's id, details every member of the participant as strings, or ~activity: gone~ when a helper has walked out.  It is ephemeral like ~turn.step~: not replayed and not logged.  Read ~office.snapshot~ on connect.
 

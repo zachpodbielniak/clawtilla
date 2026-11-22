@@ -8289,6 +8289,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_daemon_notices_setup(self);
     /* the ephemeral tools' hooks and the reap-reminder sweep */
     clawt_daemon_ephemeral_setup(self);
+    clawt_daemon_office_custodial_setup(self);
     /* the office, when office.enabled: after the agents and the bus exist */
     clawt_daemon_office_setup(self);
 

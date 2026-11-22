@@ -1054,11 +1054,13 @@ clawt_agent_config_get_string(ClawtAgentConfig *self, const gchar *key)
     }
 
     /*
-     * The chief of staff may spawn ephemeral agents unless told otherwise
-     * (0.55.0); the schema's default, false, is everybody else's.  Both
+     * The chief of staff may spawn ephemeral agents (0.55.0) and keep the
+     * office (0.58.0) unless told otherwise; the schema's default, false,
+     * is everybody else's.  Both
      * spellings of the chief count, as routing_mode_role_default() does.
      */
-    if (g_strcmp0(key, "tools.ephemeral") == 0) {
+    if (g_strcmp0(key, "tools.ephemeral") == 0 ||
+        g_strcmp0(key, "tools.office") == 0) {
         gboolean chief = clawt_agent_config_get_boolean(self, "chief_of_staff");
 
         if (!chief && self->config != NULL)

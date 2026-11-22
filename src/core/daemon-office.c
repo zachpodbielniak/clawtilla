@@ -283,6 +283,28 @@ on_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
         else
             clawt_office_presence_remove(self->office, subject);
         sync_roster(self);
+    } else if (g_strcmp0(seen, "agent.created") == 0) {
+        ClawtAgentConfig *made = clawt_config_get_agent(self->config, subject);
+        const gchar *generator = clawt_config_get_string(self->config,
+                                                         "office.asset_generator");
+
+        sync_roster(self);
+        /*
+         * A character for the newcomer, filed as a task when somebody
+         * keeps the office and a generator is configured.  Never for a
+         * helper (it is gone soon), and a refusal is only logged: the
+         * agent exists either way, drawn with its own face.
+         */
+        if (made != NULL && !clawt_agent_config_is_ephemeral(made) &&
+            generator != NULL && *generator != '\0') {
+            g_autoptr(GError) why = NULL;
+            g_autofree gchar *task = clawt_daemon_office_commission_character(self, subject,
+                                                                              &why);
+
+            if (task == NULL)
+                g_message("office: no character commissioned for %s: %s", subject,
+                          why->message);
+        }
     } else if (g_str_has_prefix(seen, "agent.") || g_strcmp0(seen, "team.changed") == 0) {
         sync_roster(self);
     } else {
@@ -467,6 +489,48 @@ find_world(ClawtDaemon *self, const gchar *id, GError **error)
     return NULL;
 }
 
+/*
+ * Who sits where, for every renderer at once: the director's answer over
+ * this moment's presence and the configured (or named) world.  One
+ * function for office.layout and the custodians' preview, so the preview
+ * is the layout and not a description of it.
+ */
+JsonNode *
+clawt_daemon_office_layout(ClawtDaemon *self, const gchar *world_id, GError **error)
+{
+    g_autoptr(ClawtOfficeWorld) world = NULL;
+    g_autoptr(ClawtOfficeChoreography) rules = NULL;
+    g_autoptr(JsonNode) snapshot = NULL;
+    g_autofree gchar *mine_path = NULL;
+    g_autofree gchar *mine = NULL;
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+    JsonNode *layout;
+
+    if (self->office == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                            "the office is off");
+        return NULL;
+    }
+    world = find_world(self, world_id, error);
+    if (world == NULL)
+        return NULL;
+    rules = clawt_office_choreography_new_default();
+    clawt_office_choreography_override(rules,
+        clawt_office_world_get_choreography_yaml(world), NULL);
+    mine_path = clawt_config_get_path_value(self->config, "office.choreography");
+    if (mine_path != NULL && g_file_get_contents(mine_path, &mine, NULL, NULL))
+        clawt_office_choreography_override(rules, mine, NULL);
+
+    snapshot = clawt_office_presence_snapshot(self->office, now);
+    layout = clawt_office_direct(world, rules, json_node_get_object(snapshot));
+    json_object_set_int_member(json_node_get_object(layout), "now", now);
+    /* the participants too, so one request draws the whole floor */
+    json_object_set_member(json_node_get_object(layout), "participants",
+        json_node_copy(json_object_get_member(json_node_get_object(snapshot),
+                                              "participants")));
+    return layout;
+}
+
 static void
 add_off(JsonBuilder *builder)
 {
@@ -565,11 +629,6 @@ clawt_daemon_handle_office(ClawtDaemon *self,
      * over this moment's presence and the configured (or named) world.
      */
     if (g_strcmp0(kind, "office.layout") == 0) {
-        g_autoptr(ClawtOfficeWorld) world = NULL;
-        g_autoptr(ClawtOfficeChoreography) rules = NULL;
-        g_autoptr(JsonNode) snapshot = NULL;
-        g_autofree gchar *mine_path = NULL;
-        g_autofree gchar *mine = NULL;
         JsonNode *layout;
 
         if (self->office == NULL) {
@@ -578,23 +637,10 @@ clawt_daemon_handle_office(ClawtDaemon *self,
             json_builder_end_object(builder);
             return clawt_ipc_response_new(request, json_builder_get_root(builder));
         }
-        world = find_world(self, clawt_ipc_payload_string(payload, "world"), &error);
-        if (world == NULL)
+        layout = clawt_daemon_office_layout(self, clawt_ipc_payload_string(payload, "world"),
+                                            &error);
+        if (layout == NULL)
             return clawt_ipc_error_new(request, error->code, error->message);
-        rules = clawt_office_choreography_new_default();
-        clawt_office_choreography_override(rules,
-            clawt_office_world_get_choreography_yaml(world), NULL);
-        mine_path = clawt_config_get_path_value(self->config, "office.choreography");
-        if (mine_path != NULL && g_file_get_contents(mine_path, &mine, NULL, NULL))
-            clawt_office_choreography_override(rules, mine, NULL);
-
-        snapshot = clawt_office_presence_snapshot(self->office, now);
-        layout = clawt_office_direct(world, rules, json_node_get_object(snapshot));
-        json_object_set_int_member(json_node_get_object(layout), "now", now);
-        /* the participants too, so one request draws the whole floor */
-        json_object_set_member(json_node_get_object(layout), "participants",
-            json_node_copy(json_object_get_member(json_node_get_object(snapshot),
-                                                  "participants")));
         return clawt_ipc_response_new(request, layout);
     }
 
@@ -719,6 +765,63 @@ clawt_daemon_handle_office(ClawtDaemon *self,
         json_builder_set_member_name(builder, "renderer");
         json_builder_add_string_value(builder,
             clawt_config_get_string(self->config, "office.renderer"));
+        json_builder_end_object(builder);
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /*
+     * The custodial team, from any client or the CLI: the same install
+     * the chief's tool runs, by the operator, who needs no permission.
+     */
+    if (g_strcmp0(kind, "office.custodians_install") == 0) {
+        g_autoptr(GPtrArray) created = g_ptr_array_new_with_free_func(g_free);
+        g_autofree gchar *team = NULL;
+        guint i;
+
+        if (!clawt_daemon_office_custodians_install(self,
+                clawt_ipc_payload_string(payload, "team"),
+                clawt_ipc_payload_boolean(payload, "start", TRUE), created, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+        team = clawt_daemon_office_custodial_team(self);
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "team");
+        json_builder_add_string_value(builder, team);
+        json_builder_set_member_name(builder, "agents");
+        json_builder_begin_array(builder);
+        for (i = 0; i < created->len; i++)
+            json_builder_add_string_value(builder, g_ptr_array_index(created, i));
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /* Who keeps the office, for a client deciding whether to offer the install. */
+    if (g_strcmp0(kind, "office.custodians") == 0) {
+        g_autofree gchar *team = clawt_daemon_office_custodial_team(self);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "team");
+        if (team != NULL)
+            json_builder_add_string_value(builder, team);
+        else
+            json_builder_add_null_value(builder);
+        json_builder_set_member_name(builder, "generator");
+        json_builder_add_string_value(builder,
+            clawt_config_get_string(self->config, "office.asset_generator"));
+        json_builder_end_object(builder);
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /* A character commissioned again, by hand. */
+    if (g_strcmp0(kind, "office.character") == 0) {
+        g_autofree gchar *task = clawt_daemon_office_commission_character(self,
+            clawt_ipc_payload_string(payload, "agent"), &error);
+
+        if (task == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "task");
+        json_builder_add_string_value(builder, task);
         json_builder_end_object(builder);
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }

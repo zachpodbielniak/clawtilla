@@ -160,6 +160,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/office/clawt-office-presence.h \
 	$(SRCDIR)/office/clawt-office-world.h \
 	$(SRCDIR)/office/clawt-office-director.h \
+	$(SRCDIR)/office/clawt-office-pack.h \
 	$(SRCDIR)/agent/clawt-agent-confine.h \
 	$(SRCDIR)/computer/clawt-exec-result.h \
 	$(SRCDIR)/computer/clawt-sandbox.h \
@@ -324,6 +325,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-provider-usage.c \
 	$(SRCDIR)/core/daemon-ephemeral.c \
 	$(SRCDIR)/core/daemon-office.c \
+	$(SRCDIR)/core/daemon-office-custodial.c \
 	$(SRCDIR)/core/daemon-config.c \
 	$(SRCDIR)/core/daemon-skill.c \
 	$(SRCDIR)/core/daemon-skill-proposal.c \
@@ -399,6 +401,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/office/clawt-office-presence.c \
 	$(SRCDIR)/office/clawt-office-world.c \
 	$(SRCDIR)/office/clawt-office-director.c \
+	$(SRCDIR)/office/clawt-office-pack.c \
 	$(SRCDIR)/agent/clawt-agent-confine.c \
 	$(SRCDIR)/computer/clawt-exec-result.c \
 	$(SRCDIR)/computer/clawt-sandbox.c \

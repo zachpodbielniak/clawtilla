@@ -135,6 +135,14 @@ gboolean clawt_team_validate_fleet(ClawtConfig  *config,
 #define CLAWT_TEAM_TAG_EPHEMERAL "ephemeral"
 
 /**
+ * CLAWT_TEAM_TAG_OFFICE_CUSTODIAL:
+ *
+ * The team that keeps the office: its worlds, assets and characters
+ * (since 0.58.0).  See docs/office-custodial-team.org.
+ */
+#define CLAWT_TEAM_TAG_OFFICE_CUSTODIAL "office-custodial"
+
+/**
  * ClawtTeamTagInfo:
  * @name: the tag, as written in `teams.tags`
  * @label: how to show it to a person

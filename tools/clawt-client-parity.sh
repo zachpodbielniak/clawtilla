@@ -348,6 +348,7 @@ declare -A AFFORDANCES=(
     ["office roster"]="clawt_office_roster_line|clawt_office_roster_line|clawt_office_roster_line"
     ["office drawn"]="clawt_gtk_office_view_attach|clawt_web_office_view_add|clawt_lrg_office_view_add"
     ["office on and world"]="on_enabled_changed|/office/set|on_toggle"
+    ["office custodial team"]="on_install_custodians|/office/custodians|on_install_custodians"
     #
     # The Spending page's ledger: the grouping is a library enumeration,
     # so layer 3 already sees the selector -- but the unpriced-turn

@@ -87,6 +87,59 @@ on_world_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
             "world", gtk_string_list_get_string(ids, chosen), NULL));
 }
 
+static void
+on_install_custodians(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(JsonNode) reply = clawt_window_request(self, "office.custodians_install",
+                                                     NULL);
+
+    (void)button;
+    if (reply != NULL)
+        g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, refresh_later, g_object_ref(self),
+                        g_object_unref);
+}
+
+/*
+ * Who keeps the office: the team carrying the office-custodial tag, and
+ * the generator its steward uses -- or the button that makes the team.
+ */
+static void
+fill_custodians(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = clawt_window_request(self, "office.custodians", NULL);
+    JsonObject *root;
+    const gchar *team;
+    const gchar *generator;
+    GtkWidget *row;
+    g_autofree gchar *subtitle = NULL;
+
+    if (reply == NULL)
+        return;
+    root = clawt_payload_of(reply);
+    team = clawt_json_string(root, "team", NULL);
+    generator = clawt_json_string(root, "generator", NULL);
+
+    row = adw_action_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), "Custodial team");
+    if (team != NULL) {
+        subtitle = g_strdup_printf("%s keeps the office; characters are made with %s",
+                                   team, generator != NULL && *generator != '\0'
+                                   ? generator : "nothing yet (office.asset_generator)");
+    } else {
+        GtkWidget *install = gtk_button_new_with_label("Create custodial team");
+
+        subtitle = g_strdup("Nobody keeps the office: a lead, an asset steward and a "
+                            "set designer would take your requests for it");
+        gtk_widget_set_valign(install, GTK_ALIGN_CENTER);
+        gtk_widget_add_css_class(install, "suggested-action");
+        g_signal_connect(install, "clicked", G_CALLBACK(on_install_custodians), self);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), install);
+    }
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+    gtk_list_box_append(self->office_controls, row);
+}
+
 /* The switch and the world picker, filled from office.worlds. */
 static void
 fill_controls(ClawtWindow *self)
@@ -134,6 +187,8 @@ fill_controls(ClawtWindow *self)
     g_object_set_data_full(G_OBJECT(picker), "clawt-world-ids", ids, g_object_unref);
     g_signal_connect(picker, "notify::selected", G_CALLBACK(on_world_changed), self);
     gtk_list_box_append(self->office_controls, picker);
+
+    fill_custodians(self);
 }
 
 static void

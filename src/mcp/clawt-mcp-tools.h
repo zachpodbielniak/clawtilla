@@ -601,6 +601,34 @@ typedef struct {
 } ClawtMcpEphemeralHooks;
 
 /**
+ * ClawtMcpOfficeHooks:
+ * @call: answers one `clawtilla_office_*` tool for the agent, with
+ *   @is_error set on a refusal (transfer full)
+ *
+ * What the daemon supplies for the office tools (since 0.58.0): one
+ * dispatcher, because every one of them is a question about the
+ * daemon's own state (its world packs, its config, its fleet).  Unset,
+ * the tools are offered to nobody; set, to agents with `tools.office`.
+ */
+typedef struct {
+    gchar *(*call)(const gchar *agent_id, const gchar *tool,
+                   JsonObject *arguments, gboolean *is_error,
+                   gpointer user_data);
+} ClawtMcpOfficeHooks;
+
+/**
+ * clawt_mcp_tools_set_office_hooks:
+ * @self: a #ClawtMcpTools
+ * @hooks: (nullable): the hooks, copied
+ * @user_data: passed to each hook
+ * @destroy: frees @user_data
+ */
+void clawt_mcp_tools_set_office_hooks(ClawtMcpTools             *self,
+                                      const ClawtMcpOfficeHooks *hooks,
+                                      gpointer                   user_data,
+                                      GDestroyNotify             destroy);
+
+/**
  * clawt_mcp_tools_set_ephemeral_hooks:
  * @self: a #ClawtMcpTools
  * @hooks: (nullable): the hooks, copied
