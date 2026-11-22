@@ -213,6 +213,7 @@ declare -A AFFORDANCES=(
     ["fleet warnings"]="append_warning_rows|clawt_web_warnings|append_warning_rows"
     ["peer conversations"]="fill_conversation_menu|conversation_switcher|conversation_picker"
     ["team busy marker"]="clawt-team-busy|clawt-team-busy|clawt-team-busy"
+    ["team tags on the heading"]="clawt-team-tags|clawt-team-tags|clawt-team-tags"
     ["follow the live edge"]="clawt_transcript_is_at_bottom|transcript-end|clawt_transcript_is_at_bottom"
     ["notification sections"]="append_chats|clawt_web_notices_sections|append_chats"
     ["agent attachments"]="fetch_attachment|attachment_element|fetch_agent_attachment"

@@ -508,6 +508,21 @@ entry_free(gpointer data)
     g_free(entry);
 }
 
+gchar *
+clawt_lrg_team_tags(JsonNode *teams, const gchar *team_id)
+{
+    JsonArray *array = reply_array(teams, "teams");
+    guint i;
+
+    for (i = 0; team_id != NULL && array != NULL && i < json_array_get_length(array); i++) {
+        JsonObject *team = array_object(array, i);
+
+        if (g_strcmp0(clawt_ipc_payload_string(team, "id"), team_id) == 0)
+            return clawt_team_tags_label(team);
+    }
+    return NULL;
+}
+
 const gchar *
 clawt_lrg_team_name(JsonNode *teams, const gchar *team_id)
 {

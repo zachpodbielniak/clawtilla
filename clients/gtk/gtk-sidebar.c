@@ -778,6 +778,36 @@ team_header_row(ClawtWindow *self,
     gtk_box_append(GTK_BOX(box), label);
 
     /*
+     * Its tags, small: they are what makes a team the office's custodians
+     * or the home of ephemeral helpers, and a renamed team is otherwise
+     * indistinguishable from any other in the list.
+     */
+    if (self->teams_seen != NULL && team_id != NULL) {
+        JsonArray *teams = json_object_get_array_member(clawt_payload_of(self->teams_seen),
+                                                        "teams");
+        guint i;
+
+        for (i = 0; teams != NULL && i < json_array_get_length(teams); i++) {
+            JsonObject *team = json_array_get_object_element(teams, i);
+            g_autofree gchar *tags = NULL;
+
+            if (g_strcmp0(json_object_get_string_member_with_default(team, "id", ""),
+                          team_id) != 0)
+                continue;
+            tags = clawt_team_tags_label(team);
+            if (tags != NULL && *tags != '\0') {
+                GtkWidget *mark = clawt_gtk_badge(tags, "dim", tags);
+
+                /* one line in a fixed-width sidebar: shrink and ellipsize, never widen it */
+                gtk_label_set_ellipsize(GTK_LABEL(mark), PANGO_ELLIPSIZE_END);
+                gtk_widget_add_css_class(mark, "clawt-team-tags");
+                gtk_box_append(GTK_BOX(box), mark);
+            }
+            break;
+        }
+    }
+
+    /*
      * Running out of total, rather than a single number. "3" could be
      * either, and the question somebody scanning a sidebar is asking is
      * how much of this team is awake.

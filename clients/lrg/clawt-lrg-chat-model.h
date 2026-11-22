@@ -438,6 +438,9 @@ void clawt_lrg_team_choices(JsonNode    *teams,
 /* The team's display name, or its id when it is not declared. */
 const gchar *clawt_lrg_team_name(JsonNode *teams, const gchar *team_id);
 
+/* A team's tags from a team.list reply, comma separated; NULL for an unknown team. */
+gchar *clawt_lrg_team_tags(JsonNode *teams, const gchar *team_id);
+
 /* "<who> moved to <team>." or "<who> taken off its team." */
 gchar *clawt_lrg_moved_text(const gchar *who,
                             const gchar *team,

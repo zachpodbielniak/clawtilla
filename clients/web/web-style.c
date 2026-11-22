@@ -241,6 +241,17 @@ clawt_web_stylesheet(void)
     ".team-name{font-size:12px;letter-spacing:0.02em;"
       "font-weight:600}"
     ".team-tally{font-family:var(--mono);font-size:11px;color:var(--muted)}"
+    /*
+     * A heading is one line however long its tags are: a badge in it
+     * shrinks and ellipsizes, and the team's name keeps what it needs.
+     * Without this, "ephemeral, acme:night-shift" made the whole sidebar
+     * scroll sideways.  min-width:0 because a flex item will not shrink
+     * below its content otherwise.
+     */
+    ".team-head{box-sizing:border-box;min-width:0}"
+    ".team-name{flex:none}"
+    ".team-head>.badge{min-width:0;flex:0 1 auto;overflow:hidden;"
+      "text-overflow:ellipsis;white-space:nowrap}"
     ".team-caret{font-family:var(--mono);font-size:11px;width:1em}"
     ".agent-row{display:block;padding:9px 20px;text-decoration:none;"
       "color:var(--ink);border-left:2px solid transparent;"

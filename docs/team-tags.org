@@ -67,7 +67,7 @@ Any valid tag that is not well-known is kept and shown, for your own use or a pl
 :END:
 
 - *In the file:* =teams[].tags=, a list (see [[file:configuration-options.org][configuration-options.org]]).
-- *In a client:* the team editor's /Tags/ field, comma separated, in the GTK, web and libregnum clients alike; the fleet list shows a team's tags beside its name.
+- *In a client:* the team editor's /Tags/ field, comma separated, in the GTK, web and libregnum clients alike; the fleet sidebar shows a team's tags beside its name on the team's heading, as a small badge that ellipsizes in a narrow sidebar with the whole list on hover (since 0.62.5 -- this page said so from 0.55.0, when only the team editor showed them).
 - *From the CLI:*
   #+begin_src bash
   clawtilla team tag list                     # every team's tags

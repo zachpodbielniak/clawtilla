@@ -589,6 +589,33 @@ team_header(JsonArray *teams, JsonArray *agents, const gchar *team_id)
     htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(name));
 
     /*
+     * Its tags, small: they are what makes a team the office's custodians
+     * or the home of ephemeral helpers, and a renamed team is otherwise
+     * indistinguishable from any other in the list.
+     */
+    {
+        guint i;
+
+        for (i = 0; team_id != NULL && teams != NULL && i < json_array_get_length(teams); i++) {
+            JsonObject *team = json_array_get_object_element(teams, i);
+            g_autofree gchar *tags = NULL;
+
+            if (g_strcmp0(clawt_web_member(team, "id", ""), team_id) != 0)
+                continue;
+            tags = clawt_team_tags_label(team);
+            if (tags != NULL && *tags != '\0') {
+                HtmxSpan *mark = clawt_web_badge(tags, "neutral");
+
+                htmx_element_add_class(HTMX_ELEMENT(mark), "clawt-team-tags");
+                /* the badge ellipsizes in a narrow sidebar; the whole list on hover */
+                htmx_element_set_attribute(HTMX_ELEMENT(mark), "title", tags);
+                clawt_web_add(head, mark);
+            }
+            break;
+        }
+    }
+
+    /*
      * A busy badge when anybody on the team is mid-turn, which is what
      * the agent rows underneath already draw.  The GTK client spins
      * here; this one badges, because that is what each of them says on

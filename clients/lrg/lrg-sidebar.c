@@ -1080,7 +1080,24 @@ team_header(ClawtLrgApp *app, const ClawtLrgSidebarEntry *entry)
     title = clawt_lrg_label(entry->title, "heading");
     lrg_widget_set_fill_weight(title, 1.0f);
     lrg_widget_set_valign(title, LRG_ALIGN_CENTER);
+    lrg_label_set_ellipsize(LRG_LABEL(title), TRUE);
     clawt_lrg_take(box, title);
+
+    /*
+     * Its tags, small: they are what makes a team the office's custodians
+     * or the home of ephemeral helpers, and a renamed team is otherwise
+     * indistinguishable from any other in the list.
+     */
+    {
+        g_autofree gchar *tags = clawt_lrg_team_tags(sidebar.teams, entry->id);
+
+        if (tags != NULL && *tags != '\0') {
+            LrgWidget *mark = clawt_lrg_badge(tags, "neutral");
+
+            lrg_widget_set_name(mark, "clawt-team-tags");
+            clawt_lrg_take(box, mark);
+        }
+    }
 
     /*
      * Running out of total, and how many are working.  A folded team
