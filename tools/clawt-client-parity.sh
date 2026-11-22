@@ -100,6 +100,8 @@ declare -A GTK_MAY_LACK=(
     ["office.layout"]="same capability, different process: GTK draws the office through clawtilla-office, whose feed (clients/office/office-feed.c) asks the daemon for the layout itself; the web client has no such process, so its page asks (docs/web-client.org, \"The drawn office\")"
     ["office.world"]="the other half of the same: clawtilla-office's feed reads the world; the web page embeds it"
     ["office.file"]="the same again: clawtilla-office's feed fetches pack files over office.file; the web page inlines the map and tileset it draws"
+    ["office.characters"]="the same again: clawtilla-office's feed lists the characters and draws each agent from its sheet; the web page's canvas does it from the scene it carries"
+    ["office.character_file"]="the same again: clawtilla-office's feed fetches each sheet and holds it to its sha256; the web page inlines it (checked) or serves it from /office/character/"
 )
 
 #
@@ -1226,6 +1228,8 @@ declare -A LRG_MAY_LACK=(
     ["office.layout"]="as in GTK: lrg draws the office in an OFFICE=1 build with the scene and feed it shares with clawtilla-office (clients/office/), and the feed asks for the layout; the web client's canvas is its own renderer, so its page asks"
     ["office.world"]="the other half of the same: the shared feed reads the world; the web page embeds it"
     ["office.file"]="the same again: the shared feed fetches pack files over office.file; the web page inlines the map and tileset it draws"
+    ["office.characters"]="as in GTK: the shared feed lists the characters and the shared scene draws them; the web page's canvas does it from the scene it carries"
+    ["office.character_file"]="as in GTK: the shared feed fetches each sheet and holds it to its sha256; the web page inlines it (checked) or serves it from /office/character/"
 )
 
 #

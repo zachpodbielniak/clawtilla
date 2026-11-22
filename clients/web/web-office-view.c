@@ -20,6 +20,11 @@
  * visible, and asks /office/world.json only when the layout names a world
  * other than the one it holds.
  *
+ * The same scene carries the agents' characters (office.characters, each
+ * sheet held to its manifest's sha256 here and inlined) and the usage
+ * board (usage.providers as it stands, labelled by libclawt here); a
+ * changed sheet afterwards comes from /office/character/:agent.
+ *
  * Nothing here decides where anybody stands.  The positions are the
  * director's (office.layout), the activity words and tones libclawt's
  * enumeration, the faces clawt_web_face_svg()'s -- one answer each,
@@ -34,6 +39,11 @@
 #define OFFICE_LAYOUT_PATH        "/office/layout.json"
 #define OFFICE_WORLD_PATH         "/office/world.json"
 #define OFFICE_INLINE_IMAGE_MAX   (4 * 1024 * 1024)
+#define OFFICE_CHARACTER_PATH     "/office/character/"
+
+/* What the usage board has room for, as the lrg board draws it. */
+#define OFFICE_BOARD_LOGINS       (4)
+#define OFFICE_BOARD_WINDOWS      (2)
 
 /*
  * The Content-Type for a pack file, by its extension.
@@ -89,6 +99,17 @@ office_world_id_is_safe(const gchar *world)
 {
     return world != NULL && clawt_office_pack_path_is_safe(world) &&
            strchr(world, '/') == NULL;
+}
+
+/*
+ * Whether @agent can name a character: the same one-segment rule, so
+ * office.character_file is never asked about a path.  The daemon checks
+ * containment again on the canonical path.
+ */
+static gboolean
+office_agent_id_is_safe(const gchar *agent)
+{
+    return office_world_id_is_safe(agent);
 }
 
 /* One file of a pack, as office.file answers it (base64), or NULL. */
@@ -319,6 +340,202 @@ office_faces(ClawtWebApp *app, JsonArray *participants)
     return faces;
 }
 
+/* One file of an agent's character, as office.character_file answers it. */
+static JsonNode *
+office_character_file_reply(ClawtWebApp *app, const gchar *agent, const gchar *path)
+{
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+
+    clawt_web_payload_set(payload, "agent", agent);
+    clawt_web_payload_set(payload, "path", path);
+
+    return clawt_web_app_call(app, "office.character_file",
+                              clawt_web_payload_take(g_steal_pointer(&payload)));
+}
+
+/*
+ * Whether @bytes are the file a character's manifest recorded.  A
+ * manifest with no checksum has nothing to hold the bytes to, which is
+ * the daemon's answer and the lrg feed's too: drawn.
+ */
+static gboolean
+office_sheet_matches(GBytes *bytes, const gchar *want)
+{
+    g_autofree gchar *sum = NULL;
+
+    if (want == NULL || *want == '\0')
+        return TRUE;
+    sum = g_compute_checksum_for_bytes(G_CHECKSUM_SHA256, bytes);
+    return sum != NULL && g_ascii_strcasecmp(sum, want) == 0;
+}
+
+/*
+ * The characters the daemon has whole (office.characters), each with a
+ * `src` the script draws the sheet from.
+ *
+ * With @inline_sheets the sheet is read here, held to its manifest's
+ * sha256, and written in as a data: URI -- the first page fetches
+ * nothing, like the tilesets.  A sheet that does not match is left out
+ * rather than drawn wrong, and one over OFFICE_INLINE_IMAGE_MAX becomes a
+ * URL instead.  Without it (the poll, every 2.5 s) `src` is always the
+ * URL, carrying the checksum, which the route holds the bytes to; the
+ * script loads a sheet again only when its checksum changes.
+ *
+ * Returns NULL when the daemon did not answer, so a poll that failed
+ * leaves the characters the page has.
+ */
+static JsonArray *
+office_characters(ClawtWebApp *app, gboolean inline_sheets)
+{
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "office.characters", NULL);
+    JsonArray *listed;
+    JsonArray *out;
+    guint i;
+
+    if (clawt_web_root(reply) == NULL)
+        return NULL;
+    listed = clawt_web_member_array(clawt_web_root(reply), "characters");
+    out = json_array_new();
+
+    for (i = 0; listed != NULL && i < json_array_get_length(listed); i++) {
+        JsonNode *node = json_array_get_element(listed, i);
+        JsonObject *character;
+        const gchar *agent;
+        const gchar *sheet;
+        const gchar *sha;
+        g_autofree gchar *src = NULL;
+
+        if (!JSON_NODE_HOLDS_OBJECT(node))
+            continue;
+        character = json_node_get_object(node);
+        agent = clawt_web_member(character, "agent", NULL);
+        sheet = clawt_web_member(character, "sheet", NULL);
+        sha = clawt_web_member(character, "sheet_sha256", NULL);
+        if (!office_agent_id_is_safe(agent) || !clawt_office_pack_path_is_safe(sheet))
+            continue;
+
+        if (inline_sheets) {
+            g_autoptr(JsonNode) file = office_character_file_reply(app, agent, sheet);
+            const gchar *encoded = clawt_web_member(clawt_web_root(file), "base64", NULL);
+            guchar *raw;
+            gsize length = 0;
+            g_autoptr(GBytes) bytes = NULL;
+
+            if (encoded == NULL)
+                continue;
+            raw = g_base64_decode(encoded, &length);
+            bytes = g_bytes_new_take(raw, length);
+            if (!office_sheet_matches(bytes, sha))
+                continue;
+            if (length <= OFFICE_INLINE_IMAGE_MAX)
+                src = g_strdup_printf("data:%s;base64,%s", office_file_type(sheet), encoded);
+        }
+        if (src == NULL) {
+            g_autofree gchar *escaped_agent = g_uri_escape_string(agent, NULL, FALSE);
+            g_autofree gchar *escaped_path = g_uri_escape_string(sheet, NULL, FALSE);
+            /* the manifest is a file in a directory agents write to */
+            g_autofree gchar *escaped_sha = sha != NULL
+                ? g_uri_escape_string(sha, NULL, FALSE) : NULL;
+
+            src = g_strdup_printf("%s%s?path=%s%s%s", OFFICE_CHARACTER_PATH,
+                                  escaped_agent, escaped_path,
+                                  escaped_sha != NULL ? "&sha256=" : "",
+                                  escaped_sha != NULL ? escaped_sha : "");
+        }
+        node = json_node_copy(node);
+        json_object_set_string_member(json_node_get_object(node), "src", src);
+        json_array_add_element(out, node);
+    }
+    return out;
+}
+
+/*
+ * The usage board, from usage.providers' answer (@usage): per login, up
+ * to four, its title and up to two windows, each with its label, how
+ * much is left (absent when the source did not say), the headline figure
+ * and the tone it is painted in.  Every word and level is libclawt's --
+ * clawt_usage_login_title(), _window_value_label(), _window_remaining(),
+ * _window_level() and clawt_allowance_level_tone(), the functions the
+ * Fleet page and the lrg board draw with -- so the script holds no copy
+ * of the rules, only how to paint them.
+ *
+ * Returns an object whose `logins` may be empty; the script then draws no
+ * board, as the lrg scene does not.
+ */
+static JsonObject *
+office_usage_board(JsonObject *usage)
+{
+    JsonArray *logins = clawt_web_member_array(usage, "logins");
+    JsonObject *board = json_object_new();
+    JsonArray *out = json_array_new();
+    guint i;
+    guint w;
+
+    for (i = 0; logins != NULL && i < json_array_get_length(logins) &&
+                json_array_get_length(out) < OFFICE_BOARD_LOGINS; i++) {
+        JsonNode *node = json_array_get_element(logins, i);
+        JsonObject *login;
+        JsonObject *entry;
+        JsonArray *windows;
+        JsonArray *drawn;
+        g_autofree gchar *title = NULL;
+
+        if (!JSON_NODE_HOLDS_OBJECT(node))
+            continue;
+        login = json_node_get_object(node);
+        windows = clawt_web_member_array(login, "windows");
+        entry = json_object_new();
+        drawn = json_array_new();
+        title = clawt_usage_login_title(login);
+        json_object_set_string_member(entry, "title", title != NULL ? title : "");
+
+        for (w = 0; windows != NULL && w < json_array_get_length(windows) &&
+                    json_array_get_length(drawn) < OFFICE_BOARD_WINDOWS; w++) {
+            JsonNode *window_node = json_array_get_element(windows, w);
+            JsonObject *window;
+            JsonObject *meter;
+            g_autofree gchar *value = NULL;
+            gdouble left = 0.0;
+
+            if (!JSON_NODE_HOLDS_OBJECT(window_node))
+                continue;
+            window = json_node_get_object(window_node);
+            meter = json_object_new();
+            value = clawt_usage_window_value_label(window);
+            json_object_set_string_member(meter, "label",
+                                          clawt_web_member(window, "label", "window"));
+            json_object_set_string_member(meter, "value", value != NULL ? value : "");
+            if (clawt_usage_window_remaining(window, &left))
+                json_object_set_double_member(meter, "remaining", CLAMP(left, 0.0, 100.0));
+            json_object_set_string_member(meter, "tone", clawt_allowance_level_tone(
+                clawt_usage_window_level(window)));
+            json_array_add_object_element(drawn, meter);
+        }
+        if (json_array_get_length(drawn) == 0)
+            json_object_set_string_member(entry, "note", "reports no plan limits");
+        json_object_set_array_member(entry, "windows", drawn);
+        json_array_add_object_element(out, entry);
+    }
+    json_object_set_array_member(board, "logins", out);
+    return board;
+}
+
+/*
+ * usage.providers as it stands -- never with `refresh`: reading an
+ * allowance spawns the provider's CLI, and a wall display polled every
+ * few seconds must not.  The Fleet page refreshes; the board shows the
+ * result.  NULL when the daemon did not answer.
+ */
+static JsonObject *
+office_board(ClawtWebApp *app)
+{
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "usage.providers", NULL);
+
+    if (clawt_web_root(reply) == NULL)
+        return NULL;
+    return office_usage_board(clawt_web_root(reply));
+}
+
 /*
  * The activity words and tones, walked from libclawt's enumeration --
  * never a list kept here, which is how two clients come to call one
@@ -353,14 +570,17 @@ office_vocabulary(void)
  * clear when the daemon did not answer.
  */
 static JsonObject *
-office_scene_layout(ClawtWebApp *app, const gchar *world_id, gboolean *out_off)
+office_scene_layout(ClawtWebApp *app, const gchar *world_id, gboolean inline_sheets,
+                    gboolean *out_off)
 {
     g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
     g_autoptr(JsonNode) reply = NULL;
     JsonObject *layout;
     JsonObject *scene;
     JsonObject *lines;
+    JsonObject *board;
     JsonArray *people;
+    JsonArray *characters;
     gint64 now;
     guint i;
 
@@ -396,6 +616,13 @@ office_scene_layout(ClawtWebApp *app, const gchar *world_id, gboolean *out_off)
     json_object_set_object_member(scene, "faces", office_faces(app, people));
     json_object_set_object_member(scene, "lines", lines);
     json_object_set_boolean_member(scene, "enabled", TRUE);
+    /* absent when the daemon would not say: the script keeps what it has */
+    characters = office_characters(app, inline_sheets);
+    if (characters != NULL)
+        json_object_set_array_member(scene, "characters", characters);
+    board = office_board(app);
+    if (board != NULL)
+        json_object_set_object_member(scene, "board", board);
     return scene;
 }
 
@@ -512,7 +739,7 @@ clawt_web_office_view_add(ClawtWebApp *app, HtmxElement *parent)
      * card above says how to turn the office on and the roster below says
      * the daemon is unreachable; a third sentence would only repeat one.
      */
-    scene = office_scene_layout(app, NULL, &off);
+    scene = office_scene_layout(app, NULL, TRUE, &off);
     if (scene == NULL)
         return;
     world = office_scene_world(app, clawt_web_member(
@@ -602,7 +829,7 @@ on_layout_json(HtmxRequest *request, GHashTable *params, gpointer user_data)
     (void)params;
     if (world != NULL && !office_world_id_is_safe(world))
         return office_json_error("no such world", SOUP_STATUS_BAD_REQUEST);
-    scene = office_scene_layout(app, world, &off);
+    scene = office_scene_layout(app, world, FALSE, &off);
     if (scene == NULL && off) {
         g_autoptr(JsonObject) body = json_object_new();
 
@@ -676,10 +903,71 @@ on_file(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return response;
 }
 
+/* A refusal the script will never show anybody, as plain text. */
+static HtmxResponse *
+office_text_response(const gchar *text, guint status)
+{
+    HtmxResponse *response = htmx_response_new_with_content(text);
+
+    htmx_response_set_status(response, status);
+    htmx_response_set_content_type(response, "text/plain; charset=utf-8");
+    htmx_response_add_header(response, "X-Content-Type-Options", "nosniff");
+    return response;
+}
+
+/*
+ * GET /office/character/:agent?path=<relative>[&sha256=<hex>] -- one file
+ * of an agent's character (its sprite sheet), as bytes.
+ *
+ * Refused here, before the daemon is asked, when the agent id is not one
+ * path segment or the path is one the pack rule refuses; the daemon
+ * resolves it again inside <state_dir>/office/characters/<agent>/ on the
+ * canonical path.  With `sha256` (the script always sends the manifest's)
+ * bytes that do not match are a 409, never an image: a sheet that does
+ * not match its manifest is not drawn, rather than drawn wrong.
+ */
+static HtmxResponse *
+on_character(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent = (params != NULL && g_hash_table_lookup(params, "agent") != NULL)
+        ? g_uri_unescape_string(g_hash_table_lookup(params, "agent"), NULL) : NULL;
+    const gchar *path = htmx_request_get_query_param(request, "path");
+    const gchar *sha = htmx_request_get_query_param(request, "sha256");
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *encoded;
+    guchar *raw;
+    gsize length = 0;
+    g_autoptr(GBytes) bytes = NULL;
+    HtmxResponse *response;
+
+    if (!office_agent_id_is_safe(agent) || !clawt_office_pack_path_is_safe(path))
+        return office_text_response("that path is outside the character\n",
+                                    SOUP_STATUS_FORBIDDEN);
+
+    reply = office_character_file_reply(app, agent, path);
+    encoded = clawt_web_member(clawt_web_root(reply), "base64", NULL);
+    if (encoded == NULL)
+        return htmx_response_not_found();
+
+    raw = g_base64_decode(encoded, &length);
+    bytes = g_bytes_new_take(raw, length);
+    if (!office_sheet_matches(bytes, sha))
+        return office_text_response("that file does not match its manifest\n",
+                                    SOUP_STATUS_CONFLICT);
+    response = htmx_response_new();
+    htmx_response_set_bytes(response, bytes);
+    htmx_response_set_content_type(response, office_file_type(path));
+    htmx_response_add_header(response, "X-Content-Type-Options", "nosniff");
+    htmx_response_add_header(response, "Cache-Control", "no-cache");
+    return response;
+}
+
 void
 clawt_web_office_view_register(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_get(router, OFFICE_LAYOUT_PATH, on_layout_json, app);
     htmx_router_get(router, OFFICE_WORLD_PATH, on_world_json, app);
     htmx_router_get(router, "/office/file/:world", on_file, app);
+    htmx_router_get(router, OFFICE_CHARACTER_PATH ":agent", on_character, app);
 }

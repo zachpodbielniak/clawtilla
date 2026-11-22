@@ -16,8 +16,15 @@
  * plausible activity for the real participants here in the browser, says
  * so on screen, and never sends any of it anywhere.
  *
+ * An agent the custodial team has given a character is drawn from its
+ * sprite sheet (office.characters) instead of the default body, and the
+ * wall the pack tags usage_board carries each provider login's allowance
+ * (usage.providers as it stands, labelled and levelled by libclawt
+ * server side -- this script only paints the words it is given).
+ *
  * Served by clawtilla-web from its own directory like htmx.min.js; it
- * fetches nothing but its own origin's /office/*.json.
+ * fetches nothing but its own origin's /office/*.json and, after the
+ * first page, a changed sprite sheet from /office/character/.
  */
 (function () {
 	'use strict';
@@ -86,6 +93,8 @@
 	var map_w = 0, map_h = 0, tile = 32;
 	var map_cache = null;         /* the map at one canvas pixel per map pixel */
 	var rooms = [];               /* {name, x, y, w, h} from the zones layer */
+	var board_at = null;          /* the usage_board's first anchor, map pixels */
+	var board = scene.board || null;   /* {logins: [...]}, libclawt's words */
 
 	/* The zones by tag, read from the pack (meeting:10 answers meeting). */
 	function zones_tagged(tag) {
@@ -100,6 +109,21 @@
 				out.push(z);
 		});
 		return out;
+	}
+
+	/*
+	 * The first anchor of the first zone tagged exactly usage_board, as
+	 * the lrg scene finds it: the wall the allowances are drawn on.
+	 */
+	function board_anchor() {
+		var zones = world.zones || [], i, a;
+
+		for (i = 0; i < zones.length; i++) {
+			a = (zones[i].anchors_2d || [])[0];
+			if ((zones[i].tags || []).indexOf('usage_board') >= 0 && a && a.length >= 2)
+				return { x: a[0], y: a[1] };
+		}
+		return null;
 	}
 
 	function zone_name(id) {
@@ -119,6 +143,7 @@
 
 		map_cache = null;
 		rooms = [];
+		board_at = board_anchor();
 		if (map && map.width && map.height) {
 			tile = map.tilewidth || 32;
 			map_w = map.width * (map.tilewidth || 32);
@@ -293,6 +318,126 @@
 		return img;
 	}
 
+	/*
+	 * Characters: agent -> {def, img, key}.  A sheet is loaded again only
+	 * when its checksum changes -- the first page carries it inline, the
+	 * poll as a URL -- so a poll every 2.5 s costs no image request.  The
+	 * bytes were held to the manifest's sha256 by clawtilla-web before
+	 * they reached here (inlined only when they match; the route answers
+	 * 409 to bytes that do not), so a sheet that does not match is never
+	 * drawn.  The browser does not hash it again: SubtleCrypto is absent
+	 * from a plain-http tailnet page, which is where this client lives.
+	 */
+	var characters = {};
+
+	function take_characters(list) {
+		var seen = {};
+
+		if (!Array.isArray(list))
+			return;
+		list.forEach(function (c) {
+			var key, have, img;
+
+			if (!c || !c.agent || !c.src || !Array.isArray(c.frame) || !c.animations)
+				return;
+			seen[c.agent] = true;
+			key = c.sheet_sha256 || c.src;
+			have = characters[c.agent];
+			if (have && have.key === key) {
+				have.def = c;
+				return;
+			}
+			img = new Image();
+			img.onload = function () { last_paint = 0; };
+			img.src = c.src;
+			characters[c.agent] = { def: c, img: img, key: key };
+		});
+		Object.keys(characters).forEach(function (id) {
+			if (!seen[id])
+				delete characters[id];
+		});
+	}
+
+	/*
+	 * The row a character draws now, as office-scene.c's pick_animation():
+	 * walking picks the direction of travel, otherwise the pose (sit,
+	 * type, read, phone, present), otherwise idle, otherwise the sheet's
+	 * first row.  `own` says the row is the one asked for rather than a
+	 * fallback.
+	 */
+	function pick_animation(anims, s) {
+		var want = null, names;
+
+		if (s.walking)
+			want = Math.abs(s.dx) > Math.abs(s.dy)
+				? (s.dx > 0 ? 'walk_right' : 'walk_left')
+				: (s.dy > 0 ? 'walk_down' : 'walk_up');
+		else if (s.pose && s.pose !== 'stand')
+			want = s.pose;
+		if (want && anims[want])
+			return { a: anims[want], own: true };
+		if (s.walking && anims.walk_down)
+			return { a: anims.walk_down, own: true };
+		if (anims.idle)
+			return { a: anims.idle, own: false };
+		names = Object.keys(anims);
+		return names.length ? { a: anims[names[0]], own: false } : null;
+	}
+
+	/*
+	 * Whether @s's frame changes with time: walking, or a pose other than
+	 * standing and sitting that the sheet has a row for.  A still pose --
+	 * and any row reached as a fallback -- holds its first frame: nobody
+	 * bobs while idle.
+	 */
+	function character_animates(s, pick) {
+		return !reduced && !!pick && pick.own && (pick.a.fps || 0) > 0 &&
+		       (pick.a.frames || 1) > 1 &&
+		       (s.walking || (!!s.pose && s.pose !== 'stand' && s.pose !== 'sit'));
+	}
+
+	/* @s's character, when it has one whose sheet has loaded. */
+	function character_of(s) {
+		var ch = characters[s.id];
+
+		if (!ch || !ch.img.complete || !ch.img.naturalWidth)
+			return null;
+		return ch;
+	}
+
+	/*
+	 * A person drawn from their sheet, feet on (x, y), about as tall as
+	 * the default body, with smoothing off so pixel art stays crisp.
+	 */
+	function draw_character(c, s, ch, now) {
+		var def = ch.def;
+		var fw = def.frame[0], fh = def.frame[1];
+		var pick = pick_animation(def.animations, s);
+		var height = 48 * s.u, width, index = 0, row;
+
+		if (!pick || !(fw > 0) || !(fh > 0))
+			return false;
+		row = pick.a.row || 0;
+		if (character_animates(s, pick))
+			index = Math.floor(now / 1000 * pick.a.fps) % Math.max(1, pick.a.frames || 1);
+		width = height * fw / fh;
+		c.save();
+		c.globalAlpha = s.alpha;
+		c.imageSmoothingEnabled = false;
+		c.drawImage(ch.img, index * fw, row * fh, fw, fh,
+		            Math.round(s.x - width / 2), Math.round(s.y - height), width, height);
+		if (s.hover) {
+			c.strokeStyle = ink.info;
+			c.lineWidth = 2;
+			round_rect(c, s.x - width / 2 - 2, s.y - height - 2, width + 4, height + 4, 4);
+			c.stroke();
+		}
+		c.restore();
+		s.head = { x: s.x, y: s.y - height + 10 * s.u, r: 10 * s.u };
+		s.box = { x: s.x - width / 2, y: s.y - height, w: width, h: height + 2 * s.u + 14 };
+		return true;
+	}
+
 	function ease(t) {
 		return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 	}
@@ -341,7 +486,7 @@
 		var e = ease(t);
 
 		return { x: a.fx + (a.tx - a.fx) * e, y: a.fy + (a.ty - a.fy) * e,
-		         walking: t < 1, t: t };
+		         walking: t < 1, t: t, dx: a.tx - a.fx, dy: a.ty - a.fy };
 	}
 
 	function take_layout(body, now) {
@@ -349,6 +494,8 @@
 
 		faces = body.faces || faces;
 		lines = body.lines || lines;
+		board = body.board || board;
+		take_characters(body.characters);
 		people = {};
 		(layout.participants || []).forEach(function (p) { people[p.id] = p; });
 		real_placements = layout.placements || [];
@@ -769,6 +916,21 @@
 		var head_y = y - (38 * u) + lift;
 		var r = 10.5 * u;
 		var img = face_image(s.id);
+		var ch = character_of(s);
+
+		/* somebody with a character is their sprite sheet, and a nameplate */
+		if (ch && draw_character(c, s, ch, now)) {
+			c.save();
+			c.globalAlpha = s.alpha;
+			s.plate = pill(c, short_name(s.name), x, plate_y(c, s.name, x, y + 2 * u,
+			                                                Math.max(9, Math.round(8.5 * u))),
+			               Math.max(9, Math.round(8.5 * u)),
+			               s.hover ? ink.ink : 'rgba(20,20,22,.72)',
+			               s.hover ? ink.surface : '#fff');
+			plates.push(s.plate);
+			c.restore();
+			return;
+		}
 
 		c.save();
 		c.globalAlpha = s.alpha;
@@ -840,6 +1002,94 @@
 		s.box = { x: x - 11 * u, y: head_y - r, w: 22 * u, h: y - (head_y - r) + 2 * u + 14 };
 	}
 
+	/* -- The usage board -------------------------------------------- */
+
+	/*
+	 * Each provider login's allowance on the wall the pack tags
+	 * usage_board: its title, then a meter per window filled for what is
+	 * left, in the tone libclawt gave the window's level, and the value
+	 * label beside it.  Every word arrives from the server
+	 * (clawt_usage_*()); nothing here decides a level.  No logins, no
+	 * board -- as the lrg scene.
+	 *
+	 * The board is a dark panel in either theme, so its tones are the
+	 * bright ones the lrg board paints clawt_allowance_level_tone() in,
+	 * not the page's foreground tokens, which are dark in the light theme.
+	 */
+	var board_ink = { good: '#2ec27e', warn: '#e5a50a', bad: '#e01b24', neutral: '#78aeed' };
+
+	function draw_board(c) {
+		var logins = board && Array.isArray(board.logins) ? board.logins : [];
+		var pr, bs, px, line, pad, bar_w, label_w = 0, value_w = 0, title_w = 0;
+		var width, height = 0, x, y;
+
+		if (!board_at || logins.length === 0)
+			return;
+		pr = project(board_at.x, board_at.y);
+		bs = Math.max(0.85, Math.min(1.25, pr.s * view.boost));
+		px = Math.round(10 * bs);
+		line = Math.round(15 * bs);
+		pad = 7 * bs;
+		bar_w = 96 * bs;
+
+		/* as wide as its words: a value label can be "$3.20 of $10.00 left" */
+		c.save();
+		logins.forEach(function (l) {
+			c.font = '700 ' + px + 'px ' + ink.sans;
+			title_w = Math.max(title_w, c.measureText(l.title || '').width);
+			c.font = '500 ' + px + 'px ' + ink.sans;
+			if (l.note)
+				title_w = Math.max(title_w, c.measureText(l.note).width);
+			(l.windows || []).forEach(function (w) {
+				label_w = Math.max(label_w, c.measureText(trim_text(w.label, 18)).width);
+				value_w = Math.max(value_w, c.measureText(w.value || '').width);
+			});
+			height += line * (1 + Math.max(1, (l.windows || []).length));
+		});
+		width = Math.max(title_w, label_w + bar_w + value_w + 16 * bs) + pad * 2;
+		height += pad * 1.2;
+		x = Math.max(4, Math.min(view.W - width - 4, pr.x - width / 2));
+		y = Math.max(4, pr.y - 8 * bs - height);
+
+		c.fillStyle = 'rgba(18,20,26,.9)';
+		round_rect(c, x, y, width, height, 6 * bs);
+		c.fill();
+		c.textAlign = 'left';
+		c.textBaseline = 'middle';
+		y += pad * 0.6;
+		logins.forEach(function (l) {
+			c.font = '700 ' + px + 'px ' + ink.sans;
+			c.fillStyle = '#fff';
+			c.fillText(l.title || '', x + pad, y + line / 2);
+			y += line;
+			c.font = '500 ' + px + 'px ' + ink.sans;
+			if (!l.windows || l.windows.length === 0) {
+				c.fillStyle = 'rgba(200,204,214,.85)';
+				c.fillText(l.note || '', x + pad, y + line / 2);
+				y += line;
+				return;
+			}
+			l.windows.forEach(function (w) {
+				var bx = x + pad + label_w + 8 * bs;
+				var by = y + line / 2 - 3.5 * bs;
+				var fill = board_ink[w.tone] || board_ink.neutral;
+
+				c.fillStyle = 'rgba(200,204,214,.9)';
+				c.fillText(trim_text(w.label, 18), x + pad, y + line / 2);
+				c.fillStyle = '#3c404c';
+				c.fillRect(bx, by, bar_w, 7 * bs);
+				if (typeof w.remaining === 'number') {
+					c.fillStyle = fill;
+					c.fillRect(bx, by, bar_w * Math.max(0, Math.min(1, w.remaining / 100)), 7 * bs);
+				}
+				c.fillStyle = fill;
+				c.fillText(w.value || '', bx + bar_w + 8 * bs, y + line / 2);
+				y += line;
+			});
+		});
+		c.restore();
+	}
+
 	/* -- One frame -------------------------------------------------- */
 
 	var hover_id = null;
@@ -867,7 +1117,7 @@
 			}
 			pr = project(w.x, w.y);
 			s = { id: id, mx: w.x, my: w.y, x: pr.x, y: pr.y, u: pr.s * view.boost,
-			      walking: w.walking, alpha: alpha,
+			      walking: w.walking, dx: w.dx, dy: w.dy, alpha: alpha,
 			      activity: p.activity || who.activity, pose: p.pose, prop: p.prop,
 			      emote: p.emote, facing: p.facing, zone: p.zone,
 			      name: who.name || id, kind: who.kind || 'agent',
@@ -936,6 +1186,7 @@
 			c.restore();
 		});
 
+		draw_board(c);
 		plates = [];
 		bubbles = [];
 		frame.sprites.forEach(function (s) { draw_person(c, s, now); });
@@ -999,6 +1250,10 @@
 
 	function busy(frame, now) {
 		return frame.sprites.some(function (s) {
+			var ch = characters[s.id];
+
+			if (ch && character_animates(s, pick_animation(ch.def.animations, s)))
+				return true;
 			return s.walking || s.alpha < 1 || s.emote === 'question' ||
 			       s.emote === 'thought' || s.activity === 'on_call' ||
 			       s.activity === 'delivering' || s.activity === 'waiting_on_you';
