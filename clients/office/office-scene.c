@@ -104,6 +104,7 @@ struct _ClawtOfficeScene {
     gchar                *hovered;
     Camera2D              camera2d;
     RenderTexture2D       baked;      /* the map at 1:1, drawn once */
+    gfloat                person_scale;
     gboolean              baked_ok;
     Camera3D              camera3d;
     gint                  last_w;
@@ -171,6 +172,7 @@ clawt_office_scene_new(void)
     self->colors = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     self->beams = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
     self->tile = 32.0f;
+    self->person_scale = PERSON_SCALE;
     self->orbit = 0.65f;
     self->distance = 1.0f;
     self->status = g_strdup("Loading the office...");
@@ -675,7 +677,8 @@ sync_beams(ClawtOfficeScene *self, gboolean three_d)
             lrg_beam_set_endpoints(beam, a->x * k, 2.2f, a->y * k, b->x * k, 2.2f, b->y * k);
         } else {
             lrg_beam_set_arc(beam, 60.0f, LRG_BEAM_BEND_PERPENDICULAR);
-            lrg_beam_set_endpoints(beam, a->x, a->y - 18.0f * PERSON_SCALE, 0.0f, b->x, b->y - 18.0f * PERSON_SCALE, 0.0f);
+            lrg_beam_set_endpoints(beam, a->x, a->y - 18.0f * self->person_scale, 0.0f, b->x,
+                                   b->y - 18.0f * self->person_scale, 0.0f);
         }
         g_hash_table_add(live, g_steal_pointer(&pair));
     }
@@ -766,7 +769,7 @@ draw_overlays(ClawtOfficeScene *self, Actor *a, Vector2 at, gfloat scale)
 
     (void)self;
     lrg_nameplate_set_hovered(a->plate, g_strcmp0(self->hovered, a->id) == 0);
-    lrg_world_widget_draw_at(LRG_WORLD_WIDGET(a->plate), at.x, at.y + 12.0f * scale);
+    lrg_world_widget_draw_at(LRG_WORLD_WIDGET(a->plate), at.x, at.y + MAX(12.0f * scale, 10.0f));
     if (lrg_world_widget_is_shown(LRG_WORLD_WIDGET(a->mark)) ||
         lrg_world_widget_get_alpha(LRG_WORLD_WIDGET(a->mark)) > 0.01f)
         lrg_world_widget_draw_at(LRG_WORLD_WIDGET(a->mark), at.x, at.y - above);
@@ -811,6 +814,8 @@ draw_2d(ClawtOfficeScene *self, gint width, gint height)
     self->camera2d.target = (Vector2){ self->map_w / 2.0f, self->map_h / 2.0f };
     self->camera2d.rotation = 0.0f;
     self->camera2d.zoom = zoom;
+    /* people stay legible in a small view: never under ~a 16 px head on screen */
+    self->person_scale = CLAMP(MAX(PERSON_SCALE, 0.95f / MAX(zoom, 0.01f)), PERSON_SCALE, 4.0f);
 
     sync_beams(self, FALSE);
     BeginMode2D(self->camera2d);
@@ -836,7 +841,7 @@ draw_2d(ClawtOfficeScene *self, gint width, gint height)
         /* people a little larger than a tile's worth, so a fitted map still shows faces */
         rlPushMatrix();
         rlTranslatef(a->x, a->y, 0.0f);
-        rlScalef(PERSON_SCALE, PERSON_SCALE, 1.0f);
+        rlScalef(self->person_scale, self->person_scale, 1.0f);
         draw_person_2d(a, 0.0f, 0.0f, g_strcmp0(self->hovered, a->id) == 0);
         rlPopMatrix();
     }
@@ -847,7 +852,7 @@ draw_2d(ClawtOfficeScene *self, gint width, gint height)
         Actor *a = g_ptr_array_index(people, i);
         Vector2 at = GetWorldToScreen2D((Vector2){ a->x, a->y }, self->camera2d);
 
-        draw_overlays(self, a, at, PERSON_SCALE * zoom);
+        draw_overlays(self, a, at, self->person_scale * zoom);
     }
 }
 
@@ -970,9 +975,9 @@ clawt_office_scene_pointer(ClawtOfficeScene *self, gfloat x, gfloat y)
                                     self->camera3d, MAX(self->last_w, 1), MAX(self->last_h, 1));
             reach = 22.0f;
         } else {
-            at = GetWorldToScreen2D((Vector2){ a->x, a->y - 10.0f * PERSON_SCALE },
+            at = GetWorldToScreen2D((Vector2){ a->x, a->y - 10.0f * self->person_scale },
                                     self->camera2d);
-            reach = 16.0f * PERSON_SCALE * self->camera2d.zoom;
+            reach = 16.0f * self->person_scale * self->camera2d.zoom;
         }
         d = sqrtf((at.x - x) * (at.x - x) + (at.y - y) * (at.y - y));
         if (d <= reach && (best == NULL || d < best_d)) {

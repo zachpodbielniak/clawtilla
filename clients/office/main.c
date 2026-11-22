@@ -373,6 +373,26 @@ run_screenshot(Office *office)
 }
 
 /*
+ * A press, from the signal rather than the button's state: a click is a
+ * press and a release inside one dispatch, and polling "is it down" once
+ * a frame never saw it.
+ */
+static void
+on_inject_button(LrgInputInject *in, guint button, gboolean pressed, gfloat x, gfloat y,
+                 gpointer user_data)
+{
+    Office *office = user_data;
+    const gchar *under;
+
+    (void)in;
+    if (button != 0 || !pressed)
+        return;
+    under = clawt_office_scene_pointer(office->scene, x, y);
+    if (under != NULL)
+        announce_open(under);
+}
+
+/*
  * For the GTK client: frames out over the socket, input back.  The host
  * owns the size; a click on somebody is a line on stdout.  Ends when the
  * host closes its end.
@@ -383,7 +403,6 @@ run_embed(Office *office)
     g_autoptr(LrgFrameExport) out = NULL;
     g_autoptr(LrgInputInject) in = NULL;
     g_autoptr(GError) error = NULL;
-    gboolean was_down = FALSE;
     guint w = (guint)opt_width;
     guint h = (guint)opt_height;
 
@@ -392,6 +411,7 @@ run_embed(Office *office)
     InitWindow(opt_width, opt_height, "clawtilla office");
     out = lrg_frame_export_new(opt_embed, w, h, TRUE);
     in = lrg_input_inject_new(opt_embed);
+    g_signal_connect(in, "button", G_CALLBACK(on_inject_button), office);
 
     for (;;) {
         gfloat x = 0.0f;
@@ -400,8 +420,6 @@ run_embed(Office *office)
         gfloat sy = 0.0f;
         guint nw = 0;
         guint nh = 0;
-        gboolean down;
-        const gchar *under;
 
         if (!lrg_input_inject_dispatch(in, &error)) {
             /* the host went away: that is the end, not a failure */
@@ -419,11 +437,7 @@ run_embed(Office *office)
             clawt_office_scene_orbit(office->scene, 0.0f, sy);
         if (sx != 0.0f)
             clawt_office_scene_orbit(office->scene, sx * 0.1f, 0.0f);
-        under = clawt_office_scene_pointer(office->scene, x, y);
-        down = lrg_input_inject_is_button_down(in, 0);
-        if (down && !was_down && under != NULL)
-            announce_open(under);
-        was_down = down;
+        clawt_office_scene_pointer(office->scene, x, y);
 
         pump(office->context, FRAME_MS);
         load_pending(office);
