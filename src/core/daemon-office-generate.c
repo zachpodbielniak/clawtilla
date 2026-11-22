@@ -182,11 +182,17 @@ on_estimate(GObject *source, GAsyncResult *result, gpointer user_data)
     clawt_decision_set_options(decision, options);
     /* no deadline: nothing spends money but a person's yes */
     clawt_decision_set_default(decision, "decline", "nobody approved it, so nothing was spent");
-    if (clawt_decision_store_post(self->decisions, decision, &error) == NULL)
-        g_warning("office: could not ask about %s's character: %s", ask->agent,
-                  error->message);
-    else if (self->bus != NULL)
-        clawt_event_bus_emit(self->bus, "decision.asked", ask->agent);
+    {
+        /* post answers the stored id, which is ours to free */
+        g_autofree gchar *stored = clawt_decision_store_post(self->decisions, decision,
+                                                             &error);
+
+        if (stored == NULL)
+            g_warning("office: could not ask about %s's character: %s", ask->agent,
+                      error->message);
+        else if (self->bus != NULL)
+            clawt_event_bus_emit(self->bus, "decision.asked", ask->agent);
+    }
     ask_free(ask);
 }
 
