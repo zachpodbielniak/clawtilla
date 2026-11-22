@@ -779,6 +779,48 @@ test_two_fleets_visit(void)
     clawt_test_remove_tree(dir);
 }
 
+/*
+ * More people than a zone has seats stand in rows in front of them, each
+ * in a place of its own.  Standing room used to be the last seat for
+ * everybody: ten visitors from a real fleet drew as three, the other
+ * seven stacked on the third chair.
+ */
+static void
+test_a_full_zone_stands_in_rows(void)
+{
+    g_autofree gchar *dir = g_build_filename(CLAWT_TEST_FIXTURES, "..", "..", "data", "office",
+                                             "worlds", "modern-office", NULL);
+    g_autoptr(ClawtOfficeWorld) world = clawt_office_world_load(dir, NULL);
+    g_autoptr(ClawtOfficeChoreography) rules = clawt_office_choreography_new_default();
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(JsonNode) layout = NULL;
+    g_autoptr(GHashTable) spots = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    g_autoptr(GString) text = g_string_new("{\"fleet\":\"ours\",\"now\":1000,\"participants\":[");
+    JsonArray *placements;
+    guint i;
+
+    for (i = 0; i < 10; i++)
+        g_string_append_printf(text, "%s{\"fleet\":\"theirs\",\"kind\":\"external\","
+                               "\"id\":\"srv:a%u\",\"activity\":\"idle\",\"since\":990}",
+                               i > 0 ? "," : "", i);
+    g_string_append(text, "]}");
+    g_assert_nonnull(world);
+    g_assert_true(json_parser_load_from_data(parser, text->str, -1, NULL));
+    layout = clawt_office_direct(world, rules, json_node_get_object(json_parser_get_root(parser)));
+    placements = json_object_get_array_member(json_node_get_object(layout), "placements");
+    g_assert_cmpuint(json_array_get_length(placements), ==, 10);
+    for (i = 0; i < json_array_get_length(placements); i++) {
+        JsonObject *p = json_array_get_object_element(placements, i);
+        g_autofree gchar *spot = g_strdup_printf("%.1f,%.1f",
+            json_object_get_double_member(p, "x"), json_object_get_double_member(p, "y"));
+
+        g_assert_cmpstr(json_object_get_string_member(p, "zone"), ==, "visitors");
+        /* nobody on top of anybody */
+        g_assert_false(g_hash_table_contains(spots, spot));
+        g_hash_table_add(spots, g_steal_pointer(&spot));
+    }
+}
+
 gint
 main(gint argc, gchar *argv[])
 {
@@ -800,6 +842,7 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office/daemon", test_daemon_office);
     g_test_add_func("/office/peer-answers-are-sanitized", test_peer_answers_are_sanitized);
     g_test_add_func("/office/two-fleets-visit", test_two_fleets_visit);
+    g_test_add_func("/office/a-full-zone-stands-in-rows", test_a_full_zone_stands_in_rows);
     g_test_add_func("/office/daemon-file-stays-in-the-pack", test_daemon_file_stays_in_the_pack);
 
     return g_test_run();

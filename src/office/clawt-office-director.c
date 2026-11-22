@@ -15,6 +15,7 @@
 typedef struct {
     const ClawtOfficeZone *zone;
     GHashTable            *taken;   /* seat index -> participant id */
+    guint                  standing; /* how many are standing, the seats all taken */
 } Occupancy;
 
 typedef struct {
@@ -122,8 +123,18 @@ seat_in(Director *d, const gchar *tag, const gchar *team, guint need,
             return zone;
         }
     }
-    /* standing room */
-    *out_seat = seat_count(first) - 1;
+    /*
+     * Standing room, in rows in front of the seats: a seat number past
+     * the zone's count is standing, at row seat / count and place seat %
+     * count (add_anchor()).  It used to be the last seat for everybody,
+     * so ten visitors at a three-seat desk drew as three people with
+     * seven more stacked invisibly on the third.
+     */
+    {
+        Occupancy *o = occupancy_of(d, first);
+
+        *out_seat = seat_count(first) + o->standing++;
+    }
     return first;
 }
 
@@ -150,6 +161,8 @@ add_anchor(JsonBuilder *b, const ClawtOfficeZone *zone, guint seat, gdouble offs
 {
     guint two = zone->anchors_2d->len / 2;
     guint three = zone->anchors_3d->len / 3;
+    /* a standing row (see seat_in()): one place further out per row */
+    gdouble row = (gdouble)(seat / seat_count(zone)) * 1.1;
 
     if (two > 0) {
         guint s = seat % two;
@@ -158,7 +171,8 @@ add_anchor(JsonBuilder *b, const ClawtOfficeZone *zone, guint seat, gdouble offs
         json_builder_add_double_value(b, g_array_index(zone->anchors_2d, gdouble, s * 2) +
                                          offset * 32.0);
         json_builder_set_member_name(b, "y");
-        json_builder_add_double_value(b, g_array_index(zone->anchors_2d, gdouble, s * 2 + 1));
+        json_builder_add_double_value(b, g_array_index(zone->anchors_2d, gdouble, s * 2 + 1) +
+                                         row * 32.0);
     }
     if (three > 0) {
         guint s = seat % three;
@@ -167,7 +181,8 @@ add_anchor(JsonBuilder *b, const ClawtOfficeZone *zone, guint seat, gdouble offs
         json_builder_add_double_value(b, g_array_index(zone->anchors_3d, gdouble, s * 3) +
                                          offset);
         json_builder_set_member_name(b, "z3");
-        json_builder_add_double_value(b, g_array_index(zone->anchors_3d, gdouble, s * 3 + 2));
+        json_builder_add_double_value(b, g_array_index(zone->anchors_3d, gdouble, s * 3 + 2) +
+                                         row);
     }
 }
 
