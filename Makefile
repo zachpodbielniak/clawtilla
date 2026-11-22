@@ -547,7 +547,7 @@ all:
 
 .PHONY: all-impl  ## @internal
 all-impl: gsurf-bin $(OUTDIR)/clawt-version.h shared static daemon cli mcp-server relay \
-          gtk web lrg $(PROJECT_NAME)-1.0.pc plugins pod-modules gir
+          gtk web lrg office $(PROJECT_NAME)-1.0.pc plugins pod-modules gir
 
 # ── gsurf (GSURF=1) ───────────────────────────────────────────────────
 #
@@ -705,6 +705,14 @@ MCP_SOURCES    = $(wildcard $(MCP_SRCDIR)/*.c)
 GTK_SOURCES    = $(wildcard $(GTK_SRCDIR)/*.c)
 WEB_SOURCES    = $(wildcard $(WEB_SRCDIR)/*.c)
 LRG_SOURCES    = $(wildcard $(LRG_SRCDIR)/*.c)
+OFFICE_SRCDIR  = clients/office
+# The scene and the feed are shared with the lrg client's Office view;
+# main.c is clawtilla-office's own.
+OFFICE_SHARED_SOURCES = $(OFFICE_SRCDIR)/office-scene.c $(OFFICE_SRCDIR)/office-feed.c
+ifeq ($(OFFICE),1)
+LRG_SOURCES   += $(OFFICE_SHARED_SOURCES)
+LRG_CFLAGS    += -DCLAWT_HAVE_OFFICE=1 -I$(OFFICE_SRCDIR)
+endif
 # The page models are plain C over JSON and libclawt -- no libregnum
 # header -- so tests/test-lrg-models.c links them into every `make test`,
 # with or without LRG_BACKEND.
@@ -774,6 +782,7 @@ $(OUTDIR)/tests/test-web-render: $(WEB_SRCDIR)/web-ui.c \
 .PHONY: cli  ## Build the clawtilla CLI only
 .PHONY: gtk  ## Build clawtilla-gtk only (skipped, loudly, without libadwaita)
 .PHONY: web  ## Build the clawtilla-web htmx client only
+.PHONY: office  ## Build clawtilla-office, the drawn office (OFFICE=1, on libregnum at LRG_DIR)
 .PHONY: lrg  ## Build clawtilla-lrg, the libregnum client (LRG_BACKEND=1, LRG_DIR=../libregnum)
 .PHONY: lrg-lib  ## Rebuild LRG_DIR's libregnum archive when missing or stale
 .PHONY: lrg-check  ## Syntax-check one lrg client file: make LRG_BACKEND=1 lrg-check F=<file>
@@ -883,11 +892,32 @@ $(LRG_BIN_TARGET): $(LRG_SOURCES) $(wildcard $(LRG_SRCDIR)/*.h) $(LIB_STATIC) $(
 	@echo "Building $(LRG_BIN_NAME)..."
 	$(CC) $(CFLAGS) $(LRG_CFLAGS) -I$(LRG_SRCDIR) $(LRG_SOURCES) \
 		-o $@ $(LIB_STATIC) $(LRG_LDFLAGS)
+# ── The drawn office (OFFICE=1) ──────────────────────────────────────
+#
+# clawtilla-office: the scene and feed shared with the lrg client, and a
+# main.c of its own -- a window, --screenshot, and --embed for the GTK
+# client.  Linked exactly as the lrg client is (one yaml-glib).
+ifeq ($(OFFICE),1)
+office: lrg-yaml-check $(OFFICE_BIN_TARGET)
+
+$(OFFICE_BIN_TARGET): $(wildcard $(OFFICE_SRCDIR)/*.c) $(wildcard $(OFFICE_SRCDIR)/*.h) \
+                      $(LIB_STATIC) $(LRG_LIB) | $(OUTDIR) $(OUTDIR)/clawt-version.h
+	@echo "Building $(OFFICE_BIN_NAME)..."
+	$(CC) $(CFLAGS) $(LRG_CFLAGS) -I$(OFFICE_SRCDIR) $(wildcard $(OFFICE_SRCDIR)/*.c) \
+		-o $@ $(LIB_STATIC) $(LRG_LDFLAGS)
+else
+office:
+	@true
+endif
 else ifeq ($(LRG_BACKEND),1)
+office:
+	@true
 lrg lrg-lib lrg-yaml-check lrg-check:
 	@echo "Skipping $(LRG_BIN_NAME): no libregnum at LRG_DIR=$(LRG_DIR)."
 	@echo "  Clone libregnum there (with --recursive), or pass LRG_DIR=<path>."
 else
+office:
+	@true
 lrg lrg-lib lrg-yaml-check lrg-check:
 	@echo "Skipping $(LRG_BIN_NAME): build with LRG_BACKEND=1 (libregnum at LRG_DIR, default ../libregnum)."
 endif
@@ -1243,6 +1273,7 @@ install: all
 	@[ -x $(GTK_BIN_TARGET) ] && install -m 755 $(GTK_BIN_TARGET) $(DESTDIR)$(BINDIR)/ || true
 	@[ -x $(WEB_BIN_TARGET) ] && install -m 755 $(WEB_BIN_TARGET) $(DESTDIR)$(BINDIR)/ || true
 	@[ -x $(LRG_BIN_TARGET) ] && install -m 755 $(LRG_BIN_TARGET) $(DESTDIR)$(BINDIR)/ || true
+	@[ -x $(OFFICE_BIN_TARGET) ] && install -m 755 $(OFFICE_BIN_TARGET) $(DESTDIR)$(BINDIR)/ || true
 	@for h in $(PUBLIC_HEADERS); do \
 		sub=$$(dirname $${h#$(SRCDIR)/}); \
 		install -d $(DESTDIR)$(INCLUDEDIR)/$(PROJECT_NAME)-1.0/$$sub; \
@@ -1296,6 +1327,7 @@ uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(GTK_BIN_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/$(WEB_BIN_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/$(LRG_BIN_NAME)
+	rm -f $(DESTDIR)$(BINDIR)/$(OFFICE_BIN_NAME)
 	rm -rf $(DESTDIR)$(INCLUDEDIR)/$(PROJECT_NAME)-1.0
 	rm -f $(DESTDIR)$(PKGCONFIGDIR)/$(PROJECT_NAME)-1.0.pc
 	rm -rf $(DESTDIR)$(LIBDIR)/$(PROJECT_NAME)

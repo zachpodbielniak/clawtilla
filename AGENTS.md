@@ -39,6 +39,11 @@ make LRG_BACKEND=1
 make LRG_BACKEND=1 test
 make LRG_BACKEND=1 lrg-check F=clients/lrg/lrg-chat.c
 
+# The drawn office: clawtilla-office and the lrg Office view, on
+# libregnum >= 0.11.0 at LRG_DIR (OFFICE=1 implies LRG_BACKEND=1)
+make OFFICE=1
+make OFFICE=1 test
+
 # Full rebuild
 make clean all
 make DEBUG=1 ASAN=1 clean all
@@ -116,6 +121,11 @@ libregnum found them).  `make lrg-lib` rebuilds that checkout's archive in
 place when it is missing, older than its sources, or lacks a symbol in
 `LRG_REQUIRED_SYMBOLS`.  See `docs/lrg-client.org`.
 
+`OFFICE=1` (the drawn office, `clients/office/`) implies `LRG_BACKEND=1`
+and needs libregnum 0.11.0 or newer; loading a 3D level reaches
+libregnum's scripting, so it also links `girepository-2.0` and `gjs-1.0`
+(`gobject-introspection-devel`, `gjs-devel`).  See `docs/office.org`.
+
 Browser sessions are opt-in too (`GSURF=1`, `GSURF_DIR` defaulting to
 `../gsurf`).  clawtilla links nothing from gsurf: a session is Xvfb plus
 a gsurf process driven over gsurf's control socket, because the daemon
@@ -139,6 +149,7 @@ and builds `GSURF_DIR` when its binary is missing; building that needs
 | `clawtilla-relay` | runs inside a gated agent's bwrap box; bridges its loopback to the egress gate and broker |
 | `clawtilla-web` | the htmx web client |
 | `clawtilla-lrg` | the libregnum client (`LRG_BACKEND=1` only) |
+| `clawtilla-office` | the drawn office: a window, `--screenshot`, `--embed` for the GTK client (`OFFICE=1` only) |
 | `plugins/libclawt-plugin-*.so` | bundled plugins |
 | `Clawt-1.0.gir`, `Clawt-1.0.typelib` | introspection data |
 | `clawt-version.h`, `clawt-default-config.h`, `clawt-bundled-skills.h` | generated headers |

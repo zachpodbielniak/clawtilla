@@ -193,6 +193,18 @@ GTK_AVAILABLE  := $(shell pkg-config --exists $(GTK_PKG_DEPS) 2>/dev/null && ech
 # symbols -- so the lrg binary drops libreclaw's archive and takes
 # libregnum's.  That is only sound while libregnum's yaml-glib descends
 # from clawtilla's pin; `lrg-yaml-check` refuses the build otherwise.
+# The drawn office (OFFICE=1, since 0.59.0): clawtilla-office and the lrg
+# client's native Office view, both on libregnum, so it brings the lrg
+# backend with it.  libregnum 0.11.0 is the first with the world-space
+# UI, the Tiled importer and frame export the office is drawn with.
+# Loading a .rlevel reaches libregnum's scripting, so the office also
+# links girepository-2.0 and gjs-1.0 when libregnum was built with them
+# (gobject-introspection-devel and gjs-devel on Fedora).
+OFFICE ?= 0
+ifeq ($(OFFICE),1)
+LRG_BACKEND := 1
+endif
+
 LRG_BACKEND ?= 0
 LRG_DIR     ?= $(abspath $(CURDIR)/../libregnum)
 LRG_LIB      = $(LRG_DIR)/build/release/lib/liblibregnum.a
@@ -204,7 +216,11 @@ LRG_REQUIRED_SYMBOLS = lrg_canvas_new lrg_island_new lrg_text_editor_new \
                        lrg_markdown_label_new lrg_table_new lrg_node_graph_new \
                        lrg_toast_queue_new lrg_header_bar_new lrg_switcher_new \
                        lrg_timeline_view_new lrg_property_grid_new \
-                       lrg_label_set_ellipsize
+                       lrg_label_set_ellipsize \
+                       $(if $(filter 1,$(OFFICE)),lrg_tiled_map_new_from_file \
+                       lrg_nameplate_new lrg_speech_bubble_new lrg_emote_new_glyph \
+                       lrg_beam_new lrg_frame_export_new lrg_input_inject_new \
+                       lrg_viewport_set_render_func lrg_level_load_world3d)
 
 ifeq ($(LRG_BACKEND),1)
 LRG_AVAILABLE := $(shell test -f $(LRG_DIR)/src/libregnum.h && echo 1 || echo 0)
@@ -236,7 +252,9 @@ LRG_PKG_DEPS = zlib libpq openssl sqlite3 fribidi \
                $(if $(shell pkg-config --exists python3-embed && echo y),python3-embed)
 LRG_SYS_LIBS = $(shell pkg-config --libs $(LRG_PKG_DEPS) 2>/dev/null) \
                $(shell pkg-config --libs wayland-client wayland-cursor wayland-egl xkbcommon 2>/dev/null) \
-               -lGL -lX11 -lm -lpthread -ldl -lrt -lreadline
+               -lGL -lX11 -lm -lpthread -ldl -lrt -lreadline \
+               $(if $(filter 1,$(OFFICE)),$(shell pkg-config --libs girepository-2.0 2>/dev/null) \
+               $(shell pkg-config --libs gjs-1.0 2>/dev/null))
 
 # libreclaw's group without its yaml-glib (see above).
 LRG_LIBRECLAW_LIBS = $(filter-out $(LR_YAML_GLIB_DIR)/build/release/libyaml-glib-1.0.a,$(LIBRECLAW_LIBS))
@@ -359,6 +377,9 @@ WEB_BIN_TARGET = $(OUTDIR)/$(WEB_BIN_NAME)
 
 LRG_BIN_NAME = clawtilla-lrg
 LRG_BIN_TARGET = $(OUTDIR)/$(LRG_BIN_NAME)
+
+OFFICE_BIN_NAME = clawtilla-office
+OFFICE_BIN_TARGET = $(OUTDIR)/$(OFFICE_BIN_NAME)
 
 # The agent-facing MCP server.  An agent's AI CLI starts this; it is not
 # meant to be run by hand.

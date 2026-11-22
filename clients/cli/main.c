@@ -9167,9 +9167,13 @@ cmd_connector(int argc, char *argv[])
         /*
          * A server reached by URL is asked how to sign in to it now --
          * the person is here and has just asked for this server, which is
-         * the moment the network is wanted.
+         * the moment the network is wanted.  Asked for a catalogue entry
+         * too, not only for --url: one that names its server (higgsfield)
+         * discovers its sign-in the same way, and "needs --client-id" was
+         * the wrong advice for it.  The daemon answers without the
+         * network for a provider that is not reached by URL.
          */
-        if (have_url) {
+        {
             g_autoptr(JsonNode) found = call(client, "connector.discover",
                                              build_payload("name", name,
                                                            NULL));
