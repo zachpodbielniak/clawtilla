@@ -598,6 +598,44 @@ test_the_subnav_escapes_the_agent_id(void)
 /* ── The stylesheet ──────────────────────────────────────────────── */
 
 /*
+ * Every custom property the stylesheet reads, it defines.  A var() of a
+ * name nobody declares is not an error to a browser: the declaration
+ * silently falls back, so the MCP app card drew with no border and the
+ * browser's own text colour for as long as it read --border and --fg,
+ * names this stylesheet never had.  A var() with a fallback is left out:
+ * those are set by the page's own script (the eyes' --look-x) and the
+ * fallback is the deliberate answer until it runs.
+ */
+static void
+test_every_var_is_defined(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+    const gchar *cursor = css;
+    guint used = 0;
+
+    while ((cursor = strstr(cursor, "var(--")) != NULL) {
+        const gchar *name = cursor + 4;
+        const gchar *end = name;
+        g_autofree gchar *wanted = NULL;
+        g_autofree gchar *definition = NULL;
+
+        while (g_ascii_isalnum(*end) || *end == '-' || *end == '_')
+            end++;
+        wanted = g_strndup(name, (gsize)(end - name));
+        if (*end == ',') {
+            cursor = end;
+            continue;
+        }
+        definition = g_strconcat(wanted, ":", NULL);
+        if (strstr(css, definition) == NULL)
+            g_error("the stylesheet reads %s and never defines it", wanted);
+        used++;
+        cursor = end;
+    }
+    g_assert_cmpuint(used, >, 0);
+}
+
+/*
  * Every colour is defined on bare :root as well as in the theme blocks.
  * A colour whose only definition is inside a media query has no value at
  * all for a reader whose browser does not match it -- and the page then
@@ -3334,6 +3372,7 @@ main(int argc, char *argv[])
                     test_the_narrow_sidebar_is_a_drawer);
     g_test_add_func("/web/the-palette-is-defined-outside-a-media-query",
                     test_the_palette_is_defined_outside_a_media_query);
+    g_test_add_func("/web/style/every-var-is-defined", test_every_var_is_defined);
     g_test_add_func("/web/style/sidebar-head-wraps",
                     test_the_sidebar_head_wraps);
     g_test_add_func("/web/the-composer-does-not-clip-its-completions",

@@ -596,14 +596,14 @@ clawt_web_stylesheet(void)
      * An MCP app: a card in the transcript, closed until opened; the
      * frame has a border so its edge is the sandbox's edge, visibly.
      */
-    ".app-card{border:1px solid var(--border);border-radius:8px;"
-    "padding:.4rem .6rem;color:var(--fg)}"
+    ".app-card{border:1px solid var(--line-strong);border-radius:8px;"
+    "padding:.4rem .6rem;color:var(--ink)}"
     ".app-card .app-title{margin:0 0 .3rem;font-weight:600}"
     ".app-body{display:flex;flex-direction:column;gap:.3rem;"
     "align-items:flex-start}"
     ".app-frame{display:flex;flex-direction:column;gap:.3rem;width:100%}"
     ".app-view{width:100%;min-height:120px;height:360px;border:1px solid "
-    "var(--border);border-radius:6px;background:#fff}"
+    "var(--line-strong);border-radius:6px;background:#fff}"
     /*
      * A run of tool calls opens to the commands in it.  The marker is
      * the only affordance saying so, so it keeps the pointer cursor and
@@ -722,7 +722,7 @@ clawt_web_stylesheet(void)
       "background:rgba(0,0,0,0.72);cursor:zoom-out}"
     "#avatar-zoom.on{display:flex}"
     "#avatar-zoom img{max-width:min(90vw,720px);max-height:90vh;"
-      "border-radius:12px;background:var(--surface-1)}"
+      "border-radius:12px;background:var(--surface)}"
     /*
      * The `<img>` half of clawt_web_avatar(): decoded and cropped to
      * fill its circle rather than stretched to it, whatever the
