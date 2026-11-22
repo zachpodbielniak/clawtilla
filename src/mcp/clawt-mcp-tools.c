@@ -51,6 +51,8 @@ typedef enum {
     NEEDS_DISPLAY,
     NEEDS_DISPLAY_INPUT,
     NEEDS_DISPLAY_SPAWN,
+    NEEDS_EPHEMERAL_SPAWN,
+    NEEDS_EPHEMERAL_PARENT,
     NEEDS_NEVER
 } ToolRequirement;
 
@@ -845,6 +847,35 @@ static const ClawtParamInfo wait_id_params[] = {
 	  "names it.", TRUE }
 };
 
+static const ClawtParamInfo ephemeral_spawn_params[] = {
+    { "description", "string",
+      "What this helper is for, in one line. It becomes the helper's "
+      "description, so the fleet can tell your helpers apart.", TRUE },
+    { "purpose", "string",
+      "Its instructions, in prose, addressed to it: what to do, how, and "
+      "what to report back. Optional; without it the helper starts with "
+      "a plain workspace and learns the job from what you delegate.", FALSE },
+    { "name", "string",
+      "Its id, if you want to choose one: lowercase letters, digits, '-' "
+      "and '_'. Leave it out for a generated one like turbo-narwhal.", FALSE },
+    { "provider", "string",
+      "Another backend than yours, from clawtilla_agent_options. Defaults "
+      "to yours.", FALSE },
+    { "model", "string", "Another model than yours. Defaults to yours.", FALSE },
+    { "computer", "string",
+      "none, host or container. Defaults to yours when that is none or the "
+      "host, else none. Never more than you have; never a VM.", FALSE },
+    { "container_image", "string",
+      "For computer=container: the image, e.g. fedora:latest.", FALSE }
+};
+
+static const ClawtParamInfo ephemeral_reap_params[] = {
+    { "agent_id", "string", "Which of your helpers.", TRUE },
+    { "force", "boolean",
+      "Reap it even with work still open, dropping that work. Defaults to "
+      "false, which refuses and names the open tasks.", FALSE }
+};
+
 /* ── The tools ───────────────────────────────────────────────────── */
 
 #define TOOL(name_, desc_, req_, params_, action_) \
@@ -875,6 +906,26 @@ static const ToolDefinition tools[] = {
          "reversible from here -- say what you are about to make and why "
          "before you make it.",
          NEEDS_FLEET_ADMIN, create_agent_params, CLAWT_ACTION_FLEET_ADMIN),
+
+    TOOL("clawtilla_ephemeral_spawn",
+         "Spawn an ephemeral agent: a temporary helper for one piece of "
+         "work, running the way you run, which stays until you reap it. "
+         "Then hand it the work with clawtilla_delegate. Use one when a "
+         "piece of work is separable and worth its own context; do the "
+         "small things yourself. Each helper is a running process, so "
+         "reap it when its work is done.",
+         NEEDS_EPHEMERAL_SPAWN, ephemeral_spawn_params, CLAWT_ACTION_FLEET_ADMIN),
+
+    TOOL("clawtilla_ephemeral_list",
+         "Your ephemeral agents: what each is for, whether it is running, "
+         "and whether it has work open.",
+         NEEDS_EPHEMERAL_PARENT, no_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_ephemeral_reap",
+         "End one of your ephemeral agents once its work is done: it is "
+         "stopped and its workspace removed. Refused while it has work "
+         "open unless force is true. Only you, its parent, can reap it.",
+         NEEDS_EPHEMERAL_PARENT, ephemeral_reap_params, CLAWT_ACTION_FLEET_ADMIN),
 
     TOOL("clawtilla_get_agent",
          "Look up one agent: its description, state and what it can do.",
@@ -1546,6 +1597,10 @@ struct _ClawtMcpTools {
     gpointer                grok_data;
     GDestroyNotify          grok_destroy;
 
+    ClawtMcpEphemeralHooks  ephemeral;
+    gpointer                ephemeral_data;
+    GDestroyNotify          ephemeral_destroy;
+
     /* The daemon's browser sessions, for clawtilla_browser_*; NULL offers none. */
     ClawtBrowserManager    *browsers;
 
@@ -1696,6 +1751,26 @@ clawt_mcp_tools_set_grok_hooks(ClawtMcpTools           *self,
 
     self->grok_data = user_data;
     self->grok_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_ephemeral_hooks(ClawtMcpTools                *self,
+                                    const ClawtMcpEphemeralHooks *hooks,
+                                    gpointer                      user_data,
+                                    GDestroyNotify                destroy)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    if (self->ephemeral_destroy != NULL && self->ephemeral_data != NULL)
+        self->ephemeral_destroy(self->ephemeral_data);
+
+    if (hooks != NULL)
+        self->ephemeral = *hooks;
+    else
+        memset(&self->ephemeral, 0, sizeof(self->ephemeral));
+
+    self->ephemeral_data = user_data;
+    self->ephemeral_destroy = destroy;
 }
 
 /* The bots an agent may reach, or NULL when it may reach none. */
@@ -2859,6 +2934,35 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
 
         if (!clawt_agent_config_get_boolean(clawt_agent_get_config(agent),
                                             "tools.manage_fleet"))
+            return FALSE;
+        break;
+
+    case NEEDS_EPHEMERAL_SPAWN:
+        /*
+         * The permission, asked of the agent's own config so the chief's
+         * role default applies; and never to a helper, whose copy has
+         * the key off but whose parent's might be edited back on.
+         */
+        if (self->ephemeral.spawn == NULL)
+            return FALSE;
+        if (clawt_agent_config_is_ephemeral(clawt_agent_get_config(agent)) ||
+            !clawt_agent_config_get_boolean(clawt_agent_get_config(agent),
+                                            "tools.ephemeral"))
+            return FALSE;
+        break;
+
+    case NEEDS_EPHEMERAL_PARENT:
+        /*
+         * Listing and reaping need no permission of their own beyond
+         * having helpers: an agent whose tools.ephemeral was turned off
+         * after spawning must still be able to clean up after itself.
+         */
+        if (self->ephemeral.list == NULL)
+            return FALSE;
+        if (!clawt_agent_config_get_boolean(clawt_agent_get_config(agent),
+                                            "tools.ephemeral") &&
+            (self->ephemeral.has_children == NULL ||
+             !self->ephemeral.has_children(agent_id, self->ephemeral_data)))
             return FALSE;
         break;
 
@@ -10530,6 +10634,14 @@ tools_call(ClawtMcpTools *self,
         text = tool_agent_options(self);
     else if (g_strcmp0(tool_name, "clawtilla_create_agent") == 0)
         text = tool_create_agent(self, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_ephemeral_spawn") == 0)
+        text = self->ephemeral.spawn(agent_id, arguments, &is_error,
+                                     self->ephemeral_data);
+    else if (g_strcmp0(tool_name, "clawtilla_ephemeral_list") == 0)
+        text = self->ephemeral.list(agent_id, self->ephemeral_data);
+    else if (g_strcmp0(tool_name, "clawtilla_ephemeral_reap") == 0)
+        text = self->ephemeral.reap(agent_id, arguments, &is_error,
+                                    self->ephemeral_data);
     else if (g_strcmp0(tool_name, "clawtilla_get_agent") == 0)
         text = tool_get_agent(self, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_message_agent") == 0 ||
@@ -10824,6 +10936,11 @@ clawt_mcp_tools_dispose(GObject *object)
     }
     self->search = NULL;
 
+    if (self->ephemeral_destroy != NULL && self->ephemeral_data != NULL) {
+        self->ephemeral_destroy(self->ephemeral_data);
+        self->ephemeral_destroy = NULL;
+        self->ephemeral_data = NULL;
+    }
     if (self->grok_destroy != NULL && self->grok_data != NULL) {
         self->grok_destroy(self->grok_data);
         self->grok_destroy = NULL;

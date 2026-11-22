@@ -406,6 +406,8 @@ clawt_lrg_agent_row_new(JsonObject *agent, GHashTable *unread,
     row->standing = clawt_team_badge_for(
         clawt_ipc_payload_boolean(agent, "chief_of_staff", FALSE),
         clawt_ipc_payload_string(agent, "team_role"));
+    row->helper = clawt_ephemeral_badge_for(agent, &row->helper_tone,
+                                            &row->helper_tooltip);
     row->unread = clawt_lrg_unread_count(unread, row->dm_room);
 
     /*
@@ -487,6 +489,7 @@ clawt_lrg_agent_row_free(ClawtLrgAgentRow *row)
     g_free(row->computer);
     g_free(row->fallback);
     g_free(row->fallback_message);
+    g_free(row->helper_tooltip);
     g_free(row);
 }
 

@@ -14,6 +14,7 @@
 #endif
 
 #include <glib.h>
+#include <json-glib/json-glib.h>
 
 #include "clawt-enums.h"
 #include "config/clawt-config.h"
@@ -113,8 +114,9 @@ ClawtTeamBadge clawt_team_badge_for(gboolean     chief_of_staff,
  *   what is wrong, one line each
  *
  * Checks the things that can only be seen with the whole fleet in view:
- * a team with two leads, an agent naming a team that does not exist, and
- * a team with a lead and nobody to lead.
+ * a team with two leads, an agent naming a team that does not exist, a
+ * team with a lead and nobody to lead, a tag that cannot be one, and a
+ * unique tag on two teams.
  *
  * Warnings rather than errors. A fleet is edited by hand and half-built
  * states are ordinary; refusing to start over one would be far worse
@@ -124,5 +126,122 @@ ClawtTeamBadge clawt_team_badge_for(gboolean     chief_of_staff,
  */
 gboolean clawt_team_validate_fleet(ClawtConfig  *config,
                                    GStrv        *warnings);
+
+/**
+ * CLAWT_TEAM_TAG_EPHEMERAL:
+ *
+ * The team ephemeral agents join (since 0.55.0).
+ */
+#define CLAWT_TEAM_TAG_EPHEMERAL "ephemeral"
+
+/**
+ * ClawtTeamTagInfo:
+ * @name: the tag, as written in `teams.tags`
+ * @label: how to show it to a person
+ * @description: what giving a team this tag does
+ * @unique: whether only one team may carry it
+ *
+ * A tag some feature of clawtilla looks for.
+ */
+typedef struct {
+    const gchar *name;
+    const gchar *label;
+    const gchar *description;
+    gboolean     unique;
+} ClawtTeamTagInfo;
+
+/**
+ * clawt_team_tag_count:
+ *
+ * Returns: how many well-known tags there are
+ */
+guint clawt_team_tag_count(void);
+
+/**
+ * clawt_team_tag_nth:
+ * @n: an index below clawt_team_tag_count()
+ *
+ * The well-known tags, in the order to show them.  Walk this rather
+ * than keeping a list: a client's copy is a copy that drifts.
+ *
+ * Returns: (transfer none) (nullable): the tag, or %NULL past the end
+ */
+const ClawtTeamTagInfo *clawt_team_tag_nth(guint n);
+
+/**
+ * clawt_team_tag_lookup:
+ * @name: (nullable): a tag
+ *
+ * Returns: (transfer none) (nullable): @name's entry when it is
+ *   well-known, else %NULL -- which is not an error: a tag nobody here
+ *   knows is a person's or a plugin's
+ */
+const ClawtTeamTagInfo *clawt_team_tag_lookup(const gchar *name);
+
+/**
+ * clawt_team_tag_is_valid:
+ * @name: (nullable): a tag
+ *
+ * Lowercase letters, digits and hyphens, starting with a letter, with
+ * at most one `vendor:` prefix of the same shape: `ephemeral`,
+ * `acme:night-shift`.  Kept narrow so a tag is safe in a file name, a
+ * URL and a chip, and cannot be confused with a team id containing it.
+ *
+ * Returns: %TRUE when @name can be a tag
+ */
+gboolean clawt_team_tag_is_valid(const gchar *name);
+
+/**
+ * clawt_team_spec_has_tag:
+ * @team: a team
+ * @tag: a tag
+ *
+ * Returns: %TRUE when @team carries @tag
+ */
+gboolean clawt_team_spec_has_tag(const ClawtTeamSpec *team, const gchar *tag);
+
+/**
+ * clawt_team_find_by_tag:
+ * @config: the fleet configuration
+ * @tag: a tag
+ *
+ * The team a feature means by @tag: the first in the team list (by
+ * `order`, then file order) that carries it.  A second team carrying a
+ * unique tag is reported by clawt_team_validate_fleet() and otherwise
+ * ignored, so the answer here and the warning there name the same team.
+ *
+ * Returns: (transfer full) (nullable): the team's id, or %NULL when no
+ *   team carries @tag
+ */
+gchar *clawt_team_find_by_tag(ClawtConfig *config, const gchar *tag);
+
+/**
+ * clawt_team_tags_label:
+ * @team: (nullable): a team from `team.list`
+ *
+ * The team's tags, comma separated, in the order written -- what a team
+ * editor's Tags field shows and what `team.set` reads back from one.
+ *
+ * Returns: (transfer full): the tags, or an empty string for none
+ */
+gchar *clawt_team_tags_label(JsonObject *team);
+
+/**
+ * clawt_ephemeral_badge_for:
+ * @agent: (nullable): an agent from `agent.list`
+ * @out_tone: (out) (optional) (transfer none): the badge's tone, `warn`
+ *   when its work is done and it is waiting to be reaped, else `neutral`
+ * @out_tooltip: (out) (optional) (transfer full): whose helper it is
+ *   and what state it is in, for a tooltip or a row's subtitle
+ *
+ * Whether to badge @agent as an ephemeral helper (since 0.55.0), from
+ * `agent.list`'s `ephemeral`, `parent` and `awaiting_reap` -- one answer
+ * for every client's sidebar.  The badge's text is "HELPER".
+ *
+ * Returns: %TRUE when @agent is ephemeral
+ */
+gboolean clawt_ephemeral_badge_for(JsonObject   *agent,
+                                   const gchar **out_tone,
+                                   gchar       **out_tooltip);
 
 G_END_DECLS

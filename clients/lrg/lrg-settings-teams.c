@@ -43,6 +43,7 @@ typedef struct {
     gchar       *team_id;
     LrgWidget   *name_entry;     /* unowned: the dialog's */
     LrgWidget   *desc_entry;
+    LrgWidget   *tags_entry;
     LrgDialog   *dialog;         /* weak */
     guint        pending;
     gboolean     failed;
@@ -69,9 +70,9 @@ team_editor_release(gpointer data)
 }
 
 /*
- * Both halves of a save have to land before it is a save: the name and
- * the description are two `team.set` frames, and saying "Saved" after
- * the first would be saying it about half.
+ * Every part of a save has to land before it is a save: the name, the
+ * description and the tags are three `team.set` frames, and saying
+ * "Saved" after the first would be saying it about a third.
  */
 static void
 on_team_set(ClawtLrgApp *app, JsonNode *reply, const GError *error,
@@ -102,12 +103,13 @@ on_team_save(ClawtLrgApp *app, LrgDialog *dialog, gint response,
     TeamEditor *editor = user_data;
     const gchar *name = clawt_lrg_entry_text(editor->name_entry);
     const gchar *description = clawt_lrg_entry_text(editor->desc_entry);
+    const gchar *tags = clawt_lrg_entry_text(editor->tags_entry);
 
     /* a save already in flight is not started twice */
     if (editor->pending > 0)
         return FALSE;
 
-    editor->pending = 2;
+    editor->pending = 3;
     editor->failed = FALSE;
 
     clawt_lrg_request(app, "team.set",
@@ -126,8 +128,16 @@ on_team_save(ClawtLrgApp *app, LrgDialog *dialog, gint response,
                                             NULL),
                       CLAWT_LRG_REQUEST_NONE, on_team_set,
                       g_rc_box_acquire(editor), team_editor_release);
+    /* comma separated; the daemon splits and refuses a malformed tag */
+    clawt_lrg_request(app, "team.set",
+                      clawt_ipc_payload_new("team", editor->team_id,
+                                            "key", "tags",
+                                            "value", (*tags != '\0') ? tags : NULL,
+                                            NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_team_set,
+                      g_rc_box_acquire(editor), team_editor_release);
 
-    /* kept open until both answer, so a refusal leaves the text there */
+    /* kept open until all answer, so a refusal leaves the text there */
     return FALSE;
 }
 
@@ -206,7 +216,7 @@ on_remove_clicked(LrgButton *button, gpointer user_data)
 
 static void
 open_team(ClawtLrgApp *app, const gchar *team_id, const gchar *name,
-          const gchar *description)
+          const gchar *description, const gchar *tags)
 {
     TeamEditor *editor = g_rc_box_new0(TeamEditor);
     LrgWidget *form = clawt_lrg_form_new();
@@ -231,6 +241,12 @@ open_team(ClawtLrgApp *app, const gchar *team_id, const gchar *name,
                        "which team a piece of work belongs to. Say what this "
                        "team handles and what it does not -- the names on it "
                        "do not say that.");
+
+    editor->tags_entry = clawt_lrg_entry(tags, "ephemeral, acme:night-shift");
+    clawt_lrg_form_add(form, "Tags", editor->tags_entry,
+                       "Comma separated. A tag gives the team a job in "
+                       "clawtilla whatever it is called: `ephemeral` makes it "
+                       "the team ephemeral helpers join.");
 
     remove = clawt_lrg_button("Remove this team", "danger",
                               G_CALLBACK(on_remove_clicked), editor);
@@ -259,7 +275,8 @@ on_edit_clicked(LrgButton *button, gpointer user_data)
 
     open_team(app, g_object_get_data(object, "clawt-team"),
               g_object_get_data(object, "clawt-team-name"),
-              g_object_get_data(object, "clawt-team-desc"));
+              g_object_get_data(object, "clawt-team-desc"),
+              g_object_get_data(object, "clawt-team-tags"));
 }
 
 /* ── Adding one ───────────────────────────────────────────────────── */
@@ -403,6 +420,8 @@ on_list(ClawtLrgApp *app, JsonNode *reply, const GError *error,
                                g_strdup((description != NULL)
                                             ? description : ""),
                                g_free);
+        g_object_set_data_full(G_OBJECT(edit), "clawt-team-tags",
+                               clawt_team_tags_label(team), g_free);
         clawt_lrg_row_add_suffix(row, edit);
 
         if (clawt_ipc_payload_int(team, "running", 0) > 0)

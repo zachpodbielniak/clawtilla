@@ -1211,6 +1211,39 @@ add_waits_card(
 	htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
 }
 
+/*
+ * A helper's card says whose it is and offers Reap (agent.reap), which is
+ * what it was always going to come to; open work goes with it.
+ */
+static gboolean
+add_reap_card(HtmxElement *parent, const gchar *agent_id, JsonObject *agent)
+{
+    g_autofree gchar *helper = NULL;
+    g_autofree gchar *escaped = NULL;
+    g_autofree gchar *action = NULL;
+    g_autofree gchar *confirm = NULL;
+
+    if (!clawt_ephemeral_badge_for(agent, NULL, &helper))
+        return FALSE;
+
+    escaped = g_uri_escape_string(agent_id, NULL, FALSE);
+    action = g_strdup_printf("/a/%s/reap", escaped);
+    confirm = g_strdup_printf("Reap %s? It stops, its workspace is removed, and "
+                              "any work still open on it is dropped.", agent_id);
+    {
+        g_autoptr(HtmxDiv) card = clawt_web_card("Reaping this helper", helper);
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+        clawt_web_add(row, clawt_web_post_button("Reap helper", action, "danger",
+                                                 confirm));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(row));
+        htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
+    }
+    return TRUE;
+}
+
 static void
 add_danger_card(HtmxElement *parent, const gchar *agent_id)
 {
@@ -1554,7 +1587,8 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
     clawt_web_add_files_card(app, HTMX_ELEMENT(pad), agent_id);
     clawt_web_add_memory_card(app, HTMX_ELEMENT(pad), agent_id, NULL);
 
-    add_danger_card(HTMX_ELEMENT(pad), agent_id);
+    if (!add_reap_card(HTMX_ELEMENT(pad), agent_id, agent))
+        add_danger_card(HTMX_ELEMENT(pad), agent_id);
 
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
@@ -1979,6 +2013,24 @@ on_remove(HtmxRequest *request, GHashTable *params, gpointer user_data)
 }
 
 static HtmxResponse *
+on_reap(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+    clawt_web_payload_set_bool(payload, "force", TRUE);
+    reply = clawt_web_app_call(app, "agent.reap",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, agent_id, CLAWT_PAGE_AGENT,
+                                    clawt_web_app_last_error(app));
+    return clawt_web_redirect(request, "/");
+}
+
+static HtmxResponse *
 on_reset(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
     ClawtWebApp *app = user_data;
@@ -2251,6 +2303,7 @@ clawt_web_register_agent(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/a/:id/set", on_save, app);
     htmx_router_post(router, "/a/:id/fallbacks", on_fallbacks, app);
     htmx_router_post(router, "/a/:id/remove", on_remove, app);
+    htmx_router_post(router, "/a/:id/reap", on_reap, app);
     htmx_router_post(router, "/a/:id/reset", on_reset, app);
     htmx_router_post(router, "/a/:id/wait/cancel", on_wait_cancel, app);
     htmx_router_get(router, "/a/:id/avatar", on_avatar_get, app);

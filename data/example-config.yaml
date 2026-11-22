@@ -740,6 +740,22 @@ orchestration:
   # been stopped nothing is left running to start it again.
   pair_quiet_minutes: 30
 
+  # How many ephemeral agents one agent may have at once. A spawn past it
+  # is refused with the list of the ones it has, so the answer to the
+  # refusal is to reap one. 0 means none at all.
+  ephemeral_max_per_parent: 5
+
+  # How many ephemeral agents the whole fleet may have at once, whoever
+  # spawned them. Each one is a running CLI process, so this is a ceiling
+  # on what a busy afternoon can start. 0 means none at all.
+  ephemeral_max_fleet: 20
+
+  # How long an ephemeral agent may sit with its work finished and nothing
+  # assigned before its parent is reminded, once, to reap it. Nothing is
+  # reaped automatically: the parent decides when the work is really
+  # done. 0 means never remind.
+  ephemeral_reap_reminder_hours: 24
+
   # Hand an agent's answer to the asker in the conversation it asked
   # from, rather than in the room the two agents share.
   #
@@ -1497,6 +1513,20 @@ teams:
 
     # Where this team sits in the list, lowest first. Ties keep file order.
     order: 0
+
+    # Labels that give this team a job in the software, by tag rather than
+    # by name, so the team can be called whatever you like.
+    #
+    # A well-known tag is one a feature looks for: `ephemeral` is the team
+    # ephemeral agents join (clawtilla makes one called Ephemeral the first
+    # time it needs it; tag a team of your own to use that instead).  Some
+    # tags belong to one team only, and a second team carrying one is a
+    # fleet warning -- the first in the team list keeps it.  Any other tag
+    # is kept and shown, for your own use or a plugin's; a plugin's tags
+    # are written `vendor:name`.  A tag is lowercase letters, digits and
+    # hyphens.  `clawtilla team tag list --well-known` lists the tags this
+    # clawtilla knows.  See docs/team-tags.org.
+    tags: []
 
     # Skills every agent on this team gets.
     #
@@ -4420,6 +4450,19 @@ agents:
       # Intended for a chief-of-staff you talk to about what the fleet needs.
       # DANGEROUS: read docs/security.org before enabling this.
       manage_fleet: false
+
+      # Whether this agent may spawn ephemeral agents: temporary helpers that
+      # do one piece of work and are then reaped (clawtilla_ephemeral_spawn,
+      # clawtilla_ephemeral_reap).
+      #
+      # On for the chief of staff unless set otherwise, off for every other
+      # agent. A helper copies how its parent runs -- runtime, confinement,
+      # model, tools, skills -- and can never do more: it cannot spawn helpers
+      # of its own, cannot create agents, and gets a computer no stronger than
+      # its parent's. It stays, across restarts, until the agent that spawned
+      # it reaps it; only that agent or you can. See docs/ephemeral-agents.org.
+      # DANGEROUS: read docs/security.org before enabling this.
+      ephemeral: false
 
       # Whether this agent may schedule its own routines.
       #

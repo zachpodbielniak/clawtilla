@@ -21,6 +21,7 @@ typedef struct {
     gchar       *team_id;
     GtkWidget   *name_entry;
     GtkWidget   *description_entry;
+    GtkWidget   *tags_entry;
 } TeamDialog;
 
 static void
@@ -91,6 +92,18 @@ on_team_saved(GtkButton *button, gpointer user_data)
 
     if (named == NULL || described == NULL)
         return;
+
+    /* comma separated; the daemon splits it and refuses a malformed tag */
+    {
+        g_autoptr(JsonNode) tagged = clawt_window_request(
+            editor->window, "team.set",
+            clawt_build_payload("team", editor->team_id, "key", "tags",
+                                "value", clawt_gtk_answer_of(editor->tags_entry),
+                                NULL));
+
+        if (tagged == NULL)
+            return;
+    }
 
     clawt_window_toast(editor->window, "Saved.");
     clawt_gtk_refresh_settings_teams(editor->window);
@@ -171,6 +184,15 @@ on_team_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               editor->description_entry);
 
+    editor->tags_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(editor->tags_entry), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(editor->tags_entry),
+                                  "Tags, comma separated");
+    gtk_editable_set_text(
+        GTK_EDITABLE(editor->tags_entry),
+        (const gchar *)g_object_get_data(G_OBJECT(row), "clawt-team-tags"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), editor->tags_entry);
+
     /*
      * Said here rather than left implicit. This description is not a
      * label: the chief of staff reads it to decide what belongs to this
@@ -180,7 +202,9 @@ on_team_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
         ADW_PREFERENCES_GROUP(group),
         "The chief of staff reads the description to decide which team a "
         "piece of work belongs to. Say what this team handles and what it "
-        "does not -- the names on it do not say that.");
+        "does not -- the names on it do not say that. Tags give the team a "
+        "job in clawtilla whatever it is called: `ephemeral` makes it the "
+        "team ephemeral helpers join.");
 
     save = gtk_button_new_with_label("Save changes");
     gtk_widget_add_css_class(save, "suggested-action");
@@ -312,15 +336,20 @@ clawt_gtk_refresh_settings_teams(ClawtWindow *self)
             GtkWidget *row = adw_action_row_new();
             g_autofree gchar *subtitle = NULL;
 
-            subtitle = g_strdup_printf(
-                "%s \342\200\224 %" G_GINT64_FORMAT " of %"
-                G_GINT64_FORMAT " running, lead: %s",
-                (description != NULL && *description != '\0')
-                    ? description
-                    : "no description, so nothing will be sent here",
-                clawt_json_int(team, "running", 0),
-                clawt_json_int(team, "total", 0),
-                lead != NULL ? lead : "nobody");
+            {
+                g_autofree gchar *tags = clawt_team_tags_label(team);
+
+                subtitle = g_strdup_printf(
+                    "%s \342\200\224 %" G_GINT64_FORMAT " of %"
+                    G_GINT64_FORMAT " running, lead: %s%s%s",
+                    (description != NULL && *description != '\0')
+                        ? description
+                        : "no description, so nothing will be sent here",
+                    clawt_json_int(team, "running", 0),
+                    clawt_json_int(team, "total", 0),
+                    lead != NULL ? lead : "nobody",
+                    *tags != '\0' ? " \302\267 tags: " : "", tags);
+            }
 
             adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row),
                                                FALSE);
@@ -338,6 +367,8 @@ clawt_gtk_refresh_settings_teams(ClawtWindow *self)
             g_object_set_data_full(
                 G_OBJECT(row), "clawt-team-desc",
                 g_strdup(description != NULL ? description : ""), g_free);
+            g_object_set_data_full(G_OBJECT(row), "clawt-team-tags",
+                                   clawt_team_tags_label(team), g_free);
 
             gtk_list_box_append(GTK_LIST_BOX(self->settings_teams), row);
         }

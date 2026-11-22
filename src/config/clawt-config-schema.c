@@ -835,6 +835,25 @@ static const ClawtSchemaEntry schema[] = {
   "chat. A loop is never quiet, so it does not earn this; once it has\n"
   "been stopped nothing is left running to start it again.", "0.34.0" },
 
+{ "orchestration.ephemeral_max_per_parent", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "5", NULL,
+  "How many ephemeral agents one agent may have at once. A spawn past it\n"
+  "is refused with the list of the ones it has, so the answer to the\n"
+  "refusal is to reap one. 0 means none at all.", "0.55.0" },
+
+{ "orchestration.ephemeral_max_fleet", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "20", NULL,
+  "How many ephemeral agents the whole fleet may have at once, whoever\n"
+  "spawned them. Each one is a running CLI process, so this is a ceiling\n"
+  "on what a busy afternoon can start. 0 means none at all.", "0.55.0" },
+
+{ "orchestration.ephemeral_reap_reminder_hours", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "24", NULL,
+  "How long an ephemeral agent may sit with its work finished and nothing\n"
+  "assigned before its parent is reminded, once, to reap it. Nothing is\n"
+  "reaped automatically: the parent decides when the work is really\n"
+  "done. 0 means never remind.", "0.55.0" },
+
 { "orchestration.answer_in_request_room", CLAWT_SCHEMA_BOOLEAN,
   CLAWT_SCHEMA_FLAG_NONE, "true", NULL,
   "Hand an agent's answer to the asker in the conversation it asked\n"
@@ -1639,6 +1658,20 @@ static const ClawtSchemaEntry schema[] = {
 { "teams.order", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "0", NULL,
   "Where this team sits in the list, lowest first. Ties keep file order.",
   "0.1.0" },
+
+{ "teams.tags", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Labels that give this team a job in the software, by tag rather than\n"
+  "by name, so the team can be called whatever you like.\n"
+  "\n"
+  "A well-known tag is one a feature looks for: `ephemeral` is the team\n"
+  "ephemeral agents join (clawtilla makes one called Ephemeral the first\n"
+  "time it needs it; tag a team of your own to use that instead).  Some\n"
+  "tags belong to one team only, and a second team carrying one is a\n"
+  "fleet warning -- the first in the team list keeps it.  Any other tag\n"
+  "is kept and shown, for your own use or a plugin's; a plugin's tags\n"
+  "are written `vendor:name`.  A tag is lowercase letters, digits and\n"
+  "hyphens.  `clawtilla team tag list --well-known` lists the tags this\n"
+  "clawtilla knows.  See docs/team-tags.org.", "0.55.0" },
 
 /* ── integrations ────────────────────────────────────────────────── */
 { "teams.skills", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
@@ -4832,6 +4865,20 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Intended for a chief-of-staff you talk to about what the fleet needs.",
   "0.1.0" },
+
+{ "agents.tools.ephemeral", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_DANGEROUS, "false", NULL,
+  "Whether this agent may spawn ephemeral agents: temporary helpers that\n"
+  "do one piece of work and are then reaped (clawtilla_ephemeral_spawn,\n"
+  "clawtilla_ephemeral_reap).\n"
+  "\n"
+  "On for the chief of staff unless set otherwise, off for every other\n"
+  "agent. A helper copies how its parent runs -- runtime, confinement,\n"
+  "model, tools, skills -- and can never do more: it cannot spawn helpers\n"
+  "of its own, cannot create agents, and gets a computer no stronger than\n"
+  "its parent's. It stays, across restarts, until the agent that spawned\n"
+  "it reaps it; only that agent or you can. See docs/ephemeral-agents.org.",
+  "0.55.0" },
 
 { "agents.tools.schedule", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "true", NULL,

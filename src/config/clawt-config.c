@@ -30,6 +30,7 @@ struct _ClawtConfig {
     GPtrArray   *triggers;    /* ClawtTrigger* */
     GPtrArray   *warnings;    /* gchar* */
     YamlNode    *scratch;     /* sequence of scratch agents, never saved */
+    YamlNode    *ephemeral;   /* ephemeral agents (0.55.0): the daemon's store, never in the file */
 };
 
 G_DEFINE_FINAL_TYPE(ClawtConfig, clawt_config, G_TYPE_OBJECT)
@@ -1050,6 +1051,22 @@ clawt_agent_config_get_string(ClawtAgentConfig *self, const gchar *key)
 
         if (value != NULL)
             return value;
+    }
+
+    /*
+     * The chief of staff may spawn ephemeral agents unless told otherwise
+     * (0.55.0); the schema's default, false, is everybody else's.  Both
+     * spellings of the chief count, as routing_mode_role_default() does.
+     */
+    if (g_strcmp0(key, "tools.ephemeral") == 0) {
+        gboolean chief = clawt_agent_config_get_boolean(self, "chief_of_staff");
+
+        if (!chief && self->config != NULL)
+            chief = g_strcmp0(clawt_config_get_string(self->config,
+                                                      "orchestration.chief_of_staff"),
+                              lookup_string(self->node, "id")) == 0;
+        if (chief)
+            return "true";
     }
 
     /* Role-dependent default -- see routing_mode_role_default(). */
@@ -2256,6 +2273,7 @@ clawt_team_spec_free(ClawtTeamSpec *self)
     g_free(self->description);
     g_free(self->color);
     g_free(self->broker_server);
+    g_strfreev(self->tags);
     g_free(self);
 }
 
@@ -2760,6 +2778,8 @@ clawt_config_get_teams(ClawtConfig *self)
         spec->broker_server =
             g_strdup(member_string(yaml_node_get_mapping(entry),
                                    "broker_server"));
+        spec->tags = node_to_strv(
+            yaml_mapping_get_member(yaml_node_get_mapping(entry), "tags"));
 
         {
             YamlNode *node = node_at_path(entry, "order", FALSE);
@@ -3418,6 +3438,7 @@ clawt_config_finalize(GObject *object)
     g_clear_pointer(&self->triggers, g_ptr_array_unref);
     g_clear_pointer(&self->warnings, g_ptr_array_unref);
     g_clear_pointer(&self->scratch, yaml_node_unref);
+    g_clear_pointer(&self->ephemeral, yaml_node_unref);
 
     G_OBJECT_CLASS(clawt_config_parent_class)->finalize(object);
 }
@@ -3493,18 +3514,31 @@ reload_agents(ClawtConfig *self)
 
     reload_agents_from_root(self);
 
-    if (self->scratch == NULL)
-        return;
+    if (self->scratch != NULL) {
+        sequence = yaml_node_get_sequence(self->scratch);
 
-    sequence = yaml_node_get_sequence(self->scratch);
+        for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+            YamlNode *element = yaml_sequence_get_element(sequence, i);
+            const gchar *id = member_string(yaml_node_get_mapping(element), "id");
 
-    for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
-        YamlNode *element = yaml_sequence_get_element(sequence, i);
-        const gchar *id = member_string(yaml_node_get_mapping(element), "id");
+            if (id != NULL && clawt_config_get_agent(self, id) == NULL)
+                g_ptr_array_add(self->agents,
+                                clawt_agent_config_new(self, id, element));
+        }
+    }
 
-        if (id != NULL && clawt_config_get_agent(self, id) == NULL)
-            g_ptr_array_add(self->agents,
-                            clawt_agent_config_new(self, id, element));
+    /* Ephemeral agents (0.55.0) after them, the same way. */
+    if (self->ephemeral != NULL) {
+        sequence = yaml_node_get_sequence(self->ephemeral);
+
+        for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+            YamlNode *element = yaml_sequence_get_element(sequence, i);
+            const gchar *id = member_string(yaml_node_get_mapping(element), "id");
+
+            if (id != NULL && clawt_config_get_agent(self, id) == NULL)
+                g_ptr_array_add(self->agents,
+                                clawt_agent_config_new(self, id, element));
+        }
     }
 }
 
@@ -4755,6 +4789,252 @@ clawt_agent_config_is_scratch(ClawtAgentConfig *agent)
             return TRUE;
 
     return FALSE;
+}
+
+/* ── Ephemeral agents (0.55.0) ───────────────────────────────────── */
+
+/*
+ * Keys an ephemeral agent does not take from its parent: who the parent
+ * is, where it works, every role in the fleet, and anything that is an
+ * identity on another service -- a Matrix account or a mail login copied
+ * would be two agents answering as one person.
+ */
+static const gchar *const EPHEMERAL_DROPPED[] = {
+    "id", "name", "description", "workspace", "team", "team_role",
+    "chief_of_staff", "autostart", "review_by", "integrations", "channels",
+    "routines", "face", "color", "avatar", "persona", "projects",
+    NULL
+};
+
+/* An entry from the store or from a spawn, checked and appended. */
+static ClawtAgentConfig *
+add_ephemeral_node(ClawtConfig *self, YamlNode *entry, GError **error)
+{
+    const gchar *id;
+    g_autoptr(YamlNode) copy = NULL;
+
+    if (entry == NULL || yaml_node_get_node_type(entry) != YAML_NODE_MAPPING) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                            "an ephemeral agent is a mapping");
+        return NULL;
+    }
+    id = member_string(yaml_node_get_mapping(entry), "id");
+    if (!clawt_is_valid_id(id) || clawt_agent_id_is_reserved(id)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' cannot be an agent's id", id != NULL ? id : "");
+        return NULL;
+    }
+    if (clawt_config_get_agent(self, id) != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
+                    "an agent called '%s' already exists", id);
+        return NULL;
+    }
+
+    copy = yaml_node_copy(entry);
+    if (self->ephemeral == NULL)
+        self->ephemeral = yaml_node_new_sequence(NULL);
+    yaml_sequence_add_element(yaml_node_get_sequence(self->ephemeral), copy);
+
+    reload_agents(self);
+    return clawt_config_get_agent(self, id);
+}
+
+ClawtAgentConfig *
+clawt_config_add_ephemeral_agent(ClawtConfig  *self,
+                                 const gchar  *id,
+                                 const gchar  *from_id,
+                                 GError      **error)
+{
+    ClawtAgentConfig *from;
+    g_autoptr(YamlNode) entry = NULL;
+    YamlMapping *mapping;
+    YamlNode *tools;
+    gsize i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+    g_return_val_if_fail(id != NULL && from_id != NULL, NULL);
+
+    from = clawt_config_get_agent(self, from_id);
+    if (from == NULL || from->node == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "no agent '%s' to copy an ephemeral agent from", from_id);
+        return NULL;
+    }
+
+    entry = yaml_node_copy(from->node);
+    mapping = yaml_node_get_mapping(entry);
+    for (i = 0; EPHEMERAL_DROPPED[i] != NULL; i++)
+        if (yaml_mapping_has_member(mapping, EPHEMERAL_DROPPED[i]))
+            yaml_mapping_remove_member(mapping, EPHEMERAL_DROPPED[i]);
+    /* the parent's own ephemeral fields, if it is one, are not inherited */
+    {
+        GList *names = yaml_mapping_get_members(mapping);
+        GList *l;
+
+        for (l = names; l != NULL; l = l->next)
+            if (g_str_has_prefix(l->data, "ephemeral_"))
+                yaml_mapping_remove_member(mapping, l->data);
+        g_list_free(names);
+    }
+    yaml_mapping_set_string_member(mapping, "id", id);
+
+    /* never a way to make more agents, whatever the parent may do */
+    tools = yaml_mapping_get_member(mapping, "tools");
+    if (tools == NULL || yaml_node_get_node_type(tools) != YAML_NODE_MAPPING) {
+        g_autoptr(YamlNode) fresh = yaml_node_new_mapping(NULL);
+
+        yaml_mapping_set_member(mapping, "tools", fresh);
+        tools = yaml_mapping_get_member(mapping, "tools");
+    }
+    yaml_mapping_set_string_member(yaml_node_get_mapping(tools), "ephemeral", "false");
+    yaml_mapping_set_string_member(yaml_node_get_mapping(tools), "manage_fleet", "false");
+
+    return add_ephemeral_node(self, entry, error);
+}
+
+gboolean
+clawt_config_remove_ephemeral_agent(ClawtConfig *self, const gchar *id)
+{
+    YamlSequence *sequence;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+
+    if (self->ephemeral == NULL || id == NULL)
+        return FALSE;
+
+    sequence = yaml_node_get_sequence(self->ephemeral);
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+
+        if (g_strcmp0(member_string(yaml_node_get_mapping(element), "id"), id) != 0)
+            continue;
+        yaml_sequence_remove_element(sequence, i);
+        reload_agents(self);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+gboolean
+clawt_agent_config_is_ephemeral(ClawtAgentConfig *agent)
+{
+    YamlSequence *sequence;
+    guint i;
+
+    g_return_val_if_fail(agent != NULL, FALSE);
+
+    if (agent->config == NULL || agent->config->ephemeral == NULL)
+        return FALSE;
+
+    sequence = yaml_node_get_sequence(agent->config->ephemeral);
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++)
+        if (yaml_sequence_get_element(sequence, i) == agent->node)
+            return TRUE;
+    return FALSE;
+}
+
+const gchar *
+clawt_agent_config_get_ephemeral_string(ClawtAgentConfig *agent,
+                                        const gchar      *field)
+{
+    g_autofree gchar *key = NULL;
+
+    g_return_val_if_fail(agent != NULL, NULL);
+    g_return_val_if_fail(field != NULL, NULL);
+
+    /* only on an ephemeral agent: a file agent with the key is not one */
+    if (!clawt_agent_config_is_ephemeral(agent))
+        return NULL;
+    key = g_strdup_printf("ephemeral_%s", field);
+    return member_string(yaml_node_get_mapping(agent->node), key);
+}
+
+gboolean
+clawt_agent_config_set_ephemeral_string(ClawtAgentConfig *agent,
+                                        const gchar      *field,
+                                        const gchar      *value)
+{
+    g_autofree gchar *key = NULL;
+    YamlMapping *mapping;
+
+    g_return_val_if_fail(agent != NULL, FALSE);
+    g_return_val_if_fail(field != NULL, FALSE);
+
+    if (!clawt_agent_config_is_ephemeral(agent))
+        return FALSE;
+    key = g_strdup_printf("ephemeral_%s", field);
+    mapping = yaml_node_get_mapping(agent->node);
+    if (value == NULL)
+        yaml_mapping_remove_member(mapping, key);
+    else
+        yaml_mapping_set_string_member(mapping, key, value);
+    return TRUE;
+}
+
+gchar *
+clawt_config_ephemeral_to_string(ClawtConfig *self)
+{
+    g_autoptr(YamlGenerator) generator = NULL;
+    g_autoptr(YamlNode) root = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    root = yaml_node_new_mapping(NULL);
+    if (self->ephemeral != NULL)
+        yaml_mapping_set_member(yaml_node_get_mapping(root), "ephemeral",
+                                self->ephemeral);
+    generator = yaml_generator_new();
+    yaml_generator_set_root(generator, root);
+    return yaml_generator_to_data(generator, NULL, NULL);
+}
+
+guint
+clawt_config_ephemeral_load(ClawtConfig  *self,
+                            const gchar  *yaml,
+                            GPtrArray    *skipped)
+{
+    g_autoptr(YamlParser) parser = NULL;
+    g_autoptr(GError) error = NULL;
+    YamlNode *root;
+    YamlNode *list;
+    YamlSequence *sequence;
+    guint added = 0;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), 0);
+
+    if (yaml == NULL)
+        return 0;
+
+    parser = yaml_parser_new();
+    if (!yaml_parser_load_from_data(parser, yaml, -1, &error)) {
+        if (skipped != NULL)
+            g_ptr_array_add(skipped, g_strdup_printf("the store is not YAML: %s",
+                                                     error->message));
+        return 0;
+    }
+    root = yaml_parser_get_root(parser);
+    if (root == NULL || yaml_node_get_node_type(root) != YAML_NODE_MAPPING)
+        return 0;
+    list = yaml_mapping_get_member(yaml_node_get_mapping(root), "ephemeral");
+    if (list == NULL || yaml_node_get_node_type(list) != YAML_NODE_SEQUENCE)
+        return 0;
+
+    sequence = yaml_node_get_sequence(list);
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+        g_autoptr(GError) entry_error = NULL;
+
+        /* one bad entry is reported and skipped, not the whole store */
+        if (add_ephemeral_node(self, yaml_sequence_get_element(sequence, i),
+                               &entry_error) != NULL)
+            added++;
+        else if (skipped != NULL)
+            g_ptr_array_add(skipped, g_strdup(entry_error != NULL
+                                              ? entry_error->message
+                                              : "an entry was not an agent"));
+    }
+    return added;
 }
 
 /* ── Rooms, as the config holds them ─────────────────────────────── */

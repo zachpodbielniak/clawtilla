@@ -1205,6 +1205,10 @@ agent_row(ClawtLrgApp *app, const ClawtLrgSidebarEntry *entry)
         break;
     }
 
+    /* an ephemeral helper, amber once its work is done and it awaits reaping */
+    if (agent->helper)
+        clawt_lrg_take(badges, clawt_lrg_badge("HELPER", agent->helper_tone));
+
     /*
      * The state in words when it is anything but running: the glow is a
      * colour, and a colour is never the only signal.

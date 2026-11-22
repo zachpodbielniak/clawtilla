@@ -663,6 +663,22 @@ orchestration:
   # been stopped nothing is left running to start it again.
   pair_quiet_minutes: 30
 
+  # How many ephemeral agents one agent may have at once. A spawn past it
+  # is refused with the list of the ones it has, so the answer to the
+  # refusal is to reap one. 0 means none at all.
+  ephemeral_max_per_parent: 5
+
+  # How many ephemeral agents the whole fleet may have at once, whoever
+  # spawned them. Each one is a running CLI process, so this is a ceiling
+  # on what a busy afternoon can start. 0 means none at all.
+  ephemeral_max_fleet: 20
+
+  # How long an ephemeral agent may sit with its work finished and nothing
+  # assigned before its parent is reminded, once, to reap it. Nothing is
+  # reaped automatically: the parent decides when the work is really
+  # done. 0 means never remind.
+  ephemeral_reap_reminder_hours: 24
+
   # Hand an agent's answer to the asker in the conversation it asked
   # from, rather than in the room the two agents share.
   #

@@ -243,6 +243,9 @@ gchar *clawt_lrg_typing_activity(gboolean typing_now, const gchar *peer);
  * @fallback: (nullable): "On fallback" while it runs on one of its
  *   model.fallbacks, from clawt_failover_sidebar_badge()
  * @fallback_message: (nullable): the sentence saying why and until when
+ * @helper: whether it is an ephemeral helper (HELPER badge)
+ * @helper_tone: (nullable): that badge's tone
+ * @helper_tooltip: (nullable): whose helper, and whether it awaits reaping
  *
  * One agent row, decided.
  */
@@ -269,6 +272,9 @@ typedef struct {
     gboolean        muted;
     gchar          *fallback;
     gchar          *fallback_message;
+    gboolean        helper;
+    const gchar    *helper_tone;
+    gchar          *helper_tooltip;
 } ClawtLrgAgentRow;
 
 /**

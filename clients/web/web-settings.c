@@ -901,6 +901,13 @@ teams_content(ClawtWebApp *app)
             "What this team is for. The agents read it."));
         clawt_web_add(form, clawt_web_field(
             "Colour", "color", clawt_web_member(team, "color", ""), NULL));
+        /* comma separated; the daemon splits and checks (docs/team-tags.org) */
+        {
+            g_autofree gchar *tags = clawt_team_tags_label(team);
+
+            clawt_web_add(form, clawt_web_field("Tags", "tags", tags,
+                                                "ephemeral, acme:night-shift"));
+        }
 
         {
             g_autoptr(HtmxDiv) row = htmx_div_new();
@@ -3821,7 +3828,7 @@ on_team_save(HtmxRequest *request, GHashTable *params, gpointer user_data)
     ClawtWebApp *app = user_data;
     g_autofree gchar *id = clawt_web_param(params, "team");
     g_autoptr(HtmxElement) content = NULL;
-    static const gchar *const keys[] = { "name", "description", "color" };
+    static const gchar *const keys[] = { "name", "description", "color", "tags" };
     guint i;
 
     for (i = 0; i < G_N_ELEMENTS(keys); i++) {

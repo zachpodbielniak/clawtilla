@@ -581,6 +581,38 @@ void clawt_mcp_tools_set_grok_hooks(ClawtMcpTools           *self,
                                     GDestroyNotify           destroy);
 
 /**
+ * ClawtMcpEphemeralHooks:
+ * @spawn: makes a helper for the agent and answers what to tell it, with
+ *   @is_error set on a refusal (transfer full)
+ * @list: the agent's helpers, as text for the model (transfer full)
+ * @reap: ends one of the agent's helpers, answering as @spawn does
+ * @has_children: whether the agent has any helpers
+ *
+ * What the daemon supplies for ephemeral agents (since 0.55.0).  Unset,
+ * the `clawtilla_ephemeral_*` tools are offered to nobody.
+ */
+typedef struct {
+    gchar   *(*spawn)(const gchar *agent_id, JsonObject *arguments,
+                      gboolean *is_error, gpointer user_data);
+    gchar   *(*list)(const gchar *agent_id, gpointer user_data);
+    gchar   *(*reap)(const gchar *agent_id, JsonObject *arguments,
+                     gboolean *is_error, gpointer user_data);
+    gboolean (*has_children)(const gchar *agent_id, gpointer user_data);
+} ClawtMcpEphemeralHooks;
+
+/**
+ * clawt_mcp_tools_set_ephemeral_hooks:
+ * @self: a #ClawtMcpTools
+ * @hooks: (nullable): the hooks, copied
+ * @user_data: passed to each hook
+ * @destroy: frees @user_data
+ */
+void clawt_mcp_tools_set_ephemeral_hooks(ClawtMcpTools                *self,
+                                         const ClawtMcpEphemeralHooks *hooks,
+                                         gpointer                      user_data,
+                                         GDestroyNotify                destroy);
+
+/**
  * clawt_mcp_tools_grok_bot_tools:
  *
  * The tools a Grok bot is offered on `/mcp/grok`, as a `tools/list`

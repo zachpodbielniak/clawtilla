@@ -333,6 +333,15 @@ declare -A AFFORDANCES=(
     ["allowance login status"]="clawt_usage_login_status_label|clawt_usage_login_status_label|clawt_usage_login_status_label"
     ["allowance read again"]="on_limits_refresh|/f/fleet-limits?ask=1|request_limits(user_data, TRUE)"
     #
+    # Ephemeral helpers and team tags (0.55.0): the HELPER badge and its
+    # tooltip from the library, Reap in the inspector (agent.reap, not
+    # agent.remove, so the word matches what happens), and the team
+    # editor's Tags field, filled from the library's join.
+    #
+    ["helper badge"]="clawt_ephemeral_badge_for|clawt_ephemeral_badge_for|clawt_ephemeral_badge_for"
+    ["reap a helper"]="on_reap_agent|/a/%s/reap|on_reap_confirmed"
+    ["team tags field"]="clawt_team_tags_label|clawt_team_tags_label|clawt_team_tags_label"
+    #
     # The Spending page's ledger: the grouping is a library enumeration,
     # so layer 3 already sees the selector -- but the unpriced-turn
     # sentence and the CSV export are each one call, sent no frame of

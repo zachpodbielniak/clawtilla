@@ -3110,6 +3110,49 @@ on_remove(LrgButton *button, gpointer user_data)
                       g_free);
 }
 
+/* ── Reaping a helper (0.55.0) ────────────────────────────────────── */
+
+static void
+on_reaped(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+          gpointer user_data)
+{
+    g_autofree gchar *said = NULL;
+
+    if (reply == NULL)
+        return;
+    said = g_strdup_printf("Reaped %s.", (const gchar *)user_data);
+    clawt_lrg_toast(app, said);
+    if (g_strcmp0(app->agent_id, user_data) == 0)
+        clawt_lrg_select_agent(app, NULL);
+    clawt_lrg_refresh_fleet(app);
+}
+
+static void
+on_reap_confirmed(ClawtLrgApp *app, gpointer user_data)
+{
+    /* asked once, so open work goes with it: the dialog said so */
+    clawt_lrg_request(app, "agent.reap",
+                      clawt_ipc_payload_new("agent", user_data, "force", "true", NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_reaped, g_strdup(user_data), g_free);
+}
+
+static void
+on_reap(LrgButton *button, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    g_autofree gchar *title = NULL;
+
+    if (app->agent_id == NULL)
+        return;
+    title = g_strdup_printf("Reap %s?", app->agent_id);
+    clawt_lrg_confirm(app, title,
+                      "It stops and its workspace is removed. Any work still "
+                      "open on it is dropped. Normally the agent that spawned "
+                      "it reaps it when the work is done.",
+                      "Reap", TRUE, on_reap_confirmed, g_strdup(app->agent_id),
+                      g_free);
+}
+
 static guint
 build_danger(ClawtLrgApp *app, guint index)
 {
@@ -3122,8 +3165,20 @@ build_danger(ClawtLrgApp *app, guint index)
 
     clawt_lrg_take(buttons, clawt_lrg_button("Reset session", NULL,
                                              G_CALLBACK(on_reset), app));
-    clawt_lrg_take(buttons, clawt_lrg_button("Delete this agent", "danger",
-                                             G_CALLBACK(on_remove), app));
+    /* a helper is reaped, not deleted: same daemon path, the honest word */
+    {
+        g_autofree gchar *helper = NULL;
+
+        if (clawt_ephemeral_badge_for(clawt_lrg_find_agent(app, app->agent_id),
+                                      NULL, &helper)) {
+            clawt_lrg_take(box, clawt_lrg_label(helper, "muted"));
+            clawt_lrg_take(buttons, clawt_lrg_button("Reap this helper", "danger",
+                                                     G_CALLBACK(on_reap), app));
+        } else {
+            clawt_lrg_take(buttons, clawt_lrg_button("Delete this agent", "danger",
+                                                     G_CALLBACK(on_remove), app));
+        }
+    }
     clawt_lrg_take(box, buttons);
 
     return index;

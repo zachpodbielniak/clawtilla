@@ -367,6 +367,100 @@ gboolean clawt_config_remove_scratch_agent(ClawtConfig *self,
 gboolean clawt_agent_config_is_scratch(ClawtAgentConfig *agent);
 
 /**
+ * clawt_config_add_ephemeral_agent:
+ * @self: a #ClawtConfig
+ * @id: the new agent's id
+ * @from_id: the agent whose runtime, confinement, model, computer, tools
+ *   and skills it copies -- the agent spawning it
+ * @error: return location for why not
+ *
+ * Adds an ephemeral agent (since 0.55.0): a copy of how @from_id runs,
+ * without its identity, team, roles, integrations or routines, and with
+ * `tools.ephemeral` and `tools.manage_fleet` off, so one cannot spawn
+ * another or grow the fleet.  Like a scratch agent it is kept apart from
+ * the file's agents, so no save, revision or export of clawtilla.yaml
+ * ever contains it; unlike one, the daemon writes it to its own store
+ * (`<state_dir>/ephemeral.yaml`) and adds it back after every load,
+ * until the agent that spawned it reaps it.  The caller sets the rest
+ * with clawt_agent_config_set_from_string() and
+ * clawt_agent_config_set_ephemeral_string().
+ *
+ * Returns: (transfer none) (nullable): the agent, or %NULL with @error set
+ */
+ClawtAgentConfig *clawt_config_add_ephemeral_agent(ClawtConfig  *self,
+                                                   const gchar  *id,
+                                                   const gchar  *from_id,
+                                                   GError      **error);
+
+/**
+ * clawt_config_remove_ephemeral_agent:
+ * @self: a #ClawtConfig
+ * @id: an ephemeral agent's id
+ *
+ * Returns: %TRUE if an ephemeral agent of that id was removed
+ */
+gboolean clawt_config_remove_ephemeral_agent(ClawtConfig *self, const gchar *id);
+
+/**
+ * clawt_agent_config_is_ephemeral:
+ * @agent: an agent's configuration
+ *
+ * Returns: %TRUE for an agent added with clawt_config_add_ephemeral_agent()
+ */
+gboolean clawt_agent_config_is_ephemeral(ClawtAgentConfig *agent);
+
+/**
+ * clawt_agent_config_get_ephemeral_string:
+ * @agent: an agent's configuration
+ * @field: `parent`, `created_at`, `brief`, `done_at` or `reminded_at`
+ *
+ * One of the fields the daemon keeps on an ephemeral agent, stored as
+ * `ephemeral_<field>` in its entry.  %NULL on any other agent, whatever
+ * its entry says: a file agent cannot make itself somebody's ephemeral.
+ *
+ * Returns: (transfer none) (nullable): the value
+ */
+const gchar *clawt_agent_config_get_ephemeral_string(ClawtAgentConfig *agent,
+                                                     const gchar      *field);
+
+/**
+ * clawt_agent_config_set_ephemeral_string:
+ * @agent: an ephemeral agent's configuration
+ * @field: the field, as for clawt_agent_config_get_ephemeral_string()
+ * @value: (nullable): the value, or %NULL to clear it
+ *
+ * Returns: %FALSE when @agent is not ephemeral
+ */
+gboolean clawt_agent_config_set_ephemeral_string(ClawtAgentConfig *agent,
+                                                 const gchar      *field,
+                                                 const gchar      *value);
+
+/**
+ * clawt_config_ephemeral_to_string:
+ * @self: a #ClawtConfig
+ *
+ * The ephemeral agents as the store's YAML document.
+ *
+ * Returns: (transfer full): the document
+ */
+gchar *clawt_config_ephemeral_to_string(ClawtConfig *self);
+
+/**
+ * clawt_config_ephemeral_load:
+ * @self: a #ClawtConfig
+ * @yaml: (nullable): the store's document
+ * @skipped: (nullable) (element-type utf8): where to add why an entry
+ *   was not added
+ *
+ * Adds every ephemeral agent in @yaml.
+ *
+ * Returns: how many were added
+ */
+guint clawt_config_ephemeral_load(ClawtConfig *self,
+                                  const gchar *yaml,
+                                  GPtrArray   *skipped);
+
+/**
  * clawt_config_remove_agent:
  * @self: a #ClawtConfig
  * @id: an agent id
@@ -541,6 +635,8 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtRoomSpec, clawt_room_spec_free)
  * @order: where it sits in a list, lowest first
  * @broker_server: (nullable): the team's gateway server on the
  *   integration broker (`teams.broker_server`)
+ * @tags: (array zero-terminated=1) (nullable): `teams.tags`, as written
+ *   (since 0.55.0)
  *
  * One entry from the config's `teams:` list.
  */
@@ -551,6 +647,7 @@ typedef struct {
     gchar *color;
     gint   order;
     gchar *broker_server;
+    GStrv  tags;
 } ClawtTeamSpec;
 
 void clawt_team_spec_free(ClawtTeamSpec *self);

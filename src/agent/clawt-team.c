@@ -10,6 +10,8 @@
 #include "clawtilla.h"
 #include "agent/clawt-team.h"
 
+#include <string.h>
+
 ClawtTeamRole
 clawt_team_role_of(ClawtAgentConfig *agent)
 {
@@ -94,6 +96,15 @@ clawt_team_may_assign(ClawtAgentConfig  *from,
      * them is the whole of the role, so it is not confined to one.
      */
     if (clawt_agent_config_get_boolean(from, "chief_of_staff"))
+        return TRUE;
+
+    /*
+     * An ephemeral agent works for the agent that spawned it, whatever
+     * either one's place in a team (0.55.0): a member that may spawn a
+     * helper may hand it the work, which is the only reason it exists.
+     */
+    if (g_strcmp0(clawt_agent_config_get_ephemeral_string(to, "parent"),
+                  clawt_agent_config_get_id(from)) == 0)
         return TRUE;
 
     from_team = team_of(from);
@@ -221,10 +232,61 @@ clawt_team_validate_fleet(ClawtConfig *config, GStrv *warnings)
         if (!g_hash_table_contains(members, spec->id))
             continue;
 
+        /*
+         * The ephemeral team needs none: each helper's parent assigns to
+         * it (clawt_team_may_assign()), so "only the chief can assign
+         * into it" would be a false thing to tell somebody.
+         */
+        if (clawt_team_spec_has_tag(spec, CLAWT_TEAM_TAG_EPHEMERAL))
+            continue;
+
         if (!g_hash_table_contains(leads, spec->id))
             g_ptr_array_add(found, g_strdup_printf(
                 "team '%s' has no lead, so only the chief of staff can "
                 "assign work into it.", spec->id));
+    }
+
+    /*
+     * Tags (0.55.0).  A malformed one is reported, not dropped: it is
+     * still in the file, and a tag silently ignored is a feature that
+     * silently does not apply.  A unique tag on a second team is named
+     * with the team that keeps it, the one clawt_team_find_by_tag()
+     * answers with, so the warning and the behaviour agree.
+     */
+    {
+        g_autoptr(GHashTable) holder = g_hash_table_new(g_str_hash, g_str_equal);
+
+        for (i = 0; i < teams->len; i++) {
+            ClawtTeamSpec *spec = g_ptr_array_index(teams, i);
+            guint t;
+
+            for (t = 0; spec->tags != NULL && spec->tags[t] != NULL; t++) {
+                const gchar *tag = spec->tags[t];
+                const ClawtTeamTagInfo *info;
+                const gchar *first;
+
+                if (!clawt_team_tag_is_valid(tag)) {
+                    g_ptr_array_add(found, g_strdup_printf(
+                        "team '%s' has the tag '%s', which is not a tag: "
+                        "lowercase letters, digits and hyphens, with at "
+                        "most one vendor: prefix", spec->id, tag));
+                    continue;
+                }
+
+                info = clawt_team_tag_lookup(tag);
+                if (info == NULL || !info->unique)
+                    continue;
+
+                first = g_hash_table_lookup(holder, tag);
+                if (first == NULL)
+                    g_hash_table_insert(holder, (gpointer)tag, spec->id);
+                else
+                    g_ptr_array_add(found, g_strdup_printf(
+                        "teams '%s' and '%s' both have the tag '%s', which "
+                        "only one team may have; '%s' keeps it, so take it "
+                        "off '%s'", first, spec->id, tag, first, spec->id));
+            }
+        }
     }
 
     if (found->len == 0)
@@ -236,4 +298,178 @@ clawt_team_validate_fleet(ClawtConfig *config, GStrv *warnings)
     }
 
     return FALSE;
+}
+
+/* ── Tags (0.55.0) ───────────────────────────────────────────────── */
+
+/*
+ * The tags a feature looks for.  One table, walked by every client and
+ * by the docs test, so a tag added here is a tag every client offers --
+ * and a tag is only added here with the feature that reads it.
+ */
+static const ClawtTeamTagInfo team_tags[] = {
+    { CLAWT_TEAM_TAG_EPHEMERAL, "Ephemeral",
+      "Where ephemeral agents go: the temporary helpers an agent spawns "
+      "with clawtilla_ephemeral_spawn and reaps when they are done.",
+      TRUE },
+};
+
+guint
+clawt_team_tag_count(void)
+{
+    return G_N_ELEMENTS(team_tags);
+}
+
+const ClawtTeamTagInfo *
+clawt_team_tag_nth(guint n)
+{
+    return n < G_N_ELEMENTS(team_tags) ? &team_tags[n] : NULL;
+}
+
+const ClawtTeamTagInfo *
+clawt_team_tag_lookup(const gchar *name)
+{
+    guint i;
+
+    if (name == NULL)
+        return NULL;
+    for (i = 0; i < G_N_ELEMENTS(team_tags); i++)
+        if (g_strcmp0(team_tags[i].name, name) == 0)
+            return &team_tags[i];
+    return NULL;
+}
+
+/* One `[a-z][a-z0-9-]*` part, not ending in a hyphen. */
+static gboolean
+tag_part_is_valid(const gchar *start, const gchar *end)
+{
+    const gchar *p;
+
+    if (end <= start || !g_ascii_islower(*start) || end[-1] == '-')
+        return FALSE;
+    for (p = start; p < end; p++)
+        if (!g_ascii_islower(*p) && !g_ascii_isdigit(*p) && *p != '-')
+            return FALSE;
+    return TRUE;
+}
+
+gboolean
+clawt_team_tag_is_valid(const gchar *name)
+{
+    const gchar *colon;
+    gsize length;
+
+    if (name == NULL)
+        return FALSE;
+    length = strlen(name);
+    if (length == 0 || length > 64)
+        return FALSE;
+
+    colon = strchr(name, ':');
+    if (colon == NULL)
+        return tag_part_is_valid(name, name + length);
+    if (strchr(colon + 1, ':') != NULL)
+        return FALSE;
+    return tag_part_is_valid(name, colon) &&
+           tag_part_is_valid(colon + 1, name + length);
+}
+
+gboolean
+clawt_team_spec_has_tag(const ClawtTeamSpec *team, const gchar *tag)
+{
+    return team != NULL && team->tags != NULL && tag != NULL &&
+           g_strv_contains((const gchar *const *)team->tags, tag);
+}
+
+gchar *
+clawt_team_find_by_tag(ClawtConfig *config, const gchar *tag)
+{
+    g_autoptr(GPtrArray) teams = NULL;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(config), NULL);
+
+    if (tag == NULL)
+        return NULL;
+    teams = clawt_config_get_teams(config);
+    for (i = 0; i < teams->len; i++) {
+        ClawtTeamSpec *spec = g_ptr_array_index(teams, i);
+
+        if (clawt_team_spec_has_tag(spec, tag))
+            return g_strdup(spec->id);
+    }
+    return NULL;
+}
+
+/* ── The helper badge (0.55.0) ───────────────────────────────────── */
+
+static gboolean
+member_true(JsonObject *object, const gchar *name)
+{
+    JsonNode *node;
+
+    if (object == NULL || !json_object_has_member(object, name))
+        return FALSE;
+    node = json_object_get_member(object, name);
+    return JSON_NODE_HOLDS_VALUE(node) &&
+           json_node_get_value_type(node) == G_TYPE_BOOLEAN &&
+           json_node_get_boolean(node);
+}
+
+gboolean
+clawt_ephemeral_badge_for(JsonObject   *agent,
+                          const gchar **out_tone,
+                          gchar       **out_tooltip)
+{
+    gboolean done;
+    const gchar *parent = NULL;
+
+    if (out_tone != NULL)
+        *out_tone = NULL;
+    if (out_tooltip != NULL)
+        *out_tooltip = NULL;
+    if (!member_true(agent, "ephemeral"))
+        return FALSE;
+
+    done = member_true(agent, "awaiting_reap");
+    if (json_object_has_member(agent, "parent") &&
+        JSON_NODE_HOLDS_VALUE(json_object_get_member(agent, "parent")))
+        parent = json_object_get_string_member(agent, "parent");
+
+    if (out_tone != NULL)
+        *out_tone = done ? "warn" : "neutral";
+    if (out_tooltip != NULL)
+        *out_tooltip = done
+            ? g_strdup_printf("%s's ephemeral helper: its work is done and it is "
+                              "waiting for %s to reap it",
+                              parent != NULL ? parent : "nobody",
+                              parent != NULL ? parent : "somebody")
+            : g_strdup_printf("%s's ephemeral helper, there until %s reaps it",
+                              parent != NULL ? parent : "nobody",
+                              parent != NULL ? parent : "somebody");
+    return TRUE;
+}
+
+gchar *
+clawt_team_tags_label(JsonObject *team)
+{
+    GString *out = g_string_new(NULL);
+    JsonArray *tags;
+    guint i;
+
+    if (team == NULL || !json_object_has_member(team, "tags") ||
+        !JSON_NODE_HOLDS_ARRAY(json_object_get_member(team, "tags")))
+        return g_string_free(out, FALSE);
+
+    tags = json_object_get_array_member(team, "tags");
+    for (i = 0; i < json_array_get_length(tags); i++) {
+        JsonNode *node = json_array_get_element(tags, i);
+
+        if (!JSON_NODE_HOLDS_VALUE(node) ||
+            json_node_get_value_type(node) != G_TYPE_STRING)
+            continue;
+        g_string_append_printf(out, "%s%s", out->len > 0 ? ", " : "",
+                               json_node_get_string(node));
+    }
+    return g_string_free(out, FALSE);
 }

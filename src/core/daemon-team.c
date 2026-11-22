@@ -60,6 +60,13 @@ clawt_daemon_handle_team(
             json_builder_set_member_name(builder, "order");
             json_builder_add_int_value(builder, team->order);
 
+            /* as written; clawt_team_tag_lookup() says which are known */
+            json_builder_set_member_name(builder, "tags");
+            json_builder_begin_array(builder);
+            for (j = 0; team->tags != NULL && team->tags[j] != NULL; j++)
+                json_builder_add_string_value(builder, team->tags[j]);
+            json_builder_end_array(builder);
+
             json_builder_set_member_name(builder, "members");
             json_builder_begin_array(builder);
 
@@ -148,6 +155,24 @@ clawt_daemon_handle_team(
             }
         }
 
+        /* tags (0.55.0), refused here when malformed rather than warned later */
+        {
+            g_auto(GStrv) tags = clawt_ipc_payload_strv(payload, "tags");
+            gsize i;
+
+            for (i = 0; tags != NULL && tags[i] != NULL; i++)
+                if (!clawt_team_tag_is_valid(tags[i])) {
+                    clawt_config_remove_team(self->config, team_id);
+                    return clawt_ipc_error_new(request,
+                        CLAWT_ERROR_INVALID_ARGUMENT,
+                        "a tag is lowercase letters, digits and hyphens, "
+                        "with at most one vendor: prefix");
+                }
+            if (tags != NULL && tags[0] != NULL)
+                clawt_config_set_team_string_list(self->config, team_id, "tags",
+                                                  (const gchar *const *)tags);
+        }
+
         if (!clawt_config_save(self->config, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
 
@@ -173,6 +198,41 @@ clawt_daemon_handle_team(
                                         value, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
 
+        /*
+         * Dispatched on what the schema says the key is.  A list written
+         * as a scalar is read back as nothing, so `skills` set through
+         * here reached no agent; a list arrives as `values` (an array),
+         * or as `value` split on commas for a client that sends strings.
+         */
+        {
+            g_autofree gchar *schema_key = g_strdup_printf("teams.%s", key);
+            const ClawtSchemaEntry *entry = clawt_config_schema_lookup(schema_key);
+
+            if (entry != NULL && entry->type == CLAWT_SCHEMA_STRING_LIST) {
+                g_auto(GStrv) values = clawt_ipc_payload_strv(payload, "values");
+                gsize i;
+
+                if (values == NULL && value != NULL && *value != '\0') {
+                    values = g_strsplit(value, ",", -1);
+                    for (i = 0; values[i] != NULL; i++)
+                        g_strstrip(values[i]);
+                }
+                for (i = 0; g_strcmp0(key, "tags") == 0 &&
+                            values != NULL && values[i] != NULL; i++)
+                    if (!clawt_team_tag_is_valid(values[i]))
+                        return clawt_ipc_error_new(request,
+                            CLAWT_ERROR_INVALID_ARGUMENT,
+                            "a tag is lowercase letters, digits and hyphens, "
+                            "with at most one vendor: prefix");
+
+                if (!clawt_config_set_team_string_list(
+                        self->config, team_id, key, (const gchar *const *)values))
+                    return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                               "no such team");
+                goto team_saved;
+            }
+        }
+
         if (!clawt_config_set_team_string(self->config, team_id, key, value))
             return clawt_ipc_error_new(
                 request, CLAWT_ERROR_NOT_FOUND,
@@ -182,6 +242,7 @@ clawt_daemon_handle_team(
                       "remove the old."
                     : "no such team");
 
+team_saved:
         if (!clawt_config_save(self->config, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
 

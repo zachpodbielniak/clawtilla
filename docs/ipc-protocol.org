@@ -407,7 +407,7 @@ several agents at once.
 ~agent.list~, ~agent.show~, ~agent.start~, ~agent.stop~, ~agent.restart~,
 ~agent.interrupt~, ~agent.reset~, ~agent.logs~, ~agent.create~,
 ~agent.import~,
-~agent.remove~, ~agent.set~, ~agent.reorder~, ~fleet.reorder~,
+~agent.remove~, ~agent.reap~, ~agent.set~, ~agent.reorder~, ~fleet.reorder~,
 ~agent.discover~,
 ~agent.forget~, ~agent.files~, ~agent.file_read~, ~agent.file_write~,
 ~agent.avatar~, ~agent.avatar_set~, ~agent.avatar_clear~,
@@ -420,6 +420,13 @@ thing is three chances to disagree about what "active" means -- plus
 ~warnings~ for what only the whole fleet shows. ~team.set~ refuses ~id~:
 everything refers to a team by it. ~team.remove~ answers with
 ~orphaned~, the number of agents still naming it.
+
+Since 0.55.0 every team in ~team.list~ carries ~tags~, an array as
+written in =teams.tags=; ~team.create~ takes ~tags~ (an array); and
+~team.set~ dispatches on the schema's type for the key, so a list key
+(~tags~, ~skills~) takes ~values~ (an array) or ~value~ split on commas,
+and is never written as a single string.  A malformed tag is refused
+there.  See [[file:team-tags.org][team-tags.org]].
 
 ~agent.list~ carries ~team~ and ~team_role~ per agent, and returns the
 fleet grouped by team so a client can emit a header when the team
@@ -486,6 +493,23 @@ do it in a text editor without renumbering the whole file.
 
 ~agent.remove~ takes ~remove_files~ beside ~remove_computer~ and answers
 with ~files~, which is ~removed~ or the reason it was not.
+
+**** Ephemeral agents (since 0.55.0)
+
+Every agent in ~agent.list~ and ~agent.show~ carries ~ephemeral~
+(boolean).  An ephemeral agent also carries ~parent~ (the agent that
+spawned it and may reap it), ~ephemeral_since~ (unix seconds) and
+~awaiting_reap~ (boolean: it has finished work and nothing open).
+=clawt_ephemeral_badge_for()= turns the three into the HELPER badge.
+
+~agent.reap~ (~agent~, optional ~force~) ends an ephemeral agent as the
+operator, who may reap anybody's: it is stopped, its workspace and
+state are removed, and ~agent.removed~ is published.  Without ~force~ it
+is refused while the agent has a task that is not finished, naming the
+tasks.  It answers an empty object.  ~agent.remove~ on an ephemeral
+agent reaps it (with ~force~, since Remove was pressed on purpose), and
+~agent.remove~ on an agent that has helpers hands them to the chief of
+staff with a notice.  See [[file:ephemeral-agents.org][ephemeral-agents.org]].
 
 ~agent.create~ and ~design.commit~ take an optional ~start~ (default
 true) and answer with ~started~, plus ~start_error~ when it did not.  A

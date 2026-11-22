@@ -1162,6 +1162,13 @@ Every retry is recorded on the incident and as a line in its room.
 
 GTK, web and libregnum show the same three things on the Tasks page: a *Problems to look at* section listing the open incidents -- whose run, what kind, what it said, who was told (or that it is waiting for them to finish a turn, or why nobody was) -- with *Retry* where the daemon would accept one (the ~retryable~ member, decided by the daemon); a *Retry* button on every failed or stalled task row; and the two settings, *Report broken runs* and *Who hears about them*, whose choices are walked from ~clawt_incident_recipient_count()~ / ~_nth()~. The incidents rooms are in every sidebar under their team. The CLI has ~clawtilla task incidents~ and ~clawtilla task retry <task-id|incident-id> [reason]~.
 
+** Ephemeral helpers
+:PROPERTIES:
+:CUSTOM_ID: ephemeral-helpers
+:END:
+
+Since 0.55.0 an agent with ~tools.ephemeral~ -- the chief of staff by default -- can spawn a temporary helper for one piece of work (=clawtilla_ephemeral_spawn=), hand it the work with =clawtilla_delegate=, and reap it when the work is done (=clawtilla_ephemeral_reap=).  A helper is a copy of how its parent runs and never more, joins the team tagged =ephemeral=, and stays across restarts until its parent reaps it.  See [[file:ephemeral-agents.org][ephemeral-agents.org]].
+
 ** Growing the fleet from a conversation
 
 A chief-of-staff can create agents, which is off by default:

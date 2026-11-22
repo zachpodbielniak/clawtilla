@@ -227,6 +227,7 @@
 #include "agent/clawt-avatar.h"
 #include "agent/clawt-face.h"
 #include "agent/clawt-team.h"
+#include "agent/clawt-ephemeral-name.h"
 #include "agent/clawt-agent-confine.h"
 
 #undef CLAWT_INSIDE

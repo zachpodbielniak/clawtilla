@@ -653,6 +653,7 @@ static const struct {
     { "new", "", "design one by answering questions" },
     { "create", "--id <id> [...]", "add one from flags, and start it" },
     { "rm", "<agent> [--purge]", "remove it; --purge deletes its files" },
+    { "reap", "<agent> [--force]", "end an ephemeral agent; --force drops its open work" },
     { "start", "<agent>", "start it" },
     { "stop", "<agent>", "stop it" },
     { "restart", "<agent>", "stop it and start it again" },
@@ -1030,13 +1031,24 @@ cmd_agent(int argc, char *argv[])
             const gchar *work = (hold != NULL) ? hold : activity;
             gboolean on_fallback = json_object_has_member(agent, "failover");
 
-            g_print("%-20s %-10s %-18s %-6" G_GINT64_FORMAT " %-8s %s%s\n",
+            /* a helper says whose it is, and when it is waiting to be reaped */
+            g_autofree gchar *helper = NULL;
+
+            if (json_object_has_member(agent, "ephemeral") &&
+                json_object_get_boolean_member(agent, "ephemeral"))
+                helper = g_strdup_printf("[ephemeral, %s's%s] ",
+                    member_or(agent, "parent", "nobody"),
+                    json_object_get_boolean_member_with_default(agent,
+                        "awaiting_reap", FALSE) ? ", done" : "");
+
+            g_print("%-20s %-10s %-18s %-6" G_GINT64_FORMAT " %-8s %s%s%s\n",
                     member_or(agent, "id", "?"),
                     member_or(agent, "state", "?"),
                     work != NULL ? work : "-",
                     json_object_get_int_member(agent, "mailbox_depth"),
                     json_object_get_boolean_member(agent, "connected")
                         ? "up" : "-",
+                    helper != NULL ? helper : "",
                     on_fallback ? "[on fallback] " : "",
                     member_or(agent, "description", ""));
         }
@@ -1652,6 +1664,26 @@ cmd_agent(int argc, char *argv[])
                         created_id);
         }
 
+        return EXIT_SUCCESS;
+    }
+
+    /*
+     * The operator may reap any helper; open work is kept unless --force,
+     * the same refusal the parent gets.
+     */
+    if (g_strcmp0(verb, "reap") == 0) {
+        gboolean force = argc > 4 && g_strcmp0(argv[4], "--force") == 0;
+
+        if (target == NULL) {
+            g_printerr("Usage: clawtilla agent reap <agent> [--force]\n");
+            return EXIT_FAILURE;
+        }
+        reply = call(client, "agent.reap",
+                     build_payload("agent", target, "force",
+                                   force ? "true" : "false", NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        g_print("Reaped %s.\n", target);
         return EXIT_SUCCESS;
     }
 
@@ -4004,7 +4036,23 @@ cmd_team(int argc, char *argv[])
                    "become teamless\n");
         g_printerr("  assign <agent> <team> [lead]  put an agent on a "
                    "team\n");
+        g_printerr("  tag <list|add|remove> ...     tags that give a team a "
+                   "job (docs/team-tags.org)\n");
         return EXIT_FAILURE;
+    }
+
+    /* the well-known table needs no daemon: it is this build's */
+    if (g_strcmp0(verb, "tag") == 0 && argc > 4 && g_strcmp0(argv[3], "list") == 0 &&
+        g_strcmp0(argv[4], "--well-known") == 0) {
+        guint i;
+
+        for (i = 0; i < clawt_team_tag_count(); i++) {
+            const ClawtTeamTagInfo *info = clawt_team_tag_nth(i);
+
+            g_print("%-20s %s%s\n", info->name, info->unique ? "[one team] " : "",
+                    info->description);
+        }
+        return EXIT_SUCCESS;
     }
 
     client = connect_to_daemon();
@@ -4052,6 +4100,121 @@ cmd_team(int argc, char *argv[])
             g_printerr("clawtilla: %s\n",
                        json_array_get_string_element(warnings, i));
 
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "tag") == 0) {
+        const gchar *action = argc > 3 ? argv[3] : NULL;
+        JsonArray *teams;
+        guint i;
+
+        if (g_strcmp0(action, "list") != 0 && g_strcmp0(action, "add") != 0 &&
+            g_strcmp0(action, "remove") != 0) {
+            g_printerr("Usage: clawtilla team tag list [--well-known]\n"
+                       "       clawtilla team tag add <team> <tag>\n"
+                       "       clawtilla team tag remove <team> <tag>\n"
+                       "\n"
+                       "Examples:\n"
+                       "  clawtilla team tag add interns ephemeral\n"
+                       "  clawtilla team tag list --well-known\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "team.list", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        teams = json_object_get_array_member(json_node_get_object(reply), "teams");
+
+        if (g_strcmp0(action, "list") == 0) {
+            for (i = 0; i < json_array_get_length(teams); i++) {
+                JsonObject *team = json_array_get_object_element(teams, i);
+                JsonArray *tags = json_object_has_member(team, "tags")
+                    ? json_object_get_array_member(team, "tags") : NULL;
+                GString *line = g_string_new(NULL);
+                guint t;
+
+                for (t = 0; tags != NULL && t < json_array_get_length(tags); t++) {
+                    const gchar *tag = json_array_get_string_element(tags, t);
+
+                    g_string_append_printf(line, "%s%s%s", t > 0 ? ", " : "", tag,
+                                           clawt_team_tag_lookup(tag) != NULL
+                                               ? "" : " (yours)");
+                }
+                g_print("%-16s %s\n", member_or(team, "id", "?"),
+                        line->len > 0 ? line->str : "-");
+                g_string_free(line, TRUE);
+            }
+            return EXIT_SUCCESS;
+        }
+
+        if (argc < 6) {
+            g_printerr("Usage: clawtilla team tag %s <team> <tag>\n", action);
+            return EXIT_FAILURE;
+        }
+
+        /* the team's tags as they are, then the one change, sent whole */
+        {
+            g_autoptr(GPtrArray) next = g_ptr_array_new_with_free_func(g_free);
+            g_autoptr(JsonBuilder) builder = json_builder_new();
+            g_autoptr(JsonNode) set_reply = NULL;
+            gboolean found = FALSE;
+            gboolean had = FALSE;
+
+            for (i = 0; i < json_array_get_length(teams); i++) {
+                JsonObject *team = json_array_get_object_element(teams, i);
+                JsonArray *tags;
+                guint t;
+
+                if (g_strcmp0(member_or(team, "id", NULL), argv[4]) != 0)
+                    continue;
+                found = TRUE;
+                tags = json_object_has_member(team, "tags")
+                    ? json_object_get_array_member(team, "tags") : NULL;
+                for (t = 0; tags != NULL && t < json_array_get_length(tags); t++) {
+                    const gchar *tag = json_array_get_string_element(tags, t);
+
+                    if (g_strcmp0(tag, argv[5]) == 0) {
+                        had = TRUE;
+                        if (g_strcmp0(action, "remove") == 0)
+                            continue;
+                    }
+                    g_ptr_array_add(next, g_strdup(tag));
+                }
+            }
+            if (!found) {
+                g_printerr("clawtilla: no team '%s'\n", argv[4]);
+                return EXIT_FAILURE;
+            }
+            if (g_strcmp0(action, "add") == 0 && had) {
+                g_print("%s already has the tag %s.\n", argv[4], argv[5]);
+                return EXIT_SUCCESS;
+            }
+            if (g_strcmp0(action, "remove") == 0 && !had) {
+                g_print("%s does not have the tag %s.\n", argv[4], argv[5]);
+                return EXIT_SUCCESS;
+            }
+            if (g_strcmp0(action, "add") == 0)
+                g_ptr_array_add(next, g_strdup(argv[5]));
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "team");
+            json_builder_add_string_value(builder, argv[4]);
+            json_builder_set_member_name(builder, "key");
+            json_builder_add_string_value(builder, "tags");
+            json_builder_set_member_name(builder, "values");
+            json_builder_begin_array(builder);
+            for (i = 0; i < next->len; i++)
+                json_builder_add_string_value(builder, g_ptr_array_index(next, i));
+            json_builder_end_array(builder);
+            json_builder_end_object(builder);
+
+            set_reply = call(client, "team.set", json_builder_get_root(builder));
+            if (set_reply == NULL)
+                return EXIT_FAILURE;
+            g_print("%s %s the tag %s.\n", argv[4],
+                    g_strcmp0(action, "add") == 0 ? "now has" : "no longer has",
+                    argv[5]);
+        }
         return EXIT_SUCCESS;
     }
 

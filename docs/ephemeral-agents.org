@@ -1,0 +1,157 @@
+#+title: Ephemeral agents
+#+description: Temporary helpers an agent spawns for one piece of work and reaps when it is done
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-11-21 Sat]
+#+updated: [2026-11-21 Sat]
+#+version: 0.1.0
+
+* Ephemeral agents
+:PROPERTIES:
+:CUSTOM_ID: ephemeral-agents
+:END:
+
+An ephemeral agent is a helper an agent makes for itself: a copy of how its parent runs, with a silly name, on the team tagged =ephemeral=, there until the parent says the work is done and *reaps* it.  The chief of staff can spawn them out of the box; any other agent can when you turn it on.
+
+Use one when a piece of work is separable and deserves its own context -- read three repositories in parallel, try an approach in a scratch workspace, chase a long investigation while the chief keeps talking to you -- and the fleet has nobody suited and free.  For anything ongoing, create a real agent (=clawtilla_create_agent=, or by hand): a helper is meant to go away.
+
+** How it works
+:PROPERTIES:
+:CUSTOM_ID: how
+:END:
+
+1. The parent calls =clawtilla_ephemeral_spawn= with a one-line =description= (and optionally =purpose=, its instructions).  clawtilla makes the helper, starts it, and answers with its id.
+2. The parent hands it work with =clawtilla_delegate=, exactly as it would any agent.  The helper's task is a child of the parent's turn task, so cancelling the parent's work cancels the helper's too, and the tree budgets count it.
+3. The helper works and answers; the task settles back to the parent as usual.
+4. The parent reaps it with =clawtilla_ephemeral_reap=: stopped, workspace and state removed, gone from the fleet.
+
+Nothing in between is special.  A helper is an ordinary agent in every respect a turn can see -- its own workspace, persona files, mailbox and transcript, listed in =clawtilla_list_agents= -- which is what makes delegating to it ordinary.
+
+** What a helper is allowed
+:PROPERTIES:
+:CUSTOM_ID: limits
+:END:
+
+*Never more than its parent.*  The helper is copied from the parent's own entry (=clawt_config_add_ephemeral_agent()=):
+
+| Copied | Not copied |
+|--------+------------|
+| =runtime= (including =confine= and =network=), =model=, =tools=, =skills=, limits, =computer= (see below) | its id, name, description, workspace, team and role, =chief_of_staff=, reviewer, =integrations=, =channels=, routines, face and colour, persona, projects |
+
+Integrations and channels are left out on purpose: a copied Matrix account or mail login would be two agents answering as one person.  A helper still gets every integration whose scope reaches it, like any agent on its team.
+
+On top of the copy, two settings are forced off: ~tools.ephemeral~ (a helper cannot spawn helpers) and ~tools.manage_fleet~ (it cannot create agents).  Both are checked when the tool is offered *and* when it is called.
+
+*The computer is never stronger than the parent's:*
+
+| Parent's computer | Helper's default | Helper may ask for |
+|-------------------+------------------+--------------------|
+| none | none | none |
+| host | host (same confinement) | none, host, container |
+| display | none | none, container |
+| container, distrobox | none | none, container |
+| vm | none | none |
+
+A VM is never spawned -- a machine built and destroyed per errand is not a helper -- and asking for more than the table allows is refused with the reason.
+
+** Names
+:PROPERTIES:
+:CUSTOM_ID: names
+:END:
+
+Unless the parent passes =name=, a helper gets an =adjective-noun= id the way a container does, only louder: =turbo-narwhal=, =feral-kazoo=, =quantum-pickle=, =disco-gremlin=.  There are about 4,900 pairs; after 64 collisions in a row a two-digit suffix is added rather than looping.  The words are chosen so a name can never be mistaken for a description of the work -- a helper called =careful-reviewer= would be believed.  A name is an address, not a secret, so it comes from GLib's random source (=clawt_ephemeral_name_generate()=).
+
+A name the parent chooses must be a valid, unused agent id; a taken one is refused, not suffixed.
+
+** The team
+:PROPERTIES:
+:CUSTOM_ID: team
+:END:
+
+Helpers join the team tagged =ephemeral= ([[file:team-tags.org][team-tags.org]]).  If no team carries the tag, clawtilla adds one to ~clawtilla.yaml~ the first time a helper is spawned -- =id: ephemeral=, name /Ephemeral/ -- declared like any team, so you can rename it, recolour it, or move the tag to a team of your own.
+
+Within the team each helper is a member, and for assignment its *parent* counts as its lead: a member that may spawn a helper may hand it work, which is the only reason it exists, and nobody else may assign to it (the chief of staff still may, as it may to anyone).
+
+** Reaping
+:PROPERTIES:
+:CUSTOM_ID: reaping
+:END:
+
+Only the parent, or you, may reap a helper.  A sibling or any other agent is refused.
+
+- *While it has work open* (any task assigned to it that is not finished), a reap is refused and the refusal names the tasks -- unless =force= is true, which drops that work.
+- *Reaping* stops the helper, removes its workspace and state directory, takes it out of every room, and publishes ~agent.removed~.
+- *Nothing is reaped automatically.*  Not on a timer and not when a task finishes: a parent that batches work hands a helper a second piece after the first, and a helper reaped under it is a turn talking to nobody.
+- *One reminder.*  A helper with finished work and nothing open for =orchestration.ephemeral_reap_reminder_hours= (24 by default) earns its parent one notice -- from the daemon, inviting no reply -- saying it can be reaped.  New work on the helper clears the record, so the next time it finishes it is reminded about afresh.  The clients badge a helper in that state amber.
+
+You reap from any client's agent inspector (*Reap this helper*), or:
+
+#+begin_src bash
+clawtilla agent reap turbo-narwhal
+clawtilla agent reap turbo-narwhal --force     # drop its open work too
+#+end_src
+
+Removing a helper with ~agent.remove~ (the clients' Delete, ~clawtilla agent rm~) reaps it, with its open work dropped since that was asked for on purpose.
+
+*When a parent is removed* from the fleet, its helpers are handed to the chief of staff -- not reaped, because whatever they were doing may be the reason somebody removed the parent in a hurry -- and the chief is told which.
+
+** Persistence
+:PROPERTIES:
+:CUSTOM_ID: persistence
+:END:
+
+Helpers survive a daemon restart and a config reload, until they are reaped.  They are never written to ~clawtilla.yaml~ -- no save, revision, export or fleet pack contains one -- but to their own store, ~<state_dir>/ephemeral.yaml~ (mode 0600, since an entry copies its parent's settings), written on every change and read back at start and after every reload.  An entry that cannot be restored (an id now taken by a file agent, a malformed entry) is skipped with a warning naming why; the rest are restored.
+
+** Configuration
+:PROPERTIES:
+:CUSTOM_ID: configuration
+:END:
+
+| Key | Default | What it does |
+|-----+---------+--------------|
+| =agents.tools.ephemeral= | on for the chief of staff, off for every other agent | whether the agent may spawn helpers; marked dangerous, so a fleet pack import needs =allow_dangerous= to turn it on |
+| =orchestration.ephemeral_max_per_parent= | 5 | helpers one agent may have at once; the refusal lists them |
+| =orchestration.ephemeral_max_fleet= | 20 | helpers the whole fleet may have at once |
+| =orchestration.ephemeral_reap_reminder_hours= | 24 | how long finished work waits before the one reminder; 0 never reminds |
+
+The chief's default comes from its role, both spellings of it (=agents.chief_of_staff: true= or =orchestration.chief_of_staff: <id>=), and an explicit =tools.ephemeral: false= on the chief turns it off.  Full descriptions are in [[file:configuration-options.org][configuration-options.org]].
+
+To let a lead spawn helpers:
+
+#+begin_src bash
+clawtilla agent set research-lead tools.ephemeral true
+clawtilla agent restart research-lead     # a tool list is read at session start
+#+end_src
+
+** The tools
+:PROPERTIES:
+:CUSTOM_ID: tools
+:END:
+
+| Tool | Offered to | Does |
+|------+------------+------|
+| =clawtilla_ephemeral_spawn= | an agent with ~tools.ephemeral~ that is not itself a helper | makes and starts a helper; =description= required, optional =purpose=, =name=, =provider=, =model=, =computer=, =container_image= |
+| =clawtilla_ephemeral_list= | an agent with ~tools.ephemeral~, or with helpers | each helper: what it is for, whether it is running, whether it has work open |
+| =clawtilla_ephemeral_reap= | the same | ends one of the caller's helpers; =agent_id=, optional =force= |
+
+List and reap need no permission beyond having helpers, so an agent whose ~tools.ephemeral~ was turned off after it spawned can still clean up.  Spawn and reap are of action class =fleet_admin=, so action rules ([[file:security.org][security.org]]) can put either behind an approval.
+
+** In the clients
+:PROPERTIES:
+:CUSTOM_ID: clients
+:END:
+
+- *The fleet list* shows a *HELPER* badge on every helper, with a tooltip saying whose it is; the badge turns amber once its work is done and it awaits reaping (=clawt_ephemeral_badge_for()=, the same answer in GTK, web and libregnum).  Helpers group under their team like any agent.
+- *The agent inspector* says whose helper it is and offers *Reap this helper* in place of Delete, with one confirmation that says open work is dropped.
+- *The CLI* marks helpers in ~clawtilla agent list~ (=[ephemeral, kudu's]=, and =done= when it awaits reaping) and has ~clawtilla agent reap~.
+
+** Troubleshooting
+:PROPERTIES:
+:CUSTOM_ID: troubleshooting
+:END:
+
+- *The chief does not have =clawtilla_ephemeral_spawn=.*  Its tool list is read at session start: restart it after upgrading.  If it is still missing, check ~tools.ephemeral~ is not set to false on it, and ~tools.deny~ does not name the tool.
+- *"you already have 5 ephemeral agents".*  Reap one that is done, or raise =orchestration.ephemeral_max_per_parent=.
+- *"a helper cannot have a 'host' computer when you have 'none'".*  Working as designed: a helper never gets more than its parent.  Give the parent the computer, or create a real agent.
+- *A helper is still there after a restart.*  Also working as designed; it stays until reaped.  ~clawtilla agent list~ shows whose it is.
+- *"teams 'ephemeral' and 'temps' both have the tag 'ephemeral'".*  Take the tag off one team; the first in the list keeps it meanwhile.

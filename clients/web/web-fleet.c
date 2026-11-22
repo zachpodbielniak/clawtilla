@@ -204,6 +204,19 @@ agent_row(JsonObject *agent, const gchar *selected, ClawtPage view,
         break;
     }
 
+    /* an ephemeral helper, amber once its work is done and it awaits reaping */
+    {
+        const gchar *tone = NULL;
+        g_autofree gchar *tooltip = NULL;
+
+        if (clawt_ephemeral_badge_for(agent, &tone, &tooltip)) {
+            HtmxSpan *badge = clawt_web_badge("helper", tone);
+
+            htmx_element_set_attribute(HTMX_ELEMENT(badge), "title", tooltip);
+            clawt_web_add(line, badge);
+        }
+    }
+
     /*
      * What has arrived from this agent since its conversation was last
      * opened -- and *not* the queue depth below, which is the opposite

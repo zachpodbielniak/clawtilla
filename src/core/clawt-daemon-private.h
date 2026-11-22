@@ -299,6 +299,14 @@ struct _ClawtDaemon {
     GHashTable              *provider_usage;
     ClawtProviderUsageQuery  provider_usage_query;
 
+    /* ephemeral agents (0.55.0): the reap-reminder sweep */
+    GSource                 *ephemeral_sweep;
+    /*
+     * Set by a test: a spawned helper is made but not started, because
+     * make test must not run an agent's CLI.  Never set by the daemon.
+     */
+    gboolean                 ephemeral_no_start;
+
     /*
      * Who to tell when something is worth interrupting somebody for.
      *
@@ -1380,6 +1388,35 @@ void clawt_daemon_provider_usage_landed(ClawtDaemon  *self,
                                         const GError *error);
 void clawt_provider_usage_login_free(ClawtProviderUsageLogin *login);
 void clawt_daemon_provider_usage_stop(ClawtDaemon *self);
+
+/* Ephemeral agents (daemon-ephemeral.c, 0.55.0). */
+JsonNode *clawt_daemon_handle_ephemeral(ClawtDaemon *self,
+                                        const gchar *kind,
+                                        JsonNode    *request,
+                                        JsonObject  *payload,
+                                        gboolean    *handled);
+gboolean clawt_daemon_ephemeral_save(ClawtDaemon *self, GError **error);
+void     clawt_daemon_ephemeral_load(ClawtDaemon *self);
+gboolean clawt_daemon_ephemeral_has_children(ClawtDaemon *self,
+                                             const gchar *parent_id);
+/* the new agent's id, or NULL with @error set */
+gchar   *clawt_daemon_ephemeral_spawn(ClawtDaemon  *self,
+                                      const gchar  *parent_id,
+                                      JsonObject   *args,
+                                      GError      **error);
+/* @caller_id NULL is the operator, who may reap any helper */
+gboolean clawt_daemon_ephemeral_reap(ClawtDaemon  *self,
+                                     const gchar  *caller_id,
+                                     const gchar  *agent_id,
+                                     gboolean      force,
+                                     GError      **error);
+void     clawt_daemon_ephemeral_reparent(ClawtDaemon *self, const gchar *gone_id);
+void     clawt_daemon_ephemeral_sweep(ClawtDaemon *self, gint64 now);
+void     clawt_daemon_ephemeral_setup(ClawtDaemon *self);
+void     clawt_daemon_ephemeral_teardown(ClawtDaemon *self);
+void     clawt_daemon_ephemeral_add_members(ClawtAgentConfig *agent,
+                                            JsonBuilder      *builder);
+gchar   *clawt_daemon_ephemeral_describe(ClawtDaemon *self, const gchar *parent_id);
 
 JsonNode *clawt_daemon_handle_grok(ClawtDaemon *self,
                                    const gchar *kind,

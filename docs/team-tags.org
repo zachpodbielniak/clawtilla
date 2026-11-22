@@ -1,0 +1,79 @@
+#+title: Team tags
+#+description: Labels that give a team a job in the software, whatever the team is called
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-11-21 Sat]
+#+updated: [2026-11-21 Sat]
+#+version: 0.1.0
+
+* Team tags
+:PROPERTIES:
+:CUSTOM_ID: team-tags
+:END:
+
+A team's id and name are yours: what the team is called is a matter of taste, and renaming one must never change what the software does with it.  So when a feature needs "the team that does X", it does not look for a team *called* X.  It looks for the team *tagged* X.
+
+#+begin_src yaml
+teams:
+  - id: interns
+    name: The Temps
+    tags: [ephemeral]
+#+end_src
+
+Here ephemeral agents join *The Temps*, because that team carries the =ephemeral= tag.
+
+** What a tag looks like
+:PROPERTIES:
+:CUSTOM_ID: syntax
+:END:
+
+Lowercase letters, digits and hyphens, starting with a letter and not ending in a hyphen, at most 64 characters: =ephemeral=, =night-shift2=.  A plugin's tags carry one =vendor:= prefix of the same shape (=acme:night-shift=), so two plugins -- or, later, two federated fleets -- cannot mean different things by one word.
+
+A malformed tag in the file is kept and reported as a fleet warning rather than dropped: a tag silently ignored is a feature that silently does not apply.  A client or ~team.set~ refuses one before it is written.
+
+** Well-known tags
+:PROPERTIES:
+:CUSTOM_ID: well-known
+:END:
+
+These are the tags a feature of this clawtilla looks for.  The table is the library's (=clawt_team_tag_count()= / =clawt_team_tag_nth()=); every client walks it, ~clawtilla team tag list --well-known~ prints it, and =tests/test-ephemeral.c= fails if a row is missing here.
+
+| Tag | Unique | What it does |
+|-----+--------+--------------|
+| =ephemeral= | yes | Where ephemeral agents go: the temporary helpers an agent spawns with =clawtilla_ephemeral_spawn= and reaps when they are done.  If no team carries it, clawtilla makes one called /Ephemeral/ the first time a helper is spawned.  See [[file:ephemeral-agents.org][ephemeral-agents.org]]. |
+
+A tag is added to this table only with the feature that reads it, so nothing here names a feature that does not exist yet.
+
+** Unique tags
+:PROPERTIES:
+:CUSTOM_ID: unique
+:END:
+
+A unique tag means "the one team that does X".  If two teams carry it, the *first in the team list* keeps it -- by =teams.order=, then file order, which is the order every client draws the teams in -- and the fleet warning names both: "teams 'helpers' and 'temps' both have the tag 'ephemeral', which only one team may have; 'helpers' keeps it, so take it off 'temps'".  The warning and the behaviour come from the same rule (=clawt_team_find_by_tag()=), so what the warning says is what happens.
+
+It is a warning, not an error, like every other fleet mistake: a fleet is edited by hand and half-built states are ordinary.
+
+** Your own tags
+:PROPERTIES:
+:CUSTOM_ID: your-own
+:END:
+
+Any valid tag that is not well-known is kept and shown, for your own use or a plugin's -- a way to mark teams for a routine, a filter or a future integration without a config key for each.  Nothing in clawtilla acts on it.
+
+** Setting tags
+:PROPERTIES:
+:CUSTOM_ID: setting
+:END:
+
+- *In the file:* =teams[].tags=, a list (see [[file:configuration-options.org][configuration-options.org]]).
+- *In a client:* the team editor's /Tags/ field, comma separated, in the GTK, web and libregnum clients alike; the fleet list shows a team's tags beside its name.
+- *From the CLI:*
+  #+begin_src bash
+  clawtilla team tag list                     # every team's tags
+  clawtilla team tag list --well-known        # the tags clawtilla knows
+  clawtilla team tag add interns ephemeral
+  clawtilla team tag remove interns ephemeral
+  #+end_src
+- *Over IPC:* ~team.set~ with ~key: "tags"~ and ~values~ (an array), or ~value~ comma separated; ~team.create~ takes ~tags~; ~team.list~ reports each team's ~tags~.  See [[file:ipc-protocol.org][ipc-protocol.org]].
+
+Since 0.55.0 ~team.set~ dispatches on the schema type for every key, so =teams.skills= set through it is a list too -- before, it was written as a single string and read back as no skills at all.

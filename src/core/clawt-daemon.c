@@ -5906,6 +5906,7 @@ release_components(ClawtDaemon *self)
     clawt_daemon_venture_stop(self);
     /* allowance reads in flight answer into nothing once this is gone */
     clawt_daemon_provider_usage_stop(self);
+    clawt_daemon_ephemeral_teardown(self);
 
     /*
      * The routine tick and the pods for the same reason -- both start
@@ -7727,6 +7728,12 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
             exchange_dir,
             clawt_config_get_int(self->config, "defaults.exchange_max_bytes"));
 
+    /*
+     * Ephemeral agents are not in clawtilla.yaml; their store is read into
+     * the configuration before the manager makes an agent of every entry.
+     */
+    clawt_daemon_ephemeral_load(self);
+
     self->agents = clawt_agent_manager_new(self->config);
     clawt_agent_manager_set_state_dir(self->agents, self->state_dir);
 
@@ -8279,6 +8286,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      * starts listening to the bus here.
      */
     clawt_daemon_notices_setup(self);
+    /* the ephemeral tools' hooks and the reap-reminder sweep */
+    clawt_daemon_ephemeral_setup(self);
 
     /*
      * After the tools exist, whose wait tools it supplies, and after
@@ -8629,6 +8638,8 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
 
         self->config = g_steal_pointer(&reloaded);
         clawt_daemon_skill_tests_readd(self, previous);
+        /* ...and neither are ephemeral agents: their store says who */
+        clawt_daemon_ephemeral_load(self);
         g_clear_object(&previous);
     }
 
@@ -9286,6 +9297,10 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     json_builder_set_member_name(builder, "chief_of_staff");
     json_builder_add_boolean_value(builder,
                                    clawt_agent_is_chief_of_staff(agent));
+
+    /* ephemeral, parent, ephemeral_since, awaiting_reap (0.55.0) */
+    if (config != NULL)
+        clawt_daemon_ephemeral_add_members(config, builder);
 
     /*
      * Which room the operator's conversation with this agent is.
@@ -11213,6 +11228,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_trigger,
     clawt_daemon_handle_grok,
     clawt_daemon_handle_provider_usage,
+    clawt_daemon_handle_ephemeral,
     clawt_daemon_handle_config,
     clawt_daemon_handle_skill_tests,
     clawt_daemon_handle_skill,

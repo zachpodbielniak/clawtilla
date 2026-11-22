@@ -156,6 +156,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/agent/clawt-avatar.h \
 	$(SRCDIR)/agent/clawt-face.h \
 	$(SRCDIR)/agent/clawt-team.h \
+	$(SRCDIR)/agent/clawt-ephemeral-name.h \
 	$(SRCDIR)/agent/clawt-agent-confine.h \
 	$(SRCDIR)/computer/clawt-exec-result.h \
 	$(SRCDIR)/computer/clawt-sandbox.h \
@@ -318,6 +319,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-venture-mirror.c \
 	$(SRCDIR)/core/daemon-grok.c \
 	$(SRCDIR)/core/daemon-provider-usage.c \
+	$(SRCDIR)/core/daemon-ephemeral.c \
 	$(SRCDIR)/core/daemon-config.c \
 	$(SRCDIR)/core/daemon-skill.c \
 	$(SRCDIR)/core/daemon-skill-proposal.c \
@@ -389,6 +391,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/agent/clawt-avatar.c \
 	$(SRCDIR)/agent/clawt-face.c \
 	$(SRCDIR)/agent/clawt-team.c \
+	$(SRCDIR)/agent/clawt-ephemeral-name.c \
 	$(SRCDIR)/agent/clawt-agent-confine.c \
 	$(SRCDIR)/computer/clawt-exec-result.c \
 	$(SRCDIR)/computer/clawt-sandbox.c \

@@ -1400,6 +1400,60 @@ clawt_gtk_delete_agent(ClawtWindow *self)
     adw_dialog_present(ADW_DIALOG(first), GTK_WIDGET(self));
 }
 
+/* ── Reaping a helper (0.55.0) ───────────────────────────────────── */
+
+static void
+on_reap_confirmed(AdwAlertDialog *dialog, gchar *response, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *agent_id = NULL;
+    g_autofree gchar *message = NULL;
+
+    if (g_strcmp0(response, "reap") != 0 || self->selected_agent == NULL)
+        return;
+
+    agent_id = g_strdup(self->selected_agent);
+    /* asked once, so open work goes with it: the dialog said so */
+    reply = clawt_window_request(self, "agent.reap",
+                                 clawt_build_payload("agent", agent_id,
+                                                     "force", "true", NULL));
+    if (reply == NULL)
+        return;
+
+    g_clear_pointer(&self->selected_agent, g_free);
+    g_clear_pointer(&self->selected_room, g_free);
+    clawt_gtk_clear_box(self->inspector);
+    clawt_gtk_reset_transcript(self);
+    message = g_strdup_printf("Reaped %s.", agent_id);
+    clawt_window_toast(self, message);
+    clawt_gtk_refresh_agents(self);
+}
+
+static void
+on_reap_agent(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autofree gchar *heading = NULL;
+    AdwAlertDialog *confirm;
+
+    if (self->selected_agent == NULL)
+        return;
+
+    heading = g_strdup_printf("Reap %s?", self->selected_agent);
+    confirm = ADW_ALERT_DIALOG(adw_alert_dialog_new(heading,
+        "It stops and its workspace is removed. Any work still open on it is "
+        "dropped. Normally the agent that spawned it reaps it when the work "
+        "is done."));
+    adw_alert_dialog_add_response(confirm, "cancel", "Keep it");
+    adw_alert_dialog_add_response(confirm, "reap", "Reap");
+    adw_alert_dialog_set_response_appearance(confirm, "reap", ADW_RESPONSE_DESTRUCTIVE);
+    adw_alert_dialog_set_default_response(confirm, "cancel");
+    adw_alert_dialog_set_close_response(confirm, "cancel");
+    g_signal_connect(confirm, "response", G_CALLBACK(on_reap_confirmed), self);
+    adw_dialog_present(ADW_DIALOG(confirm), GTK_WIDGET(self));
+}
+
 static void
 on_delete_agent(GtkButton *button, gpointer user_data)
 {
@@ -4304,11 +4358,27 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
         "Removing an agent stops it and takes it out of every room. Its "
         "mailbox and transcripts stay on disk.");
 
-    delete_button = gtk_button_new_with_label("Delete this agent");
+    /*
+     * A helper is reaped, not deleted: the same daemon path either way,
+     * but the word says it was always meant to go.
+     */
+    {
+        g_autofree gchar *helper = NULL;
+
+        if (clawt_ephemeral_badge_for(agent, NULL, &helper)) {
+            adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(danger),
+                                                  helper);
+            delete_button = gtk_button_new_with_label("Reap this helper");
+            g_signal_connect(delete_button, "clicked", G_CALLBACK(on_reap_agent),
+                             self);
+        } else {
+            delete_button = gtk_button_new_with_label("Delete this agent");
+            g_signal_connect(delete_button, "clicked", G_CALLBACK(on_delete_agent),
+                             self);
+        }
+    }
     gtk_widget_add_css_class(delete_button, "destructive-action");
     gtk_widget_set_margin_top(delete_button, 6);
-    g_signal_connect(delete_button, "clicked", G_CALLBACK(on_delete_agent),
-                     self);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(danger), delete_button);
 
     gtk_box_append(self->inspector, danger);

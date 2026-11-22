@@ -481,6 +481,17 @@ agent_row(ClawtWindow *self, JsonObject *agent, guint unread)
         break;
     }
 
+    /* an ephemeral helper, amber once its work is done and it awaits reaping */
+    {
+        const gchar *tone = NULL;
+        g_autofree gchar *tooltip = NULL;
+
+        if (clawt_ephemeral_badge_for(agent, &tone, &tooltip))
+            gtk_box_append(GTK_BOX(box),
+                           clawt_gtk_badge("HELPER", clawt_gtk_tone_class(tone),
+                                           tooltip));
+    }
+
     adw_action_row_add_suffix(ADW_ACTION_ROW(row), box);
 
     g_object_set_data_full(G_OBJECT(row), "agent-id",

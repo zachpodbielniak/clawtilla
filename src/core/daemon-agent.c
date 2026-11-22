@@ -1395,6 +1395,27 @@ clawt_daemon_handle_agent(
                                        "which agent?");
 
         /*
+         * An ephemeral agent is not in the file, so removing it is
+         * reaping it -- by the operator, who may reap anybody's, with
+         * open work dropped because Remove was pressed on purpose.
+         */
+        {
+            ClawtAgentConfig *maybe = clawt_config_get_agent(self->config, agent_id);
+
+            if (maybe != NULL && clawt_agent_config_is_ephemeral(maybe)) {
+                if (!clawt_daemon_ephemeral_reap(self, NULL, agent_id, TRUE, &error))
+                    return clawt_ipc_error_new(request, error->code, error->message);
+                json_builder_begin_object(builder);
+                json_builder_set_member_name(builder, "id");
+                json_builder_add_string_value(builder, agent_id);
+                json_builder_set_member_name(builder, "files");
+                json_builder_add_string_value(builder, "removed");
+                json_builder_end_object(builder);
+                return clawt_ipc_response_new(request, json_builder_get_root(builder));
+            }
+        }
+
+        /*
          * The container or VM, torn down before the agent goes.
          *
          * Removing an agent used to leave its computer running, with a
@@ -1528,6 +1549,9 @@ clawt_daemon_handle_agent(
 
         clawt_agent_manager_load(self->agents, NULL);
         clawt_event_bus_emit(self->bus, "agent.removed", agent_id);
+
+        /* its helpers are the chief's now, with a notice, not reaped */
+        clawt_daemon_ephemeral_reparent(self, agent_id);
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "id");
