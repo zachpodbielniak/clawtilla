@@ -2715,8 +2715,14 @@ static const ClawtSchemaEntry schema[] = {
 { "office.asset_api", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "A service the daemon makes characters with itself, with no model\n"
   "deciding what to ask: `comfyui` (self-hosted, free: office.comfyui_url\n"
-  "and office.comfyui_workflow), `higgsfield` (paid: its key stored with\n"
-  "`clawtilla office api-key higgsfield`), or empty for none.\n"
+  "and office.comfyui_workflow); `higgsfield` (Higgsfield's REST API, a\n"
+  "key pair stored with `clawtilla office api-key higgsfield`, billed to\n"
+  "the API balance in Higgsfield's console); `higgsfield-mcp` (Higgsfield's\n"
+  "MCP server through a connector's sign-in -- office.asset_generator, or\n"
+  "the only higgsfield connector -- billed to the account's app credits,\n"
+  "the ones the website and the hf CLI spend); or empty for none.\n"
+  "The two Higgsfield roads are billed separately: choose the one your\n"
+  "money is in.\n"
   "`clawtilla office character AGENT --direct` makes one; a paid service's\n"
   "estimate is put to you as a decision and nothing is spent until you\n"
   "approve.\n"
@@ -2735,9 +2741,12 @@ static const ClawtSchemaEntry schema[] = {
   "{{negative_prompt}}. See docs/office-custodial-team.org.", "0.61.0" },
 
 { "office.asset_model", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
-  "higgsfield-ai/soul/v2/standard", NULL,
-  "The model office.asset_api makes characters with: the service's own\n"
-  "id for it (for Higgsfield, the endpoint path on its model page).",
+  NULL, NULL,
+  "The model office.asset_api makes characters with, in the service's own\n"
+  "spelling. Empty is each road's own default: for `higgsfield` the REST\n"
+  "endpoint path higgsfield-ai/soul/v2/standard, for `higgsfield-mcp` the\n"
+  "MCP catalogue's nano_banana_2 -- the two name models differently, and\n"
+  "one road's name is refused by the other.",
   "0.60.0" },
 
 { "office.asset_generator", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,

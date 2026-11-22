@@ -1328,3 +1328,72 @@ clawt_connector_directory_new(ClawtConfig             *config,
         clawt_mcp_directory_cli_searches_tools(provider),
         (guint64)MAX(min_tools, 0), (guint64)MAX(min_chars, 0));
 }
+
+ClawtConnectorPlan *
+clawt_connector_plan_for_name(ClawtConfig              *config,
+                              const gchar              *name,
+                              ClawtIntegrationBinding **out_binding,
+                              GError                  **error)
+{
+    g_autoptr(GPtrArray) catalog = NULL;
+    g_autoptr(ClawtIntegrationBinding) binding = NULL;
+    g_autoptr(ClawtOauthToken) token = NULL;
+    g_autofree gchar *catalog_dir = NULL;
+    g_autofree gchar *token_file = NULL;
+    g_autofree gchar *secrets_dir = NULL;
+    ClawtIntegrationConfig *instance;
+    const ClawtIntegrationInfo *info;
+    const ClawtConnectorInfo *connector;
+    ClawtConnectorPlan *plan;
+
+    g_return_val_if_fail(config != NULL, NULL);
+
+    instance = name != NULL ? clawt_config_get_integration(config, name) : NULL;
+    if (instance == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no connector called '%s'", name != NULL ? name : "");
+        return NULL;
+    }
+    info = clawt_integration_find(clawt_integration_config_get_type_id(instance));
+    if (info == NULL || g_strcmp0(info->id, "connector") != 0) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is not a connector", name);
+        return NULL;
+    }
+    catalog_dir = clawt_config_get_path_value(config, "connectors.dir");
+    catalog = clawt_connector_catalog_load(catalog_dir, NULL);
+    connector = clawt_connector_catalog_find(
+        catalog, clawt_integration_config_get_string(instance, NULL, "provider"));
+    if (connector == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "'%s' names a provider clawtilla does not know", name);
+        return NULL;
+    }
+    binding = clawt_integration_binding_for_instance(instance, info, NULL);
+
+    /*
+     * Where the daemon keeps it now, which may be newer than this
+     * config: a confined relay reads the clawtilla.yaml its box started
+     * with, and its connector's directory is what is bound in.
+     */
+    secrets_dir = clawt_config_get_path_value(config, "secrets.dir");
+    if (secrets_dir != NULL)
+        token_file = clawt_connector_find_token_file(
+            secrets_dir, name, clawt_integration_binding_get_string(binding, "token_file"));
+    else
+        token_file = g_strdup(clawt_integration_binding_get_string(binding, "token_file"));
+
+    if (token_file != NULL) {
+        token = clawt_oauth_token_load(token_file, error);
+        if (token == NULL) {
+            g_prefix_error(error, "cannot read the credential for '%s': ", name);
+            return NULL;
+        }
+    }
+
+    plan = clawt_connector_plan_new(connector, binding,
+                                    token != NULL ? token->access_token : NULL, error);
+    if (plan != NULL && out_binding != NULL)
+        *out_binding = g_steal_pointer(&binding);
+    return plan;
+}

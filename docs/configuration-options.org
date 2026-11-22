@@ -3768,8 +3768,14 @@ which are also the format. See docs/office-choreography.org.
 
 A service the daemon makes characters with itself, with no model
 deciding what to ask: `comfyui` (self-hosted, free: office.comfyui_url
-and office.comfyui_workflow), `higgsfield` (paid: its key stored with
-`clawtilla office api-key higgsfield`), or empty for none.
+and office.comfyui_workflow); `higgsfield` (Higgsfield's REST API, a
+key pair stored with `clawtilla office api-key higgsfield`, billed to
+the API balance in Higgsfield's console); `higgsfield-mcp` (Higgsfield's
+MCP server through a connector's sign-in -- office.asset_generator, or
+the only higgsfield connector -- billed to the account's app credits,
+the ones the website and the hf CLI spend); or empty for none.
+The two Higgsfield roads are billed separately: choose the one your
+money is in.
 `clawtilla office character AGENT --direct` makes one; a paid service's
 estimate is put to you as a decision and nothing is spent until you
 approve.
@@ -3799,11 +3805,14 @@ with {{prompt}} where the description goes and, if you like,
 *** =office.asset_model=
 
 - Type :: string
-- Default :: =higgsfield-ai/soul/v2/standard=
+- Default :: unset
 - Since :: 0.60.0
 
-The model office.asset_api makes characters with: the service's own
-id for it (for Higgsfield, the endpoint path on its model page).
+The model office.asset_api makes characters with, in the service's own
+spelling. Empty is each road's own default: for `higgsfield` the REST
+endpoint path higgsfield-ai/soul/v2/standard, for `higgsfield-mcp` the
+MCP catalogue's nano_banana_2 -- the two name models differently, and
+one road's name is refused by the other.
 
 *** =office.asset_generator=
 

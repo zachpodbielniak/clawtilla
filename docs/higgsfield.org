@@ -62,7 +62,7 @@ Higgsfield's generations are jobs, not answers.  A call returns a request id at 
 2. ask the job's status until it says completed or failed -- a turn that waits should do other work between checks rather than spin;
 3. fetch the result into its exchange directory (~computer.exchange~) or workspace, because a result URL on Higgsfield's CDN is not forever.
 
-The office's own road (=office.asset_api: higgsfield=) is the REST API instead, with a key pair from the console, and it bills a separate API balance: the app's credits do not pay for it, and a submit with none is refused =HTTP 403 not_enough_credits= ([[file:office-custodial-team.org::#direct][made by the daemon itself]]).
+The office can make characters through this connector too (=office.asset_api: higgsfield-mcp=, the daemon calling the MCP tools itself with the connector's sign-in, paid from the app credits); its other road (=office.asset_api: higgsfield=) is the REST API instead, with a key pair from the console, and it bills a separate API balance: the app's credits do not pay for it, and a submit with none is refused =HTTP 403 not_enough_credits= ([[file:office-custodial-team.org::#direct][made by the daemon itself]]).
 
 What the server's tools want, as of 2026-11-22 -- the names are not the ones a model guesses, and a wrong one is refused with an input validation error rather than ignored:
 

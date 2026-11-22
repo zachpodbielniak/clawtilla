@@ -1230,6 +1230,32 @@ test_key_background(void)
 #undef AT
 }
 
+/*
+ * The MCP road (office.asset_api: higgsfield-mcp) pays with a connector's
+ * sign-in.  With no Higgsfield connector it is refused where the person
+ * asking reads it, naming the command that adds one -- and nothing is
+ * asked about money that nothing could spend.
+ */
+static void
+test_mcp_road_needs_a_connector(void)
+{
+    DaemonFixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+
+    daemon_setup(&fixture, "");
+    g_assert_true(clawt_config_set_string(fixture.daemon->config, "office.asset_api",
+                                          "higgsfield-mcp"));
+    g_assert_false(clawt_daemon_office_generate_ask(fixture.daemon, "kudu", NULL, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID);
+    g_assert_nonnull(strstr(error->message, "connector add hf --provider higgsfield"));
+    {
+        g_autoptr(GPtrArray) open = clawt_decision_store_list(fixture.daemon->decisions, TRUE);
+
+        g_assert_cmpuint(open->len, ==, 0);
+    }
+    daemon_teardown(&fixture);
+}
+
 /* The key is stored as a file, 0600, and never given back. */
 static void
 test_api_key(void)
@@ -1294,6 +1320,8 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office-custodial/daemon-characters", test_daemon_characters);
     g_test_add_func("/office-custodial/direct-generation", test_direct_generation);
     g_test_add_func("/office-custodial/api-key", test_api_key);
+    g_test_add_func("/office-custodial/mcp-road-needs-a-connector",
+                    test_mcp_road_needs_a_connector);
     g_test_add_func("/office-custodial/key-background", test_key_background);
     g_test_add_func("/office-custodial/comfyui-needs-a-picture",
                     test_comfyui_needs_a_picture);

@@ -33,6 +33,8 @@
 
 #define GENERATE_PREFIX "office-generate-"
 
+static void tell_operator(ClawtDaemon *self, const gchar *agent_id, const gchar *body);
+
 /* ── The key ────────────────────────────────────────────────────── */
 
 static gchar *
@@ -83,6 +85,45 @@ clawt_daemon_office_store_api_key(ClawtDaemon  *self,
 }
 
 /*
+ * The connector whose sign-in pays on the MCP road: office.asset_generator
+ * when it names one, else the fleet's only higgsfield connector.  Two
+ * with neither named is refused rather than guessed: they may be two
+ * accounts, and which one is charged is the person's to say.
+ */
+static gchar *
+mcp_connector_name(ClawtDaemon *self, GError **error)
+{
+    const gchar *named = clawt_config_get_string(self->config, "office.asset_generator");
+    GPtrArray *all = clawt_config_get_integrations(self->config);
+    g_autofree gchar *found = NULL;
+    guint count = 0;
+    guint i;
+
+    if (named != NULL && *named != '\0')
+        return g_strdup(named);
+    for (i = 0; all != NULL && i < all->len; i++) {
+        ClawtIntegrationConfig *instance = g_ptr_array_index(all, i);
+
+        if (g_strcmp0(clawt_integration_config_get_type_id(instance), "connector") != 0 ||
+            g_strcmp0(clawt_integration_config_get_string(instance, NULL, "provider"),
+                      "higgsfield") != 0)
+            continue;
+        count++;
+        g_free(found);
+        found = g_strdup(clawt_integration_config_get_name(instance));
+    }
+    if (count == 1)
+        return g_steal_pointer(&found);
+    g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                count == 0
+                ? "office.asset_api: higgsfield-mcp needs a Higgsfield connector: "
+                  "clawtilla connector add hf --provider higgsfield"
+                : "there are %u Higgsfield connectors: name the one that pays with "
+                  "office.asset_generator", count);
+    return NULL;
+}
+
+/*
  * The generator: the test's when it set one, else a Higgsfield client
  * with the stored key.  The key is read here, never kept, and never in
  * a reply or a log.
@@ -128,10 +169,42 @@ generator_for(ClawtDaemon *self, GError **error)
         }
         return AI_MEDIA_GENERATOR(g_steal_pointer(&client));
     }
+    /*
+     * Higgsfield through a connector's sign-in: the account's app
+     * credits, where the REST road below spends a separate API balance.
+     */
+    if (g_strcmp0(service, "higgsfield-mcp") == 0) {
+        g_autofree gchar *name = mcp_connector_name(self, error);
+        g_autoptr(ClawtConnectorPlan) plan = NULL;
+        g_autoptr(ClawtMcpHttpClient) client = NULL;
+        ClawtHiggsfieldMcp *generator;
+
+        if (name == NULL)
+            return NULL;
+        plan = clawt_connector_plan_for_name(self->config, name, NULL, error);
+        if (plan == NULL)
+            return NULL;
+        if (plan->url == NULL) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                        "the connector '%s' is not a server reached by URL", name);
+            return NULL;
+        }
+        if (plan->header_value == NULL) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_AUTH,
+                        "the connector '%s' is not signed in: clawtilla connector connect %s",
+                        name, name);
+            return NULL;
+        }
+        client = clawt_mcp_http_client_new(name, plan->url, plan->header_name,
+                                           plan->header_value);
+        generator = clawt_higgsfield_mcp_new(client);
+        clawt_higgsfield_mcp_set_connector(generator, name);
+        return AI_MEDIA_GENERATOR(generator);
+    }
     if (g_strcmp0(service, "higgsfield") != 0) {
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
                             "no service is set to make characters directly "
-                            "(office.asset_api: comfyui or higgsfield)");
+                            "(office.asset_api: comfyui, higgsfield or higgsfield-mcp)");
         return NULL;
     }
     path = key_path(self, service);
@@ -190,9 +263,40 @@ service_label(AiMediaGenerator *generator)
 {
     if (AI_IS_COMFYUI_CLIENT(generator))
         return "ComfyUI";
-    if (AI_IS_HIGGSFIELD_CLIENT(generator))
+    if (AI_IS_HIGGSFIELD_CLIENT(generator) || CLAWT_IS_HIGGSFIELD_MCP(generator))
         return "Higgsfield";
     return G_OBJECT_TYPE_NAME(generator);
+}
+
+/*
+ * Which money pays, as the card says it.  Higgsfield bills its two
+ * roads separately, so "your Higgsfield balance" would not say which.
+ */
+static gchar *
+balance_label(AiMediaGenerator *generator)
+{
+    if (CLAWT_IS_HIGGSFIELD_MCP(generator))
+        return g_strdup_printf("Higgsfield app credits (the account signed in to the "
+                               "connector '%s')",
+                               clawt_higgsfield_mcp_get_connector(
+                                   CLAWT_HIGGSFIELD_MCP(generator)));
+    if (AI_IS_HIGGSFIELD_CLIENT(generator))
+        return g_strdup("Higgsfield API balance (console.higgsfield.ai)");
+    return g_strdup_printf("%s balance", service_label(generator));
+}
+
+/* Where the remembered estimates live: per agent, until the job ends. */
+static GHashTable *
+estimates(ClawtDaemon *self)
+{
+    GHashTable *table = g_object_get_data(G_OBJECT(self), "clawt-office-estimates");
+
+    if (table == NULL) {
+        table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+        g_object_set_data_full(G_OBJECT(self), "clawt-office-estimates", table,
+                               (GDestroyNotify)g_hash_table_unref);
+    }
+    return table;
 }
 
 /* What is asked for: the agent, as the sidebar knows it, as a person. */
@@ -212,9 +316,12 @@ request_for(ClawtDaemon *self, ClawtAgentConfig *agent)
         description != NULL && *description != '\0' ? ", who " : "",
         description != NULL ? description : "", color);
     const gchar *model = clawt_config_get_string(self->config, "office.asset_model");
+    /* each road's own spelling: one's model name is refused by the other */
+    const gchar *fallback = g_strcmp0(clawt_config_get_string(self->config, "office.asset_api"),
+                                      "higgsfield-mcp") == 0
+        ? CLAWT_HIGGSFIELD_MCP_DEFAULT_MODEL : AI_HIGGSFIELD_MODEL_SOUL_V2;
 
-    return ai_media_request_new(model != NULL && *model != '\0'
-                                ? model : AI_HIGGSFIELD_MODEL_SOUL_V2, prompt);
+    return ai_media_request_new(model != NULL && *model != '\0' ? model : fallback, prompt);
 }
 
 /* ── Asking ─────────────────────────────────────────────────────── */
@@ -277,7 +384,23 @@ on_estimate(GObject *source, GAsyncResult *result, gpointer user_data)
         ask_free(ask);
         return;
     }
-    if (error != NULL || micro < 0) {
+    if (g_error_matches(error, CLAWT_ERROR, CLAWT_ERROR_AUTH)) {
+        /* signed out: a card would ask about money nobody can spend */
+        g_autofree gchar *body = g_strdup_printf(
+            "%s's office character was not asked for: %s.", ask->agent, error->message);
+
+        g_message("office: %s", body);
+        tell_operator(self, ask->agent, body);
+        ask_free(ask);
+        return;
+    }
+    if (error == NULL && CLAWT_IS_HIGGSFIELD_MCP(source) &&
+        clawt_higgsfield_mcp_get_estimate_credits(CLAWT_HIGGSFIELD_MCP(source)) >= 0.0) {
+        /* the MCP road quotes credits, the money it actually spends */
+        cost = g_strdup_printf("%g credits",
+                               clawt_higgsfield_mcp_get_estimate_credits(
+                                   CLAWT_HIGGSFIELD_MCP(source)));
+    } else if (error != NULL || micro < 0) {
         /* no estimate is not a free generation: the card says so */
         g_message("office: no estimate for %s's character: %s", ask->agent,
                   error != NULL ? error->message : "the service gave none");
@@ -291,11 +414,18 @@ on_estimate(GObject *source, GAsyncResult *result, gpointer user_data)
         cost = micro >= 10000 ? g_strdup_printf("about $%.2f", (gdouble)micro / 1e6)
                               : g_strdup_printf("about $%.4f", (gdouble)micro / 1e6);
     }
-    question = g_strdup_printf(
-        "Make a character for %s with %s (%s)?  It costs %s, from your "
-        "%s balance.  Approve submits one image from %s's picture and imports it "
-        "as its character; decline spends nothing.",
-        ask->agent, ask->service, ask->model, cost, ask->service, ask->agent);
+    {
+        g_autofree gchar *balance = balance_label(AI_MEDIA_GENERATOR(source));
+
+        question = g_strdup_printf(
+            "Make a character for %s with %s (%s)?  It costs %s, from your %s.  "
+            "Approve submits one image from %s's picture and imports it as its "
+            "character; decline spends nothing.",
+            ask->agent, ask->service, ask->model, cost, balance, ask->agent);
+        /* remembered for the provenance: a job's status names no price */
+        g_hash_table_replace(estimates(self), g_strdup(ask->agent),
+                             g_strdup_printf("%s, from the %s", cost, balance));
+    }
     decision = clawt_decision_new(id, ask->agent, question);
     clawt_decision_set_options(decision, options);
     /* no deadline: nothing spends money but a person's yes */
@@ -365,8 +495,11 @@ clawt_daemon_office_generate_ask(ClawtDaemon  *self,
     ask->model = g_strdup(ai_media_request_get_model(request));
     ask->service = g_strdup(service_label(generator));
     ask->self_hosted = AI_IS_COMFYUI_CLIENT(generator);
-    if (out_service != NULL)
-        *out_service = g_ascii_strdown(ask->service, -1);
+    if (out_service != NULL) {
+        const gchar *road = clawt_config_get_string(self->config, "office.asset_api");
+
+        *out_service = g_strdup(road != NULL && *road != '\0' ? road : "");
+    }
 
     /* on the daemon's context: the estimate is a network call */
     if (self->main_context != NULL)
@@ -472,14 +605,29 @@ on_downloaded(GObject *source, GAsyncResult *result, gpointer user_data)
         job_failed(job, "the result is not a PNG", error);
         return;
     }
-    provenance = AI_IS_COMFYUI_CLIENT(job->generator)
-        ? g_strdup_printf("generated by a self-hosted ComfyUI (%s) with the operator's own "
-                          "workflow; the licence is that of the models it runs",
-                          ai_comfyui_client_get_base_url(AI_COMFYUI_CLIENT(job->generator)))
-        : g_strdup_printf("generated by Higgsfield (%s) for clawtilla's office%s; Higgsfield's "
-                          "terms apply (docs/higgsfield.org)",
-                          ai_media_request_get_model(job->request),
-                          job->cost >= 0 ? "" : ", cost unknown");
+    {
+        /*
+         * What it cost, as the approved card said: a job's status names
+         * no price, and "cost unknown" beside a price somebody approved
+         * is a record that knows less than its reader did.
+         */
+        g_autofree gchar *estimate = g_strdup(g_hash_table_lookup(estimates(self), job->agent));
+        g_autofree gchar *spent = estimate != NULL
+            ? g_strdup_printf(", estimated at %s", estimate)
+            : g_strdup(job->cost >= 0 ? "" : ", cost unknown");
+
+        g_hash_table_remove(estimates(self), job->agent);
+        provenance = AI_IS_COMFYUI_CLIENT(job->generator)
+            ? g_strdup_printf("generated by a self-hosted ComfyUI (%s) with the operator's own "
+                              "workflow; the licence is that of the models it runs",
+                              ai_comfyui_client_get_base_url(AI_COMFYUI_CLIENT(job->generator)))
+            : g_strdup_printf("generated by Higgsfield (%s%s) for clawtilla's office%s; "
+                              "Higgsfield's terms apply (docs/higgsfield.org)",
+                              ai_media_request_get_model(job->request),
+                              CLAWT_IS_HIGGSFIELD_MCP(job->generator)
+                              ? ", through its MCP server" : ", through its REST API",
+                              spent);
+    }
     json_object_set_int_member(idle, "row", 0);
     json_object_set_int_member(idle, "frames", 1);
     json_object_set_object_member(animations, "idle", idle);
@@ -498,7 +646,10 @@ on_downloaded(GObject *source, GAsyncResult *result, gpointer user_data)
     {
         g_autofree gchar *body = g_strdup_printf(
             "%s's office character is made (%s) and the office draws it now.", job->agent,
-            AI_IS_COMFYUI_CLIENT(job->generator) ? "on your ComfyUI" : "by Higgsfield");
+            AI_IS_COMFYUI_CLIENT(job->generator) ? "on your ComfyUI"
+            : CLAWT_IS_HIGGSFIELD_MCP(job->generator)
+            ? "by Higgsfield, from your app credits"
+            : "by Higgsfield, from your API balance");
 
         tell_operator(self, job->agent, body);
     }
@@ -570,6 +721,24 @@ on_uploaded(GObject *source, GAsyncResult *result, gpointer user_data)
 }
 
 static void
+on_mcp_uploaded(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    Job *job = user_data;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *media = clawt_higgsfield_mcp_upload_finish(CLAWT_HIGGSFIELD_MCP(source),
+                                                                 result, &error);
+
+    /* a media id, never a URL: Higgsfield's image tools refuse URLs */
+    if (media != NULL)
+        ai_media_request_set_image_url(job->request, media);
+    else
+        g_message("office: %s's picture was not uploaded, so the character is made from "
+                  "the description alone: %s", job->agent,
+                  error != NULL ? error->message : "no reason given");
+    submit(job);
+}
+
+static void
 on_comfyui_uploaded(GObject *source, GAsyncResult *result, gpointer user_data)
 {
     Job *job = user_data;
@@ -625,6 +794,11 @@ clawt_daemon_office_generate_start(ClawtDaemon *self, const gchar *agent_id)
         if (AI_IS_COMFYUI_CLIENT(generator)) {
             ai_comfyui_client_upload_async(AI_COMFYUI_CLIENT(generator), picture, name, NULL,
                                            on_comfyui_uploaded, job);
+            goto out;
+        }
+        if (CLAWT_IS_HIGGSFIELD_MCP(generator)) {
+            clawt_higgsfield_mcp_upload_async(CLAWT_HIGGSFIELD_MCP(generator), picture, name,
+                                              mime, NULL, on_mcp_uploaded, job);
             goto out;
         }
     }

@@ -157,22 +157,34 @@ A workflow that was run end to end against ComfyUI 0.46.0 on CPU in podman, with
 
 The provenance then names a CC BY-SA model's output: the character carries that licence's attribution and share-alike terms, which the pack's ~character.yaml~ is the place to record.
 
-*** Higgsfield, hosted and paid
+*** Higgsfield, hosted and paid: two roads, billed separately
+
+Higgsfield bills two ways, and an account can have money in one and not the other, so you choose:
+
+| =office.asset_api= | Talks to | Signs in with | Pays from | Default model |
+|--------------------+----------+---------------+-----------+---------------|
+| ~higgsfield~ | the REST API, ~api.higgsfield.ai~ | a key pair from ~console.higgsfield.ai~, ~clawtilla office api-key higgsfield~ | the *API balance*, topped up in the console | ~higgsfield-ai/soul/v2/standard~ (0.05 credits, $0.004) |
+| ~higgsfield-mcp~ | the MCP server, ~mcp.higgsfield.ai~ | the connector's sign-in (SSO), ~clawtilla connector connect hf~ | the account's *app credits*, the ones the website and the ~hf~ CLI spend | ~nano_banana_2~ (1.5 credits) |
+
+=office.asset_model= overrides the model in that road's own spelling -- the two catalogues name models differently and each refuses the other's names.  Both were run end to end on 2026-11-22, each making kudu's character from its picture: the REST road after its balance was funded, the MCP road on app credits (8.5 before, 7 after: the 1.5 the card quoted).
+
+The MCP road needs a Higgsfield connector ([[file:higgsfield.org][higgsfield.org]]); =office.asset_generator= names which one pays, and with it empty the fleet's only Higgsfield connector does -- two with neither named is refused, since they may be two accounts.  A connector that is not signed in is refused when you ask, with the command that signs it in, and never reaches a card.  The daemon talks to the server itself (~ClawtMcpHttpClient~, asynchronous, reusing the connector's credential exactly as an agent's relay does through ~clawt_connector_plan_for_name()~): ~estimate_image_cost~ for the card, ~media_upload~, a PUT to the presigned URL and ~media_confirm~ for the agent's picture, ~generate_image~, ~job_status~, then the result from Higgsfield's CDN.
 
 #+begin_src bash
-clawtilla office api-key higgsfield          # KEY_ID:KEY_SECRET from console.higgsfield.ai, read with the echo off
+clawtilla office api-key higgsfield          # the REST road: KEY_ID:KEY_SECRET, read with the echo off
+clawtilla connector add hf --provider higgsfield && clawtilla connector connect hf   # the MCP road
 #+end_src
 
-with =office.asset_api: higgsfield= (and =office.asset_model= for the model):
+With either road set:
 
-1. The daemon asks Higgsfield for an *estimate* -- behind the reply; nothing waits on the network -- and puts it to you as a decision: /Make a character for kudu with Higgsfield (model)?  It costs about $0.04, from your Higgsfield balance./  It has no deadline and no default but decline: nothing is ever spent because nobody answered.
-2. On *approve* (the exact word; anything else typed is not a yes), it uploads the agent's own picture when it has one (PNG, JPEG or WebP), submits one image, waits for the job, downloads the result and imports it as =generated/portrait.png=, provenance naming the model and Higgsfield's terms.
+1. The daemon asks Higgsfield for an *estimate* -- behind the reply; nothing waits on the network -- and puts it to you as a decision naming the price and which money pays: /It costs about $0.0040, from your Higgsfield API balance (console.higgsfield.ai)/ on the REST road, /It costs 1.5 credits, from your Higgsfield app credits (the account signed in to the connector 'hf')/ on the MCP road.  It has no deadline and no default but decline: nothing is ever spent because nobody answered.
+2. On *approve* (the exact word; anything else typed is not a yes), it uploads the agent's own picture when it has one (PNG, JPEG or WebP), submits one image, waits for the job, downloads the result and imports it as =generated/portrait.png=, provenance naming the model, the road, the price the card quoted and Higgsfield's terms.
 3. Decline, dismiss or delete spends nothing.
 4. Whatever happens after an approval -- made, or refused by the service -- is said in your own conversation with that agent, as a system note that starts no turn; the daemon's log has it too.
 
 Only a self-hosted server skips the card.  A paid service that estimates zero -- a price too small to round, or free credits -- still asks, because what it spends is still yours.  Small prices are shown with their digits: Higgsfield's Soul v2 portrait is 0.05 credits, /about $0.0040/ on the card.
 
-Higgsfield's REST API (~api.higgsfield.ai~, the key pair from ~console.higgsfield.ai~) bills a balance of its own, separate from the credits the app, the ~hf~ CLI and the connector spend: on 2026-11-22 an account with 8.5 app credits was refused every submit with =HTTP 403 not_enough_credits=, and the note in the agent's conversation said exactly that.  Fund the API balance in the console to use this road; the connector road ([[file:higgsfield.org][higgsfield.org]]) spends the app's credits.
+Higgsfield's REST API (~api.higgsfield.ai~, the key pair from ~console.higgsfield.ai~) bills a balance of its own, separate from the credits the app, the ~hf~ CLI and the connector spend: on 2026-11-22 an account with 8.5 app credits was refused every submit with =HTTP 403 not_enough_credits=, and the note in the agent's conversation said exactly that.  Fund the API balance in the console to use this road, or switch to ~higgsfield-mcp~, which spends the app credits.
 
 Keys and tokens are files under =secrets.dir/office/= (0600); a reply names the file and never the value, and a key is read when a generation starts, never kept.  A one-frame character stands still in every pose -- a walk cycle needs a sheet, which is the custodial team's road.
 

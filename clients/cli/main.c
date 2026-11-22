@@ -8489,18 +8489,11 @@ static gint
 connector_relay(const gchar *name, const gchar *agent_id, gboolean app_call)
 {
     g_autoptr(ClawtConfig) config = NULL;
-    g_autoptr(GPtrArray) catalog = NULL;
     g_autoptr(ClawtIntegrationBinding) binding = NULL;
-    g_autoptr(ClawtOauthToken) token = NULL;
     g_autoptr(ClawtConnectorPlan) plan = NULL;
     g_autoptr(ClawtMcpDirectory) directory = NULL;
     g_autoptr(GError) error = NULL;
-    g_autofree gchar *catalog_dir = NULL;
     CatalogueReport report = { NULL, NULL, -1, FALSE };
-    ClawtIntegrationConfig *instance;
-    const ClawtIntegrationInfo *info;
-    const ClawtConnectorInfo *connector;
-    g_autofree gchar *token_file = NULL;
 
     if (name == NULL) {
         g_printerr("clawtilla: connector relay needs a name\n");
@@ -8541,74 +8534,14 @@ connector_relay(const gchar *name, const gchar *agent_id, gboolean app_call)
         return EXIT_FAILURE;
     }
 
-    instance = clawt_config_get_integration(config, name);
-
-    if (instance == NULL) {
-        g_printerr("clawtilla: there is no connector called '%s'\n", name);
-        return EXIT_FAILURE;
-    }
-
-    info = clawt_integration_find(
-        clawt_integration_config_get_type_id(instance));
-
-    if (info == NULL || g_strcmp0(info->id, "connector") != 0) {
-        g_printerr("clawtilla: '%s' is not a connector\n", name);
-        return EXIT_FAILURE;
-    }
-
-    catalog_dir = clawt_config_get_path_value(config, "connectors.dir");
-    catalog = clawt_connector_catalog_load(catalog_dir, NULL);
-    connector = clawt_connector_catalog_find(
-        catalog, clawt_integration_config_get_string(instance, NULL,
-                                                     "provider"));
-
-    if (connector == NULL) {
-        g_printerr("clawtilla: '%s' names a provider clawtilla does not "
-                   "know\n", name);
-        return EXIT_FAILURE;
-    }
-
-    binding = clawt_integration_binding_for_instance(instance, info, NULL);
-
     /*
-     * Where the daemon keeps it now, which may be newer than this
-     * config: a confined relay reads the clawtilla.yaml its box started
-     * with, and its connector's directory is what is bound in.
+     * The same resolution the daemon makes for its own calls: the
+     * instance, its provider, and the token file where the daemon keeps
+     * the credential now -- one function, so the two reach the server
+     * the same way.  No credential yet is still a plan for a server
+     * reached by URL: its 401 is what asks for a sign-in.
      */
-    {
-        g_autofree gchar *secrets_dir =
-            clawt_config_get_path_value(config, "secrets.dir");
-
-        if (secrets_dir != NULL)
-            token_file = clawt_connector_find_token_file(
-                secrets_dir, name,
-                clawt_integration_binding_get_string(binding, "token_file"));
-        else
-            token_file = g_strdup(clawt_integration_binding_get_string(
-                binding, "token_file"));
-    }
-
-    /*
-     * No credential yet is still a relay for a server reached by URL:
-     * plenty list their tools to anybody, and the 401 on the first call
-     * is what turns into "sign in to this connector" for the agent and
-     * a Sign in button for the person.  clawt_connector_plan_new()
-     * refuses it for a stdio server, which has nowhere to say so.
-     */
-    if (token_file != NULL) {
-        token = clawt_oauth_token_load(token_file, &error);
-
-        if (token == NULL) {
-            g_printerr("clawtilla: cannot read the credential for '%s': "
-                       "%s\n", name, error->message);
-            return EXIT_FAILURE;
-        }
-    }
-
-    plan = clawt_connector_plan_new(connector, binding,
-                                    token != NULL ? token->access_token
-                                                  : NULL,
-                                    &error);
+    plan = clawt_connector_plan_for_name(config, name, &binding, &error);
 
     if (plan == NULL) {
         g_printerr("clawtilla: %s\n", error->message);

@@ -222,6 +222,28 @@ clawt_connector_plan_new(const ClawtConnectorInfo *info,
                          GError                  **error);
 
 /**
+ * clawt_connector_plan_for_name: (skip)
+ * @config: the fleet's configuration
+ * @name: a connector's name, as `clawtilla connector add` gave it
+ * @out_binding: (out) (optional) (transfer full): the connector's binding
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Works out how to reach connector @name with its stored credential:
+ * the configured instance, its provider in the catalogue, and the token
+ * file where the daemon keeps it now.  The relay (`clawtilla connector
+ * relay`) and the daemon's own calls (the office's character generator)
+ * both come through here, so they reach the same server the same way.
+ * A server reached by URL that nobody has signed in to yet still has a
+ * plan, with no credential; its 401 is what asks for the sign-in.
+ *
+ * Returns: (transfer full) (nullable): the plan, or %NULL on error
+ */
+ClawtConnectorPlan *clawt_connector_plan_for_name(ClawtConfig              *config,
+                                                  const gchar              *name,
+                                                  ClawtIntegrationBinding **out_binding,
+                                                  GError                  **error);
+
+/**
  * clawt_connector_plan_free: (skip)
  * @self: (transfer full) (nullable): a plan
  *

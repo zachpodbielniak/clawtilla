@@ -161,6 +161,8 @@
 #include "integration/clawt-integration-field.h"
 #include "integration/clawt-oauth.h"
 #include "integration/clawt-mcp-auth.h"
+#include "integration/clawt-mcp-http-client.h"
+#include "integration/clawt-higgsfield-mcp.h"
 #include "integration/clawt-connector-accounts.h"
 #include "integration/clawt-broker.h"
 #include "integration/clawt-connector-relay.h"
