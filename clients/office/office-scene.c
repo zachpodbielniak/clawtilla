@@ -1052,19 +1052,25 @@ draw_person_2d(Actor *a, gfloat x, gfloat y, gboolean hovered)
  * first row, so a partial sheet still draws.
  */
 static JsonObject *
-pick_animation(JsonObject *animations, Actor *a, gboolean walking, gfloat dx, gfloat dy)
+pick_animation(JsonObject *animations, Actor *a, gboolean walking, gfloat dx, gfloat dy,
+               gboolean *out_asked)
 {
     const gchar *want = NULL;
 
+    *out_asked = FALSE;
     if (walking)
         want = fabsf(dx) > fabsf(dy) ? (dx > 0.0f ? "walk_right" : "walk_left")
                                      : (dy > 0.0f ? "walk_down" : "walk_up");
     else if (a->pose != NULL && g_strcmp0(a->pose, "stand") != 0)
         want = a->pose;
-    if (want != NULL && json_object_has_member(animations, want))
+    if (want != NULL && json_object_has_member(animations, want)) {
+        *out_asked = TRUE;
         return json_object_get_object_member(animations, want);
-    if (walking && json_object_has_member(animations, "walk_down"))
+    }
+    if (walking && json_object_has_member(animations, "walk_down")) {
+        *out_asked = TRUE;
         return json_object_get_object_member(animations, "walk_down");
+    }
     if (json_object_has_member(animations, "idle"))
         return json_object_get_object_member(animations, "idle");
     {
@@ -1088,6 +1094,7 @@ draw_character_2d(ClawtOfficeScene *self, Actor *a, Sheet *sheet, gfloat x, gflo
     JsonArray *frame = json_object_get_array_member(sheet->layout, "frame");
     JsonObject *animations = json_object_get_object_member(sheet->layout, "animations");
     gboolean walking = fabsf(a->tx - a->x) + fabsf(a->ty - a->y) > ARRIVED_PIXELS;
+    gboolean asked = FALSE;
     JsonObject *anim;
     gdouble fw;
     gdouble fh;
@@ -1102,13 +1109,18 @@ draw_character_2d(ClawtOfficeScene *self, Actor *a, Sheet *sheet, gfloat x, gflo
         return FALSE;
     fw = (gdouble)json_array_get_int_element(frame, 0);
     fh = (gdouble)json_array_get_int_element(frame, 1);
-    anim = pick_animation(animations, a, walking, a->tx - a->x, a->ty - a->y);
+    anim = pick_animation(animations, a, walking, a->tx - a->x, a->ty - a->y, &asked);
     if (anim == NULL || fw <= 0.0 || fh <= 0.0)
         return FALSE;
     frames = MAX(1, json_object_get_int_member_with_default(anim, "frames", 1));
     fps = json_object_get_double_member_with_default(anim, "fps", 0.0);
-    if (fps > 0.0 && (walking || (a->pose != NULL && g_strcmp0(a->pose, "stand") != 0 &&
-                                  g_strcmp0(a->pose, "sit") != 0)))
+    /*
+     * Only the row that was asked for moves: a fallback (idle standing in
+     * for a pose the sheet lacks) holds its first frame, or a sheet with
+     * an animated idle would bob -- the one thing the office never does.
+     */
+    if (fps > 0.0 && asked && (walking || (a->pose != NULL && g_strcmp0(a->pose, "stand") != 0 &&
+                                           g_strcmp0(a->pose, "sit") != 0)))
         index = (gint64)(self->clock * fps) % frames;
     width = height * (gfloat)(fw / fh);
     DrawEllipse((gint)x, (gint)(y + 7.0f), width * 0.45f, 4.0f,
