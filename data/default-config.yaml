@@ -1652,6 +1652,18 @@ office:
   # which are also the format. See docs/office-choreography.org.
   choreography: null
 
+  # A service the daemon makes characters with itself, through its REST
+  # API and with no model deciding what to ask: `higgsfield`, or empty for
+  # none. Its key is stored with `clawtilla office api-key higgsfield`.
+  # `clawtilla office character AGENT --direct` then puts the service's
+  # estimate to you as a decision and spends nothing until you approve.
+  # See docs/office-custodial-team.org.
+  asset_api: null
+
+  # The model office.asset_api makes characters with: the service's own
+  # id for it (for Higgsfield, the endpoint path on its model page).
+  asset_model: "higgsfield-ai/soul/v2/standard"
+
   # The connector the office's assets and characters are made with: the
   # name of one you added (`clawtilla connector add hf --provider
   # higgsfield`, or a self-hosted ComfyUI). Set, creating an agent while

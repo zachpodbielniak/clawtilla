@@ -226,8 +226,8 @@ JsonNode *clawt_office_character_to_json(const ClawtOfficeCharacter *character);
  * @agent_id: whose character
  * @sheet: the sprite sheet, relative to the character's directory; it must
  *   have been imported (clawt_office_character_import_asset()) and be a PNG
- * @frame_width: one frame's width, 8 to 512 pixels
- * @frame_height: one frame's height, 8 to 512 pixels
+ * @frame_width: one frame's width, 8 to 4096 pixels
+ * @frame_height: one frame's height, 8 to 4096 pixels
  * @animations: `{name: {row, frames, fps}}`, at least one
  * @error: return location for a #GError
  *

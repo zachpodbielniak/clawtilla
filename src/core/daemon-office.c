@@ -906,6 +906,41 @@ clawt_daemon_handle_office(ClawtDaemon *self,
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    /*
+     * The key the daemon makes characters with directly.  It crosses IPC
+     * once, inward; the reply names the file, never the value.
+     */
+    if (g_strcmp0(kind, "office.api_key") == 0) {
+        g_autofree gchar *path = clawt_daemon_office_store_api_key(self,
+            clawt_ipc_payload_string(payload, "service"),
+            clawt_ipc_payload_string(payload, "key"), &error);
+
+        if (path == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "key_file");
+        json_builder_add_string_value(builder, path);
+        json_builder_end_object(builder);
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /*
+     * A character made by the daemon itself (`direct`): the estimate is
+     * fetched behind the reply and put to the operator as a decision; the
+     * reply says only that it was asked.
+     */
+    if (g_strcmp0(kind, "office.character") == 0 &&
+        clawt_ipc_payload_boolean(payload, "direct", FALSE)) {
+        if (!clawt_daemon_office_generate_ask(self, clawt_ipc_payload_string(payload, "agent"),
+                                              &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "asked");
+        json_builder_add_boolean_value(builder, TRUE);
+        json_builder_end_object(builder);
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     /* A character commissioned again, by hand. */
     if (g_strcmp0(kind, "office.character") == 0) {
         g_autofree gchar *task = clawt_daemon_office_commission_character(self,

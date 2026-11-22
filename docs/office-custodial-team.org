@@ -106,6 +106,24 @@ clawtilla office character <agent>
 
 Higgsfield makes images and video and no 3D models, so a 3D office draws every character as the shared body wearing its generated face, whatever the generator.
 
+** Made by the daemon itself
+:PROPERTIES:
+:CUSTOM_ID: direct
+:END:
+
+The road above has a model deciding what to ask a generator for.  The other road has none: with =office.asset_api= set to ~higgsfield~ and its key stored, the daemon makes a character itself through Higgsfield's REST API (ai-glib's =AiHiggsfieldClient=).
+
+#+begin_src bash
+clawtilla office api-key higgsfield          # KEY_ID:KEY_SECRET from console.higgsfield.ai, read with the echo off
+clawtilla office character kudu --direct
+#+end_src
+
+1. The daemon asks Higgsfield for an *estimate* -- behind the reply; nothing waits on the network -- and puts it to you as a decision: /Make a character for kudu with Higgsfield (model)?  It costs about $0.04, from your Higgsfield balance./  It has no deadline and no default but decline: nothing is ever spent because nobody answered.
+2. On *approve* (the exact word; anything else typed is not a yes), it uploads the agent's own picture when it has a PNG one, submits one image -- the agent described by its name, description and colour, the picture as the reference -- waits for the job, downloads the result and imports it as a one-frame character (=generated/portrait.png=, provenance naming the model and Higgsfield's terms).
+3. Decline, dismiss or delete spends nothing.
+
+The key is a file under =secrets.dir/office/= (0600); the reply names the file and never the value, and it is read when a generation starts, never kept.  =office.asset_model= picks the model.  A one-frame character stands still in every pose -- a walk cycle needs a sheet, which is the custodial team's road.
+
 ** Generators
 :PROPERTIES:
 :CUSTOM_ID: generators

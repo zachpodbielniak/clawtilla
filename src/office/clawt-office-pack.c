@@ -732,9 +732,10 @@ clawt_office_character_set_sheet(const gchar  *characters,
                     "%s is not a PNG in %s's character; import it first", sheet, agent_id);
         return FALSE;
     }
-    if (frame_width < 8 || frame_height < 8 || frame_width > 512 || frame_height > 512) {
+    /* up to a generated portrait's size: a one-frame character is the whole image */
+    if (frame_width < 8 || frame_height < 8 || frame_width > 4096 || frame_height > 4096) {
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
-                            "a frame is 8 to 512 pixels on each side");
+                            "a frame is 8 to 4096 pixels on each side");
         return FALSE;
     }
 

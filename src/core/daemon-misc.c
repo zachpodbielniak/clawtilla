@@ -556,6 +556,7 @@ clawt_daemon_handle_misc(
          */
         if (proposal == NULL &&
             !clawt_daemon_rebuild_settle(self, settled, "answered") &&
+            !clawt_daemon_office_generate_settle(self, settled, "answered") &&
             !clawt_daemon_policy_settle(self, settled, "answered") &&
             !clawt_daemon_review_settle(self, settled, "answered"))
             clawt_daemon_deliver_decision_answer(self, settled);
@@ -610,6 +611,7 @@ clawt_daemon_handle_misc(
         if (dismissed != NULL) {
             /* settle() releases its own hold; anything else is released here. */
             if (!clawt_daemon_rebuild_settle(self, dismissed, "dismissed") &&
+                !clawt_daemon_office_generate_settle(self, dismissed, "dismissed") &&
                 !clawt_daemon_policy_settle(self, dismissed, "dismissed"))
                 clawt_daemon_turn_release(self,
                                           clawt_decision_get_agent(dismissed));
@@ -657,6 +659,7 @@ clawt_daemon_handle_misc(
         if (deleted != NULL &&
             clawt_decision_get_state(deleted) == CLAWT_DECISION_OPEN) {
             if (!clawt_daemon_rebuild_settle(self, deleted, "deleted") &&
+                !clawt_daemon_office_generate_settle(self, deleted, "deleted") &&
                 !clawt_daemon_policy_settle(self, deleted, "deleted"))
                 clawt_daemon_turn_release(self,
                                           clawt_decision_get_agent(deleted));

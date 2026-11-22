@@ -69,7 +69,7 @@ A result that is a large blob of JSON is held by the relay's result budget like 
 :CUSTOM_ID: api
 :END:
 
-Higgsfield also has a REST API, with a key and secret from [[https://console.higgsfield.ai][console.higgsfield.ai]] instead of a sign-in.  ai-glib carries a client for it (~AiHiggsfieldClient~, since ai-glib 0.14.0, which clawtilla has through libreclaw 0.30.6): submit to a model path, poll the request, estimate the cost first, upload an input image.  That is what the office's character pipeline is built on -- a job clawtilla runs on its own, with an estimate shown to a person as a decision before anything is spent -- and it is separate from this connector: the connector is for *agents*, the API client for the daemon.
+Higgsfield also has a REST API, with a key and secret from [[https://console.higgsfield.ai][console.higgsfield.ai]] instead of a sign-in.  ai-glib carries a client for it (~AiHiggsfieldClient~, since ai-glib 0.14.0, which clawtilla has through libreclaw 0.30.6): submit to a model path, poll the request, estimate the cost first, upload an input image.  That is what the office's direct character road is built on -- =office.asset_api: higgsfield=, ~clawtilla office api-key higgsfield~, then ~clawtilla office character AGENT --direct~: a job clawtilla runs on its own, with the estimate put to you as a decision before anything is spent ([[file:office-custodial-team.org::#direct][made by the daemon itself]]) -- and it is separate from this connector: the connector is for *agents*, the API client for the daemon.
 
 ** What you are agreeing to
 :PROPERTIES:

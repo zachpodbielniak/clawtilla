@@ -307,6 +307,10 @@ struct _ClawtDaemon {
      */
     gboolean                 ephemeral_no_start;
 
+    /* direct character generation (0.60.0): test seams */
+    struct _AiMediaGenerator *(*office_generator_factory)(ClawtDaemon *self);
+    guint                    office_generate_poll_ms;
+
     /* the office (0.56.0): NULL unless office.enabled */
     ClawtOfficePresence     *office;
     gulong                   office_bus_handler;
@@ -1423,6 +1427,18 @@ gboolean clawt_daemon_office_custodians_install(ClawtDaemon  *self,
 gchar   *clawt_daemon_office_commission_character(ClawtDaemon  *self,
                                                   const gchar  *agent_id,
                                                   GError      **error);
+
+/* A character made by the daemon itself (daemon-office-generate.c, 0.60.0). */
+gchar   *clawt_daemon_office_store_api_key(ClawtDaemon  *self,
+                                           const gchar  *service,
+                                           const gchar  *key,
+                                           GError      **error);
+gboolean clawt_daemon_office_generate_ask(ClawtDaemon  *self,
+                                          const gchar  *agent_id,
+                                          GError      **error);
+gboolean clawt_daemon_office_generate_settle(ClawtDaemon   *self,
+                                             ClawtDecision *decision,
+                                             const gchar   *how);
 
 /* Ephemeral agents (daemon-ephemeral.c, 0.55.0). */
 JsonNode *clawt_daemon_handle_ephemeral(ClawtDaemon *self,

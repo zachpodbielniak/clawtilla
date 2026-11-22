@@ -19,6 +19,8 @@
 #include "clawt-test-util.h"
 #include "core/clawt-daemon-private.h"
 
+#include <ai-glib.h>
+
 #include <glib/gstdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -349,6 +351,7 @@ daemon_setup(DaemonFixture *fixture, const gchar *generator)
         "daemon:\n  tailscale: false\n  state_dir: \"%s/state\"\n"
         "  socket: \"%s/d.sock\"\n  automation_dir: \"%s/pods\"\n"
         "defaults:\n  workspace_root: \"%s/agents\"\n"
+        "secrets:\n  dir: \"%s/secrets\"\n"
         "office:\n  enabled: true\n  asset_generator: \"%s\"\n"
         "  world_dirs: [\"%s/../../data/office/worlds\"]\n"
         "teams:\n  - id: core\n"
@@ -356,7 +359,7 @@ daemon_setup(DaemonFixture *fixture, const gchar *generator)
         "  - id: chief\n    chief_of_staff: true\n    runtime:\n      autostart: false\n"
         "  - id: kudu\n    team: core\n    color: \"#3584e4\"\n"
         "    runtime:\n      autostart: false\n",
-        fixture->dir, fixture->dir, fixture->dir, fixture->dir, generator,
+        fixture->dir, fixture->dir, fixture->dir, fixture->dir, fixture->dir, generator,
         CLAWT_TEST_FIXTURES);
     g_assert_true(g_file_set_contents(fixture->config_path, yaml, -1, &error));
 
@@ -718,6 +721,272 @@ test_daemon_characters(void)
     daemon_teardown(&fixture);
 }
 
+/* ── Made by the daemon itself ──────────────────────────────────── */
+
+/*
+ * A generator that answers at once and counts what it was asked to do:
+ * make test reaches no network, and the question here is what the
+ * daemon spends money on, which is the count.
+ */
+typedef struct {
+    GObject parent_instance;
+    guint   estimates;
+    guint   submits;
+} MockGenerator;
+
+typedef struct {
+    GObjectClass parent_class;
+} MockGeneratorClass;
+
+static void mock_generator_iface_init(AiMediaGeneratorInterface *iface);
+
+G_DEFINE_TYPE_WITH_CODE(MockGenerator, mock_generator, G_TYPE_OBJECT,
+                        G_IMPLEMENT_INTERFACE(AI_TYPE_MEDIA_GENERATOR,
+                                              mock_generator_iface_init))
+
+static MockGenerator *the_mock;
+
+static void
+mock_generator_init(MockGenerator *self)
+{
+    (void)self;
+}
+
+static void
+mock_generator_class_init(MockGeneratorClass *klass)
+{
+    (void)klass;
+}
+
+static void
+mock_estimate_async(AiMediaGenerator *self, AiMediaRequest *request, GCancellable *cancellable,
+                    GAsyncReadyCallback callback, gpointer user_data)
+{
+    g_autoptr(GTask) task = g_task_new(self, cancellable, callback, user_data);
+
+    (void)request;
+    ((MockGenerator *)self)->estimates++;
+    g_task_return_int(task, 40000);
+}
+
+static gboolean
+mock_estimate_finish(AiMediaGenerator *self, GAsyncResult *result, gint64 *micro_usd,
+                     GError **error)
+{
+    (void)self;
+    *micro_usd = g_task_propagate_int(G_TASK(result), error);
+    return TRUE;
+}
+
+static void
+mock_submit_async(AiMediaGenerator *self, AiMediaRequest *request, GCancellable *cancellable,
+                  GAsyncReadyCallback callback, gpointer user_data)
+{
+    g_autoptr(GTask) task = g_task_new(self, cancellable, callback, user_data);
+
+    (void)request;
+    ((MockGenerator *)self)->submits++;
+    g_task_return_pointer(task, g_strdup("job-1"), g_free);
+}
+
+static gchar *
+mock_submit_finish(AiMediaGenerator *self, GAsyncResult *result, GError **error)
+{
+    (void)self;
+    return g_task_propagate_pointer(G_TASK(result), error);
+}
+
+static void
+mock_poll_async(AiMediaGenerator *self, const gchar *job_id, GCancellable *cancellable,
+                GAsyncReadyCallback callback, gpointer user_data)
+{
+    g_autoptr(GTask) task = g_task_new(self, cancellable, callback, user_data);
+    AiMediaJob *job = ai_media_job_new(job_id, AI_MEDIA_JOB_STATE_DONE);
+
+    ai_media_job_add_result_url(job, "https://results.invalid/portrait.png");
+    g_task_return_pointer(task, job, g_object_unref);
+}
+
+static AiMediaJob *
+mock_poll_finish(AiMediaGenerator *self, GAsyncResult *result, GError **error)
+{
+    (void)self;
+    return g_task_propagate_pointer(G_TASK(result), error);
+}
+
+static void
+mock_download_async(AiMediaGenerator *self, const gchar *url, GCancellable *cancellable,
+                    GAsyncReadyCallback callback, gpointer user_data)
+{
+    g_autoptr(GTask) task = g_task_new(self, cancellable, callback, user_data);
+    guchar png[33] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n',
+                       0, 0, 0, 13, 'I', 'H', 'D', 'R',
+                       0, 0, 0, 64, 0, 0, 0, 96, 8, 6 };
+
+    (void)url;
+    g_task_return_pointer(task, g_bytes_new(png, sizeof(png)), (GDestroyNotify)g_bytes_unref);
+}
+
+static GBytes *
+mock_download_finish(AiMediaGenerator *self, GAsyncResult *result, GError **error)
+{
+    (void)self;
+    return g_task_propagate_pointer(G_TASK(result), error);
+}
+
+static void
+mock_generator_iface_init(AiMediaGeneratorInterface *iface)
+{
+    iface->estimate_async = mock_estimate_async;
+    iface->estimate_finish = mock_estimate_finish;
+    iface->submit_async = mock_submit_async;
+    iface->submit_finish = mock_submit_finish;
+    iface->poll_async = mock_poll_async;
+    iface->poll_finish = mock_poll_finish;
+    iface->download_async = mock_download_async;
+    iface->download_finish = mock_download_finish;
+}
+
+static struct _AiMediaGenerator *
+mock_factory(ClawtDaemon *self)
+{
+    (void)self;
+    return g_object_ref(AI_MEDIA_GENERATOR(the_mock));
+}
+
+/* The open generation decision, once the estimate has landed. */
+static ClawtDecision *
+wait_for_generation_decision(DaemonFixture *fixture)
+{
+    gint64 deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+
+    while (g_get_monotonic_time() < deadline) {
+        g_autoptr(GPtrArray) open = clawt_decision_store_list(fixture->daemon->decisions, TRUE);
+        guint i;
+
+        for (i = 0; i < open->len; i++) {
+            ClawtDecision *d = g_ptr_array_index(open, i);
+
+            if (g_str_has_prefix(clawt_decision_get_id(d), "office-generate-"))
+                return clawt_decision_copy(d);
+        }
+        g_main_context_iteration(fixture->context, FALSE);
+    }
+    return NULL;
+}
+
+static void
+answer(DaemonFixture *fixture, ClawtDecision *decision, const gchar *what)
+{
+    g_autoptr(JsonNode) frame = clawt_ipc_request_new("decision.answer", "a1");
+    g_autoptr(JsonNode) reply = NULL;
+
+    clawt_ipc_frame_set_payload(frame, clawt_ipc_payload_new(
+        "decision", clawt_decision_get_id(decision), "answer", what, NULL));
+    reply = clawt_daemon_handle_request(fixture->daemon, frame);
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+}
+
+/*
+ * The estimate is asked before anything is spent and put to a person; a
+ * decline spends nothing, an approve makes the character -- imported
+ * with its provenance and laid out as one frame -- and spends once.
+ */
+static void
+test_direct_generation(void)
+{
+    DaemonFixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtDecision) first = NULL;
+    g_autoptr(ClawtDecision) second = NULL;
+    g_autofree gchar *chars = NULL;
+    g_autofree gchar *kudu = NULL;
+    g_autoptr(ClawtOfficeCharacter) made = NULL;
+    gint64 deadline;
+
+    daemon_setup(&fixture, "");
+    the_mock = g_object_new(mock_generator_get_type(), NULL);
+    fixture.daemon->office_generator_factory = mock_factory;
+    fixture.daemon->office_generate_poll_ms = 5;
+    chars = clawt_daemon_office_characters_dir(fixture.daemon);
+    kudu = g_build_filename(chars, "kudu", NULL);
+
+    /* asked, not spent: a decision with the cost in it */
+    g_assert_true(clawt_daemon_office_generate_ask(fixture.daemon, "kudu", &error));
+    g_assert_no_error(error);
+    first = wait_for_generation_decision(&fixture);
+    g_assert_nonnull(first);
+    g_assert_nonnull(strstr(clawt_decision_get_question(first), "$0.04"));
+    g_assert_cmpuint(the_mock->estimates, ==, 1);
+    g_assert_cmpuint(the_mock->submits, ==, 0);
+
+    /* declined: nothing spent, nothing made */
+    answer(&fixture, first, "decline");
+    while (g_main_context_iteration(fixture.context, FALSE))
+        ;
+    g_assert_cmpuint(the_mock->submits, ==, 0);
+    g_assert_false(g_file_test(kudu, G_FILE_TEST_EXISTS));
+
+    /* approved: spent once, and the character is whole */
+    g_assert_true(clawt_daemon_office_generate_ask(fixture.daemon, "kudu", &error));
+    second = wait_for_generation_decision(&fixture);
+    g_assert_nonnull(second);
+    answer(&fixture, second, "approve");
+    deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+    while (g_get_monotonic_time() < deadline) {
+        g_clear_pointer(&made, clawt_office_character_free);
+        made = clawt_office_character_load(kudu, NULL);
+        if (made != NULL && made->sheet != NULL)
+            break;
+        g_main_context_iteration(fixture.context, FALSE);
+    }
+    g_assert_nonnull(made);
+    g_assert_cmpstr(made->sheet, ==, "generated/portrait.png");
+    g_assert_cmpuint(made->frame_width, ==, 64);
+    g_assert_cmpuint(made->frame_height, ==, 96);
+    g_assert_cmpuint(the_mock->submits, ==, 1);
+
+    g_clear_object(&the_mock);
+    daemon_teardown(&fixture);
+}
+
+/* The key is stored as a file, 0600, and never given back. */
+static void
+test_api_key(void)
+{
+    DaemonFixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *path = NULL;
+    GStatBuf st;
+
+    daemon_setup(&fixture, "");
+    g_assert_null(clawt_daemon_office_store_api_key(fixture.daemon, "higgsfield", "no-colon",
+                                                    &error));
+    g_clear_error(&error);
+    g_assert_null(clawt_daemon_office_store_api_key(fixture.daemon, "elsewhere", "a:b",
+                                                    &error));
+    g_clear_error(&error);
+    path = clawt_daemon_office_store_api_key(fixture.daemon, "higgsfield", "id:sup3rsecret",
+                                             &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(path);
+    g_assert_null(strstr(path, "sup3rsecret"));
+    g_assert_cmpint(g_stat(path, &st), ==, 0);
+    g_assert_cmpint(st.st_mode & 0777, ==, 0600);
+    {
+        g_autoptr(JsonNode) frame = clawt_ipc_request_new("office.api_key", "k1");
+        g_autoptr(JsonNode) reply = NULL;
+        g_autofree gchar *text = NULL;
+
+        clawt_ipc_frame_set_payload(frame, clawt_ipc_payload_new(
+            "service", "higgsfield", "key", "id:sup3rsecret", NULL));
+        reply = clawt_daemon_handle_request(fixture.daemon, frame);
+        text = json_to_string(reply, FALSE);
+        g_assert_null(strstr(text, "sup3rsecret"));
+    }
+    daemon_teardown(&fixture);
+}
+
 gint
 main(gint argc, gchar *argv[])
 {
@@ -738,6 +1007,8 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office-custodial/no-generator-no-character",
                     test_no_generator_no_character);
     g_test_add_func("/office-custodial/daemon-characters", test_daemon_characters);
+    g_test_add_func("/office-custodial/direct-generation", test_direct_generation);
+    g_test_add_func("/office-custodial/api-key", test_api_key);
 
     return g_test_run();
 }

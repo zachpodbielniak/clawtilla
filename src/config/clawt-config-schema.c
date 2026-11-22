@@ -2712,6 +2712,20 @@ static const ClawtSchemaEntry schema[] = {
   "pack's own. `clawtilla office choreography` prints the built-in rules,\n"
   "which are also the format. See docs/office-choreography.org.", "0.56.0" },
 
+{ "office.asset_api", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "A service the daemon makes characters with itself, through its REST\n"
+  "API and with no model deciding what to ask: `higgsfield`, or empty for\n"
+  "none. Its key is stored with `clawtilla office api-key higgsfield`.\n"
+  "`clawtilla office character AGENT --direct` then puts the service's\n"
+  "estimate to you as a decision and spends nothing until you approve.\n"
+  "See docs/office-custodial-team.org.", "0.60.0" },
+
+{ "office.asset_model", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "higgsfield-ai/soul/v2/standard", NULL,
+  "The model office.asset_api makes characters with: the service's own\n"
+  "id for it (for Higgsfield, the endpoint path on its model page).",
+  "0.60.0" },
+
 { "office.asset_generator", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "The connector the office's assets and characters are made with: the\n"
   "name of one you added (`clawtilla connector add hf --provider\n"

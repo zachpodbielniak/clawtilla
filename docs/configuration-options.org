@@ -3760,6 +3760,28 @@ each activity gets -- applied over the built-in rules and the world
 pack's own. `clawtilla office choreography` prints the built-in rules,
 which are also the format. See docs/office-choreography.org.
 
+*** =office.asset_api=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.60.0
+
+A service the daemon makes characters with itself, through its REST
+API and with no model deciding what to ask: `higgsfield`, or empty for
+none. Its key is stored with `clawtilla office api-key higgsfield`.
+`clawtilla office character AGENT --direct` then puts the service's
+estimate to you as a decision and spends nothing until you approve.
+See docs/office-custodial-team.org.
+
+*** =office.asset_model=
+
+- Type :: string
+- Default :: =higgsfield-ai/soul/v2/standard=
+- Since :: 0.60.0
+
+The model office.asset_api makes characters with: the service's own
+id for it (for Higgsfield, the endpoint path on its model page).
+
 *** =office.asset_generator=
 
 - Type :: string

@@ -4781,6 +4781,8 @@ cmd_room(int argc, char *argv[])
  * built-in rules, which are also the format an override is written in,
  * and needs no daemon.  `open` starts the renderer, when it was built.
  */
+static gchar *read_secret(const gchar *prompt);
+
 static gint
 cmd_office(int argc, char *argv[])
 {
@@ -4810,8 +4812,12 @@ cmd_office(int argc, char *argv[])
                 "  custodians install [--team NAME]\n"
                 "                make the custodial team: a lead, an asset steward\n"
                 "                and a set designer, tagged office-custodial\n"
-                "  character AGENT\n"
-                "                ask the custodians for AGENT's character again\n"
+                "  character AGENT [--direct]\n"
+                "                ask the custodians for AGENT's character again; with\n"
+                "                --direct the daemon makes it through office.asset_api,\n"
+                "                after you approve the estimate\n"
+                "  api-key SERVICE\n"
+                "                store the key office.asset_api uses (read from stdin)\n"
                 "  open          start clawtilla-office (built with OFFICE=1)\n"
                 "\n"
                 "Examples:\n"
@@ -4821,7 +4827,9 @@ cmd_office(int argc, char *argv[])
                 "  clawtilla office worlds --json\n"
                 "  clawtilla office choreography > my-rules.yaml\n"
                 "  clawtilla office custodians install --team groundskeepers\n"
-                "  clawtilla office character wren\n");
+                "  clawtilla office character wren\n"
+                "  clawtilla office api-key higgsfield\n"
+                "  clawtilla office character wren --direct\n");
         return verb == NULL ? EXIT_FAILURE : EXIT_SUCCESS;
     }
 
@@ -4889,6 +4897,32 @@ cmd_office(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
+    /* the key the daemon makes characters with: stdin, echo off, never argv */
+    if (g_strcmp0(verb, "api-key") == 0) {
+        g_autofree gchar *key = NULL;
+        JsonObject *answer;
+
+        if (argc < 4) {
+            g_printerr("Usage: clawtilla office api-key <higgsfield>\n");
+            return EXIT_FAILURE;
+        }
+        key = read_secret("Key (KEY_ID:KEY_SECRET): ");
+        if (key == NULL || *key == '\0') {
+            g_printerr("clawtilla: no key was given\n");
+            return EXIT_FAILURE;
+        }
+        client = connect_to_daemon();
+        if (client == NULL)
+            return EXIT_FAILURE;
+        reply = call(client, "office.api_key", build_payload("service", argv[3], "key", key,
+                                                             NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        answer = json_node_get_object(reply);
+        g_print("Stored in %s.\n", member_or(answer, "key_file", "?"));
+        return EXIT_SUCCESS;
+    }
+
     /* the custodial team, and a character asked for again */
     if (g_strcmp0(verb, "custodians") == 0 || g_strcmp0(verb, "character") == 0) {
         g_autoptr(JsonBuilder) builder = json_builder_new();
@@ -4906,6 +4940,11 @@ cmd_office(int argc, char *argv[])
         if (character) {
             json_builder_set_member_name(builder, "agent");
             json_builder_add_string_value(builder, argv[3]);
+            for (k = 4; k < argc; k++)
+                if (g_strcmp0(argv[k], "--direct") == 0) {
+                    json_builder_set_member_name(builder, "direct");
+                    json_builder_add_boolean_value(builder, TRUE);
+                }
         }
         for (k = 4; install && k + 1 < argc; k++)
             if (g_strcmp0(argv[k], "--team") == 0) {
@@ -4927,6 +4966,9 @@ cmd_office(int argc, char *argv[])
             g_autofree gchar *text = json_to_string(reply, TRUE);
 
             g_print("%s\n", text);
+        } else if (character && json_object_has_member(answer, "asked")) {
+            g_print("Asked: the estimate for %s's character will be in your decisions; "
+                    "nothing is spent until you approve it.\n", argv[3]);
         } else if (character) {
             g_print("Asked for %s's character: task %s.\n", argv[3],
                     member_or(answer, "task", "?"));

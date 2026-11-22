@@ -238,7 +238,8 @@ Which zone, pose, prop and emote each activity gets.  Three layers, each replaci
 | ~office.character_file~ (~agent~, ~path~) | one file of a character as ~base64~, resolved by the kernel inside =<state_dir>/office/characters/<agent>/= |
 | ~office.custodians~ | ~team~ (the team tagged ~office-custodial~, or null) and ~generator~ (=office.asset_generator=) -- whether a client offers the install (since 0.58.0) |
 | ~office.custodians_install~ (~team~, ~start~ optional) | makes the custodial team and its three agents, started unless ~start: false~; answers ~team~ and ~agents~; refused when a team already carries the tag |
-| ~office.character~ (~agent~) | files the task that makes ~agent~'s character; answers its ~task~ id; refused with what is missing when there is no generator or nobody keeps the office |
+| ~office.character~ (~agent~, ~direct~ optional) | files the task that makes ~agent~'s character and answers its ~task~ id; with ~direct: true~ the daemon makes it itself through =office.asset_api= and answers ~asked: true~ -- the estimate arrives as a decision.  Refused with what is missing |
+| ~office.api_key~ (~service~, ~key~) | stores the key =office.asset_api= uses; answers ~key_file~, never the key (since 0.60.0) |
 
 ~office.changed~ is published after ~office.set~.  ~office.presence~ is published whenever what a participant should be drawn doing changes, and never for a repeat: subject the participant's id, details every member of the participant as strings, or ~activity: gone~ when a helper has walked out.  It is ephemeral like ~turn.step~: not replayed and not logged.  Read ~office.snapshot~ on connect.
 
