@@ -232,10 +232,10 @@ Which zone, pose, prop and emote each activity gets.  Three layers, each replaci
 
 | Request | Answers |
 |---------+---------|
-| ~office.snapshot~ | ~enabled~, ~fleet~, ~now~, ~world~, ~renderer~ and ~participants~ (each ~fleet~, ~kind~, ~id~, ~name~, ~team~, ~parent~, ~role~, ~activity~, ~station~, ~peer~, ~room~, ~since~, ~detail~); or ~enabled: false~ and ~why~ |
+| ~office.snapshot~ | ~enabled~, ~fleet~, ~now~, ~world~, ~renderer~ and ~participants~ (each ~fleet~, ~kind~, ~id~, ~name~, ~team~, ~parent~, ~role~, ~color~ (since 0.64.0), ~activity~, ~station~, ~peer~, ~room~, ~since~, ~detail~) -- this fleet's own people only, never a visitor; or ~enabled: false~ and ~why~ |
 | ~office.worlds~ | ~enabled~, ~current~, ~worlds~ (~id~, ~name~, ~license~, ~has_2d~, ~has_3d~, ~warnings~) and ~refused~ (why a pack was not loaded) |
 | ~office.world~ (~world~ optional) | the pack: ~zones~, ~assets~, ~warnings~, ~districts~, relative ~map_2d~ / ~level_3d~, and the merged ~choreography~ |
-| ~office.layout~ (~world~ optional) | the director's ~placements~ (each ~id~, ~activity~, ~zone~, ~zone_tag~, ~seat~, ~x~/~y~, ~x3~/~z3~, ~pose~, ~prop~, ~emote~, ~facing~, ~fallback~) plus ~participants~ and ~now~ |
+| ~office.layout~ (~world~ optional) | the director's ~placements~ (visitors from =office.peers= fleets included, as =<peer>:<id>= with ~visiting_from~) (each ~id~, ~activity~, ~zone~, ~zone_tag~, ~seat~, ~x~/~y~, ~x3~/~z3~, ~pose~, ~prop~, ~emote~, ~facing~, ~fallback~) plus ~participants~ and ~now~ |
 | ~office.file~ (~world~, ~path~) | one file of a pack as ~base64~, at most 32 MiB, only inside the pack -- for a renderer not on the daemon's machine |
 | ~office.set~ (~enabled~, ~world~, ~renderer~, each optional) | writes them to clawtilla.yaml and applies them at once; answers the new ~enabled~, ~world~, ~renderer~; a world that does not exist is refused |
 | ~office.characters~ | ~characters~: each agent the custodial team has made a whole character for -- ~agent~, ~sheet~, ~sheet_sha256~, ~frame~ ([w, h]) and ~animations~ (~{name: {row, frames, fps}}~) (since 0.60.0), ~mesh~ and ~mesh_sha256~ for one with a model (since 0.62.0), and ~background~ (=corners= or =#rrggbb=) for a sheet on a backdrop the renderer keys out (since 0.62.1) |
@@ -244,6 +244,8 @@ Which zone, pose, prop and emote each activity gets.  Three layers, each replaci
 | ~office.custodians_install~ (~team~, ~start~ optional) | makes the custodial team and its three agents, started unless ~start: false~; answers ~team~ and ~agents~; refused when a team already carries the tag |
 | ~office.character~ (~agent~, ~direct~ optional) | files the task that makes ~agent~'s character and answers its ~task~ id; with ~direct: true~ the daemon makes it itself through =office.asset_api= and answers ~asked: true~ and ~service~ (=comfyui=, =higgsfield=) -- a paid service's estimate arrives as a decision, a self-hosted ComfyUI starts at once.  Refused with what is missing |
 | ~office.api_key~ (~service~, ~key~) | stores the key =office.asset_api= uses; answers ~key_file~, never the key (since 0.60.0) |
+| ~office.peers~ | ~peers~: each =office.peers= fleet's ~name~, ~where~, ~state~ (=asking=, =ok=, =quiet=, =error=), ~error~, ~fleet~ (its id), ~visitors~ (how many) and ~read_at~ (since 0.64.0) |
+| ~office.peer_pair~ (~name~, ~code~) | pairs with a tailnet peer by redeeming a code its daemon printed; answers ~token_file~, never the token (since 0.64.0) |
 
 ~office.changed~ is published after ~office.set~.  ~office.presence~ is published whenever what a participant should be drawn doing changes, and never for a repeat: subject the participant's id, details every member of the participant as strings, or ~activity: gone~ when a helper has walked out.  It is ephemeral like ~turn.step~: not replayed and not logged.  Read ~office.snapshot~ on connect.
 
@@ -284,13 +286,44 @@ The receiver never accumulates past the message it is assembling: a header annou
 :CUSTOM_ID: federation
 :END:
 
-Not built yet.  These invariants exist so it can be built without undoing anything:
+Another fleet's people can visit this office.  =office.peers= names the other daemons, each ~NAME=WHERE~:
 
-- Every participant carries its fleet's id; locally they all carry this one.
-- A fleet publishes only its own participants.  A merged office would take other fleets' snapshots as read-only participants, kind =external=, drawn at the visitor desk or in a district of their own.
+#+begin_src yaml
+office:
+  peers:
+    - studio=/run/user/1000/studio/d.sock   # another fleet on this machine: its socket
+    - lab=100.64.0.7:8792                   # another machine: its tailnet address
+  peer_poll_seconds: 5
+#+end_src
+
+A peer on another machine is paired once, with a code that machine's daemon prints:
+
+#+begin_src bash
+clawtilla device pair --name home-office        # on the peer's machine
+clawtilla office peer-pair lab K7Q-4MZ          # here: the token goes to secrets.dir/office/peers/lab.token (0600)
+clawtilla office peers                          # who visits, and whether each answers
+#+end_src
+
+#+caption: fleet "home" with fleet "studio"'s Ada and Bo visiting, at the visitor desk in their own colours
+[[file:images/office/office-federation.png]]
+
+How it works, and what it holds to:
+
+- *Read-only.*  This daemon asks each peer for its ~office.snapshot~ and draws the people in it.  Nothing a peer sends can act here: each becomes a participant of kind =external=, named =<peer>:<id>= (=studio:ada=), drawn and nothing else.
+- *A peer's answer is somebody else's input* (~clawt_daemon_office_peer_sanitize()~): only the peer's own people (a third fleet's, passed on, are not believed), at most 200, every string bounded, ids in a plain spelling, an activity this clawtilla does not know drawn as idle, a colour kept only as =#rrggbb=, and a snapshot carrying this fleet's own id refused -- it would draw everybody twice.
+- *No echo.*  A fleet publishes only its own people: ~office.snapshot~ never includes a visitor, which is merged into ~office.layout~ alone.  Two fleets that peer with each other see each other's people and never their own come back.
+- *Guests stay guests.*  A visitor keeps to the visitor desk whatever it is doing -- its meetings, calls and idle hours happen in its own office -- and its activity is drawn on it there.  Its nameplate is its name; hovering says which fleet (/Ada · studio/).  It is drawn in its own fleet's colour, which every snapshot now carries.
+- *Nothing at start.*  The first ~office.layout~ -- a client drawing the office -- starts the polling, so a daemon nobody looks at never dials a peer; nothing waits on a peer while a request is answered.
+- *Quiet, not frozen.*  A peer that has not answered for three polls is drawn empty, and ~clawtilla office peers~ says /quiet/ or the error it gave.
+
+The invariants laid down before this was built still hold:
+
+- Every participant carries its fleet's id (=<state_dir>/fleet-id=, random, made once).
 - A pack names files by relative path only, and lists each with a =sha256= (=clawt_office_world_verify_assets()= checks them), so a pack can be synced between fleets by hash.  =districts= in a manifest names the parts of a world a merged office could give to other fleets.
 - ~office.file~ serves pack files by pack and path, never by a path on this machine.
-- Team tags and ephemeral names are unique within a fleet only; anything that crosses fleets namespaces them.
+- Team tags and ephemeral names are unique within a fleet only; anything that crosses fleets namespaces them, as visitor ids do.
+
+Not built: anything that acts across fleets -- messages, delegation, handing a task to another fleet's agent.  Visiting is looking.
 
 ** Troubleshooting
 :PROPERTIES:

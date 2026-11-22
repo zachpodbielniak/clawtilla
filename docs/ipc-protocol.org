@@ -1304,7 +1304,9 @@ from a scan that found nothing (an empty ~issues~).  See
 ~office.characters~ (the whole characters: ~agent~, ~sheet~,
 ~sheet_sha256~, ~frame~, ~animations~, and ~mesh~, ~mesh_sha256~ and ~background~ when set), ~office.character_file~
 (~agent~, ~path~ → ~path~, ~size~, ~base64~, resolved inside
-=<state_dir>/office/characters/<agent>/=) and ~office.api_key~ (since 0.60.0), and the events
+=<state_dir>/office/characters/<agent>/=) and ~office.api_key~ (since 0.60.0),
+~office.peers~ and ~office.peer_pair~ (since 0.64.0: other fleets' people, visiting --
+[[file:office.org::#federation][Federation]]), and the events
 ~office.presence~ (ephemeral, an edge per participant) and
 ~office.changed~.  Every member is listed in
 [[file:office.org::#wire][office.org]].  With =office.enabled= off,

@@ -4818,6 +4818,11 @@ cmd_office(int argc, char *argv[])
                 "                after you approve the estimate\n"
                 "  api-key SERVICE\n"
                 "                store the key office.asset_api uses (read from stdin)\n"
+                "  peers         the other fleets visiting (office.peers), and whether\n"
+                "                each answers\n"
+                "  peer-pair NAME CODE\n"
+                "                pair with a tailnet peer, using a code `clawtilla device\n"
+                "                pair` printed on that machine\n"
                 "  open          start clawtilla-office (built with OFFICE=1)\n"
                 "\n"
                 "Examples:\n"
@@ -4829,7 +4834,9 @@ cmd_office(int argc, char *argv[])
                 "  clawtilla office custodians install --team groundskeepers\n"
                 "  clawtilla office character wren\n"
                 "  clawtilla office api-key higgsfield\n"
-                "  clawtilla office character wren --direct\n");
+                "  clawtilla office character wren --direct\n"
+                "  clawtilla office peers\n"
+                "  clawtilla office peer-pair studio K7Q-4MZ\n");
         return verb == NULL ? EXIT_FAILURE : EXIT_SUCCESS;
     }
 
@@ -4898,6 +4905,60 @@ cmd_office(int argc, char *argv[])
     }
 
     /* the key the daemon makes characters with: stdin, echo off, never argv */
+    /* other fleets' people, visiting: which, and whether each answers */
+    if (g_strcmp0(verb, "peers") == 0) {
+        JsonArray *peers;
+        guint k;
+
+        client = connect_to_daemon();
+        if (client == NULL)
+            return EXIT_FAILURE;
+        reply = call(client, "office.peers", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        if (json) {
+            g_autofree gchar *text = json_to_string(reply, TRUE);
+
+            g_print("%s\n", text);
+            return EXIT_SUCCESS;
+        }
+        peers = json_object_get_array_member(json_node_get_object(reply), "peers");
+        if (peers == NULL || json_array_get_length(peers) == 0) {
+            g_print("No peer fleets (office.peers is empty).\n");
+            return EXIT_SUCCESS;
+        }
+        for (k = 0; k < json_array_get_length(peers); k++) {
+            JsonObject *peer = json_array_get_object_element(peers, k);
+            const gchar *state = member_or(peer, "state", "?");
+
+            g_print("%-12s %-8s %3" G_GINT64_FORMAT " visiting  %s%s%s\n",
+                    member_or(peer, "name", "?"), state,
+                    json_object_get_int_member_with_default(peer, "visitors", 0),
+                    member_or(peer, "where", "?"),
+                    json_object_has_member(peer, "error") ? "  -- " : "",
+                    member_or(peer, "error", ""));
+        }
+        return EXIT_SUCCESS;
+    }
+
+    /* a one-time code, so an argument is acceptable where a password is not */
+    if (g_strcmp0(verb, "peer-pair") == 0) {
+        if (argc < 5) {
+            g_printerr("Usage: clawtilla office peer-pair NAME CODE\n");
+            return EXIT_FAILURE;
+        }
+        client = connect_to_daemon();
+        if (client == NULL)
+            return EXIT_FAILURE;
+        reply = call(client, "office.peer_pair",
+                     build_payload("name", argv[3], "code", argv[4], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        g_print("Paired with '%s'; its token is in %s.\n", argv[3],
+                member_or(json_node_get_object(reply), "token_file", "?"));
+        return EXIT_SUCCESS;
+    }
+
     if (g_strcmp0(verb, "api-key") == 0) {
         g_autofree gchar *key = NULL;
         JsonObject *answer;

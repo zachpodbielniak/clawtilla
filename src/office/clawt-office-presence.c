@@ -19,6 +19,7 @@ typedef struct {
     gchar      *team;
     gchar      *parent;
     gchar      *role;
+    gchar      *color;
     gboolean    running;
     gint64      arrived_at;
     gint64      leaving_at;
@@ -63,6 +64,7 @@ participant_free(Participant *p)
     g_free(p->team);
     g_free(p->parent);
     g_free(p->role);
+    g_free(p->color);
     g_hash_table_unref(p->turns);
     g_free(p->call_peer);
     g_free(p->meeting_room);
@@ -182,6 +184,16 @@ clawt_office_presence_set_role(ClawtOfficePresence *self, const gchar *id,
 
     if (p != NULL)
         replace(&p->role, role);
+}
+
+void
+clawt_office_presence_set_color(ClawtOfficePresence *self, const gchar *id,
+                                const gchar *color)
+{
+    Participant *p = lookup(self, id);
+
+    if (p != NULL)
+        replace(&p->color, color);
 }
 
 gboolean
@@ -482,6 +494,7 @@ clawt_office_presence_add_participant_json(ClawtOfficePresence *self,
     add_string(builder, "team", p->team);
     add_string(builder, "parent", p->parent);
     add_string(builder, "role", p->role);
+    add_string(builder, "color", p->color);
     add_string(builder, "activity", clawt_office_activity_nick(activity));
     add_string(builder, "station", clawt_office_station_nick(station));
     add_string(builder, "peer", peer);

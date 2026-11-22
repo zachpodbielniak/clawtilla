@@ -316,6 +316,8 @@ struct _ClawtDaemon {
     gulong                   office_bus_handler;
     GSource                 *office_tick;
     guint                    office_flush;
+    GPtrArray               *office_peers;      /* daemon-office-peers.c; NULL until asked */
+    GSource                 *office_peer_tick;
     /* this fleet's id, made once in <state_dir>/fleet-id */
     gchar                   *fleet_id;
 
@@ -1443,6 +1445,26 @@ gboolean clawt_daemon_office_custodians_install(ClawtDaemon  *self,
 gchar   *clawt_daemon_office_commission_character(ClawtDaemon  *self,
                                                   const gchar  *agent_id,
                                                   GError      **error);
+
+/* Other fleets' people, visiting (daemon-office-peers.c, 0.64.0). */
+void      clawt_daemon_office_peers_touch(ClawtDaemon *self);
+void      clawt_daemon_office_peers_merge(ClawtDaemon *self, JsonArray *participants,
+                                          gint64 now);
+JsonNode *clawt_daemon_office_peers_status(ClawtDaemon *self);
+void      clawt_daemon_office_peers_stop(ClawtDaemon *self);
+JsonNode *clawt_daemon_office_peer_pair(ClawtDaemon *self, JsonNode *request,
+                                        const gchar *name, const gchar *code);
+/*
+ * A peer fleet's office.snapshot, made safe to draw: only the peer's own
+ * people, each a read-only `external` participant named "<peer>:<id>",
+ * every string bounded, at most 200.  NULL with @error when the answer is
+ * not a snapshot or is this fleet's own.
+ */
+JsonArray *clawt_daemon_office_peer_sanitize(const gchar  *peer_name,
+                                             JsonObject   *snapshot,
+                                             const gchar  *our_fleet,
+                                             gchar       **out_fleet,
+                                             GError      **error);
 
 /* A character made by the daemon itself (daemon-office-generate.c, 0.60.0). */
 gchar   *clawt_daemon_office_store_api_key(ClawtDaemon  *self,

@@ -135,6 +135,11 @@ sync_roster(ClawtDaemon *self)
         clawt_office_presence_set_role(self->office, clawt_agent_get_id(agent),
             clawt_agent_is_chief_of_staff(agent) ? "chief"
             : config != NULL && clawt_team_role_of(config) == CLAWT_TEAM_LEAD ? "lead" : NULL);
+        /* the colour every client draws it in, for fleets that cannot look it up */
+        clawt_office_presence_set_color(self->office, clawt_agent_get_id(agent),
+            clawt_avatar_color(clawt_agent_get_id(agent), clawt_agent_get_name(agent),
+                               config != NULL ? clawt_agent_config_get_string(config, "color")
+                                              : NULL));
     }
 }
 
@@ -442,6 +447,7 @@ clawt_daemon_office_teardown(ClawtDaemon *self)
         g_source_destroy(self->office_tick);
         g_clear_pointer(&self->office_tick, g_source_unref);
     }
+    clawt_daemon_office_peers_stop(self);
     if (self->office_flush != 0) {
         GSource *source = g_main_context_find_source_by_id(self->main_context,
                                                            self->office_flush);
@@ -524,6 +530,14 @@ clawt_daemon_office_layout(ClawtDaemon *self, const gchar *world_id, GError **er
         clawt_office_choreography_override(rules, mine, NULL);
 
     snapshot = clawt_office_presence_snapshot(self->office, now);
+    /*
+     * Other fleets' people join the floor here and only here: what this
+     * fleet publishes (office.snapshot) stays its own, so two fleets that
+     * peer with each other never echo each other's visitors.
+     */
+    clawt_daemon_office_peers_touch(self);
+    clawt_daemon_office_peers_merge(self,
+        json_object_get_array_member(json_node_get_object(snapshot), "participants"), now);
     layout = clawt_office_direct(world, rules, json_node_get_object(snapshot));
     json_object_set_int_member(json_node_get_object(layout), "now", now);
     /* the participants too, so one request draws the whole floor */
@@ -630,6 +644,16 @@ clawt_daemon_handle_office(ClawtDaemon *self,
      * Who sits where, for every renderer at once: the director's answer
      * over this moment's presence and the configured (or named) world.
      */
+    /* who visits from other fleets, and whether each answers */
+    if (g_strcmp0(kind, "office.peers") == 0)
+        return clawt_ipc_response_new(request, clawt_daemon_office_peers_status(self));
+
+    /* a tailnet peer is paired once, with a code its own daemon printed */
+    if (g_strcmp0(kind, "office.peer_pair") == 0)
+        return clawt_daemon_office_peer_pair(self, request,
+                                             clawt_ipc_payload_string(payload, "name"),
+                                             clawt_ipc_payload_string(payload, "code"));
+
     if (g_strcmp0(kind, "office.layout") == 0) {
         JsonNode *layout;
 

@@ -318,6 +318,9 @@ office_faces(ClawtWebApp *app, JsonArray *participants)
         agent = g_hash_table_lookup(by_id, id);
         if (agent != NULL)
             color = clawt_web_member(agent, "color", NULL);
+        /* a visitor's colour comes with it: no agent here to read it from */
+        if (color == NULL)
+            color = clawt_web_member(p, "color", NULL);
 
         face = json_object_new();
         json_object_set_string_member(face, "color",

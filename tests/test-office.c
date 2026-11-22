@@ -601,7 +601,9 @@ test_director_seats_a_visitor_from_another_fleet(void)
         "{\"fleet\":\"ours\",\"kind\":\"agent\",\"id\":\"kudu\",\"activity\":\"working\","
         "\"since\":990},"
         "{\"fleet\":\"theirs\",\"kind\":\"external\",\"id\":\"theirs:ada\","
-        "\"activity\":\"working\",\"since\":990}]}", -1, NULL));
+        "\"activity\":\"working\",\"since\":990},"
+        "{\"fleet\":\"theirs\",\"kind\":\"external\",\"id\":\"theirs:bo\","
+        "\"activity\":\"idle\",\"since\":990}]}", -1, NULL));
     layout = clawt_office_direct(world, rules,
                                  json_node_get_object(json_parser_get_root(parser)));
 
@@ -612,6 +614,169 @@ test_director_seats_a_visitor_from_another_fleet(void)
     p = placement_of(layout, "kudu");
     g_assert_nonnull(p);
     g_assert_cmpstr(json_object_get_string_member(p, "zone"), !=, "visitors");
+    /* an idle guest stays a guest: not in this fleet's lounge */
+    p = placement_of(layout, "theirs:bo");
+    g_assert_nonnull(p);
+    g_assert_cmpstr(json_object_get_string_member(p, "zone"), ==, "visitors");
+}
+
+/*
+ * A peer's answer is somebody else's input: only its own people survive,
+ * each as a read-only external visitor under the peer's name, with every
+ * string bounded and an unknown activity drawn as idle.  This fleet's own
+ * snapshot, offered as a peer's, is refused -- it would draw everybody
+ * twice.
+ */
+static void
+test_peer_answers_are_sanitized(void)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonArray) visitors = NULL;
+    g_autofree gchar *fleet = NULL;
+    JsonObject *v;
+    g_autofree gchar *long_name = g_strnfill(500, 'x');
+    g_autofree gchar *text = g_strdup_printf(
+        "{\"fleet\":\"theirs\",\"participants\":["
+        "{\"fleet\":\"theirs\",\"kind\":\"agent\",\"id\":\"ada\",\"name\":\"Ada\","
+        "\"color\":\"#e01b24\",\"activity\":\"working\",\"since\":5},"
+        "{\"fleet\":\"theirs\",\"kind\":\"agent\",\"id\":\"bo\",\"activity\":\"plotting\","
+        "\"color\":\"red;background:url(x)\"},"
+        "{\"fleet\":\"theirs\",\"kind\":\"agent\",\"id\":\"cy\",\"activity\":\"offline\"},"
+        "{\"fleet\":\"a-third\",\"kind\":\"agent\",\"id\":\"eve\",\"activity\":\"working\"},"
+        "{\"fleet\":\"theirs\",\"kind\":\"agent\",\"id\":\"../../etc\",\"activity\":\"idle\"},"
+        "{\"fleet\":\"theirs\",\"kind\":\"agent\",\"id\":\"%s\",\"activity\":\"idle\"}]}",
+        long_name);
+
+    g_assert_true(json_parser_load_from_data(parser, text, -1, NULL));
+    visitors = clawt_daemon_office_peer_sanitize("studio",
+        json_node_get_object(json_parser_get_root(parser)), "ours", &fleet, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(fleet, ==, "theirs");
+    /* ada and bo: not the offline one, a third fleet's, a path or a 500-character id */
+    g_assert_cmpuint(json_array_get_length(visitors), ==, 2);
+    v = json_array_get_object_element(visitors, 0);
+    g_assert_cmpstr(json_object_get_string_member(v, "id"), ==, "studio:ada");
+    g_assert_cmpstr(json_object_get_string_member(v, "kind"), ==, "external");
+    g_assert_cmpstr(json_object_get_string_member(v, "fleet"), ==, "theirs");
+    g_assert_cmpstr(json_object_get_string_member(v, "name"), ==, "Ada");
+    /* its own colour comes with it, as #rrggbb and nothing else */
+    g_assert_cmpstr(json_object_get_string_member(v, "color"), ==, "#e01b24");
+    g_assert_cmpstr(json_object_get_string_member(v, "visiting_from"), ==, "studio");
+    g_assert_false(json_object_has_member(v, "peer"));
+    v = json_array_get_object_element(visitors, 1);
+    g_assert_cmpstr(json_object_get_string_member(v, "activity"), ==, "idle");
+    g_assert_false(json_object_has_member(v, "color"));
+
+    /* our own snapshot, come back as a peer's */
+    g_clear_pointer(&visitors, json_array_unref);
+    visitors = clawt_daemon_office_peer_sanitize("loop",
+        json_node_get_object(json_parser_get_root(parser)), "theirs", NULL, &error);
+    g_assert_null(visitors);
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+}
+
+/*
+ * Two fleets, peered over a unix socket in one process: fleet A draws
+ * fleet B's people as visitors in its layout, while A's own snapshot --
+ * what A publishes -- stays A's alone, so nothing echoes.  Nothing is
+ * dialled until a client asks for A's layout.
+ */
+static void
+test_two_fleets_visit(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-peers-XXXXXX", NULL);
+    g_autofree gchar *a_path = g_build_filename(dir, "a.yaml", NULL);
+    g_autofree gchar *b_path = g_build_filename(dir, "b.yaml", NULL);
+    g_autofree gchar *worlds = g_build_filename(CLAWT_TEST_FIXTURES, "..", "..", "data",
+                                                "office", "worlds", NULL);
+    g_autofree gchar *b_yaml = g_strdup_printf(
+        "daemon:\n  tailscale: false\n  state_dir: \"%s/b\"\n"
+        "  socket: \"%s/b.sock\"\n  automation_dir: \"%s/b-pods\"\n"
+        "defaults:\n  workspace_root: \"%s/b-agents\"\n"
+        "office:\n  enabled: true\n  world: modern-office\n  world_dirs: [\"%s\"]\n"
+        "agents:\n  - id: ada\n    runtime:\n      autostart: false\n",
+        dir, dir, dir, dir, worlds);
+    g_autofree gchar *a_yaml = g_strdup_printf(
+        "daemon:\n  tailscale: false\n  state_dir: \"%s/a\"\n"
+        "  socket: \"%s/a.sock\"\n  automation_dir: \"%s/a-pods\"\n"
+        "defaults:\n  workspace_root: \"%s/a-agents\"\n"
+        "office:\n  enabled: true\n  world: modern-office\n  world_dirs: [\"%s\"]\n"
+        "  peers: [\"studio=%s/b.sock\"]\n  peer_poll_seconds: 1\n"
+        "agents:\n  - id: kudu\n    runtime:\n      autostart: false\n",
+        dir, dir, dir, dir, worlds, dir);
+    GMainContext *context = g_main_context_new();
+    ClawtDaemon *a;
+    ClawtDaemon *b;
+    g_autoptr(ClawtEvent) job = clawt_event_new("grok.job_updated", "job-1");
+    g_autoptr(JsonNode) mine = NULL;
+    gboolean seen = FALSE;
+    gint64 deadline;
+    guint i;
+
+    g_assert_true(g_file_set_contents(b_path, b_yaml, -1, &error));
+    g_assert_true(g_file_set_contents(a_path, a_yaml, -1, &error));
+    b = clawt_daemon_new(b_path, context);
+    clawt_daemon_start(b, &error);
+    g_assert_no_error(error);
+    a = clawt_daemon_new(a_path, context);
+    clawt_daemon_start(a, &error);
+    g_assert_no_error(error);
+    /* nothing dialled at start */
+    g_assert_null(a->office_peers);
+
+    /* somebody present in B: a Grok job stands in for a running agent */
+    clawt_event_set_detail(job, "bot", "scout");
+    clawt_event_set_detail(job, "state", "working");
+    clawt_event_bus_publish(b->bus, job);
+
+    deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+    while (!seen && g_get_monotonic_time() < deadline) {
+        g_autoptr(JsonNode) layout = office_request(a, "office.layout");
+        JsonArray *placements = json_object_get_array_member(
+            clawt_ipc_frame_get_payload(layout), "placements");
+
+        for (i = 0; placements != NULL && i < json_array_get_length(placements); i++) {
+            JsonObject *p = json_array_get_object_element(placements, i);
+
+            if (g_strcmp0(json_object_get_string_member(p, "id"), "studio:grok:scout") == 0) {
+                g_assert_cmpstr(json_object_get_string_member(p, "zone"), ==, "visitors");
+                seen = TRUE;
+            }
+        }
+        g_main_context_iteration(context, FALSE);
+    }
+    g_assert_true(seen);
+
+    /* what A publishes is A's alone: B's visitor is not passed on */
+    mine = office_request(a, "office.snapshot");
+    {
+        JsonArray *people = json_object_get_array_member(clawt_ipc_frame_get_payload(mine),
+                                                         "participants");
+
+        for (i = 0; i < json_array_get_length(people); i++)
+            g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(
+                people, i), "kind"), !=, "external");
+    }
+    {
+        g_autoptr(JsonNode) status = office_request(a, "office.peers");
+        JsonObject *peer = json_array_get_object_element(json_object_get_array_member(
+            clawt_ipc_frame_get_payload(status), "peers"), 0);
+
+        g_assert_cmpstr(json_object_get_string_member(peer, "state"), ==, "ok");
+        g_assert_cmpstr(json_object_get_string_member(peer, "fleet"), ==,
+                        clawt_daemon_fleet_id(b));
+    }
+
+    clawt_daemon_stop(a);
+    clawt_daemon_stop(b);
+    g_object_unref(a);
+    g_object_unref(b);
+    while (g_main_context_iteration(context, FALSE))
+        ;
+    g_main_context_unref(context);
+    clawt_test_remove_tree(dir);
 }
 
 gint
@@ -633,6 +798,8 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office/director-seats-a-visitor-from-another-fleet",
                     test_director_seats_a_visitor_from_another_fleet);
     g_test_add_func("/office/daemon", test_daemon_office);
+    g_test_add_func("/office/peer-answers-are-sanitized", test_peer_answers_are_sanitized);
+    g_test_add_func("/office/two-fleets-visit", test_two_fleets_visit);
     g_test_add_func("/office/daemon-file-stays-in-the-pack", test_daemon_file_stays_in_the_pack);
 
     return g_test_run();

@@ -41,6 +41,9 @@ typedef struct {
     gchar           *id;
     gchar           *name;
     gchar           *kind;
+    gchar           *own_color;     /* from the participant: a visitor's own fleet colour */
+    gchar           *visiting_from; /* a visitor's fleet, said on hover */
+    gboolean         plate_full;    /* the plate says "name · fleet" now */
     gchar           *activity;
     gchar           *pose;
     gchar           *prop;
@@ -69,6 +72,8 @@ actor_free(Actor *a)
     g_free(a->id);
     g_free(a->name);
     g_free(a->kind);
+    g_free(a->own_color);
+    g_free(a->visiting_from);
     g_free(a->activity);
     g_free(a->pose);
     g_free(a->prop);
@@ -249,6 +254,10 @@ static Color
 actor_color(ClawtOfficeScene *self, Actor *a)
 {
     const gchar *configured = g_hash_table_lookup(self->colors, a->id);
+
+    /* a visitor's colour comes with it: this fleet has no config to look it up in */
+    if (configured == NULL)
+        configured = a->own_color;
 
     return parse_color(clawt_avatar_color(a->id, a->name, configured),
                        (Color){ 120, 130, 150, 255 });
@@ -671,6 +680,9 @@ clawt_office_scene_set_layout(ClawtOfficeScene *self, JsonObject *layout)
         a->leaving = FALSE;
         replace(&a->name, p != NULL && member(p, "name") != NULL ? member(p, "name") : id);
         replace(&a->kind, p != NULL ? member(p, "kind") : NULL);
+        replace(&a->own_color, p != NULL ? member(p, "color") : NULL);
+        replace(&a->visiting_from, p != NULL ? member(p, "visiting_from") : NULL);
+        a->plate_full = FALSE;
         replace(&a->activity, member(pl, "activity"));
         replace(&a->pose, member(pl, "pose"));
         replace(&a->prop, member(pl, "prop"));
@@ -1357,6 +1369,23 @@ draw_overlays(ClawtOfficeScene *self, Actor *a, Vector2 at, gfloat scale)
 
     (void)self;
     lrg_nameplate_set_hovered(a->plate, g_strcmp0(self->hovered, a->id) == 0);
+    /*
+     * A visitor's plate is its name, small, as everybody's is; hovered it
+     * says which fleet it is from.  Two "Ada · studio" plates at adjacent
+     * visitor desks covered each other.  Set only on a change of hover.
+     */
+    if (a->visiting_from != NULL &&
+        a->plate_full != (g_strcmp0(self->hovered, a->id) == 0)) {
+        a->plate_full = !a->plate_full;
+        if (a->plate_full) {
+            g_autofree gchar *full = g_strdup_printf("%s \302\267 %s", a->name,
+                                                     a->visiting_from);
+
+            lrg_nameplate_set_text(a->plate, full);
+        } else {
+            lrg_nameplate_set_text(a->plate, a->name);
+        }
+    }
     lrg_world_widget_draw_at(LRG_WORLD_WIDGET(a->plate), at.x, at.y + MAX(12.0f * scale, 10.0f));
     if (lrg_world_widget_is_shown(LRG_WORLD_WIDGET(a->mark)) ||
         lrg_world_widget_get_alpha(LRG_WORLD_WIDGET(a->mark)) > 0.01f)

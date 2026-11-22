@@ -1247,7 +1247,8 @@
 			      name: who.name || id, kind: who.kind || 'agent',
 			      detail: p.sim_detail !== undefined ? p.sim_detail : who.detail,
 			      since: p.sim_since || who.since || 0,
-			      peer: p.peer || who.peer, hover: id === hover_id };
+			      peer: p.peer || who.peer, hover: id === hover_id,
+			      visiting_from: who.visiting_from };
 			sprites.push(s);
 			by_id[id] = s;
 			if (s.activity === 'in_meeting' && !w.walking) {
@@ -1452,7 +1453,9 @@
 			return;
 		tip_key = key;
 		tip.textContent = '';
-		tip.appendChild(document.createElement('strong')).textContent = s.name;
+		/* a visitor from another fleet says which, where there is room for it */
+		tip.appendChild(document.createElement('strong')).textContent =
+			s.visiting_from ? s.name + ' \u00b7 ' + s.visiting_from : s.name;
 		tip.appendChild(document.createElement('span')).textContent =
 			word ? word.label : (s.activity || '');
 		if (line)

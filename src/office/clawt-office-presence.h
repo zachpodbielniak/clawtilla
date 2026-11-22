@@ -159,6 +159,18 @@ void clawt_office_presence_set_role(ClawtOfficePresence *self, const gchar *id,
                                     const gchar *role);
 
 /**
+ * clawt_office_presence_set_color:
+ * @self: the fold
+ * @id: a participant
+ * @color: (nullable): its colour, `#rrggbb`, as its fleet draws it
+ *
+ * Carried in the snapshot, so a fleet drawing this one's people as
+ * visitors draws them in their own colours, which it cannot look up.
+ */
+void clawt_office_presence_set_color(ClawtOfficePresence *self, const gchar *id,
+                                     const gchar *color);
+
+/**
  * clawt_office_presence_remove:
  * @self: the fold
  * @id: a participant

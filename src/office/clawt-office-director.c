@@ -289,6 +289,15 @@ clawt_office_direct(ClawtOfficeWorld        *world,
              * deliverer to its own chair.
              */
             at_home = g_strcmp0(tag, "desk") == 0;
+            /*
+             * A visitor from another fleet is a guest whatever it is
+             * doing: its meetings, calls and idle hours happen in its own
+             * office, so it keeps to the visitor desk and its activity is
+             * drawn on it there -- not sent to sit in this fleet's lounge.
+             */
+            if (g_strcmp0(json_object_get_string_member_with_default(p, "kind", "agent"),
+                          "external") == 0)
+                at_home = TRUE;
             if (activity == CLAWT_OFFICE_DELIVERING && peer != NULL &&
                 g_hash_table_contains(homes, peer)) {
                 /* beside the assignee's desk, folder in hand */

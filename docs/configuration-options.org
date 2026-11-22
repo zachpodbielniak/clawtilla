@@ -3828,6 +3828,32 @@ make its character from its picture, and installing the custodial team
 makes every call to it ask you first. Empty, nothing is generated.
 See docs/office-custodial-team.org.
 
+*** =office.peers=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.64.0
+
+Other fleets whose people visit this office, each `NAME=WHERE`:
+WHERE is the other daemon's socket on this machine
+(`work=/run/user/1000/work/d.sock`) or its tailnet address
+(`studio=100.64.0.7:8792`), paired once with `clawtilla office
+peer-pair NAME CODE` using a code `clawtilla device pair` printed on
+that machine. Their people are drawn as visitors, read-only: nothing
+they send can act here, and each fleet publishes only its own people,
+so two fleets that peer with each other never echo. Asked only once a
+client is drawing the office. See docs/office.org#federation.
+
+*** =office.peer_poll_seconds=
+
+- Type :: integer
+- Default :: =5=
+- Since :: 0.64.0
+
+How often, in seconds, each office.peers fleet is asked who is where.
+A fleet that has not answered for three of these is drawn empty, not
+frozen.
+
 ** =routines=
 
 Standing work: a prompt, an agent, and when to run it.

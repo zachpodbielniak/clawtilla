@@ -330,6 +330,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-office.c \
 	$(SRCDIR)/core/daemon-office-custodial.c \
 	$(SRCDIR)/core/daemon-office-generate.c \
+	$(SRCDIR)/core/daemon-office-peers.c \
 	$(SRCDIR)/core/daemon-config.c \
 	$(SRCDIR)/core/daemon-skill.c \
 	$(SRCDIR)/core/daemon-skill-proposal.c \

@@ -2758,6 +2758,23 @@ static const ClawtSchemaEntry schema[] = {
   "makes every call to it ask you first. Empty, nothing is generated.\n"
   "See docs/office-custodial-team.org.", "0.58.0" },
 
+{ "office.peers", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Other fleets whose people visit this office, each `NAME=WHERE`:\n"
+  "WHERE is the other daemon's socket on this machine\n"
+  "(`work=/run/user/1000/work/d.sock`) or its tailnet address\n"
+  "(`studio=100.64.0.7:8792`), paired once with `clawtilla office\n"
+  "peer-pair NAME CODE` using a code `clawtilla device pair` printed on\n"
+  "that machine. Their people are drawn as visitors, read-only: nothing\n"
+  "they send can act here, and each fleet publishes only its own people,\n"
+  "so two fleets that peer with each other never echo. Asked only once a\n"
+  "client is drawing the office. See docs/office.org#federation.",
+  "0.64.0" },
+
+{ "office.peer_poll_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "5", NULL,
+  "How often, in seconds, each office.peers fleet is asked who is where.\n"
+  "A fleet that has not answered for three of these is drawn empty, not\n"
+  "frozen.", "0.64.0" },
+
 { "routines", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing work: a prompt, an agent, and when to run it.\n"
   "\n"
