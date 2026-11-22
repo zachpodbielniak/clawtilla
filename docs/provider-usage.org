@@ -50,6 +50,7 @@ Reading a login takes a few seconds and starts a CLI process, so the daemon neve
 - With ~refresh: true~ it also starts a read of each login *behind* the reply, at most once a minute per login (throttled on the last attempt, so a CLI that keeps failing is not respawned on every refresh).
 - Each answer that lands is stored and announced as ~usage.providers_changed~; the clients redraw on it without asking again.
 - Nothing is read at daemon start.  A daemon nobody looks at never spawns a CLI to read an allowance, and ~make test~ never spawns one at all.
+- Every answer -- figures, or "reports no plan limits" -- is also kept in =<state_dir>/usage/providers.json= (0600), and a restarted daemon starts each login from it, with the reading's own time, without asking any CLI (since 0.63.1; before, a restart blanked every meter until somebody refreshed).  A failure is not kept: the last good reading stays, on disk as in memory, and a login that never answered says /Not read yet/.
 
 The clients ask with ~refresh~ when the Fleet tab is shown and when *Read again* (web), the refresh button (GTK) or *Refresh* (libregnum) is pressed.  ~clawtilla limits~ asks and then waits for the answers, up to a minute.
 

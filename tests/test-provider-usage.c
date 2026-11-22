@@ -16,6 +16,7 @@
  */
 
 #include "clawtilla.h"
+#include <glib/gstdio.h>
 #include "clawt-test-util.h"
 #include "core/clawt-daemon-private.h"
 
@@ -416,6 +417,64 @@ test_daemon_lists_logins_and_reads_on_request(void)
     daemon_teardown(&fixture);
 }
 
+/*
+ * A reading outlives the daemon that took it.  The cache was memory only,
+ * so a restart blanked every meter until somebody refreshed -- which
+ * spawns every login's CLI.  Now the next daemon starts from the readings
+ * on disk, with their own times, and asks no CLI to show them.
+ */
+static void
+test_readings_survive_a_restart(void)
+{
+    DaemonFixture fixture = { 0 };
+    g_autoptr(JsonNode) read = NULL;
+    g_autoptr(JsonNode) after = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *file = NULL;
+    gint64 read_at;
+    JsonObject *codex;
+    JsonObject *claude;
+    GStatBuf info;
+
+    daemon_setup(&fixture);
+    g_clear_pointer(&read, json_node_unref);
+    read = providers(&fixture, TRUE);
+    g_clear_pointer(&read, json_node_unref);
+    read = providers(&fixture, FALSE);
+    read_at = json_object_get_int_member(find_login(read, "codex-cli:default"), "read_at");
+    g_assert_cmpint(read_at, >, 0);
+
+    /* kept where only the daemon's user can read it */
+    file = g_build_filename(fixture.dir, "state", "usage", "providers.json", NULL);
+    g_assert_cmpint(g_stat(file, &info), ==, 0);
+    g_assert_cmpint(info.st_mode & 0777, ==, 0600);
+
+    /* a new daemon on the same state */
+    clawt_daemon_stop(fixture.daemon);
+    g_clear_object(&fixture.daemon);
+    while (g_main_context_iteration(fixture.context, FALSE))
+        ;
+    g_ptr_array_set_size(asked, 0);
+    path = g_build_filename(fixture.dir, "config.yaml", NULL);
+    fixture.daemon = clawt_daemon_new(path, fixture.context);
+    clawt_daemon_start(fixture.daemon, &error);
+    g_assert_no_error(error);
+    fixture.daemon->provider_usage_query = fake_query;
+
+    after = providers(&fixture, FALSE);
+    codex = find_login(after, "codex-cli:default");
+    claude = find_login(after, "claude-code:work");
+    g_assert_cmpstr(json_object_get_string_member(codex, "state"), ==, "ok");
+    g_assert_cmpint(json_object_get_int_member(codex, "read_at"), ==, read_at);
+    g_assert_cmpuint(json_array_get_length(json_object_get_array_member(codex, "windows")),
+                     ==, 1);
+    g_assert_cmpstr(json_object_get_string_member(claude, "state"), ==, "unsupported");
+    g_assert_cmpuint(asked->len, ==, 0);
+
+    daemon_teardown(&fixture);
+}
+
 gint
 main(gint argc, gchar *argv[])
 {
@@ -428,6 +487,8 @@ main(gint argc, gchar *argv[])
                     test_refuses_other_documents);
     g_test_add_func("/provider-usage/tones-and-meter", test_tones_and_meter);
     g_test_add_func("/provider-usage/status-labels", test_status_labels);
+    g_test_add_func("/provider-usage/readings-survive-a-restart",
+                    test_readings_survive_a_restart);
     g_test_add_func("/provider-usage/daemon-lists-logins-and-reads-on-request",
                     test_daemon_lists_logins_and_reads_on_request);
 

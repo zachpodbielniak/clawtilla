@@ -19,11 +19,20 @@
  * and announced as `usage.providers_changed`; clients re-read on it.
  * Nothing is read at daemon start -- `make test` must not spawn a CLI --
  * and a client that never opens the page never costs a query.
+ *
+ * Every answer is also kept on disk (<state_dir>/usage/providers.json,
+ * 0600), and a login the daemon has not asked since it started begins
+ * from that, with the reading's own time.  The cache used to be memory
+ * only, so a restart blanked every meter until somebody refreshed --
+ * which spawns every login's CLI -- and a meter that knows its age is
+ * worth more than one that knows nothing.
  */
 
 #include "clawtilla.h"
 #include "core/clawt-daemon-private.h"
 
+#include <errno.h>
+#include <glib/gstdio.h>
 #include <string.h>
 
 /* A refresh asked for within this long of the last read is not repeated. */
@@ -61,6 +70,100 @@ clawt_provider_usage_login_free(ClawtProviderUsageLogin *login)
     g_free(login->message);
     g_clear_pointer(&login->report, json_node_unref);
     g_free(login);
+}
+
+/* ── What was read before, on disk ──────────────────────────────── */
+
+static gchar *
+saved_path(ClawtDaemon *self)
+{
+    g_autofree gchar *state = clawt_config_get_path_value(self->config, "daemon.state_dir");
+
+    return state != NULL ? g_build_filename(state, "usage", "providers.json", NULL) : NULL;
+}
+
+/* The saved answers, read once: login id -> {state, message, read_at, report}. */
+static JsonObject *
+saved(ClawtDaemon *self)
+{
+    JsonObject *object = g_object_get_data(G_OBJECT(self), "clawt-usage-saved");
+
+    if (object == NULL) {
+        g_autofree gchar *path = saved_path(self);
+        g_autoptr(JsonParser) parser = json_parser_new();
+        JsonNode *root;
+
+        /* a damaged file is no readings, never a failure to start */
+        if (path != NULL && json_parser_load_from_file(parser, path, NULL) &&
+            (root = json_parser_get_root(parser)) != NULL && JSON_NODE_HOLDS_OBJECT(root))
+            object = json_object_ref(json_node_get_object(root));
+        else
+            object = json_object_new();
+        g_object_set_data_full(G_OBJECT(self), "clawt-usage-saved", object,
+                               (GDestroyNotify)json_object_unref);
+    }
+    return object;
+}
+
+/* An answer worth keeping, kept: the file is rewritten whole, by rename. */
+static void
+save_login(ClawtDaemon *self, ClawtProviderUsageLogin *login)
+{
+    JsonObject *all = saved(self);
+    JsonObject *entry = json_object_new();
+    g_autofree gchar *path = saved_path(self);
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *text = NULL;
+    g_autoptr(JsonGenerator) generator = json_generator_new();
+    g_autoptr(JsonNode) root = json_node_new(JSON_NODE_OBJECT);
+    g_autoptr(GError) error = NULL;
+
+    json_object_set_string_member(entry, "state", login->state);
+    if (login->message != NULL)
+        json_object_set_string_member(entry, "message", login->message);
+    json_object_set_int_member(entry, "read_at", login->read_at);
+    if (login->report != NULL)
+        json_object_set_member(entry, "report", json_node_copy(login->report));
+    json_object_set_object_member(all, login->id, entry);
+
+    if (path == NULL)
+        return;
+    dir = g_path_get_dirname(path);
+    json_node_set_object(root, all);
+    json_generator_set_root(generator, root);
+    text = json_generator_to_data(generator, NULL);
+    if (g_mkdir_with_parents(dir, 0700) != 0 ||
+        !g_file_set_contents_full(path, text, -1, G_FILE_SET_CONTENTS_CONSISTENT, 0600,
+                                  &error))
+        g_warning("usage: the reading for %s could not be kept: %s", login->id,
+                  error != NULL ? error->message : g_strerror(errno));
+}
+
+/* A login made fresh in this daemon, started from what the last one read. */
+static void
+seed_login(ClawtDaemon *self, ClawtProviderUsageLogin *login)
+{
+    JsonObject *all = saved(self);
+    JsonNode *node = json_object_get_member(all, login->id);
+    JsonObject *entry;
+    const gchar *state;
+
+    if (node == NULL || !JSON_NODE_HOLDS_OBJECT(node))
+        return;
+    entry = json_node_get_object(node);
+    state = json_object_get_string_member_with_default(entry, "state", "");
+    /* only answers: a stored "pending" would be a query nobody is running */
+    if (g_strcmp0(state, "ok") == 0)
+        login->state = "ok";
+    else if (g_strcmp0(state, "unsupported") == 0)
+        login->state = "unsupported";
+    else
+        return;
+    login->read_at = json_object_get_int_member_with_default(entry, "read_at", 0);
+    login->message = g_strdup(json_object_get_string_member_with_default(entry, "message",
+                                                                         NULL));
+    if (json_object_has_member(entry, "report"))
+        login->report = json_node_copy(json_object_get_member(entry, "report"));
 }
 
 static GHashTable *
@@ -105,6 +208,7 @@ collect_logins(ClawtDaemon *self)
             login = g_new0(ClawtProviderUsageLogin, 1);
             login->id = g_steal_pointer(&id);
             login->state = "idle";
+            seed_login(self, login);
             g_hash_table_insert(table, login->id, login);
         }
         /* the entry may have been edited since: its directory is today's */
@@ -145,6 +249,7 @@ collect_logins(ClawtDaemon *self)
             login->id = g_steal_pointer(&id);
             login->provider = g_strdup(cli);
             login->state = "idle";
+            seed_login(self, login);
             g_hash_table_insert(table, login->id, login);
         }
         if (g_hash_table_add(seen, login->id))
@@ -208,6 +313,10 @@ clawt_daemon_provider_usage_landed(ClawtDaemon  *self,
             login->read_at = g_get_real_time() / G_USEC_PER_SEC;
         }
     }
+
+    /* answers are kept; a failure keeps the previous good reading, on disk too */
+    if (g_strcmp0(login->state, "ok") == 0 || g_strcmp0(login->state, "unsupported") == 0)
+        save_login(self, login);
 
     {
         g_autoptr(ClawtEvent) event = clawt_event_new("usage.providers_changed",
