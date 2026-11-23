@@ -1960,6 +1960,241 @@ append_rooms_for_team(ClawtWindow *self, JsonArray *rooms,
     }
 }
 
+/* ── Linked fleets, after this one (docs/federation.org) ───────────── */
+
+static void
+on_fed_chip_toggled(GtkToggleButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *term = g_object_get_data(G_OBJECT(button), "clawt-term");
+    guint index;
+
+    if (self->fed_filter == NULL)
+        self->fed_filter = g_ptr_array_new_with_free_func(g_free);
+    if (g_strcmp0(term, "hidden") == 0)
+        self->fed_show_hidden = gtk_toggle_button_get_active(button);
+    else if (g_strcmp0(term, "more") == 0)
+        self->fed_more_filters = gtk_toggle_button_get_active(button);
+    else if (gtk_toggle_button_get_active(button))
+        g_ptr_array_add(self->fed_filter, g_strdup(term));
+    else if (g_ptr_array_find_with_equal_func(self->fed_filter, term, g_str_equal, &index))
+        g_ptr_array_remove_index(self->fed_filter, index);
+    clawt_gtk_refresh_agents(self);
+}
+
+static gboolean
+fed_chip_active(ClawtWindow *self, const gchar *term)
+{
+    return self->fed_filter != NULL
+        && g_ptr_array_find_with_equal_func(self->fed_filter, term, g_str_equal, NULL);
+}
+
+/* A row that is part of the list but never selected or activated. */
+static GtkWidget *
+inert_row(GtkWidget *child)
+{
+    GtkWidget *row = gtk_list_box_row_new();
+
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), child);
+    gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(row), FALSE);
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+    return row;
+}
+
+static GtkWidget *
+fed_chip(ClawtWindow *self, const gchar *label, const gchar *term, gboolean active)
+{
+    GtkWidget *chip = gtk_toggle_button_new_with_label(label);
+
+    /* Small and as wide as its words, so several share a line. */
+    gtk_widget_add_css_class(chip, "flat");
+    gtk_widget_add_css_class(chip, "caption");
+    gtk_widget_add_css_class(chip, "clawt-fed-chip");
+    gtk_widget_set_halign(chip, GTK_ALIGN_START);
+    gtk_widget_set_hexpand(chip, FALSE);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(chip), active);
+    g_object_set_data_full(G_OBJECT(chip), "clawt-term", g_strdup(term), g_free);
+    g_signal_connect(chip, "toggled", G_CALLBACK(on_fed_chip_toggled), self);
+    return chip;
+}
+
+/* One linked fleet's heading: dot, name, tier badge, owner, tags, fold. */
+static GtkWidget *
+fed_header(ClawtWindow *self, JsonObject *fleet, guint shown)
+{
+    const gchar *alias = clawt_json_string(fleet, "alias", "?");
+    g_autofree gchar *key = g_strdup_printf("fleet:%s", alias);
+    gboolean collapsed = team_is_collapsed(self, key);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *fold = gtk_button_new_from_icon_name(collapsed ? "pan-end-symbolic"
+                                                              : "pan-down-symbolic");
+    GtkWidget *dot = gtk_label_new(clawt_fed_health_glyph(clawt_json_string(fleet, "health", NULL)));
+    GtkWidget *name = gtk_label_new(clawt_json_string(fleet, "label", alias));
+    GtkWidget *tier = gtk_label_new(clawt_json_string(fleet, "tier", ""));
+    GtkWidget *count;
+    g_autofree gchar *tooltip = clawt_fed_peer_summary(fleet);
+    g_autofree gchar *tally = g_strdup_printf("%u", shown);
+
+    gtk_widget_add_css_class(fold, "flat");
+    gtk_widget_add_css_class(fold, "circular");
+    g_object_set_data_full(G_OBJECT(fold), "team-id", g_strdup(key), g_free);
+    g_signal_connect(fold, "clicked", G_CALLBACK(on_team_header_toggled), self);
+    gtk_box_append(GTK_BOX(box), fold);
+
+    gtk_widget_add_css_class(dot, "clawt-fed-health");
+    {
+        const gchar *tone = clawt_json_string(fleet, "health_tone", "neutral");
+        gtk_widget_add_css_class(dot, g_strcmp0(tone, "neutral") == 0 ? "dim-label" : tone);
+    }
+    gtk_box_append(GTK_BOX(box), dot);
+
+    gtk_label_set_ellipsize(GTK_LABEL(name), PANGO_ELLIPSIZE_END);
+    gtk_label_set_xalign(GTK_LABEL(name), 0);
+    gtk_widget_set_hexpand(name, TRUE);
+    gtk_widget_add_css_class(name, "heading");
+    gtk_box_append(GTK_BOX(box), name);
+
+    gtk_widget_add_css_class(tier, "caption");
+    gtk_widget_add_css_class(tier, "clawt-fed-tier");
+    {
+        const gchar *tone = clawt_json_string(fleet, "tier_tone", "neutral");
+        gtk_widget_add_css_class(tier, g_strcmp0(tone, "neutral") == 0 ? "dim-label" : tone);
+    }
+    gtk_box_append(GTK_BOX(box), tier);
+
+    count = gtk_label_new(tally);
+    gtk_widget_add_css_class(count, "dim-label");
+    gtk_widget_add_css_class(count, "caption");
+    gtk_box_append(GTK_BOX(box), count);
+
+    gtk_widget_set_tooltip_text(box, tooltip);
+    gtk_widget_set_margin_top(box, 10);
+    gtk_widget_set_margin_start(box, 6);
+    gtk_widget_set_margin_end(box, 12);
+    if (clawt_json_boolean(fleet, "muted", FALSE) || clawt_json_boolean(fleet, "hidden", FALSE))
+        gtk_widget_add_css_class(box, "dim-label");
+    gtk_widget_add_css_class(box, "clawt-fed-section");
+    return inert_row(box);
+}
+
+static GtkWidget *
+fed_agent_row(JsonObject *fleet, JsonObject *agent)
+{
+    const gchar *tone = NULL;
+    const gchar *presence = clawt_fed_agent_presence(agent, &tone);
+    GtkWidget *row = adw_action_row_new();
+    GtkWidget *dot = gtk_label_new("\342\227\217");
+    g_autofree gchar *subtitle = g_strdup_printf(
+        "%s%s%s", presence,
+        clawt_json_string(agent, "team", NULL) != NULL ? " \302\267 " : "",
+        clawt_json_string(agent, "team", ""));
+    g_autofree gchar *tip = g_strdup_printf(
+        "%s, in %s. Messaging agents in other fleets arrives with the next release.",
+        clawt_json_string(agent, "ref", "?"), clawt_json_string(fleet, "label", "?"));
+
+    adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), clawt_json_string(agent, "name", "?"));
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+    /* "neutral" is the library's word and no libadwaita class: grey it */
+    gtk_widget_add_css_class(dot, g_strcmp0(tone, "neutral") == 0 ? "dim-label" : tone);
+    gtk_widget_add_css_class(dot, "caption");
+    adw_action_row_add_prefix(ADW_ACTION_ROW(row), dot);
+    gtk_widget_set_tooltip_text(row, tip);
+    gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(row), FALSE);
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+    gtk_widget_add_css_class(row, "clawt-fed-agent");
+    return row;
+}
+
+/*
+ * The linked fleets, one section each after this fleet's own: chips to
+ * filter them (from clawt_fed_filter_chips(), so every client offers the
+ * same), then each fleet that passes, with the agents it lets us see.
+ */
+static void
+append_fleets(ClawtWindow *self, JsonArray *fleets)
+{
+    g_autoptr(GPtrArray) chips = NULL;
+    g_autoptr(GPtrArray) terms = g_ptr_array_new();
+    GtkWidget *bar;
+    gboolean any_hidden = FALSE;
+    guint i;
+
+    if (fleets == NULL || json_array_get_length(fleets) == 0)
+        return;
+
+    chips = clawt_fed_filter_chips(fleets);
+    for (i = 0; self->fed_filter != NULL && i < self->fed_filter->len; i++)
+        g_ptr_array_add(terms, g_ptr_array_index(self->fed_filter, i));
+    g_ptr_array_add(terms, NULL);
+    for (i = 0; i < json_array_get_length(fleets); i++)
+        if (clawt_json_boolean(json_array_get_object_element(fleets, i), "hidden", FALSE))
+            any_hidden = TRUE;
+
+    {
+        GtkWidget *title = gtk_label_new("Linked fleets");
+        gtk_label_set_xalign(GTK_LABEL(title), 0);
+        gtk_widget_add_css_class(title, "caption-heading");
+        gtk_widget_add_css_class(title, "dim-label");
+        gtk_widget_set_margin_top(title, 14);
+        gtk_widget_set_margin_start(title, 12);
+        gtk_list_box_append(self->sidebar, inert_row(title));
+    }
+
+    bar = gtk_flow_box_new();
+    gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(bar), GTK_SELECTION_NONE);
+    gtk_flow_box_set_min_children_per_line(GTK_FLOW_BOX(bar), 3);
+    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(bar), 12);
+    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(bar), 4);
+    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(bar), 4);
+    gtk_widget_set_margin_start(bar, 8);
+    gtk_widget_set_margin_end(bar, 8);
+    gtk_widget_add_css_class(bar, "clawt-fed-chips");
+    /*
+     * Online and the tiers always; owners and tags behind "More", unless
+     * one of them is switched on -- a filter in force is never hidden.
+     */
+    {
+        gboolean extra = FALSE;
+        for (i = 0; i < chips->len; i++) {
+            ClawtFedChip *chip = g_ptr_array_index(chips, i);
+            gboolean basic = g_strcmp0(chip->kind, "online") == 0
+                || g_strcmp0(chip->kind, "tier") == 0;
+            gboolean on = fed_chip_active(self, chip->term);
+            if (!basic)
+                extra = TRUE;
+            if (!basic && !on && !self->fed_more_filters)
+                continue;
+            gtk_flow_box_append(GTK_FLOW_BOX(bar), fed_chip(self, chip->label, chip->term, on));
+        }
+        if (extra)
+            gtk_flow_box_append(GTK_FLOW_BOX(bar),
+                                fed_chip(self, self->fed_more_filters ? "Fewer" : "More\342\200\246",
+                                         "more", self->fed_more_filters));
+    }
+    if (any_hidden)
+        gtk_flow_box_append(GTK_FLOW_BOX(bar),
+                            fed_chip(self, "Show hidden", "hidden", self->fed_show_hidden));
+    gtk_list_box_append(self->sidebar, inert_row(bar));
+
+    for (i = 0; i < json_array_get_length(fleets); i++) {
+        JsonObject *fleet = json_array_get_object_element(fleets, i);
+        JsonArray *agents = json_object_get_array_member(fleet, "agents");
+        g_autofree gchar *key = g_strdup_printf("fleet:%s", clawt_json_string(fleet, "alias", ""));
+        guint n = agents != NULL ? json_array_get_length(agents) : 0;
+        guint j;
+
+        if (!clawt_fed_filter_matches(fleet, (gchar **)terms->pdata, self->fed_show_hidden))
+            continue;
+        gtk_list_box_append(self->sidebar, fed_header(self, fleet, n));
+        if (team_is_collapsed(self, key))
+            continue;
+        for (j = 0; j < n; j++)
+            gtk_list_box_append(self->sidebar,
+                                fed_agent_row(fleet, json_array_get_object_element(agents, j)));
+    }
+}
+
 static void
 refresh_agents_once(ClawtWindow *self)
 {
@@ -2118,6 +2353,8 @@ refresh_agents_once(ClawtWindow *self)
          * lost them.
          */
         append_rooms_for_team(self, rooms, "", rooms_emitted);
+        if (json_object_has_member(clawt_payload_of(reply), "fleets"))
+            append_fleets(self, json_object_get_array_member(clawt_payload_of(reply), "fleets"));
         return;
     }
 
@@ -2253,6 +2490,10 @@ refresh_agents_once(ClawtWindow *self)
                                   rooms_emitted);
         }
     }
+
+    /* Then every linked fleet, after this one's own. */
+    if (json_object_has_member(clawt_payload_of(reply), "fleets"))
+        append_fleets(self, json_object_get_array_member(clawt_payload_of(reply), "fleets"));
 }
 
 void

@@ -772,6 +772,192 @@ team_picker_for(const gchar *base, const gchar *id, const gchar *current,
     return HTMX_ELEMENT(g_steal_pointer(&form));
 }
 
+/* ── Linked fleets (0.67.0) ──────────────────────────────────────── */
+
+static gboolean
+fed_term_on(const ClawtWebLook *look, const gchar *term)
+{
+    return look != NULL && look->fed_filter != NULL
+        && g_strv_contains((const gchar * const *)look->fed_filter, term);
+}
+
+/*
+ * A chip, or a fold caret: one submit button in the fleets form, whose
+ * name and value say which term it switches.  A button rather than a
+ * link because it changes something, if only this browser's cookie, and
+ * the cross-site guard is on writes.
+ */
+static HtmxButton *
+fed_toggle(const gchar *label, const gchar *term, gboolean on, const gchar *css)
+{
+    HtmxButton *button = htmx_button_new_submit();
+
+    htmx_element_set_attribute(HTMX_ELEMENT(button), "name", "t");
+    htmx_element_set_attribute(HTMX_ELEMENT(button), "value", term);
+    htmx_element_set_attribute(HTMX_ELEMENT(button), "aria-pressed",
+                               on ? "true" : "false");
+    htmx_element_add_class(HTMX_ELEMENT(button), css);
+    if (on)
+        htmx_element_add_class(HTMX_ELEMENT(button), "on");
+    htmx_node_set_text_content(HTMX_NODE(button), label);
+    return button;
+}
+
+/*
+ * The linked fleets after this fleet's own, as the GTK client draws them:
+ * chips from clawt_fed_filter_chips() (online and tiers always, owners
+ * and tags behind More unless one is on), then a section per fleet that
+ * clawt_fed_filter_matches() lets through, with the agents it lets us
+ * see.  Every toggle posts to /fleet-filter, which rewrites this
+ * browser's cookie and comes back to @back.
+ */
+static void
+append_linked_fleets(HtmxDiv *scroll, JsonArray *fleets,
+                     const ClawtWebLook *look, const gchar *back)
+{
+    g_autoptr(GPtrArray) chips = NULL;
+    g_autoptr(HtmxForm) form = NULL;
+    g_autoptr(HtmxDiv) bar = htmx_div_new();
+    g_autoptr(HtmxDiv) title = htmx_div_new();
+    gboolean show_hidden = fed_term_on(look, "hidden");
+    gboolean more = fed_term_on(look, "more");
+    gboolean extra = FALSE;
+    gboolean any_hidden = FALSE;
+    guint i;
+
+    if (fleets == NULL || json_array_get_length(fleets) == 0)
+        return;
+
+    form = clawt_web_form("/fleet-filter");
+    htmx_element_add_class(HTMX_ELEMENT(form), "fed-fleets");
+    clawt_web_add(form, clawt_web_hidden("back", back));
+
+    htmx_element_add_class(HTMX_ELEMENT(title), "fed-title");
+    htmx_node_set_text_content(HTMX_NODE(title), "Linked fleets");
+    htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(title));
+
+    htmx_element_add_class(HTMX_ELEMENT(bar), "fed-chips");
+    chips = clawt_fed_filter_chips(fleets);
+    for (i = 0; i < chips->len; i++) {
+        ClawtFedChip *chip = g_ptr_array_index(chips, i);
+        gboolean basic = g_strcmp0(chip->kind, "online") == 0
+            || g_strcmp0(chip->kind, "tier") == 0;
+        gboolean on = fed_term_on(look, chip->term);
+
+        if (!basic)
+            extra = TRUE;
+        /* a filter in force is never folded away behind More */
+        if (!basic && !on && !more)
+            continue;
+        clawt_web_add(bar, fed_toggle(chip->label, chip->term, on, "fed-chip"));
+    }
+    if (extra)
+        clawt_web_add(bar, fed_toggle(more ? "Fewer" : "More\342\200\246",
+                                      "more", more, "fed-chip"));
+    for (i = 0; i < json_array_get_length(fleets); i++)
+        if (json_object_get_boolean_member_with_default(json_array_get_object_element(fleets, i),
+                               "hidden", FALSE))
+            any_hidden = TRUE;
+    if (any_hidden)
+        clawt_web_add(bar, fed_toggle("Show hidden", "hidden", show_hidden,
+                                      "fed-chip"));
+    htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(bar));
+
+    for (i = 0; i < json_array_get_length(fleets); i++) {
+        JsonObject *fleet = json_array_get_object_element(fleets, i);
+        JsonArray *agents = json_object_get_array_member(fleet, "agents");
+        const gchar *alias = clawt_web_member(fleet, "alias", "?");
+        g_autofree gchar *fold = g_strdup_printf("fold:%s", alias);
+        gboolean folded = fed_term_on(look, fold);
+        guint n = agents != NULL ? json_array_get_length(agents) : 0;
+        g_autoptr(HtmxDiv) head = htmx_div_new();
+        g_autoptr(HtmxSpan) dot = htmx_span_new();
+        g_autoptr(HtmxSpan) name = htmx_span_new();
+        g_autoptr(HtmxSpan) tally = htmx_span_new();
+        g_autofree gchar *summary = clawt_fed_peer_summary(fleet);
+        g_autofree gchar *dot_class = NULL;
+        g_autofree gchar *count = g_strdup_printf("%u", n);
+        HtmxSpan *tier;
+        guint j;
+
+        if (!clawt_fed_filter_matches(fleet, look != NULL ? look->fed_filter : NULL,
+                                      show_hidden))
+            continue;
+
+        htmx_element_add_class(HTMX_ELEMENT(head), "team-head");
+        htmx_element_add_class(HTMX_ELEMENT(head), "fed-section");
+        if (json_object_get_boolean_member_with_default(fleet, "muted", FALSE)
+            || json_object_get_boolean_member_with_default(fleet, "hidden", FALSE))
+            htmx_element_add_class(HTMX_ELEMENT(head), "fed-quiet");
+        htmx_element_set_attribute(HTMX_ELEMENT(head), "title", summary);
+
+        clawt_web_add(head, fed_toggle(folded ? "\342\226\270" : "\342\226\276",
+                                       fold, folded, "team-caret"));
+
+        dot_class = g_strdup_printf("fed-health tone-%s", clawt_fed_badge_tone(
+            clawt_web_member(fleet, "health_tone", "neutral")));
+        htmx_element_add_class(HTMX_ELEMENT(dot), dot_class);
+        htmx_element_set_attribute(HTMX_ELEMENT(dot), "title",
+                                   clawt_web_member(fleet, "health_label", ""));
+        htmx_node_set_text_content(HTMX_NODE(dot), clawt_fed_health_glyph(
+            clawt_web_member(fleet, "health", NULL)));
+        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(dot));
+
+        htmx_element_add_class(HTMX_ELEMENT(name), "team-name");
+        htmx_node_set_text_content(HTMX_NODE(name),
+                                   clawt_web_member(fleet, "label", alias));
+        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(name));
+
+        tier = clawt_web_badge(clawt_web_member(fleet, "tier", ""),
+                               clawt_fed_badge_tone(clawt_web_member(fleet, "tier_tone",
+                                                               "neutral")));
+        htmx_element_add_class(HTMX_ELEMENT(tier), "fed-tier");
+        clawt_web_add(head, tier);
+
+        htmx_element_add_class(HTMX_ELEMENT(tally), "team-tally");
+        htmx_node_set_text_content(HTMX_NODE(tally), count);
+        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(tally));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(head));
+
+        for (j = 0; !folded && j < n; j++) {
+            JsonObject *agent = json_array_get_object_element(agents, j);
+            const gchar *tone = NULL;
+            const gchar *presence = clawt_fed_agent_presence(agent, &tone);
+            const gchar *team = clawt_web_member(agent, "team", "");
+            g_autoptr(HtmxDiv) row = htmx_div_new();
+            g_autoptr(HtmxSpan) mark = htmx_span_new();
+            g_autoptr(HtmxSpan) who = htmx_span_new();
+            g_autoptr(HtmxSpan) state = htmx_span_new();
+            g_autofree gchar *mark_class = g_strdup_printf(
+                "fed-presence tone-%s", clawt_fed_badge_tone(tone));
+            g_autofree gchar *line = g_strdup_printf("%s%s%s", presence,
+                                                     *team != '\0' ? " \302\267 " : "",
+                                                     team);
+            g_autofree gchar *tip = g_strdup_printf(
+                "%s, in %s. Messaging agents in other fleets arrives with the "
+                "next release.", clawt_web_member(agent, "ref", "?"),
+                clawt_web_member(fleet, "label", alias));
+
+            htmx_element_add_class(HTMX_ELEMENT(row), "fed-agent");
+            htmx_element_set_attribute(HTMX_ELEMENT(row), "title", tip);
+            htmx_element_add_class(HTMX_ELEMENT(mark), mark_class);
+            htmx_node_set_text_content(HTMX_NODE(mark), "\342\227\217");
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(mark));
+            htmx_element_add_class(HTMX_ELEMENT(who), "agent-name");
+            htmx_node_set_text_content(HTMX_NODE(who),
+                                       clawt_web_member(agent, "name",
+                                                        clawt_web_member(agent, "id", "?")));
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(who));
+            htmx_element_add_class(HTMX_ELEMENT(state), "fed-agent-state");
+            htmx_node_set_text_content(HTMX_NODE(state), line);
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(state));
+            htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+        }
+    }
+
+    htmx_node_add_child(HTMX_NODE(scroll), HTMX_NODE(form));
+}
+
 HtmxElement *
 clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
                   const ClawtWebLook *look)
@@ -1082,6 +1268,24 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
             clawt_web_member(json_array_get_object_element(rooms, i),
                              "team", ""),
             selected_room, rooms_shown);
+
+    /*
+     * Other fleets after this one's own, whatever is selected: the page
+     * the sidebar sits on is where a chip should bring somebody back to.
+     */
+    {
+        g_autofree gchar *back = NULL;
+
+        if (selected_room != NULL)
+            back = g_strdup_printf("/r/%s", selected_room);
+        else if (selected != NULL)
+            back = g_strdup_printf("/a/%s", selected);
+        else
+            back = g_strdup("/");
+        append_linked_fleets(scroll,
+                             clawt_web_member_array(clawt_web_root(reply), "fleets"),
+                             look, back);
+    }
 
     htmx_node_add_child(HTMX_NODE(aside), HTMX_NODE(scroll));
 
@@ -1572,6 +1776,45 @@ on_agent_root(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return clawt_web_redirect(request, url);
 }
 
+/*
+ * A linked-fleet chip or fold caret: switch one term in this browser's
+ * `clawt_fed_filter` cookie and go back.  The way back is a path on this
+ * site and nothing else -- `back` came off a form, and a redirect to
+ * whatever it names would make this an open redirect.
+ */
+static HtmxResponse *
+on_fleet_filter(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    g_autoptr(ClawtWebLook) look = clawt_web_look_from_request(request);
+    const gchar *term = clawt_web_form_value(request, "t");
+    const gchar *back = clawt_web_form_value(request, "back");
+    g_autofree gchar *value = NULL;
+    g_autofree gchar *escaped = NULL;
+    g_autofree gchar *cookie = NULL;
+    HtmxResponse *response;
+
+    (void)params;
+    (void)user_data;
+
+    if (back == NULL || back[0] != '/' || back[1] == '/' || back[1] == '\\'
+        || strpbrk(back, "\r\n") != NULL)
+        back = "/";
+
+    response = clawt_web_redirect(request, back);
+    if (term == NULL || *term == '\0' || strlen(term) > 200
+        || strchr(term, '\t') != NULL)
+        return response;
+
+    value = clawt_web_fed_filter_toggle(look->fed_filter, term);
+    escaped = g_uri_escape_string(value, NULL, FALSE);
+    cookie = (*value == '\0')
+        ? g_strdup(CLAWT_WEB_FED_FILTER_COOKIE "=; Path=/; Max-Age=0; SameSite=Lax")
+        : g_strdup_printf(CLAWT_WEB_FED_FILTER_COOKIE "=%s; Path=/; "
+                          "Max-Age=31536000; SameSite=Lax", escaped);
+    htmx_response_append_header(response, "Set-Cookie", cookie);
+    return response;
+}
+
 static HtmxResponse *
 on_sidebar_fragment(HtmxRequest *request, GHashTable *params,
                     gpointer user_data)
@@ -2040,6 +2283,7 @@ clawt_web_register_fleet(HtmxRouter *router, ClawtWebApp *app)
     clawt_web_register_navigation(router, app);
     htmx_router_get(router, "/a/:id", on_agent_root, app);
     htmx_router_get(router, "/f/sidebar", on_sidebar_fragment, app);
+    htmx_router_post(router, "/fleet-filter", on_fleet_filter, app);
 
     /*
      * The room routes live in their own space rather than under /a/, so

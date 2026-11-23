@@ -335,6 +335,8 @@ struct _ClawtDaemon {
     GHashTable              *fed_links;       /* alias -> PeerState */
     GSource                 *fed_tick;
     GQueue                  *fed_audit;       /* JsonObject*, newest last */
+    gulong                   fed_bus_handler; /* local changes -> roster pushes */
+    GSource                 *fed_push_soon;   /* the debounce for those pushes */
 
     /*
      * Who to tell when something is worth interrupting somebody for.
@@ -2700,5 +2702,9 @@ void clawt_daemon_federation_setup(ClawtDaemon *self);
 void clawt_daemon_federation_teardown(ClawtDaemon *self);
 void clawt_daemon_federation_refresh_links(ClawtDaemon *self);
 const gchar *clawt_daemon_federation_fleet_id(ClawtDaemon *self);
+JsonNode *clawt_daemon_federation_fleets(ClawtDaemon *self);
+void      clawt_daemon_federation_office_visitors(ClawtDaemon *self,
+                                                  JsonArray   *participants,
+                                                  GHashTable  *fleets_drawn);
 
 G_END_DECLS

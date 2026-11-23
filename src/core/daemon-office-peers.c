@@ -409,14 +409,26 @@ void
 clawt_daemon_office_peers_merge(ClawtDaemon *self, JsonArray *participants, gint64 now)
 {
     gint64 every = MAX(1, clawt_config_get_int(self->config, "office.peer_poll_seconds"));
+    g_autoptr(GHashTable) linked = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                         g_free, NULL);
     guint i;
     guint j;
+
+    /*
+     * Linked fleets first (docs/federation.org): their people come from
+     * the link's roster.  A fleet that is both linked and still named in
+     * office.peers is drawn once, from the link, which is the one that
+     * respects what that fleet chose to show us.
+     */
+    clawt_daemon_federation_office_visitors(self, participants, linked);
 
     for (i = 0; self->office_peers != NULL && i < self->office_peers->len; i++) {
         Peer *peer = g_ptr_array_index(self->office_peers, i);
 
         /* a peer that stopped answering is drawn empty, not frozen as it was */
         if (peer->participants == NULL || now - peer->fetched_at > PEER_STALE_POLLS * every)
+            continue;
+        if (peer->fleet != NULL && g_hash_table_contains(linked, peer->fleet))
             continue;
         for (j = 0; j < json_array_get_length(peer->participants); j++)
             json_array_add_element(participants,

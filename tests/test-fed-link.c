@@ -59,8 +59,9 @@ daemon_yaml(
         "federation:\n  enabled: true\n  name: \"%s\"\n  owner: \"Owner of %s\"\n"
         "  ping_seconds: 1\n  listen: [\"unix:%s/%s-fed.sock\"]\n"
         "agents:\n  - id: %s-chief\n    chief_of_staff: true\n"
-        "    runtime:\n      autostart: false\n",
-        dir, who, dir, who, dir, who, dir, who, dir, who, name, name, dir, who, who);
+        "    runtime:\n      autostart: false\n"
+        "  - id: %s-worker\n    runtime:\n      autostart: false\n",
+        dir, who, dir, who, dir, who, dir, who, dir, who, name, name, dir, who, who, who);
 }
 
 static void
@@ -303,6 +304,141 @@ test_link_ping_revoke(
     pair_down(&p);
 }
 
+/* The refs another fleet's agents have in @client's agent.list. */
+static gchar *
+mirrored_refs(
+    ClawtClient *client
+){
+    g_autoptr(JsonObject) list = ask(client, "agent.list", NULL, NULL);
+    JsonArray *fleets = list != NULL && json_object_has_member(list, "fleets")
+        ? json_object_get_array_member(list, "fleets") : NULL;
+    GString *out = g_string_new(NULL);
+    guint i;
+    guint j;
+
+    for (i = 0; fleets != NULL && i < json_array_get_length(fleets); i++) {
+        JsonArray *agents = json_object_get_array_member(json_array_get_object_element(fleets, i),
+                                                         "agents");
+        for (j = 0; agents != NULL && j < json_array_get_length(agents); j++)
+            g_string_append_printf(out, "%s%s", out->len > 0 ? " " : "",
+                                   json_object_get_string_member(
+                                       json_array_get_object_element(agents, j), "ref"));
+    }
+    return g_string_free(out, FALSE);
+}
+
+static void
+wait_for_refs(
+    Pair        *p,
+    ClawtClient *client,
+    const gchar *want
+){
+    gint64 deadline = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+
+    for (;;) {
+        g_autofree gchar *got = mirrored_refs(client);
+        if (g_strcmp0(got, want) == 0)
+            return;
+        if (g_get_monotonic_time() > deadline)
+            g_error("expected refs \"%s\", have \"%s\"", want, got);
+        g_main_context_iteration(p->context, FALSE);
+        g_usleep(20000);
+    }
+}
+
+/*
+ * The office visitors A draws from its links: their ids, space-joined,
+ * once the floor has @want of them.  Stopped agents stay off the floor,
+ * and so does everybody whose fleet withholds presence -- except that
+ * withholding presence draws them idle rather than not at all.
+ */
+static void
+wait_for_visitors(
+    Pair        *p,
+    const gchar *want
+){
+    gint64 deadline = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+
+    for (;;) {
+        g_autoptr(JsonArray) floor = json_array_new();
+        g_autoptr(GHashTable) drawn = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+        g_autoptr(GString) got = g_string_new(NULL);
+        guint i;
+
+        clawt_daemon_federation_office_visitors(p->a, floor, drawn);
+        for (i = 0; i < json_array_get_length(floor); i++) {
+            JsonObject *v = json_array_get_object_element(floor, i);
+
+            g_assert_cmpstr(json_object_get_string_member(v, "kind"), ==, "external");
+            g_assert_cmpstr(json_object_get_string_member(v, "fleet"), ==, p->b->fed_fleet_id);
+            g_assert_cmpstr(json_object_get_string_member(v, "activity"), ==, "idle");
+            g_string_append_printf(got, "%s%s", got->len > 0 ? " " : "",
+                                   json_object_get_string_member(v, "id"));
+        }
+        if (g_strcmp0(got->str, want) == 0) {
+            g_assert_true(g_hash_table_contains(drawn, p->b->fed_fleet_id));
+            return;
+        }
+        if (g_get_monotonic_time() > deadline)
+            g_error("expected visitors \"%s\", have \"%s\"", want, got->str);
+        g_main_context_iteration(p->context, FALSE);
+        g_usleep(20000);
+    }
+}
+
+/*
+ * Each fleet sees exactly what the other's grant lets it: B gave A the
+ * limited tier (its inbox, the chief, only), A gave B trusted (all).  A
+ * grant changed on one side reaches the other's mirror without a
+ * restart, and a revoked fleet leaves the list.
+ */
+static void
+test_rosters_follow_grants(
+    gconstpointer data
+){
+    const Transport *t = data;
+    Pair p;
+    g_autofree gchar *alias = NULL;
+    g_autofree gchar *b_alias_on_a = NULL;
+    g_autoptr(GError) error = NULL;
+
+    memset(&p, 0, sizeof(p));
+    pair_up(&p);
+    alias = link_them(&p, t);
+    wait_for_refs(&p, p.ca, "b-chief@bravo-lab");
+    wait_for_refs(&p, p.cb, "a-chief@alpha a-worker@alpha");
+
+    /* B widens what A may see; A's mirror follows. */
+    {
+        g_autofree gchar *req = g_strdup_printf("{\"alias\":\"alpha\",\"grant\":{\"reach\":\"all\"}}");
+        g_autoptr(JsonObject) shown = ask(p.cb, "federation.peer.set", payload_of(req), &error);
+        g_assert_no_error(error);
+    }
+    wait_for_refs(&p, p.ca, "b-chief@bravo-lab b-worker@bravo-lab");
+
+    /* Nobody is running, so nobody visits A's office... */
+    wait_for_visitors(&p, "");
+    /* ...until B stops telling A who is running: then they are drawn idle. */
+    {
+        g_autoptr(JsonObject) shown = ask(p.cb, "federation.peer.set",
+            payload_of("{\"alias\":\"alpha\",\"grant\":{\"see_presence\":\"false\"}}"),
+            &error);
+        g_assert_no_error(error);
+    }
+    wait_for_visitors(&p, "bravo-lab:b-chief bravo-lab:b-worker");
+
+    /* A takes the roster away from B entirely. */
+    {
+        g_autofree gchar *req = g_strdup_printf("{\"alias\":\"%s\",\"grant\":{\"see_roster\":\"false\"}}",
+                                                alias);
+        g_autoptr(JsonObject) shown = ask(p.ca, "federation.peer.set", payload_of(req), &error);
+        g_assert_no_error(error);
+    }
+    wait_for_refs(&p, p.cb, "");
+    (void)b_alias_on_a;
+    pair_down(&p);
+}
+
 /* What B's hello says when signed by A, for a hand-made connection. */
 static const gchar *
 hello_as_a(
@@ -445,7 +581,10 @@ main(int argc, char *argv[])
     for (i = 0; i < G_N_ELEMENTS(transports); i++) {
         g_autofree gchar *path = g_strdup_printf("/fed-link/%s/link-ping-revoke",
                                                  transports[i].name);
+        g_autofree gchar *rpath = g_strdup_printf("/fed-link/%s/rosters-follow-grants",
+                                                  transports[i].name);
         g_test_add_data_func(path, &transports[i], test_link_ping_revoke);
+        g_test_add_data_func(rpath, &transports[i], test_rosters_follow_grants);
     }
     g_test_add_func("/fed-link/fleet-connection-is-fenced", test_fleet_connection_is_fenced);
     g_test_add_func("/fed-link/grant-override-and-explain", test_grant_override_and_explain);

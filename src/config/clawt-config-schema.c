@@ -2776,7 +2776,12 @@ static const ClawtSchemaEntry schema[] = {
   "that machine. Their people are drawn as visitors, read-only: nothing\n"
   "they send can act here, and each fleet publishes only its own people,\n"
   "so two fleets that peer with each other never echo. Asked only once a\n"
-  "client is drawing the office. See docs/office.org#federation.",
+  "client is drawing the office. See docs/office.org#federation.\n"
+  "\n"
+  "Superseded by linking fleets (`clawtilla federation link`), whose people\n"
+  "visit without the owner-level device token this needs, as each fleet's\n"
+  "grant allows. A fleet both linked and listed here is drawn once, from\n"
+  "the link. Still read; it will go in a later release.",
   "0.64.0" },
 
 { "office.peer_poll_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "5", NULL,

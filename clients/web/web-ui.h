@@ -663,6 +663,16 @@ typedef struct {
      * says.
      */
     gboolean still_faces;
+
+    /*
+     * The linked-fleet chips switched on in this browser (0.67.0), as
+     * selector terms, plus `hidden` (draw hidden fleets), `more` (offer
+     * the owner and tag chips) and `fold:ALIAS` per folded fleet.  NULL
+     * is none, which draws every fleet that is not hidden.  Per browser,
+     * like the GTK client's chips are per window: which fleets somebody
+     * is looking at is about them, not about the fleet.
+     */
+    gchar **fed_filter;
 } ClawtWebLook;
 
 /**
@@ -672,6 +682,30 @@ typedef struct {
 void clawt_web_look_free(ClawtWebLook *self);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtWebLook, clawt_web_look_free)
+
+#define CLAWT_WEB_FED_FILTER_COOKIE "clawt_fed_filter"
+
+/**
+ * clawt_web_fed_filter_parse:
+ * @value: (transfer full) (nullable): the `clawt_fed_filter` cookie
+ *
+ * Splits the cookie into its terms, dropping empty, overlong and
+ * non-UTF-8 ones.
+ *
+ * Returns: (transfer full) (nullable) (array zero-terminated=1): the
+ *   terms, or %NULL for none
+ */
+gchar **clawt_web_fed_filter_parse(gchar *value);
+
+/**
+ * clawt_web_fed_filter_toggle:
+ * @terms: (nullable) (array zero-terminated=1): the terms now
+ * @term: the one to switch
+ *
+ * Returns: (transfer full): the cookie value with @term switched
+ */
+gchar *clawt_web_fed_filter_toggle(gchar       **terms,
+                                   const gchar  *term);
 
 /**
  * clawt_web_look_from_request:

@@ -3280,6 +3280,44 @@ test_the_notifications_page_draws_the_sections(void)
     g_assert_cmpuint(shown, ==, 0);
 }
 
+/*
+ * The linked-fleet chips live in one cookie: a term switches on and off,
+ * an owner with a space survives, and what a browser sends back that is
+ * not UTF-8 or absurdly long is dropped rather than drawn.
+ */
+static void
+test_fed_filter_cookie(void)
+{
+    g_auto(GStrv) none = clawt_web_fed_filter_parse(NULL);
+    g_auto(GStrv) empty = clawt_web_fed_filter_parse(g_strdup(""));
+    g_autofree gchar *one = clawt_web_fed_filter_toggle(NULL, "tier:trusted");
+    g_auto(GStrv) parsed = NULL;
+    g_autofree gchar *two = NULL;
+    g_autofree gchar *back = NULL;
+    g_auto(GStrv) again = NULL;
+    g_auto(GStrv) bad = NULL;
+    g_autofree gchar *long_term = g_strnfill(300, 'x');
+
+    g_assert_null(none);
+    g_assert_null(empty);
+    g_assert_cmpstr(one, ==, "tier:trusted");
+
+    parsed = clawt_web_fed_filter_parse(g_strdup(one));
+    two = clawt_web_fed_filter_toggle(parsed, "owner:Priya Shah");
+    again = clawt_web_fed_filter_parse(g_strdup(two));
+    g_assert_cmpuint(g_strv_length(again), ==, 2);
+    g_assert_cmpstr(again[1], ==, "owner:Priya Shah");
+
+    back = clawt_web_fed_filter_toggle(again, "tier:trusted");
+    g_assert_cmpstr(back, ==, "owner:Priya Shah");
+
+    bad = clawt_web_fed_filter_parse(g_strdup_printf("tag:gpu\t\xff\xfe\t%s\t\tonline",
+                                                     long_term));
+    g_assert_cmpuint(g_strv_length(bad), ==, 2);
+    g_assert_cmpstr(bad[0], ==, "tag:gpu");
+    g_assert_cmpstr(bad[1], ==, "online");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -3470,6 +3508,7 @@ main(int argc, char *argv[])
                     test_review_by_field_lists_agents);
     g_test_add_func("/web-render/app-host-bridge",
                     test_the_app_host_bridge_checks_the_source);
+    g_test_add_func("/web-render/fed-filter-cookie", test_fed_filter_cookie);
     g_test_add_func("/web-render/app-call-route",
                     test_an_app_frame_names_its_call_route);
     g_test_add_func("/web-render/app-bridge-message",

@@ -233,6 +233,26 @@ gchar *clawt_fed_link_request_finish(ClawtFedLink  *self,
                                      GError       **error);
 
 /**
+ * clawt_fed_link_open_stream:
+ * @self: a #ClawtFedLink with a peer
+ *
+ * Opens the live stream a peer pushes on: for an HTTP link the
+ * WebSocket `GET /fed/v1/events`, signed like any request; an IPC link's
+ * connection already is one, so this connects it.  Every pushed envelope
+ * is checked and emitted as #ClawtFedLink::push.  Does nothing while one
+ * is open or opening; a stream that drops is reopened by calling again.
+ */
+void clawt_fed_link_open_stream(ClawtFedLink *self);
+
+/**
+ * clawt_fed_link_is_streaming:
+ * @self: a #ClawtFedLink
+ *
+ * Returns: whether pushes from the peer can arrive now
+ */
+gboolean clawt_fed_link_is_streaming(ClawtFedLink *self);
+
+/**
  * clawt_fed_link_close:
  * @self: a #ClawtFedLink
  *

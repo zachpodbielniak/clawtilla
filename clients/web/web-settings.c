@@ -2573,21 +2573,6 @@ connections_content(ClawtWebApp *app)
  * See docs/federation.org.
  */
 
-/* The tier and health tones are the library's words; these are the page's. */
-static const gchar *
-fed_badge_tone(const gchar *tone)
-{
-    if (g_strcmp0(tone, "success") == 0)
-        return "good";
-    if (g_strcmp0(tone, "accent") == 0)
-        return "info";
-    if (g_strcmp0(tone, "warning") == 0)
-        return "warn";
-    if (g_strcmp0(tone, "error") == 0)
-        return "bad";
-    return "neutral";
-}
-
 static HtmxDiv *
 fed_tier_select(const gchar *label, const gchar *current)
 {
@@ -2699,7 +2684,7 @@ fed_peer_item(ClawtWebApp *app, JsonObject *peer)
         g_autoptr(HtmxSpan) dot = htmx_span_new();
         g_autoptr(HtmxSpan) label = htmx_span_new();
         g_autofree gchar *dot_class = g_strdup_printf(
-            "fed-health tone-%s", fed_badge_tone(clawt_web_member(peer, "health_tone", "")));
+            "fed-health tone-%s", clawt_fed_badge_tone(clawt_web_member(peer, "health_tone", "")));
         htmx_element_add_class(HTMX_ELEMENT(dot), dot_class);
         htmx_element_set_attribute(HTMX_ELEMENT(dot), "title",
                                    clawt_web_member(peer, "health", ""));
@@ -2713,7 +2698,7 @@ fed_peer_item(ClawtWebApp *app, JsonObject *peer)
     {
         g_autoptr(HtmxSpan) badge = clawt_web_badge(
             clawt_web_member(peer, "tier", "?"),
-            fed_badge_tone(clawt_web_member(peer, "tier_tone", "")));
+            clawt_fed_badge_tone(clawt_web_member(peer, "tier_tone", "")));
         htmx_element_add_class(HTMX_ELEMENT(badge), "fed-tier");
         clawt_web_add(head, g_steal_pointer(&badge));
     }

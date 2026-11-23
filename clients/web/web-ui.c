@@ -1794,6 +1794,7 @@ clawt_web_look_free(ClawtWebLook *self)
     g_free(self->theme);
     g_free(self->font);
     g_free(self->mono);
+    g_strfreev(self->fed_filter);
     g_free(self);
 }
 
@@ -1854,6 +1855,60 @@ static gboolean
 descriptions_hidden(const gchar *cookie)
 {
     return cookie != NULL && g_strcmp0(cookie, "0") == 0;
+}
+
+gchar **
+clawt_web_fed_filter_parse(gchar *value)
+{
+    g_autofree gchar *owned = value;
+    g_autoptr(GPtrArray) terms = NULL;
+    g_auto(GStrv) parts = NULL;
+    guint i;
+
+    if (owned == NULL || *owned == '\0')
+        return NULL;
+
+    /*
+     * A tab between terms: an owner may have a space in their name, and
+     * the cookie is escaped on the way out, so the tab costs nothing.
+     * Capped, because a cookie is the browser's to send and a sidebar
+     * render should not cost what somebody pasted into it.
+     */
+    parts = g_strsplit(owned, "\t", 64);
+    terms = g_ptr_array_new_with_free_func(g_free);
+    for (i = 0; parts[i] != NULL; i++)
+        if (*parts[i] != '\0' && strlen(parts[i]) <= 200
+            && g_utf8_validate(parts[i], -1, NULL))
+            g_ptr_array_add(terms, g_strdup(parts[i]));
+    if (terms->len == 0)
+        return NULL;
+    g_ptr_array_add(terms, NULL);
+    return (gchar **)g_ptr_array_free(g_steal_pointer(&terms), FALSE);
+}
+
+gchar *
+clawt_web_fed_filter_toggle(gchar       **terms,
+                            const gchar  *term)
+{
+    g_autoptr(GString) out = g_string_new(NULL);
+    gboolean found = FALSE;
+    guint i;
+
+    for (i = 0; terms != NULL && terms[i] != NULL; i++) {
+        if (g_strcmp0(terms[i], term) == 0) {
+            found = TRUE;
+            continue;
+        }
+        if (out->len > 0)
+            g_string_append_c(out, '\t');
+        g_string_append(out, terms[i]);
+    }
+    if (!found && term != NULL && *term != '\0') {
+        if (out->len > 0)
+            g_string_append_c(out, '\t');
+        g_string_append(out, term);
+    }
+    return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
 ClawtWebLook *
@@ -1921,6 +1976,9 @@ clawt_web_look_from_request(HtmxRequest *request)
         /* only a "0" stops them, as with descriptions: a typo moves */
         look->still_faces = (faces != NULL && g_strcmp0(faces, "0") == 0);
     }
+
+    look->fed_filter = clawt_web_fed_filter_parse(
+        cookie_value(cookies, CLAWT_WEB_FED_FILTER_COOKIE));
 
     return look;
 }

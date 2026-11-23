@@ -2357,10 +2357,15 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         return;
     }
 
-    /* A linked fleet added, changed or heard from: the Federation page. */
+    /*
+     * A linked fleet added, changed or heard from: the Federation page,
+     * and the sidebar's fleet sections for anything but the audit.
+     */
     if (g_str_has_prefix(kind != NULL ? kind : "", "federation.")) {
         if (self->settings != NULL)
             clawt_gtk_federation_on_event(self, event);
+        if (g_strcmp0(kind, "federation.audit") != 0)
+            clawt_gtk_refresh_agents(self);
         return;
     }
 
@@ -7521,6 +7526,7 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->local_socket, g_free);
     g_clear_pointer(&self->team_ids, g_strfreev);
     g_clear_pointer(&self->collapsed_teams, g_hash_table_unref);
+    g_clear_pointer(&self->fed_filter, g_ptr_array_unref);
 
     g_clear_pointer(&self->selected_agent, g_free);
     g_clear_pointer(&self->selected_room, g_free);

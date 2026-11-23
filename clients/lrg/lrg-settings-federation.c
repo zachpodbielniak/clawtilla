@@ -55,20 +55,6 @@ tier_combo(const gchar *selected, gboolean explained)
                            (const gchar *const *)labels->pdata, selected);
 }
 
-static const gchar *
-badge_tone(const gchar *tone)
-{
-    if (g_strcmp0(tone, "success") == 0)
-        return "good";
-    if (g_strcmp0(tone, "accent") == 0)
-        return "info";
-    if (g_strcmp0(tone, "warning") == 0)
-        return "warn";
-    if (g_strcmp0(tone, "error") == 0)
-        return "bad";
-    return "neutral";
-}
-
 static void
 on_done(ClawtLrgApp *app, JsonNode *reply, const GError *error, gpointer user_data)
 {
@@ -425,7 +411,7 @@ peer_row(ClawtLrgApp *app, JsonObject *peer)
     LrgWidget *row = clawt_lrg_row(title, summary);
     LrgWidget *actions = clawt_lrg_hbox(6.0f);
     LrgWidget *dot = clawt_lrg_badge(clawt_fed_health_glyph(clawt_ipc_payload_string(peer, "health")),
-                                     badge_tone(clawt_ipc_payload_string(peer, "health_tone")));
+                                     clawt_fed_badge_tone(clawt_ipc_payload_string(peer, "health_tone")));
     LrgWidget *tier = tier_combo(clawt_ipc_payload_string(peer, "tier"), FALSE);
     LrgWidget *details;
 
@@ -433,7 +419,7 @@ peer_row(ClawtLrgApp *app, JsonObject *peer)
     clawt_lrg_row_add_prefix(row, dot);
     {
         LrgWidget *badge = clawt_lrg_badge(clawt_ipc_payload_string(peer, "tier"),
-                                           badge_tone(clawt_ipc_payload_string(peer, "tier_tone")));
+                                           clawt_fed_badge_tone(clawt_ipc_payload_string(peer, "tier_tone")));
         lrg_widget_add_class(badge, "clawt-fed-tier");
         clawt_lrg_row_add_prefix(row, badge);
     }

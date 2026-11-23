@@ -32,7 +32,8 @@ typedef struct {
     LrgWidget   *list;         /* the rows, rebuilt on every refresh */
     JsonNode    *teams;        /* team.list, kept for the menus */
     gchar       *teams_text;   /* its serialisation, to skip no-op redraws */
-    GHashTable  *collapsed;    /* folded team ids; a view preference */
+    GHashTable  *collapsed;    /* folded team ids, and "fleet:ALIAS" */
+    GHashTable  *fed_terms;    /* linked-fleet chips switched on (0.67.0) */
     GHashTable  *seen;         /* tokens drawn last time, for entrances */
     GPtrArray   *entries;      /* what the list was built from */
     gboolean     teams_asked;
@@ -1313,6 +1314,215 @@ room_row(ClawtLrgApp *app, const ClawtLrgSidebarEntry *entry)
     return row;
 }
 
+/* ── Linked fleets (0.67.0) ───────────────────────────────────────── */
+
+/*
+ * A chip, or a fleet heading's fold: switches @user_data (a term, or a
+ * "fleet:ALIAS" fold key) in a set this client keeps.  Which fleets
+ * somebody is looking at is about them, so it never reaches the daemon.
+ */
+static void
+on_fed_chip_clicked(ClawtLrgApp *app, gpointer user_data)
+{
+    const gchar *term = user_data;
+
+    if (g_hash_table_contains(sidebar.fed_terms, term))
+        g_hash_table_remove(sidebar.fed_terms, term);
+    else
+        g_hash_table_add(sidebar.fed_terms, g_strdup(term));
+    rebuild(app);
+}
+
+static void
+on_fed_fold_clicked(ClawtLrgApp *app, gpointer user_data)
+{
+    const gchar *key = user_data;
+
+    if (g_hash_table_contains(sidebar.collapsed, key))
+        g_hash_table_remove(sidebar.collapsed, key);
+    else
+        g_hash_table_add(sidebar.collapsed, g_strdup(key));
+    rebuild(app);
+}
+
+static LrgWidget *
+fed_chip(ClawtLrgApp *app, const gchar *label, const gchar *term)
+{
+    gboolean on = g_hash_table_contains(sidebar.fed_terms, term);
+    LrgWidget *chip = clickable_new(app, clawt_lrg_badge(label, on ? "info" : "neutral"),
+                                    on_fed_chip_clicked, g_strdup(term), g_free);
+
+    lrg_widget_set_name(chip, "clawt-fed-chip");
+    return chip;
+}
+
+/*
+ * Chips three to a line: an lrg box does not wrap, and a row of every
+ * owner and tag would push the sidebar wider than the window.
+ */
+static void
+fed_chip_lines(ClawtLrgApp *app, GPtrArray *chips)
+{
+    LrgWidget *line = NULL;
+    guint i;
+
+    for (i = 0; i < chips->len; i++) {
+        if (i % 3 == 0) {
+            LrgInsets margin = { 0.0f, 2.0f, 0.0f, 0.0f };
+
+            line = clawt_lrg_hbox(4.0f);
+            lrg_container_set_padding(LRG_CONTAINER(line), 2.0f);
+            lrg_widget_set_margin(line, &margin);
+            clawt_lrg_take(sidebar.list, line);
+        }
+        clawt_lrg_take(line, g_ptr_array_index(chips, i));
+    }
+}
+
+static LrgWidget *
+fed_header(ClawtLrgApp *app, JsonObject *fleet, guint shown, gboolean folded)
+{
+    const gchar *alias = clawt_ipc_payload_string(fleet, "alias");
+    const gchar *label = clawt_ipc_payload_string(fleet, "label");
+    const gchar *tier = clawt_ipc_payload_string(fleet, "tier");
+    LrgWidget *box = clawt_lrg_hbox(8.0f);
+    LrgWidget *title;
+    LrgWidget *header;
+    g_autofree gchar *count = g_strdup_printf("%u", shown);
+    LrgInsets margin = { 0.0f, 10.0f, 0.0f, 0.0f };
+
+    lrg_container_set_padding(LRG_CONTAINER(box), 6.0f);
+    clawt_lrg_take(box, clawt_lrg_label(folded ? "\342\226\270" : "\342\226\276", "muted"));
+    clawt_lrg_take(box, clawt_lrg_badge(
+        clawt_fed_health_glyph(clawt_ipc_payload_string(fleet, "health")),
+        clawt_fed_badge_tone(clawt_ipc_payload_string(fleet, "health_tone"))));
+    title = clawt_lrg_label(label != NULL ? label : alias, "heading");
+    lrg_widget_set_fill_weight(title, 1.0f);
+    lrg_widget_set_valign(title, LRG_ALIGN_CENTER);
+    lrg_label_set_ellipsize(LRG_LABEL(title), TRUE);
+    clawt_lrg_take(box, title);
+    {
+        LrgWidget *badge = clawt_lrg_badge(tier != NULL ? tier : "",
+            clawt_fed_badge_tone(clawt_ipc_payload_string(fleet, "tier_tone")));
+
+        lrg_widget_set_name(badge, "clawt-fed-tier");
+        clawt_lrg_take(box, badge);
+    }
+    clawt_lrg_take(box, clawt_lrg_label(count, "muted"));
+
+    header = clickable_new(app, box, on_fed_fold_clicked,
+                           g_strdup_printf("fleet:%s", alias != NULL ? alias : ""),
+                           g_free);
+    lrg_widget_set_name(header, "clawt-fed-section");
+    lrg_widget_set_margin(header, &margin);
+    return header;
+}
+
+static LrgWidget *
+fed_agent_row(JsonObject *fleet, JsonObject *agent)
+{
+    const gchar *tone = NULL;
+    const gchar *presence = clawt_fed_agent_presence(agent, &tone);
+    const gchar *team = clawt_ipc_payload_string(agent, "team");
+    const gchar *name = clawt_ipc_payload_string(agent, "name");
+    g_autofree gchar *line = g_strdup_printf("%s%s%s", presence,
+                                             team != NULL ? " \302\267 " : "",
+                                             team != NULL ? team : "");
+    LrgWidget *row = clawt_lrg_row(name != NULL ? name
+                                                : clawt_ipc_payload_string(agent, "id"),
+                                   line);
+
+    (void)fleet;
+    lrg_container_set_padding(LRG_CONTAINER(row), 6.0f);
+    clawt_lrg_row_add_prefix(row, clawt_lrg_badge("\342\227\217", clawt_fed_badge_tone(tone)));
+    lrg_widget_set_name(row, "clawt-fed-agent");
+    return row;
+}
+
+/*
+ * The linked fleets after this fleet's own, as the GTK and web clients
+ * draw them: the chips clawt_fed_filter_chips() offers (online and the
+ * tiers always, owners and tags behind More unless one is on), then a
+ * section per fleet clawt_fed_filter_matches() lets through.
+ */
+static void
+append_fleets(ClawtLrgApp *app)
+{
+    JsonObject *root = clawt_ipc_reply_object(app->agents);
+    JsonNode *member = (root != NULL) ? json_object_get_member(root, "fleets") : NULL;
+    JsonArray *fleets = (member != NULL && JSON_NODE_HOLDS_ARRAY(member))
+        ? json_node_get_array(member) : NULL;
+    g_autoptr(GPtrArray) chips = NULL;
+    g_autoptr(GPtrArray) shown = g_ptr_array_new();
+    g_autoptr(GPtrArray) terms = g_ptr_array_new();
+    gboolean more = g_hash_table_contains(sidebar.fed_terms, "more");
+    gboolean show_hidden = g_hash_table_contains(sidebar.fed_terms, "hidden");
+    gboolean extra = FALSE;
+    gboolean any_hidden = FALSE;
+    GHashTableIter iter;
+    gpointer key;
+    guint i;
+
+    if (fleets == NULL || json_array_get_length(fleets) == 0)
+        return;
+
+    g_hash_table_iter_init(&iter, sidebar.fed_terms);
+    while (g_hash_table_iter_next(&iter, &key, NULL))
+        g_ptr_array_add(terms, key);
+    g_ptr_array_add(terms, NULL);
+
+    {
+        LrgWidget *title = clawt_lrg_label("LINKED FLEETS", "caption");
+        LrgInsets margin = { 0.0f, 14.0f, 0.0f, 0.0f };
+
+        lrg_widget_set_margin(title, &margin);
+        clawt_lrg_take(sidebar.list, title);
+    }
+
+    chips = clawt_fed_filter_chips(fleets);
+    for (i = 0; i < chips->len; i++) {
+        ClawtFedChip *chip = g_ptr_array_index(chips, i);
+        gboolean basic = g_strcmp0(chip->kind, "online") == 0
+            || g_strcmp0(chip->kind, "tier") == 0;
+
+        if (!basic)
+            extra = TRUE;
+        if (!basic && !more && !g_hash_table_contains(sidebar.fed_terms, chip->term))
+            continue;
+        g_ptr_array_add(shown, fed_chip(app, chip->label, chip->term));
+    }
+    if (extra)
+        g_ptr_array_add(shown, fed_chip(app, more ? "Fewer" : "More\342\200\246", "more"));
+    for (i = 0; i < json_array_get_length(fleets); i++) {
+        JsonObject *fleet = json_array_get_object_element(fleets, i);
+
+        if (json_object_has_member(fleet, "hidden")
+            && json_object_get_boolean_member(fleet, "hidden"))
+            any_hidden = TRUE;
+    }
+    if (any_hidden)
+        g_ptr_array_add(shown, fed_chip(app, "Show hidden", "hidden"));
+    fed_chip_lines(app, shown);
+
+    for (i = 0; i < json_array_get_length(fleets); i++) {
+        JsonObject *fleet = json_array_get_object_element(fleets, i);
+        JsonArray *agents = json_object_has_member(fleet, "agents")
+            ? json_object_get_array_member(fleet, "agents") : NULL;
+        g_autofree gchar *fold = g_strdup_printf("fleet:%s",
+            clawt_ipc_payload_string(fleet, "alias"));
+        gboolean folded = g_hash_table_contains(sidebar.collapsed, fold);
+        guint n = agents != NULL ? json_array_get_length(agents) : 0;
+        guint j;
+
+        if (!clawt_fed_filter_matches(fleet, (gchar **)terms->pdata, show_hidden))
+            continue;
+        clawt_lrg_take(sidebar.list, fed_header(app, fleet, n, folded));
+        for (j = 0; !folded && j < n; j++)
+            clawt_lrg_take(sidebar.list,
+                           fed_agent_row(fleet, json_array_get_object_element(agents, j)));
+    }
+}
+
 static void
 rebuild(ClawtLrgApp *app)
 {
@@ -1367,6 +1577,8 @@ rebuild(ClawtLrgApp *app)
 
     g_hash_table_unref(sidebar.seen);
     sidebar.seen = g_hash_table_ref(now_seen);
+
+    append_fleets(app);
 
     update_unread_total(app);
     clawt_lrg_app_wake(app);
@@ -1431,6 +1643,8 @@ clawt_lrg_sidebar_build(ClawtLrgApp *app)
     memset(&sidebar, 0, sizeof(sidebar));
     sidebar.app = app;
     sidebar.root = root;
+    sidebar.fed_terms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                              NULL);
     sidebar.collapsed = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                               NULL);
     sidebar.seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,

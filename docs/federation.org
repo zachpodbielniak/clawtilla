@@ -368,13 +368,26 @@ The daemon says hello to every peer with an endpoint each =federation.ping_secon
 |--------+---------|
 | live | answering |
 | connecting | dialling |
-| degraded | answering requests, no live event stream (0.67.0) |
+| degraded | answering requests, but its live event stream is down; rosters still arrive with each hello |
 | offline | not answering, or its answers did not check out |
 | pending | waiting for approval, or for a first contact |
 | revoked | the link was ended, by either side |
 | incompatible | it speaks a protocol this one does not |
 
 A peer with no endpoint (it dials you) is live while its own requests keep arriving.
+
+*** The live stream and rosters
+:PROPERTIES:
+:CUSTOM_ID: stream
+:END:
+
+Since 0.67.0 each side keeps a *roster* of the other: its agents and teams, as the other side's grant allows.  A roster rides in every hello and its answer, so it is never older than =federation.ping_seconds=; between hellos, changes are pushed.  A change here (an agent started, stopped or typing, a team edited) is pushed to every linked fleet at most once a second, each copy filtered by that fleet's own grant, over whichever pipe is open:
+
+- HTTP links :: the dialling side opens a WebSocket on =GET /fed/v1/events= (signed like any request); each frame is a signed envelope bound to =WS fed.push=.
+- IPC links :: the answering daemon sends ~fed.push~ frames on the fleet connection, each bound to =IPC fed.push=.
+- Anything else :: the hello carries it.
+
+Every pushed roster is verified like a request (known fleet, key, clock, addressed to us, binding, signature, replay) and then sanitised: ids as an agent id is spelled, strings bounded, at most 500 agents, unknown members dropped.  A grant changed on either side reaches the other's sidebar without a restart.  Health is /degraded/ while requests work and the stream does not.
 
 *** Rotation
 :PROPERTIES:
@@ -444,7 +457,25 @@ The GTK, web and libregnum clients each have a Federation page in the Fleet sect
 - Invite :: tier cards; the invite as a link, a paste string and a QR code; and an Accept pane that previews a pasted invite -- name, owner, address, words -- before anything is linked.
 - Activity :: the audit, live.
 
-From 0.67.0 linked fleets also appear in the sidebar, one section per fleet after your own, with filter chips for tier, owner, tag and online.
+*** Linked fleets in the sidebar
+:PROPERTIES:
+:CUSTOM_ID: sidebar
+:END:
+
+Since 0.67.0 every client's sidebar ends with *Linked fleets*: one section per fleet after your own, each with a fold caret, its health dot, its name, its tier badge (coloured by tier) and how many of its agents you can see.  Under it, those agents, each with a presence dot and word -- /working/, /idle/, /stopped/ or /unknown/ -- and its team.  Hover a heading for the fleet's whole line (tier, owner, tags, health, latency).
+
+What is listed is exactly what the other fleet's grant lets you see (=see_roster=, =reach=, =agents=, =see_presence=, =see_typing=), filtered on their side before it is sent.  A fleet that is offline keeps its people listed as /unknown/, never frozen at what they were last doing; one that withholds presence shows them /unknown/ too.  Remote agents cannot be messaged yet (0.68.0); their rows say so on hover.
+
+Above the sections, *filter chips*, offered from what is there (~clawt_fed_filter_chips()~, so the three clients draw the same chips in the same order): /Online/ and each tier present always, each owner and tag behind *More...* -- a chip that is switched on is never folded away -- and *Show hidden* when a fleet is hidden.  Chips of one kind are alternatives and kinds combine: /Trusted/, /Owned/ and /#gpu/ shows a trusted-or-owned fleet tagged gpu (~clawt_fed_filter_matches()~).  The chips and the folds are the person's, not the fleet's: GTK and lrg keep them for the window, the web client in a cookie (=clawt_fed_filter=) per browser.  *Hide* and *Mute* (Federation page or ~clawtilla federation hide~) are the fleet's and every client agrees: a hidden fleet is left out unless Show hidden is on, a muted one is drawn dimmed.
+
+Each fleet entry is ~agent.list~'s =fleets= member (see [[#requests][Requests]]), so a client draws it and never assembles it.
+
+*** In the office
+:PROPERTIES:
+:CUSTOM_ID: office
+:END:
+
+A linked fleet's running agents visit your office (kind /external/, id =ALIAS:AGENT=), from the roster the link already keeps -- no second connection, no device token on the other daemon.  Hidden fleets, fleets not /live/ or /degraded/, and stopped agents stay off the floor.  An agent whose fleet withholds presence is drawn idle, and one mid-turn (=see_typing=) is drawn working.  A fleet still named in =office.peers= as well is drawn once, from the link.  =office.peers= keeps working this release and is superseded.
 
 ** Requests
 :PROPERTIES:
@@ -472,9 +503,11 @@ From 0.67.0 linked fleets also appear in the sidebar, one section per fleet afte
 | ~federation.rotate_key~ | | ={key_index, fleet_id, told}= |
 | ~federation.expose~ | ={hostname?}= | ={cloudflared_config, public_url, socket, next}= |
 
-Events: ~federation.peer~ (=alias=, =change=: added, changed, health, revoked, removed) and ~federation.audit~ (=direction=, =kind=, =outcome=).
+Events: ~federation.peer~ (=alias=, =change=: added, changed, health, revoked, removed), ~federation.roster~ (=alias=, since 0.67.0: that fleet's roster changed) and ~federation.audit~ (=direction=, =kind=, =outcome=).
 
-Between fleets: =GET /fed/v1/hello= (public, signed: who this fleet is), =POST /fed/v1/invite/accept=, =POST /fed/v1/envelope=, =GET /fed/v1/events= (WebSocket, 0.67.0); on the IPC port the frames ~fed.hello~, ~fed.invite~, ~fed.envelope~ and, from the far side, ~fed.push~.  Envelope kinds in 0.66.0: =hello=, =ping=, =revoke=, =rotate=; anything else is answered "not understood yet", naming the version.
+~agent.list~ carries, since 0.67.0, =fleets=: one object per linked fleet that is not revoked, in the registry's order, with =alias=, =label=, =fleet_id=, =tier=, =tier_label=, =tier_tone=, =owner=, =tags=, =health=, =health_label=, =health_tone=, =hidden=, =muted=, =latency_ms= (when known), =teams= (=[{id, name}]=) and =agents= (=[{id, ref, fleet, name, team?, color?, inbox, state?, busy?}]=, =ref= being =AGENT@ALIAS=; =state= is =unknown= for a fleet that is not live).  The tones are the library's words (=success=, =accent=, =warning=, =error=, =neutral=); ~clawt_fed_badge_tone()~ turns them into the web and lrg badge names.
+
+Between fleets: =GET /fed/v1/hello= (public, signed: who this fleet is), =POST /fed/v1/invite/accept=, =POST /fed/v1/envelope=, =GET /fed/v1/events= (WebSocket, 0.67.0); on the IPC port the frames ~fed.hello~, ~fed.invite~, ~fed.envelope~ and, from the far side, ~fed.push~.  Envelope kinds: =hello=, =ping=, =revoke=, =rotate= (0.66.0), =roster= (0.67.0); anything else is answered "not understood yet", naming the version.
 
 ** Configuration
 :PROPERTIES:

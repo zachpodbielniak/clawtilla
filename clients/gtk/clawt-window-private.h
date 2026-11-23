@@ -517,6 +517,9 @@ struct _ClawtWindow {
      */
     GPtrArray         *schema_rows;         /* SchemaRow*, owned */
     GHashTable        *collapsed_teams;   /* team id -> GINT_TO_POINTER(1) */
+    GPtrArray         *fed_filter;        /* the fleet chips switched on (terms) */
+    gboolean           fed_show_hidden;
+    gboolean           fed_more_filters;  /* owner and tag chips drawn */
     ModelChooser       inspector_models;
     ImageChooser       inspector_image;
     gchar             *inspector_computer;   /* the selected agent's type */

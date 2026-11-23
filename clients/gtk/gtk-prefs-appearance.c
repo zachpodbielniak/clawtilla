@@ -103,6 +103,17 @@ static const gchar CLAWT_STRUCTURE_CSS[] =
     "  font-weight: bold;\n"
     "}\n"
     /*
+     * Federation: the sidebar's fleet filter chips, small pills that
+     * wrap; a switched-on chip in the accent.  The tier word is bold
+     * for the reason .clawt-badge is: pale colour at caption size loses
+     * its strokes.
+     */
+    ".clawt-fed-chip { min-height: 20px; padding: 0 8px; border-radius: 999px;"
+    " border: 1px solid alpha(currentColor, 0.18); }\n"
+    ".clawt-fed-chip:checked { background-color: alpha(@accent_bg_color, 0.18);"
+    " color: @accent_color; border-color: alpha(@accent_color, 0.5); }\n"
+    ".clawt-fed-tier { font-weight: bold; }\n"
+    /*
      * The button around a transcript face, when there is a picture to
      * enlarge.
      *

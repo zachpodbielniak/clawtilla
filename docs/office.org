@@ -323,10 +323,11 @@ The invariants laid down before this was built still hold:
 - ~office.file~ serves pack files by pack and path, never by a path on this machine.
 - Team tags and ephemeral names are unique within a fleet only; anything that crosses fleets namespaces them, as visitor ids do.
 
-Superseded: 0.66.0 adds real federation -- fleet keys, invites, tiers
-and grants ([[file:federation.org][federation.org]]) -- and 0.67.0 moves visiting onto it, so a
-visitor's fleet is a linked fleet rather than a device token on the
-other daemon.  Until then this section describes what runs.
+Superseded: since 0.67.0 a linked fleet's people visit from the link
+itself ([[file:federation.org::#office][federation.org, "In the office"]]), as that fleet's grant allows,
+with no device token on the other daemon.  =office.peers= still works
+and is drawn as described here; a fleet both linked and listed is drawn
+once, from the link.  Prefer linking: ~clawtilla federation link~.
 
 Not built here: anything that acts across fleets -- messages, delegation, handing a task to another fleet's agent.  Visiting is looking.
 

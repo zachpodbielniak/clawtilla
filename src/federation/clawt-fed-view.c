@@ -10,6 +10,8 @@
 #include "clawtilla.h"
 #include "federation/clawt-fed-view.h"
 
+#include <string.h>
+
 static const gchar *
 str(
     JsonObject  *o,
@@ -122,4 +124,187 @@ clawt_fed_audit_line(
                            str(entry, "outcome") != NULL ? str(entry, "outcome") : "",
                            detail != NULL && *detail != '\0' ? " \342\200\224 " : "",
                            detail != NULL ? detail : "");
+}
+
+void
+clawt_fed_chip_free(
+    ClawtFedChip *chip
+){
+    if (chip == NULL)
+        return;
+    g_free(chip->kind);
+    g_free(chip->label);
+    g_free(chip->term);
+    g_free(chip);
+}
+
+static void
+add_chip(
+    GPtrArray   *out,
+    GHashTable  *seen,
+    const gchar *kind,
+    const gchar *label,
+    const gchar *term
+){
+    ClawtFedChip *chip;
+
+    if (g_hash_table_contains(seen, term))
+        return;
+    g_hash_table_add(seen, g_strdup(term));
+    chip = g_new0(ClawtFedChip, 1);
+    chip->kind = g_strdup(kind);
+    chip->label = g_strdup(label);
+    chip->term = g_strdup(term);
+    g_ptr_array_add(out, chip);
+}
+
+static gint
+by_label(
+    gconstpointer a,
+    gconstpointer b
+){
+    const ClawtFedChip *ca = *(ClawtFedChip * const *)a;
+    const ClawtFedChip *cb = *(ClawtFedChip * const *)b;
+
+    return g_utf8_collate(ca->label, cb->label);
+}
+
+GPtrArray *
+clawt_fed_filter_chips(
+    JsonArray *fleets
+){
+    GPtrArray *out = g_ptr_array_new_with_free_func((GDestroyNotify)clawt_fed_chip_free);
+    g_autoptr(GHashTable) seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    g_autoptr(GPtrArray) owners = g_ptr_array_new_with_free_func((GDestroyNotify)clawt_fed_chip_free);
+    g_autoptr(GPtrArray) tags = g_ptr_array_new_with_free_func((GDestroyNotify)clawt_fed_chip_free);
+    gboolean any_online = FALSE;
+    guint n = fleets != NULL ? json_array_get_length(fleets) : 0;
+    guint t;
+    guint i;
+
+    for (i = 0; i < n; i++) {
+        JsonObject *f = json_array_get_object_element(fleets, i);
+        if (f != NULL && clawt_fed_selector_matches("online", f))
+            any_online = TRUE;
+    }
+    if (any_online)
+        add_chip(out, seen, "online", "Online", "online");
+
+    /* Tiers in the enum's order, only those present. */
+    for (t = 0; t < clawt_fed_tier_count(); t++) {
+        ClawtFedTier tier = clawt_fed_tier_nth(t);
+        g_autofree gchar *term = g_strdup_printf("tier:%s", clawt_fed_tier_nick(tier));
+        for (i = 0; i < n; i++) {
+            JsonObject *f = json_array_get_object_element(fleets, i);
+            if (g_strcmp0(str(f, "tier"), clawt_fed_tier_nick(tier)) == 0) {
+                add_chip(out, seen, "tier", clawt_fed_tier_label(tier), term);
+                break;
+            }
+        }
+    }
+
+    for (i = 0; i < n; i++) {
+        JsonObject *f = json_array_get_object_element(fleets, i);
+        const gchar *owner = str(f, "owner");
+        JsonNode *tags_node = f != NULL ? json_object_get_member(f, "tags") : NULL;
+
+        /* An owner with a selector character cannot be a glob-safe term. */
+        if (owner != NULL && *owner != '\0' && strpbrk(owner, ",+!*?") == NULL) {
+            g_autofree gchar *term = g_strdup_printf("owner:%s", owner);
+            add_chip(owners, seen, "owner", owner, term);
+        }
+        if (tags_node != NULL && JSON_NODE_HOLDS_ARRAY(tags_node)) {
+            JsonArray *list = json_node_get_array(tags_node);
+            guint j;
+            for (j = 0; list != NULL && j < json_array_get_length(list); j++) {
+                const gchar *tag = json_array_get_string_element(list, j);
+                g_autofree gchar *term = g_strdup_printf("tag:%s", tag);
+                g_autofree gchar *label = g_strdup_printf("#%s", tag);
+                add_chip(tags, seen, "tag", label, term);
+            }
+        }
+    }
+    g_ptr_array_sort(owners, by_label);
+    g_ptr_array_sort(tags, by_label);
+    while (owners->len > 0)
+        g_ptr_array_add(out, g_ptr_array_steal_index(owners, 0));
+    while (tags->len > 0)
+        g_ptr_array_add(out, g_ptr_array_steal_index(tags, 0));
+    return out;
+}
+
+gboolean
+clawt_fed_filter_matches(
+    JsonObject  *fleet,
+    gchar      **terms,
+    gboolean     show_hidden
+){
+    static const gchar *kinds[] = { "online", "tier:", "owner:", "tag:" };
+    JsonNode *hidden = fleet != NULL ? json_object_get_member(fleet, "hidden") : NULL;
+    guint k;
+    guint i;
+
+    if (fleet == NULL)
+        return FALSE;
+    if (!show_hidden && hidden != NULL && JSON_NODE_HOLDS_VALUE(hidden)
+        && json_node_get_value_type(hidden) == G_TYPE_BOOLEAN && json_node_get_boolean(hidden))
+        return FALSE;
+    /* Within a kind any term may match; every kind with a term must. */
+    for (k = 0; k < G_N_ELEMENTS(kinds); k++) {
+        gboolean asked = FALSE;
+        gboolean hit = FALSE;
+        for (i = 0; terms != NULL && terms[i] != NULL; i++) {
+            if (!g_str_has_prefix(terms[i], kinds[k]))
+                continue;
+            asked = TRUE;
+            if (clawt_fed_selector_matches(terms[i], fleet))
+                hit = TRUE;
+        }
+        if (asked && !hit)
+            return FALSE;
+    }
+    return TRUE;
+}
+
+const gchar *
+clawt_fed_agent_presence(
+    JsonObject   *agent,
+    const gchar **out_tone
+){
+    const gchar *state = str(agent, "state");
+    JsonNode *busy = agent != NULL ? json_object_get_member(agent, "busy") : NULL;
+    gboolean is_busy = busy != NULL && JSON_NODE_HOLDS_VALUE(busy)
+        && json_node_get_value_type(busy) == G_TYPE_BOOLEAN && json_node_get_boolean(busy);
+    const gchar *tone = "neutral";
+    const gchar *word = "unknown";
+
+    if (state == NULL || g_strcmp0(state, "unknown") == 0) {
+        word = "unknown";
+    } else if (is_busy) {
+        word = "working";
+        tone = "accent";
+    } else if (g_strcmp0(state, "running") == 0) {
+        word = "idle";
+        tone = "success";
+    } else {
+        word = "stopped";
+    }
+    if (out_tone != NULL)
+        *out_tone = tone;
+    return word;
+}
+
+const gchar *
+clawt_fed_badge_tone(
+    const gchar *tone
+){
+    if (g_strcmp0(tone, "success") == 0)
+        return "good";
+    if (g_strcmp0(tone, "accent") == 0)
+        return "info";
+    if (g_strcmp0(tone, "warning") == 0)
+        return "warn";
+    if (g_strcmp0(tone, "error") == 0)
+        return "bad";
+    return "neutral";
 }

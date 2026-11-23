@@ -412,6 +412,141 @@ test_registry(void)
     clawt_test_remove_tree(dir);
 }
 
+/*
+ * The sidebar's chips and filter, which all three clients draw from the
+ * library: chips only for what is present, in one order; chips of one
+ * kind are alternatives and kinds combine; a hidden fleet is drawn only
+ * when asked; an offline fleet's agents are "unknown", never "stopped".
+ */
+static JsonArray *
+sample_fleets(void)
+{
+    static const gchar text[] =
+        "[{\"alias\":\"lab\",\"label\":\"Lab\",\"tier\":\"trusted\",\"owner\":\"Dana\","
+        "  \"tags\":[\"gpu\",\"research\"],\"health\":\"live\",\"hidden\":false},"
+        " {\"alias\":\"acme\",\"label\":\"Acme\",\"tier\":\"limited\",\"owner\":\"Priya\","
+        "  \"tags\":[\"client\"],\"health\":\"offline\",\"hidden\":false},"
+        " {\"alias\":\"home\",\"label\":\"Home\",\"tier\":\"owned\",\"owner\":\"\","
+        "  \"tags\":[\"gpu\"],\"health\":\"live\",\"hidden\":true}]";
+    g_autoptr(JsonParser) parser = json_parser_new();
+
+    g_assert_true(json_parser_load_from_data(parser, text, -1, NULL));
+    return json_array_ref(json_node_get_array(json_parser_get_root(parser)));
+}
+
+static gboolean
+chip_has(GPtrArray *chips, const gchar *term)
+{
+    guint i;
+
+    for (i = 0; i < chips->len; i++)
+        if (g_strcmp0(((ClawtFedChip *)g_ptr_array_index(chips, i))->term, term) == 0)
+            return TRUE;
+    return FALSE;
+}
+
+static void
+test_sidebar_chips(void)
+{
+    g_autoptr(JsonArray) fleets = sample_fleets();
+    g_autoptr(GPtrArray) chips = clawt_fed_filter_chips(fleets);
+    ClawtFedChip *first = g_ptr_array_index(chips, 0);
+    g_autoptr(GPtrArray) none = clawt_fed_filter_chips(NULL);
+
+    g_assert_cmpstr(first->term, ==, "online");
+    /* tiers most trusted first, and only those present */
+    g_assert_cmpstr(((ClawtFedChip *)g_ptr_array_index(chips, 1))->term, ==, "tier:owned");
+    g_assert_cmpstr(((ClawtFedChip *)g_ptr_array_index(chips, 2))->term, ==, "tier:trusted");
+    g_assert_cmpstr(((ClawtFedChip *)g_ptr_array_index(chips, 3))->term, ==, "tier:limited");
+    g_assert_false(chip_has(chips, "tier:untrusted"));
+    g_assert_true(chip_has(chips, "owner:Dana"));
+    g_assert_true(chip_has(chips, "owner:Priya"));
+    g_assert_false(chip_has(chips, "owner:"));
+    /* a tag two fleets carry is one chip */
+    g_assert_true(chip_has(chips, "tag:gpu"));
+    g_assert_true(chip_has(chips, "tag:client"));
+    g_assert_cmpuint(chips->len, ==, 1 + 3 + 2 + 3);
+    g_assert_cmpuint(none->len, ==, 0);
+}
+
+static void
+test_sidebar_filter(void)
+{
+    g_autoptr(JsonArray) fleets = sample_fleets();
+    JsonObject *lab = json_array_get_object_element(fleets, 0);
+    JsonObject *acme = json_array_get_object_element(fleets, 1);
+    JsonObject *home = json_array_get_object_element(fleets, 2);
+    gchar *either[] = { "tier:trusted", "tier:limited", NULL };
+    gchar *both[] = { "tier:trusted", "tier:limited", "tag:client", NULL };
+    gchar *online[] = { "online", NULL };
+    gchar *gpu[] = { "tag:gpu", NULL };
+    gchar *unknown_kind[] = { "hidden", "more", "fold:lab", NULL };
+
+    g_assert_true(clawt_fed_filter_matches(lab, NULL, FALSE));
+    g_assert_false(clawt_fed_filter_matches(home, NULL, FALSE));
+    g_assert_true(clawt_fed_filter_matches(home, NULL, TRUE));
+
+    /* one kind: alternatives */
+    g_assert_true(clawt_fed_filter_matches(lab, either, FALSE));
+    g_assert_true(clawt_fed_filter_matches(acme, either, FALSE));
+    /* two kinds: both must hold */
+    g_assert_false(clawt_fed_filter_matches(lab, both, FALSE));
+    g_assert_true(clawt_fed_filter_matches(acme, both, FALSE));
+
+    g_assert_true(clawt_fed_filter_matches(lab, online, FALSE));
+    g_assert_false(clawt_fed_filter_matches(acme, online, FALSE));
+    g_assert_false(clawt_fed_filter_matches(home, gpu, FALSE));
+    g_assert_true(clawt_fed_filter_matches(home, gpu, TRUE));
+
+    /* the clients' own view terms ride in the same list and filter nothing */
+    g_assert_true(clawt_fed_filter_matches(lab, unknown_kind, FALSE));
+}
+
+static void
+test_sidebar_presence(void)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    JsonArray *agents;
+    const gchar *tone = NULL;
+
+    g_assert_true(json_parser_load_from_data(parser,
+        "[{\"state\":\"running\",\"busy\":true},{\"state\":\"running\",\"busy\":false},"
+        " {\"state\":\"stopped\"},{\"state\":\"unknown\",\"busy\":false},{}]", -1, NULL));
+    agents = json_node_get_array(json_parser_get_root(parser));
+
+    g_assert_cmpstr(clawt_fed_agent_presence(json_array_get_object_element(agents, 0), &tone),
+                    ==, "working");
+    g_assert_cmpstr(clawt_fed_badge_tone(tone), ==, "info");
+    g_assert_cmpstr(clawt_fed_agent_presence(json_array_get_object_element(agents, 1), &tone),
+                    ==, "idle");
+    g_assert_cmpstr(clawt_fed_badge_tone(tone), ==, "good");
+    g_assert_cmpstr(clawt_fed_agent_presence(json_array_get_object_element(agents, 2), NULL),
+                    ==, "stopped");
+    /* an offline fleet's people are unknown, not last seen */
+    g_assert_cmpstr(clawt_fed_agent_presence(json_array_get_object_element(agents, 3), &tone),
+                    ==, "unknown");
+    g_assert_cmpstr(clawt_fed_badge_tone(tone), ==, "neutral");
+    g_assert_cmpstr(clawt_fed_agent_presence(json_array_get_object_element(agents, 4), NULL),
+                    ==, "unknown");
+}
+
+/* Every tier's and health's tone has a badge the web and lrg clients paint. */
+static void
+test_badge_tones(void)
+{
+    guint i;
+
+    for (i = 0; i < clawt_fed_tier_count(); i++) {
+        const gchar *tone = clawt_fed_tier_tone(clawt_fed_tier_nth(i));
+        g_assert_true(g_strcmp0(tone, "neutral") == 0
+                      || g_strcmp0(clawt_fed_badge_tone(tone), "neutral") != 0);
+    }
+    g_assert_cmpstr(clawt_fed_badge_tone("warning"), ==, "warn");
+    g_assert_cmpstr(clawt_fed_badge_tone("error"), ==, "bad");
+    g_assert_cmpstr(clawt_fed_badge_tone(NULL), ==, "neutral");
+    g_assert_cmpstr(clawt_fed_badge_tone("nonsense"), ==, "neutral");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -427,6 +562,10 @@ main(int argc, char *argv[])
     g_test_add_func("/fed-model/reach", test_reach);
     g_test_add_func("/fed-model/selectors", test_selectors);
     g_test_add_func("/fed-model/registry", test_registry);
+    g_test_add_func("/fed-model/sidebar-chips", test_sidebar_chips);
+    g_test_add_func("/fed-model/sidebar-filter", test_sidebar_filter);
+    g_test_add_func("/fed-model/sidebar-presence", test_sidebar_presence);
+    g_test_add_func("/fed-model/badge-tones", test_badge_tones);
 
     return g_test_run();
 }

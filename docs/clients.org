@@ -403,6 +403,15 @@ words, what they give you -- before *Link*.  ~clawtilla-gtk --settings
 federation~ opens straight on it.  The CLI is ~clawtilla federation~; see
 [[file:federation.org][federation.org]].
 
+Since 0.67.0 the sidebar ends with *Linked fleets*: a section per linked
+fleet (fold caret, health dot, name, tier badge, count) with the agents
+it lets you see and their presence, under a row of filter chips --
+Online and each tier, owners and tags behind More..., Show hidden when
+anything is hidden.  The chips come from ~clawt_fed_filter_chips()~ and
+filter through ~clawt_fed_filter_matches()~, so all three clients agree;
+chips and folds are per window (GTK, lrg) or per browser (the web
+client's =clawt_fed_filter= cookie).  See [[file:federation.org::#sidebar][federation.org]].
+
 *** Choosing where the daemon listens
 
 ~clawtillad~ takes ~--bind~ and ~--no-bind~, and its ~--help~ prints what

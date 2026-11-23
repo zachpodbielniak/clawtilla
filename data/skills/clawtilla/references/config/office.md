@@ -174,6 +174,11 @@ they send can act here, and each fleet publishes only its own people,
 so two fleets that peer with each other never echo. Asked only once a
 client is drawing the office. See docs/office.org#federation.
 
+Superseded by linking fleets (`clawtilla federation link`), whose people
+visit without the owner-level device token this needs, as each fleet's
+grant allows. A fleet both linked and listed here is drawn once, from
+the link. Still read; it will go in a later release.
+
 ### `office.peer_poll_seconds`
 
 - Type: integer

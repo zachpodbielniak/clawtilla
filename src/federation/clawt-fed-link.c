@@ -49,6 +49,10 @@ struct _ClawtFedLink {
     ClawtClient       *client;
     gboolean           connecting;
     GQueue            *waiting;       /* GTask*, sent once connected */
+
+    /* the HTTP link's live stream */
+    SoupWebsocketConnection *socket;
+    gboolean           socket_opening;
 };
 
 enum {
@@ -457,13 +461,25 @@ ipc_hello(
     return "fed.hello";
 }
 
+static void verify_push(ClawtFedLink *self, JsonObject *payload, const gchar *binding);
+
 static void
 on_ipc_push(
     ClawtClient *client,
     JsonObject  *payload,
     gpointer     user_data
 ){
-    ClawtFedLink *self = user_data;
+    (void)client;
+    verify_push(user_data, payload, "IPC fed.push");
+}
+
+/* A pushed envelope: the peer's, to us, fresh -- or dropped unheard. */
+static void
+verify_push(
+    ClawtFedLink *self,
+    JsonObject   *payload,
+    const gchar  *binding
+){
     g_autoptr(ClawtFedStamp) stamp = NULL;
     g_autofree gchar *body = NULL;
     g_autofree gchar *opened = NULL;
@@ -471,13 +487,12 @@ on_ipc_push(
     guint8 seal[CLAWT_FLEET_KEY_SIZE];
     gint64 now = g_get_real_time() / G_USEC_PER_SEC;
 
-    (void)client;
     if (self->peer == NULL || payload == NULL)
         return;
     stamp = clawt_fed_envelope_split(payload, &body, NULL);
     if (stamp == NULL || g_strcmp0(stamp->from, self->peer->fleet_id) != 0
         || !clawt_fed_peer_public_key(self->peer, stamp->key_index, now, key)
-        || !clawt_fed_stamp_check(stamp, key, self->our_fleet, body, "IPC fed.push", now,
+        || !clawt_fed_stamp_check(stamp, key, self->our_fleet, body, binding, now,
                                   CLAWT_FED_DEFAULT_SKEW_SECONDS, NULL))
         return;
     if (clawt_fed_body_is_sealed(body)) {
@@ -621,6 +636,123 @@ send_ipc(
     clawt_client_connect_async(self->client, NULL, on_ipc_connected, g_object_ref(self));
     if (self->context != NULL)
         g_main_context_pop_thread_default(self->context);
+}
+
+/* ---- the live stream ---------------------------------------------------- */
+
+static void
+on_socket_message(
+    SoupWebsocketConnection *socket,
+    gint                     type,
+    GBytes                  *message,
+    gpointer                 user_data
+){
+    ClawtFedLink *self = user_data;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    gsize length = 0;
+    const gchar *data = g_bytes_get_data(message, &length);
+    JsonNode *root;
+
+    (void)socket;
+    /* Text frames only, bounded: a push is a roster, not a download. */
+    if (type != SOUP_WEBSOCKET_DATA_TEXT || data == NULL || length > 4 * 1024 * 1024)
+        return;
+    if (!json_parser_load_from_data(parser, data, (gssize)length, NULL))
+        return;
+    root = json_parser_get_root(parser);
+    if (root != NULL && JSON_NODE_HOLDS_OBJECT(root))
+        verify_push(self, json_node_get_object(root), "WS fed.push");
+}
+
+static void
+on_socket_closed(
+    SoupWebsocketConnection *socket,
+    gpointer                 user_data
+){
+    ClawtFedLink *self = user_data;
+
+    if (self->socket == socket) {
+        g_signal_handlers_disconnect_by_data(socket, self);
+        g_clear_object(&self->socket);
+    }
+}
+
+static void
+on_socket_open(
+    GObject      *source,
+    GAsyncResult *result,
+    gpointer      user_data
+){
+    g_autoptr(ClawtFedLink) self = user_data;
+    g_autoptr(GError) error = NULL;
+    SoupWebsocketConnection *socket;
+
+    self->socket_opening = FALSE;
+    socket = soup_session_websocket_connect_finish(SOUP_SESSION(source), result, &error);
+    if (socket == NULL) {
+        g_debug("federation: no live stream from %s: %s", self->endpoint, error->message);
+        return;
+    }
+    self->socket = socket;
+    /* Keep-alive pings, so a dead route is noticed and the stream reopened. */
+    soup_websocket_connection_set_keepalive_interval(socket, 30);
+    soup_websocket_connection_set_max_incoming_payload_size(socket, 4 * 1024 * 1024);
+    g_signal_connect(socket, "message", G_CALLBACK(on_socket_message), self);
+    g_signal_connect(socket, "closed", G_CALLBACK(on_socket_closed), self);
+}
+
+void
+clawt_fed_link_open_stream(
+    ClawtFedLink *self
+){
+    g_return_if_fail(CLAWT_IS_FED_LINK(self));
+
+    if (self->peer == NULL)
+        return;
+    if (self->transport == CLAWT_FED_TRANSPORT_IPC) {
+        /* The kept connection is the stream; a ping through it connects it. */
+        return;
+    }
+    if (self->socket != NULL || self->socket_opening)
+        return;
+    {
+        g_autofree gchar *url = g_strconcat(self->base_url, "/fed/v1/events", NULL);
+        g_autoptr(SoupMessage) message = clawt_http_message_new("GET", url,
+                                                                CLAWT_HTTP_CARRIES_CREDENTIALS);
+        g_autoptr(ClawtFedStamp) stamp = NULL;
+        SoupMessageHeaders *headers;
+
+        if (message == NULL)
+            return;
+        stamp = clawt_fed_stamp_sign(self->key, self->key_index, "events", self->our_fleet,
+                                     self->peer->fleet_id, "", "GET /fed/v1/events", NULL);
+        if (stamp == NULL)
+            return;
+        headers = soup_message_get_request_headers(message);
+        clawt_fed_stamp_to_headers(stamp, http_set_header, headers);
+        if (self->access_id != NULL && self->access_secret != NULL) {
+            soup_message_headers_replace(headers, "CF-Access-Client-Id", self->access_id);
+            soup_message_headers_replace(headers, "CF-Access-Client-Secret", self->access_secret);
+        }
+        self->socket_opening = TRUE;
+        if (self->context != NULL)
+            g_main_context_push_thread_default(self->context);
+        soup_session_websocket_connect_async(self->session, message, NULL, NULL,
+                                             G_PRIORITY_DEFAULT, NULL, on_socket_open,
+                                             g_object_ref(self));
+        if (self->context != NULL)
+            g_main_context_pop_thread_default(self->context);
+    }
+}
+
+gboolean
+clawt_fed_link_is_streaming(
+    ClawtFedLink *self
+){
+    if (self->transport == CLAWT_FED_TRANSPORT_IPC)
+        return self->client != NULL && clawt_client_is_connected(self->client);
+    return self->socket != NULL
+        && soup_websocket_connection_get_state(self->socket) == SOUP_WEBSOCKET_STATE_OPEN;
 }
 
 /* ---- the two entry points ---------------------------------------------- */
@@ -843,6 +975,12 @@ clawt_fed_link_close(
         g_clear_object(&self->client);
     }
     self->connecting = FALSE;
+    if (self->socket != NULL) {
+        g_signal_handlers_disconnect_by_data(self->socket, self);
+        if (soup_websocket_connection_get_state(self->socket) == SOUP_WEBSOCKET_STATE_OPEN)
+            soup_websocket_connection_close(self->socket, SOUP_WEBSOCKET_CLOSE_NORMAL, NULL);
+        g_clear_object(&self->socket);
+    }
     if (self->session != NULL)
         soup_session_abort(self->session);
 }

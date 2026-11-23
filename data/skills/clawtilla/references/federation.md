@@ -8,7 +8,7 @@ Read this before linking this fleet with another clawtilla fleet, changing what 
 - **Safety words** (four words from the fleet id) are what two people read to each other while one accepts the other's invite.
 - A **peer** is a linked fleet, known here by an **alias** (a valid id, never renamed). Peers live in `<state_dir>/federation/peers.yaml`, written by the daemon. Do not edit it; use `clawtilla federation` or a client's Settings → Federation page.
 - **Every request and every answer between fleets is a signed envelope.** That holds over any transport. Kind, from, to, time, nonce, body digest, and what it was sent to are all signed. Answers are bound to the request's nonce.
-- What crosses in 0.66.0: hello, ping, revoke, rotate. Not yet: messages (0.68.0), delegation (0.69.0), remote agents in the sidebar (0.67.0), shared rooms (0.70.0). A kind the other side does not know is answered 501 "not understood yet", naming its version.
+- What crosses: hello, ping, revoke, rotate (0.66.0); rosters, pushed live (0.67.0). Not yet: messages (0.68.0), delegation (0.69.0), shared rooms (0.70.0). A kind the other side does not know is answered 501 "not understood yet", naming its version.
 
 ## Turn it on
 
@@ -118,6 +118,16 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 
 **Rotate the key:** `clawtilla federation rotate-key`. Peers are told with the old key and accept it for 24 h. A peer unreachable longer than that must be linked again.
 
+## Sidebar and office (0.67.0)
+
+- Each side keeps a **roster** of the other: agents (id, name, team, colour, state, busy, inbox) and teams, filtered by *the other side's* grant before sending (`see_roster`, `reach`, `agents`, `see_presence`, `see_typing`). It rides in every hello and is pushed within a second of a change here, over a WebSocket (`GET /fed/v1/events`, HTTP links) or `fed.push` frames (IPC links). Every push is a signed envelope, verified and sanitised (max 500 agents).
+- `agent.list` gains `fleets`: one entry per non-revoked link with tier/health and their tones, owner, tags, hidden, muted, latency, teams and `agents[]` (`ref` = `AGENT@ALIAS`). A fleet not live shows its agents' `state` as `unknown`. Event: `federation.roster` (subject = alias).
+- Every client's sidebar ends with **Linked fleets**: filter chips (Online, tiers; owners/tags behind More...; Show hidden), then a section per fleet with its agents and a presence word (working, idle, stopped, unknown). Chips and folds are per window/browser; **hide** and **mute** are the daemon's (`clawtilla federation hide|mute ALIAS`), so every client agrees.
+- To let a peer see *fewer* of your agents: `clawtilla federation set ALIAS reach=listed agents=atlas,team:web`, or `see_roster=false` for none; `see_presence=false` shows them without state. The peer's sidebar follows without a restart.
+- **Office**: a linked fleet's *running* agents visit your office as `external` participants (`ALIAS:AGENT`), drawn idle when presence is withheld, working when busy. Hidden or not-live fleets stay off the floor. `office.peers` still works but is superseded; a fleet in both is drawn once, from the link.
+- Health `degraded` = requests work, the live stream does not (rosters still arrive with each hello).
+- Remote agents cannot be messaged until 0.68.0.
+
 ## Diagnose
 
 | Symptom | Cause, fix |
@@ -129,6 +139,9 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 | "not the one that made the invite" | the invite's address reached another fleet; check address and safety words |
 | "used, revoked or has expired" | invites are single-use; make a new one |
 | peer stays offline | `clawtilla federation show ALIAS` (last error); tunnel running? tailnet ACL? listener bound? |
+| sidebar shows a fleet with no agents | their grant gives you `see_roster=false`, or `reach`/`agents` matches none; ask them; `clawtilla federation show ALIAS` prints "What it lets this fleet do there" |
+| a fleet's agents all `unknown` | it is not live, or it withholds `see_presence` |
+| a fleet missing from the sidebar | hidden (`federation unhide`), or a chip filters it out |
 | "unknown fleet or key" | the peer revoked/forgot you, or a rotation was missed; link again |
 
 `clawtilla federation log [ALIAS]` is the audit (`<state_dir>/federation/audit.ndjson`). It records every request between fleets, refusals included, except successful keep-alive hellos and pings.

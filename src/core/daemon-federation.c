@@ -53,6 +53,10 @@ typedef struct {
     gboolean         in_flight;
     gint64           latency_ms;
     gchar           *error;
+    JsonObject      *roster;        /* what it last told us, sanitized */
+    gchar           *roster_digest; /* to publish only real changes */
+    gint64           roster_at;
+    GPtrArray       *sockets;       /* SoupWebsocketConnection*: its streams to us */
 } PeerState;
 
 static void
@@ -64,6 +68,19 @@ peer_state_free(
         clawt_fed_link_close(ps->link);
         g_object_unref(ps->link);
     }
+    if (ps->sockets != NULL) {
+        guint i;
+        for (i = 0; i < ps->sockets->len; i++) {
+            SoupWebsocketConnection *socket = g_ptr_array_index(ps->sockets, i);
+            g_signal_handlers_disconnect_by_data(socket, ps);
+            if (soup_websocket_connection_get_state(socket) == SOUP_WEBSOCKET_STATE_OPEN)
+                soup_websocket_connection_close(socket, SOUP_WEBSOCKET_CLOSE_GOING_AWAY, NULL);
+        }
+        g_ptr_array_unref(ps->sockets);
+    }
+    if (ps->roster != NULL)
+        json_object_unref(ps->roster);
+    g_free(ps->roster_digest);
     g_free(ps->alias);
     g_free(ps->error);
     g_free(ps);
@@ -530,6 +547,472 @@ set_health(
         publish_peer(ps->daemon, ps->alias, "health");
 }
 
+/* ---- rosters: what each fleet lets the other see ----------------------- */
+
+#define ROSTER_MAX_AGENTS (500)
+#define ROSTER_MAX_TEAMS (100)
+
+/*
+ * Our agents as @peer may see them: only those its grant reaches, and
+ * of each only what see_presence and see_typing allow.  A grant without
+ * see_roster sees nobody.  Built fresh for every send -- the grant can
+ * change between two.
+ */
+static JsonObject *
+roster_for(
+    ClawtDaemon  *self,
+    ClawtFedPeer *peer
+){
+    g_autoptr(ClawtFedGrant) grant = grant_for(self, peer, CLAWT_FED_HEALTH_LIVE, NULL, NULL);
+    g_autoptr(JsonObject) facts = clawt_fed_peer_selector_json(peer, CLAWT_FED_HEALTH_LIVE);
+    g_autoptr(GHashTable) teams = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    JsonObject *roster = json_object_new();
+    JsonArray *agents = json_array_new();
+    JsonArray *team_list = json_array_new();
+    GPtrArray *all = self->agents != NULL ? clawt_agent_manager_list(self->agents) : NULL;
+    const gchar *inbox = inbox_agent(self);
+    guint i;
+
+    for (i = 0; grant->see_roster && all != NULL && i < all->len; i++) {
+        ClawtAgent *agent = g_ptr_array_index(all, i);
+        ClawtAgentConfig *config = clawt_agent_get_config(agent);
+        const gchar *id = clawt_agent_get_id(agent);
+        const gchar *team = config != NULL ? clawt_agent_config_get_string(config, "team") : NULL;
+        g_autoptr(ClawtTeamSpec) spec = team != NULL ? clawt_config_get_team(self->config, team) : NULL;
+        JsonObject *a;
+
+        if (!clawt_fed_grant_reaches(grant, id, team, spec != NULL ? spec->tags : NULL, inbox,
+                                     NULL, facts))
+            continue;
+        a = json_object_new();
+        json_object_set_string_member(a, "id", id);
+        json_object_set_string_member(a, "name", clawt_agent_get_name(agent));
+        if (team != NULL && *team != '\0') {
+            json_object_set_string_member(a, "team", team);
+            if (!g_hash_table_contains(teams, team)) {
+                JsonObject *t = json_object_new();
+                json_object_set_string_member(t, "id", team);
+                json_object_set_string_member(t, "name", spec != NULL && spec->name != NULL
+                                                         ? spec->name : team);
+                json_array_add_object_element(team_list, t);
+                g_hash_table_add(teams, g_strdup(team));
+            }
+        }
+        if (config != NULL && clawt_agent_config_get_string(config, "color") != NULL)
+            json_object_set_string_member(a, "color", clawt_agent_config_get_string(config, "color"));
+        json_object_set_boolean_member(a, "inbox", g_strcmp0(id, inbox) == 0);
+        if (grant->see_presence)
+            json_object_set_string_member(a, "state",
+                                          clawt_enum_to_nick(CLAWT_TYPE_AGENT_STATE,
+                                                             clawt_agent_get_state(agent)));
+        if (grant->see_typing)
+            json_object_set_boolean_member(a, "busy", clawt_agent_get_typing_rooms(agent) > 0);
+        json_array_add_object_element(agents, a);
+        if (json_array_get_length(agents) >= ROSTER_MAX_AGENTS)
+            break;
+    }
+    json_object_set_array_member(roster, "agents", agents);
+    json_object_set_array_member(roster, "teams", team_list);
+    json_object_set_int_member(roster, "time", now_s());
+    return roster;
+}
+
+/* A plain id, as this fleet would accept for one of its own. */
+static gboolean
+roster_id_ok(
+    const gchar *id
+){
+    return id != NULL && clawt_is_valid_id(id);
+}
+
+/*
+ * What another fleet says its agents are, made safe to draw: bounded
+ * counts and strings, ids this fleet would accept, a colour only when it
+ * is one, a state only from the vocabulary.  Nothing in it reaches
+ * anything but a client's sidebar and the office.
+ */
+static JsonObject *
+roster_sanitize(
+    JsonObject *raw
+){
+    JsonObject *clean = json_object_new();
+    JsonArray *agents = json_array_new();
+    JsonArray *teams = json_array_new();
+    JsonNode *node;
+    guint i;
+
+    node = raw != NULL ? json_object_get_member(raw, "agents") : NULL;
+    if (node != NULL && JSON_NODE_HOLDS_ARRAY(node)) {
+        JsonArray *list = json_node_get_array(node);
+        for (i = 0; list != NULL && i < json_array_get_length(list)
+                    && json_array_get_length(agents) < ROSTER_MAX_AGENTS; i++) {
+            JsonNode *item = json_array_get_element(list, i);
+            JsonObject *in = JSON_NODE_HOLDS_OBJECT(item) ? json_node_get_object(item) : NULL;
+            const gchar *id = obj_str(in, "id");
+            const gchar *team = obj_str(in, "team");
+            const gchar *color = obj_str(in, "color");
+            const gchar *state = obj_str(in, "state");
+            g_autofree gchar *name = bounded(obj_str(in, "name"), 64);
+            JsonObject *out;
+            gint value;
+
+            if (!roster_id_ok(id))
+                continue;
+            out = json_object_new();
+            json_object_set_string_member(out, "id", id);
+            json_object_set_string_member(out, "name", name != NULL && *name != '\0' ? name : id);
+            if (roster_id_ok(team))
+                json_object_set_string_member(out, "team", team);
+            if (color != NULL && color[0] == '#' && strlen(color) <= 9
+                && strspn(color + 1, "0123456789abcdefABCDEF") == strlen(color) - 1)
+                json_object_set_string_member(out, "color", color);
+            if (state != NULL && clawt_enum_from_nick(CLAWT_TYPE_AGENT_STATE, state, &value))
+                json_object_set_string_member(out, "state", state);
+            if (json_object_has_member(in, "busy")
+                && JSON_NODE_HOLDS_VALUE(json_object_get_member(in, "busy"))
+                && json_node_get_value_type(json_object_get_member(in, "busy")) == G_TYPE_BOOLEAN)
+                json_object_set_boolean_member(out, "busy", json_object_get_boolean_member(in, "busy"));
+            if (json_object_has_member(in, "inbox")
+                && JSON_NODE_HOLDS_VALUE(json_object_get_member(in, "inbox"))
+                && json_node_get_value_type(json_object_get_member(in, "inbox")) == G_TYPE_BOOLEAN)
+                json_object_set_boolean_member(out, "inbox", json_object_get_boolean_member(in, "inbox"));
+            json_array_add_object_element(agents, out);
+        }
+    }
+    node = raw != NULL ? json_object_get_member(raw, "teams") : NULL;
+    if (node != NULL && JSON_NODE_HOLDS_ARRAY(node)) {
+        JsonArray *list = json_node_get_array(node);
+        for (i = 0; list != NULL && i < json_array_get_length(list)
+                    && json_array_get_length(teams) < ROSTER_MAX_TEAMS; i++) {
+            JsonNode *item = json_array_get_element(list, i);
+            JsonObject *in = JSON_NODE_HOLDS_OBJECT(item) ? json_node_get_object(item) : NULL;
+            g_autofree gchar *name = bounded(obj_str(in, "name"), 64);
+            JsonObject *out;
+
+            if (!roster_id_ok(obj_str(in, "id")))
+                continue;
+            out = json_object_new();
+            json_object_set_string_member(out, "id", obj_str(in, "id"));
+            json_object_set_string_member(out, "name", name != NULL ? name : obj_str(in, "id"));
+            json_array_add_object_element(teams, out);
+        }
+    }
+    json_object_set_array_member(clean, "agents", agents);
+    json_object_set_array_member(clean, "teams", teams);
+    return clean;
+}
+
+/* Keeps @raw as @ps's roster; publishes only when it changed. */
+static void
+store_roster(
+    ClawtDaemon *self,
+    PeerState   *ps,
+    JsonObject  *raw
+){
+    g_autoptr(JsonObject) clean = NULL;
+    g_autofree gchar *text = NULL;
+    g_autofree gchar *digest = NULL;
+
+    if (ps == NULL || raw == NULL)
+        return;
+    clean = roster_sanitize(raw);
+    text = object_text(clean);
+    digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, text, -1);
+    ps->roster_at = now_s();
+    if (g_strcmp0(digest, ps->roster_digest) == 0)
+        return;
+    if (ps->roster != NULL)
+        json_object_unref(ps->roster);
+    ps->roster = g_steal_pointer(&clean);
+    g_free(ps->roster_digest);
+    ps->roster_digest = g_steal_pointer(&digest);
+    if (self->bus != NULL) {
+        g_autoptr(ClawtEvent) event = clawt_event_new("federation.roster", ps->alias);
+        clawt_event_set_detail(event, "alias", ps->alias);
+        clawt_event_bus_publish(self->bus, event);
+    }
+}
+
+/* ---- pushing our roster ------------------------------------------------ */
+
+static void
+on_roster_sent(
+    GObject      *source,
+    GAsyncResult *result,
+    gpointer      user_data
+){
+    g_autofree gchar *body = clawt_fed_link_request_finish(CLAWT_FED_LINK(source), result, NULL);
+
+    (void)body;
+    g_object_unref(user_data);
+}
+
+static void
+on_peer_socket_closed(
+    SoupWebsocketConnection *socket,
+    gpointer                 user_data
+){
+    PeerState *ps = user_data;
+
+    g_signal_handlers_disconnect_by_data(socket, ps);
+    if (ps->sockets != NULL)
+        g_ptr_array_remove(ps->sockets, socket);
+}
+
+/*
+ * Our roster as @peer may see it, sent the way it can be reached: a
+ * request on our link to it, or -- when it dials us -- pushed down the
+ * IPC connection or WebSocket it keeps.  Sealed when it can be: a push
+ * has no transport rule to say whether its pipe is private.
+ */
+static void
+push_roster(
+    ClawtDaemon  *self,
+    ClawtFedPeer *peer,
+    PeerState    *ps
+){
+    g_autoptr(JsonObject) roster = NULL;
+    g_autofree gchar *body = NULL;
+    guint8 seal[CLAWT_FLEET_KEY_SIZE];
+    guint i;
+
+    if (peer == NULL || ps == NULL || g_strcmp0(peer->status, "active") != 0)
+        return;
+    roster = roster_for(self, peer);
+    body = object_text(roster);
+
+    if (ps->link != NULL) {
+        clawt_fed_link_request_async(ps->link, "roster", body, NULL, on_roster_sent,
+                                     g_object_ref(self));
+        return;
+    }
+    if (peer->seal_key != NULL && clawt_fed_decode_key(peer->seal_key, seal)) {
+        gchar *sealed = clawt_fed_seal(self->fed_key, seal, body, NULL);
+        if (sealed != NULL) {
+            g_free(body);
+            body = sealed;
+        }
+    }
+    if (self->ipc_server != NULL) {
+        g_autoptr(ClawtFedStamp) stamp = clawt_fed_stamp_sign(
+            self->fed_key, self->fed_key_index, "roster", self->fed_fleet_id, peer->fleet_id,
+            body, "IPC fed.push", NULL);
+        if (stamp != NULL) {
+            g_autoptr(JsonNode) frame = clawt_ipc_request_new("fed.push", NULL);
+            JsonNode *payload = json_node_new(JSON_NODE_OBJECT);
+            json_node_take_object(payload, clawt_fed_envelope_build(stamp, body));
+            clawt_ipc_frame_set_payload(frame, payload);
+            clawt_ipc_server_push_to_fleet(self->ipc_server, peer->fleet_id, frame);
+        }
+    }
+    for (i = 0; ps->sockets != NULL && i < ps->sockets->len; i++) {
+        SoupWebsocketConnection *socket = g_ptr_array_index(ps->sockets, i);
+        g_autoptr(ClawtFedStamp) stamp = NULL;
+        g_autoptr(JsonObject) envelope = NULL;
+        g_autofree gchar *text = NULL;
+
+        if (soup_websocket_connection_get_state(socket) != SOUP_WEBSOCKET_STATE_OPEN)
+            continue;
+        stamp = clawt_fed_stamp_sign(self->fed_key, self->fed_key_index, "roster",
+                                     self->fed_fleet_id, peer->fleet_id, body, "WS fed.push",
+                                     NULL);
+        if (stamp == NULL)
+            continue;
+        envelope = clawt_fed_envelope_build(stamp, body);
+        text = object_text(envelope);
+        soup_websocket_connection_send_text(socket, text);
+    }
+}
+
+static gboolean
+on_push_soon(
+    gpointer user_data
+){
+    ClawtDaemon *self = user_data;
+    g_autoptr(GPtrArray) peers = NULL;
+    guint i;
+
+    g_clear_pointer(&self->fed_push_soon, g_source_unref);
+    if (!fed_on(self))
+        return G_SOURCE_REMOVE;
+    peers = clawt_fed_registry_list(self->fed_registry);
+    for (i = 0; i < peers->len; i++) {
+        ClawtFedPeer *peer = g_ptr_array_index(peers, i);
+        push_roster(self, peer, state_of(self, peer->alias));
+    }
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * Something another fleet may see changed here.  Debounced to one push
+ * a second at most: a typing edge, a state change and a reorder in the
+ * same moment are one roster.
+ */
+static void
+on_local_event(
+    ClawtEventBus *bus,
+    ClawtEvent    *event,
+    gpointer       user_data
+){
+    ClawtDaemon *self = user_data;
+    const gchar *kind = clawt_event_get_kind(event);
+
+    (void)bus;
+    if (kind == NULL || self->fed_push_soon != NULL || !fed_on(self))
+        return;
+    if (!(g_str_has_prefix(kind, "agent.") || g_str_has_prefix(kind, "team.")))
+        return;
+    self->fed_push_soon = g_timeout_source_new(1000);
+    g_source_set_callback(self->fed_push_soon, on_push_soon, self, NULL);
+    g_source_attach(self->fed_push_soon, self->main_context);
+}
+
+/*
+ * Linked fleets' people, as visitors on this office's floor (0.67.0).
+ * The same shape clawt_daemon_office_peer_sanitize() gives an
+ * office.peers answer -- kind `external`, id `ALIAS:AGENT`, the fleet's
+ * id -- from the roster the link already keeps, so a linked fleet needs
+ * no second connection and no owner token to be drawn.  Only what the
+ * roster says is drawn (the other side filtered it by its grant and we
+ * sanitised it on the way in); a hidden fleet, one that is not live and
+ * anybody stopped stay off the floor.  An agent whose presence we were
+ * not granted is drawn idle: there, but saying nothing about what it is
+ * doing.
+ */
+void
+clawt_daemon_federation_office_visitors(
+    ClawtDaemon *self,
+    JsonArray   *participants,
+    GHashTable  *fleets_drawn
+){
+    g_autoptr(GPtrArray) peers = NULL;
+    guint i;
+
+    if (!fed_on(self) || participants == NULL)
+        return;
+    peers = clawt_fed_registry_list(self->fed_registry);
+    for (i = 0; i < peers->len; i++) {
+        ClawtFedPeer *peer = g_ptr_array_index(peers, i);
+        PeerState *ps = state_of(self, peer->alias);
+        ClawtFedHealth health = health_of(self, peer);
+        JsonArray *list;
+        guint j;
+
+        if (g_strcmp0(peer->status, "revoked") == 0 || peer->hidden || ps == NULL
+            || ps->roster == NULL
+            || (health != CLAWT_FED_HEALTH_LIVE && health != CLAWT_FED_HEALTH_DEGRADED))
+            continue;
+        list = json_object_get_array_member(ps->roster, "agents");
+        for (j = 0; list != NULL && j < json_array_get_length(list); j++) {
+            JsonObject *a = json_array_get_object_element(list, j);
+            const gchar *id = json_object_get_string_member_with_default(a, "id", NULL);
+            const gchar *name = json_object_get_string_member_with_default(a, "name", id);
+            const gchar *state = json_object_get_string_member_with_default(a, "state", NULL);
+            const gchar *color = json_object_get_string_member_with_default(a, "color", NULL);
+            const gchar *activity = "idle";
+            g_autofree gchar *ours = NULL;
+            JsonObject *visitor;
+
+            if (id == NULL)
+                continue;
+            if (state != NULL && g_strcmp0(state, "running") != 0)
+                continue;
+            if (state != NULL && json_object_get_boolean_member_with_default(a, "busy", FALSE))
+                activity = "working";
+            ours = g_strdup_printf("%s:%s", peer->alias, id);
+            visitor = json_object_new();
+            json_object_set_string_member(visitor, "fleet", peer->fleet_id);
+            json_object_set_string_member(visitor, "kind", "external");
+            json_object_set_string_member(visitor, "id", ours);
+            json_object_set_string_member(visitor, "name", name);
+            json_object_set_string_member(visitor, "activity", activity);
+            json_object_set_string_member(visitor, "visiting_from", peer->alias);
+            if (color != NULL && color[0] == '#'
+                && clawt_office_character_background_is_valid(color))
+                json_object_set_string_member(visitor, "color", color);
+            json_object_set_int_member(visitor, "since", 0);
+            json_array_add_object_element(participants, visitor);
+        }
+        if (fleets_drawn != NULL)
+            g_hash_table_add(fleets_drawn, g_strdup(peer->fleet_id));
+    }
+}
+
+JsonNode *
+clawt_daemon_federation_fleets(
+    ClawtDaemon *self
+){
+    g_autoptr(GPtrArray) peers = NULL;
+    JsonArray *fleets = json_array_new();
+    JsonNode *node = json_node_new(JSON_NODE_ARRAY);
+    guint i;
+
+    if (!fed_on(self)) {
+        json_node_take_array(node, fleets);
+        return node;
+    }
+    peers = clawt_fed_registry_list(self->fed_registry);
+    for (i = 0; i < peers->len; i++) {
+        ClawtFedPeer *peer = g_ptr_array_index(peers, i);
+        PeerState *ps = state_of(self, peer->alias);
+        ClawtFedHealth health = health_of(self, peer);
+        JsonObject *fleet;
+        JsonArray *agents = json_array_new();
+        JsonArray *teams = json_array_new();
+        gboolean known = health == CLAWT_FED_HEALTH_LIVE || health == CLAWT_FED_HEALTH_DEGRADED;
+        guint j;
+
+        if (g_strcmp0(peer->status, "revoked") == 0) {
+            json_array_unref(agents);
+            json_array_unref(teams);
+            continue;
+        }
+        fleet = clawt_fed_peer_selector_json(peer, health);
+        json_object_set_string_member(fleet, "tier_label", clawt_fed_tier_label(peer->tier));
+        json_object_set_string_member(fleet, "health_label", clawt_fed_health_label(health));
+        /* The colours too, so no client keeps its own tier-to-tone table. */
+        json_object_set_string_member(fleet, "tier_tone", clawt_fed_tier_tone(peer->tier));
+        json_object_set_string_member(fleet, "health_tone", clawt_fed_health_tone(health));
+        if (!json_object_has_member(fleet, "owner"))
+            json_object_set_string_member(fleet, "owner", "");
+        if (ps != NULL && ps->latency_ms > 0)
+            json_object_set_int_member(fleet, "latency_ms", ps->latency_ms);
+        if (ps != NULL && ps->roster != NULL) {
+            JsonArray *list = json_object_get_array_member(ps->roster, "agents");
+            JsonArray *tl = json_object_get_array_member(ps->roster, "teams");
+            for (j = 0; list != NULL && j < json_array_get_length(list); j++) {
+                JsonObject *a = json_object_ref(json_array_get_object_element(list, j));
+                JsonObject *copy = json_object_new();
+                g_autoptr(GList) members = json_object_get_members(a);
+                g_autofree gchar *ref = g_strdup_printf("%s@%s",
+                                                        json_object_get_string_member(a, "id"),
+                                                        peer->alias);
+                GList *l;
+                for (l = members; l != NULL; l = l->next)
+                    json_object_set_member(copy, l->data,
+                                           json_node_copy(json_object_get_member(a, l->data)));
+                json_object_unref(a);
+                json_object_set_string_member(copy, "ref", ref);
+                json_object_set_string_member(copy, "fleet", peer->alias);
+                /* An offline fleet's people are unknown, never frozen as last seen. */
+                if (!known) {
+                    json_object_set_string_member(copy, "state", "unknown");
+                    json_object_set_boolean_member(copy, "busy", FALSE);
+                }
+                json_array_add_object_element(agents, copy);
+            }
+            for (j = 0; tl != NULL && j < json_array_get_length(tl); j++)
+                json_array_add_object_element(teams,
+                    json_object_ref(json_array_get_object_element(tl, j)));
+        }
+        json_object_set_array_member(fleet, "agents", agents);
+        json_object_set_array_member(fleet, "teams", teams);
+        json_array_add_object_element(fleets, fleet);
+    }
+    json_node_take_array(node, fleets);
+    return node;
+}
+
 /* ---- answering another fleet ------------------------------------------ */
 
 typedef struct {
@@ -761,10 +1244,18 @@ receive_hello(
         publish_peer(self, peer->alias, "changed");
     }
 
+    /* Rosters cross in both directions on every hello. */
+    if (o != NULL && json_object_has_member(o, "roster")
+        && JSON_NODE_HOLDS_OBJECT(json_object_get_member(o, "roster")))
+        store_roster(self, state_of(self, peer->alias),
+                     json_object_get_object_member(o, "roster"));
+
     grant = grant_for(self, peer, health_of(self, peer), NULL, NULL);
     json_object_set_object_member(me, "grant", clawt_fed_grant_to_json(grant));
     json_object_set_string_member(me, "tier", clawt_fed_tier_nick(peer->tier));
     json_object_set_string_member(me, "status", peer->status);
+    if (g_strcmp0(peer->status, "active") == 0)
+        json_object_set_object_member(me, "roster", roster_for(self, peer));
     answer_set(answer, 200, object_text(me));
 }
 
@@ -845,6 +1336,10 @@ receive(
 
     if (g_strcmp0(stamp->kind, "hello") == 0) {
         receive_hello(self, peer, o, answer);
+    } else if (g_strcmp0(stamp->kind, "roster") == 0) {
+        if (o != NULL)
+            store_roster(self, ps, o);
+        answer_set(answer, 200, g_strdup("{\"ok\":true}"));
     } else if (g_strcmp0(stamp->kind, "ping") == 0) {
         g_autoptr(JsonObject) pong = json_object_new();
         json_object_set_boolean_member(pong, "pong", TRUE);
@@ -941,12 +1436,39 @@ on_socket(
     ClawtFedStamp           *stamp,
     gpointer                 user_data
 ){
+    ClawtDaemon *self = user_data;
+    ClawtFedPeer *peer;
+    PeerState *ps;
+    guint8 key[CLAWT_FLEET_KEY_SIZE];
+    gint64 now = now_s();
+
     (void)server;
-    (void)connection;
-    (void)stamp;
-    (void)user_data;
-    /* The live stream arrives with mirroring; until then, refused. */
-    return FALSE;
+    /* Checked exactly like any request, before a frame moves. */
+    peer = stamp != NULL ? clawt_fed_registry_by_fleet(self->fed_registry, stamp->from) : NULL;
+    if (peer == NULL || g_strcmp0(peer->status, "active") != 0
+        || !clawt_fed_peer_public_key(peer, stamp->key_index, now, key)
+        || !clawt_fed_stamp_check(stamp, key, self->fed_fleet_id, "", "GET /fed/v1/events", now,
+                                  (guint)clawt_config_get_int(self->config,
+                                                              "federation.clock_skew_seconds"),
+                                  NULL)
+        || !clawt_fed_replay_guard_admit(self->fed_guard, stamp->from, stamp->nonce,
+                                         stamp->time, now)) {
+        audit(self, "in", peer != NULL ? peer->alias : stamp != NULL ? stamp->from : "?",
+              "events", "refused", "websocket");
+        return FALSE;
+    }
+    ps = state_of(self, peer->alias);
+    if (ps == NULL)
+        return FALSE;
+    if (ps->sockets == NULL)
+        ps->sockets = g_ptr_array_new_with_free_func(g_object_unref);
+    g_ptr_array_add(ps->sockets, g_object_ref(connection));
+    g_signal_connect(connection, "closed", G_CALLBACK(on_peer_socket_closed), ps);
+    soup_websocket_connection_set_keepalive_interval(connection, 30);
+    ps->last_seen = now;
+    /* What it may see, at once, rather than at the next change. */
+    push_roster(self, peer, ps);
+    return TRUE;
 }
 
 static gint
@@ -1066,8 +1588,12 @@ on_link_push(
     PeerState *ps = user_data;
 
     (void)link;
-    (void)body;
     ps->last_seen = now_s();
+    if (g_strcmp0(kind, "roster") == 0) {
+        g_autoptr(JsonObject) o = parse_object(body);
+        store_roster(ps->daemon, ps, o);
+        return;
+    }
     audit(ps->daemon, "in", ps->alias, kind, "ok", "push");
 }
 
@@ -1198,13 +1724,28 @@ on_ping(
             ps->backoff = 0;
             ps->latency_ms = (g_get_monotonic_time() - call->started) / 1000;
             ps->next_try = now + clawt_config_get_int(self->config, "federation.ping_seconds");
-            set_health(ps, CLAWT_FED_HEALTH_LIVE, NULL);
+            if (o != NULL && json_object_has_member(o, "roster")
+                && JSON_NODE_HOLDS_OBJECT(json_object_get_member(o, "roster")))
+                store_roster(self, ps, json_object_get_object_member(o, "roster"));
+            /*
+             * Answering is degraded until it can also push: an HTTP link
+             * opens its stream now; an IPC link's connection is one.
+             */
+            if (ps->link != NULL && !clawt_fed_link_is_streaming(ps->link))
+                clawt_fed_link_open_stream(ps->link);
+            set_health(ps, ps->link != NULL && !clawt_fed_link_is_streaming(ps->link)
+                           ? CLAWT_FED_HEALTH_DEGRADED : CLAWT_FED_HEALTH_LIVE, NULL);
             /* What it allows us, shown on the peer page, never enforced here. */
             if (peer != NULL && grant != NULL && JSON_NODE_HOLDS_OBJECT(grant)) {
-                if (peer->their_grant != NULL)
-                    json_object_unref(peer->their_grant);
-                peer->their_grant = json_object_ref(json_node_get_object(grant));
-                save_registry(self);
+                g_autofree gchar *before = peer->their_grant != NULL
+                    ? object_text(peer->their_grant) : NULL;
+                g_autofree gchar *after = object_text(json_node_get_object(grant));
+                if (g_strcmp0(before, after) != 0) {
+                    if (peer->their_grant != NULL)
+                        json_object_unref(peer->their_grant);
+                    peer->their_grant = json_object_ref(json_node_get_object(grant));
+                    save_registry(self);
+                }
             }
             audit(self, "out", call->alias, "hello", "ok", NULL);
         } else {
@@ -1271,6 +1812,11 @@ ping_peer(
     }
     /* A hello: it keeps the peer's view of us current as it checks the link. */
     me = self_description(self);
+    {
+        ClawtFedPeer *peer = clawt_fed_registry_get(self->fed_registry, ps->alias);
+        if (peer != NULL && g_strcmp0(peer->status, "active") == 0)
+            json_object_set_object_member(me, "roster", roster_for(self, peer));
+    }
     body = object_text(me);
     clawt_fed_link_request_async(ps->link, "hello", body, NULL, on_ping, call);
 }
@@ -1414,6 +1960,9 @@ clawt_daemon_federation_setup(
         clawt_ipc_server_set_federation_handler(self->ipc_server, on_ipc_federation, self);
 
     clawt_daemon_federation_refresh_links(self);
+    if (self->bus != NULL)
+        self->fed_bus_handler = g_signal_connect(self->bus, "event",
+                                                 G_CALLBACK(on_local_event), self);
     self->fed_tick = clawt_timeout_add_seconds(1, on_tick, self);
     g_message("federation: this is fleet %s (%s)", self->fed_fleet_id, fleet_name(self));
 }
@@ -1428,6 +1977,13 @@ clawt_daemon_federation_teardown(
     }
     if (self->ipc_server != NULL)
         clawt_ipc_server_set_federation_handler(self->ipc_server, NULL, NULL);
+    if (self->bus != NULL && self->fed_bus_handler != 0)
+        g_signal_handler_disconnect(self->bus, self->fed_bus_handler);
+    self->fed_bus_handler = 0;
+    if (self->fed_push_soon != NULL) {
+        g_source_destroy(self->fed_push_soon);
+        g_clear_pointer(&self->fed_push_soon, g_source_unref);
+    }
     if (self->fed_guard != NULL && self->state_dir != NULL) {
         g_autofree gchar *nonces = state_path(self, "nonces");
         clawt_fed_replay_guard_save(self->fed_guard, nonces, now_s(), NULL);

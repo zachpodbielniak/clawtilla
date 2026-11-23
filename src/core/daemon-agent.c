@@ -290,6 +290,14 @@ clawt_daemon_handle_agent(
         }
 
         json_builder_end_array(builder);
+
+        /*
+         * Linked fleets and the agents each lets this one see
+         * (docs/federation.org): grouped and ordered here, so every
+         * client draws the same sections from one reply.
+         */
+        json_builder_set_member_name(builder, "fleets");
+        json_builder_add_value(builder, clawt_daemon_federation_fleets(self));
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));

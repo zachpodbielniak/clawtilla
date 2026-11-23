@@ -355,6 +355,11 @@ declare -A AFFORDANCES=(
     ["federation accept preview"]="federation.invite.inspect|federation.invite.inspect|federation.invite.accept"
     ["federation grant editor"]="clawt-fed-grant-editor|fed-grant-editor|clawt-fed-grant-editor"
     ["federation activity"]="clawt_fed_audit_line|clawt_fed_audit_line|clawt_fed_audit_line"
+    # federation (0.67.0): other fleets in the sidebar
+    ["linked fleet sections"]="clawt-fed-section|fed-section|clawt-fed-section"
+    ["linked fleet chips"]="clawt_fed_filter_chips|clawt_fed_filter_chips|clawt_fed_filter_chips"
+    ["linked fleet filter"]="clawt_fed_filter_matches|clawt_fed_filter_matches|clawt_fed_filter_matches"
+    ["remote agent presence"]="clawt_fed_agent_presence|clawt_fed_agent_presence|clawt_fed_agent_presence"
     #
     # The Office page (0.56.0): the roster line from the library, and the
     # slot the drawn office goes in -- a note in a build without OFFICE=1.
