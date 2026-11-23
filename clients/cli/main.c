@@ -5526,7 +5526,7 @@ cmd_federation(int argc, char *argv[])
             return EXIT_FAILURE;
         o = json_node_get_object(reply);
         g_print("%s\n", member_or(o, "cloudflared_config", ""));
-        g_print("# then: clawtilla config set federation.public_url %s\n",
+        g_print("# then: federation.public_url: %s (clawtilla config edit; clawtilla config reload)\n",
                 member_or(o, "public_url", ""));
         g_print("# steps: %s\n", member_or(o, "next", ""));
         return EXIT_SUCCESS;

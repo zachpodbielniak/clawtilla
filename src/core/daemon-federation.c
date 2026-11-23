@@ -5577,8 +5577,8 @@ handle_status(
     json_object_set_boolean_member(o, "enabled", fed_on(self));
     if (!fed_on(self)) {
         json_object_set_string_member(o, "hint",
-            "set federation.enabled: true and restart the daemon "
-            "(clawtilla config set federation.enabled true)");
+            "set federation.enabled: true (clawtilla config edit) "
+            "and restart the daemon");
         return reply_object(request, o);
     }
     words = clawt_fed_safety_words(self->fed_fleet_id);
@@ -6713,7 +6713,8 @@ handle_expose(
     json_object_set_string_member(o, "socket", sock);
     json_object_set_string_member(o, "next",
         "cloudflared tunnel create NAME; cloudflared tunnel route dns NAME HOSTNAME; "
-        "put the config above in place; clawtilla config set federation.public_url URL; "
+        "put the config above in place; set federation.public_url to URL "
+        "(clawtilla config edit, then clawtilla config reload); "
         "cloudflared tunnel run NAME");
     return reply_object(request, o);
 }

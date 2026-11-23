@@ -207,12 +207,22 @@ prints a =~/.cloudflared/config.yml= routing =https://fleet.example.com/fed/v1/=
 #+begin_src bash
 cloudflared tunnel create clawtilla
 cloudflared tunnel route dns clawtilla fleet.example.com
-# put the printed config in place, then
-clawtilla config set federation.public_url https://fleet.example.com
+# put the printed config in place; set federation.public_url to
+# https://fleet.example.com (clawtilla config edit), then
+clawtilla config reload
 cloudflared tunnel run clawtilla
 #+end_src
 
 clawtilla never runs cloudflared itself.  Invites now name =https://fleet.example.com=.
+
+*A quick tunnel, to try it out.*  A ~trycloudflare.com~ tunnel needs no account, but it cannot reach a unix socket: =--url unix:...= is read as a host named =unix=, and =--unix-socket= is ignored beside =--url=, so both answer 502.  Give the listener a loopback port as well -- =federation.listen: ["unix:/STATE_DIR/federation.sock", "127.0.0.1:7791"]= with =clawtilla config edit=, then restart the daemon, since a listener binds at start -- and point the tunnel at that:
+
+#+begin_src bash
+cloudflared tunnel --no-autoupdate --url http://127.0.0.1:7791
+clawtilla federation invite --endpoint https://WORDS.trycloudflare.com
+#+end_src
+
+The hostname changes every time cloudflared starts, so a peer linked through one stops reaching you when it does.  Asking for several in a row is refused for a while (~429~, "Tunnelstore request failed").
 
 *Cloudflare Access.*  To keep the hostname behind Access, create a service token in Cloudflare Zero Trust and add a Service Auth policy for it on the application.  Put the token in the invite -- ~clawtilla federation invite --access-id ID~ asks for the secret with echo off -- and the accepting fleet sends =CF-Access-Client-Id= / =CF-Access-Client-Secret= on every request to you.  The secret is kept in the accepter's =<secrets.dir>/federation/<alias>.cf-access= and never shown again.
 

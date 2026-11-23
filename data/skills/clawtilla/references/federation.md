@@ -99,10 +99,10 @@ clawtilla federation accept clawt-fed1-... --tier trusted --alias lab --tag rese
 
 ```bash
 clawtilla federation expose --cloudflare --hostname fleet.example.com   # prints cloudflared config for <state_dir>/federation.sock
-clawtilla config set federation.public_url https://fleet.example.com
+# then federation.public_url: https://fleet.example.com (clawtilla config edit; clawtilla config reload)
 ```
 
-clawtilla never runs cloudflared. For Cloudflare Access, add `--access-id ID` to the invite; it prompts for the secret.
+clawtilla never runs cloudflared. A quick `trycloudflare.com` tunnel cannot reach a unix socket (`--url unix:...` is read as a host named `unix`, `--unix-socket` is ignored beside `--url`; both give 502): add a loopback `HOST:PORT` to `federation.listen`, restart the daemon, run `cloudflared tunnel --url http://127.0.0.1:PORT`, and invite with `--endpoint https://WORDS.trycloudflare.com`. Its hostname changes on every start; repeated requests get a 429 for a while. For Cloudflare Access, add `--access-id ID` to the invite; it prompts for the secret.
 
 **Change what a fleet may do:**
 
