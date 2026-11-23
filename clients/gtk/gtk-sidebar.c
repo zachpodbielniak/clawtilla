@@ -2077,8 +2077,36 @@ fed_header(ClawtWindow *self, JsonObject *fleet, guint shown)
     return inert_row(box);
 }
 
+/*
+ * A remote agent clicked: the daemon makes (or finds) the conversation
+ * with it -- a `fed:` room -- and it opens like any room.
+ */
+static void
+on_fed_agent_pressed(GtkGestureClick *gesture, gint n_press, gdouble x, gdouble y,
+                     gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    GtkWidget *row = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+    const gchar *ref = g_object_get_data(G_OBJECT(row), "clawt-ref");
+    g_autoptr(JsonBuilder) b = json_builder_new();
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *room;
+
+    (void)n_press; (void)x; (void)y;
+    if (ref == NULL)
+        return;
+    json_builder_begin_object(b);
+    json_builder_set_member_name(b, "ref");
+    json_builder_add_string_value(b, ref);
+    json_builder_end_object(b);
+    reply = clawt_window_request(self, "federation.open", json_builder_get_root(b));
+    room = reply != NULL ? clawt_json_string(clawt_payload_of(reply), "room", NULL) : NULL;
+    if (room != NULL)
+        clawt_gtk_select_room(self, room);
+}
+
 static GtkWidget *
-fed_agent_row(JsonObject *fleet, JsonObject *agent)
+fed_agent_row(ClawtWindow *self, JsonObject *fleet, JsonObject *agent)
 {
     const gchar *tone = NULL;
     const gchar *presence = clawt_fed_agent_presence(agent, &tone);
@@ -2089,8 +2117,9 @@ fed_agent_row(JsonObject *fleet, JsonObject *agent)
         clawt_json_string(agent, "team", NULL) != NULL ? " \302\267 " : "",
         clawt_json_string(agent, "team", ""));
     g_autofree gchar *tip = g_strdup_printf(
-        "%s, in %s. Messaging agents in other fleets arrives with the next release.",
+        "%s, in %s. Click to write to them; their fleet's grant decides whether it lands.",
         clawt_json_string(agent, "ref", "?"), clawt_json_string(fleet, "label", "?"));
+    GtkGesture *click = gtk_gesture_click_new();
 
     adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), clawt_json_string(agent, "name", "?"));
@@ -2103,6 +2132,10 @@ fed_agent_row(JsonObject *fleet, JsonObject *agent)
     gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(row), FALSE);
     gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
     gtk_widget_add_css_class(row, "clawt-fed-agent");
+    g_object_set_data_full(G_OBJECT(row), "clawt-ref",
+                           g_strdup(clawt_json_string(agent, "ref", "")), g_free);
+    g_signal_connect(click, "pressed", G_CALLBACK(on_fed_agent_pressed), self);
+    gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(click));
     return row;
 }
 
@@ -2119,6 +2152,11 @@ append_fleets(ClawtWindow *self, JsonArray *fleets)
     GtkWidget *bar;
     gboolean any_hidden = FALSE;
     guint i;
+
+    /* Kept for the banner over a fed: conversation. */
+    g_clear_pointer(&self->fed_fleets, json_array_unref);
+    if (fleets != NULL)
+        self->fed_fleets = json_array_ref(fleets);
 
     if (fleets == NULL || json_array_get_length(fleets) == 0)
         return;
@@ -2191,7 +2229,7 @@ append_fleets(ClawtWindow *self, JsonArray *fleets)
             continue;
         for (j = 0; j < n; j++)
             gtk_list_box_append(self->sidebar,
-                                fed_agent_row(fleet, json_array_get_object_element(agents, j)));
+                                fed_agent_row(self, fleet, json_array_get_object_element(agents, j)));
     }
 }
 

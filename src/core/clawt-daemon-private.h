@@ -337,6 +337,16 @@ struct _ClawtDaemon {
     GQueue                  *fed_audit;       /* JsonObject*, newest last */
     gulong                   fed_bus_handler; /* local changes -> roster pushes */
     GSource                 *fed_push_soon;   /* the debounce for those pushes */
+    /*
+     * Messages between fleets (0.68.0).  The outbox and the holds are
+     * written through to <state_dir>/federation/, so a restart neither
+     * loses a message nor leaves a held one unanswerable.
+     */
+    GPtrArray               *fed_outbox;      /* FedOut*, oldest first */
+    GHashTable              *fed_holds;       /* decision id -> JsonObject */
+    GHashTable              *fed_invites;     /* message id -> invites a reply */
+    GHashTable              *fed_sent;        /* message id -> its room */
+    GHashTable              *fed_room_depth;  /* fed: room -> last depth in */
 
     /*
      * Who to tell when something is worth interrupting somebody for.
@@ -2703,6 +2713,21 @@ void clawt_daemon_federation_teardown(ClawtDaemon *self);
 void clawt_daemon_federation_refresh_links(ClawtDaemon *self);
 const gchar *clawt_daemon_federation_fleet_id(ClawtDaemon *self);
 JsonNode *clawt_daemon_federation_fleets(ClawtDaemon *self);
+gboolean  clawt_daemon_federation_send_ref(ClawtDaemon  *self,
+                                           const gchar  *from,
+                                           const gchar  *ref,
+                                           const gchar  *body,
+                                           gboolean      invites,
+                                           gchar       **out_room,
+                                           GError      **error);
+gchar    *clawt_daemon_federation_open(ClawtDaemon  *self,
+                                       const gchar  *local,
+                                       const gchar  *ref,
+                                       GError      **error);
+JsonArray *clawt_daemon_federation_remote_agents(ClawtDaemon *self);
+gboolean  clawt_daemon_federation_hold_settle(ClawtDaemon   *self,
+                                              ClawtDecision *decision,
+                                              const gchar   *how);
 void      clawt_daemon_federation_office_visitors(ClawtDaemon *self,
                                                   JsonArray   *participants,
                                                   GHashTable  *fleets_drawn);

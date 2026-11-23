@@ -283,6 +283,8 @@ clawt_web_stylesheet(void)
     ".fed-agent-state{font-size:12px;color:var(--muted);overflow:hidden;"
       "text-overflow:ellipsis;white-space:nowrap;min-width:0}"
     ".fed-presence{font-size:9px}"
+    ".fed-banner{background:var(--info-bg);color:var(--info-fg);"
+      "padding:8px 20px;font-size:13px}"
     ".agent-row{display:block;padding:9px 20px;text-decoration:none;"
       "color:var(--ink);border-left:2px solid transparent;"
       "transition:background 140ms}"

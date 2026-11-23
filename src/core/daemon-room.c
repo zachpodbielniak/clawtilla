@@ -376,6 +376,29 @@ clawt_daemon_handle_room(
                                        "target and body are both required");
 
         /*
+         * Another fleet's agent, `AGENT@ALIAS` (0.68.0): said in the
+         * conversation with it, which is what sends it.  The reply names
+         * the room, so a client can open it.
+         */
+        if (strchr(target, '@') != NULL) {
+            g_autoptr(GError) fed_error = NULL;
+            g_autofree gchar *fed_room = NULL;
+
+            if (!clawt_daemon_federation_send_ref(self, from != NULL ? from : "user", target,
+                                                  body, TRUE, &fed_room, &fed_error))
+                return clawt_ipc_error_new(request, fed_error->code, fed_error->message);
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "queued");
+            json_builder_add_int_value(builder, 0);
+            json_builder_set_member_name(builder, "steered");
+            json_builder_add_boolean_value(builder, FALSE);
+            json_builder_set_member_name(builder, "room");
+            json_builder_add_string_value(builder, fed_room);
+            json_builder_end_object(builder);
+            return clawt_ipc_response_new(request, json_builder_get_root(builder));
+        }
+
+        /*
          * Under `agents.steer: all`, a person's message to an agent busy
          * in their conversation goes straight into that turn instead of
          * being held.  Said in the reply (`steering`), so a client can

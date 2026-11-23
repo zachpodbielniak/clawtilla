@@ -638,9 +638,23 @@ clawt_gtk_select_room(ClawtWindow *self, const gchar *room_id)
         clawt_gtk_entry_set_text(self, held);
     }
 
-    adw_window_title_set_title(
-        ADW_WINDOW_TITLE(g_object_get_data(G_OBJECT(self), "title")),
-        room_id);
+    /*
+     * A conversation with another fleet's agent is titled for whom it
+     * is with, and carries a banner saying it leaves this fleet -- the
+     * one fact about it nobody should have to remember.
+     */
+    {
+        g_autofree gchar *fed_title = clawt_fed_room_title(room_id);
+        g_autofree gchar *banner = clawt_fed_room_banner(room_id, self->fed_fleets);
+
+        adw_window_title_set_title(
+            ADW_WINDOW_TITLE(g_object_get_data(G_OBJECT(self), "title")),
+            fed_title != NULL ? fed_title : room_id);
+        if (self->fed_banner != NULL) {
+            adw_banner_set_title(ADW_BANNER(self->fed_banner), banner != NULL ? banner : "");
+            adw_banner_set_revealed(ADW_BANNER(self->fed_banner), banner != NULL);
+        }
+    }
 
     clawt_gtk_load_history(self);
     clawt_gtk_fill_conversation_menu(self);
@@ -830,6 +844,8 @@ clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
     adw_window_title_set_title(
         ADW_WINDOW_TITLE(g_object_get_data(G_OBJECT(self), "title")),
         agent_id);
+    if (self->fed_banner != NULL)
+        adw_banner_set_revealed(ADW_BANNER(self->fed_banner), FALSE);
 
     clawt_gtk_load_history(self);
     clawt_gtk_fill_conversation_menu(self);
@@ -7245,6 +7261,12 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                      G_CALLBACK(on_banner_button), self);
     gtk_box_append(GTK_BOX(content), self->connection_banner);
 
+    /* Over a conversation with another fleet's agent (0.68.0). */
+    self->fed_banner = adw_banner_new("");
+    adw_banner_set_revealed(ADW_BANNER(self->fed_banner), FALSE);
+    gtk_widget_add_css_class(self->fed_banner, "clawt-fed-banner");
+    gtk_box_append(GTK_BOX(content), self->fed_banner);
+
     /*
      * The remembered daemon's bar, in the banner's place and shown
      * instead of it (update_connection_banner()).  Use Local is the
@@ -7527,6 +7549,7 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->team_ids, g_strfreev);
     g_clear_pointer(&self->collapsed_teams, g_hash_table_unref);
     g_clear_pointer(&self->fed_filter, g_ptr_array_unref);
+    g_clear_pointer(&self->fed_fleets, json_array_unref);
 
     g_clear_pointer(&self->selected_agent, g_free);
     g_clear_pointer(&self->selected_room, g_free);

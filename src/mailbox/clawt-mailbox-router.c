@@ -1046,11 +1046,13 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
 		/*
 		 * A person, a routine or a trigger writing to an agent is the
 		 * one thing that starts its pair counts again.  Not the daemon's
-		 * own notices and not a Grok bot: both are things agents cause,
-		 * and a count they could renew is a count they could run round.
+		 * own notices, not a Grok bot and not another fleet's agent:
+		 * each is something agents cause, and a count they could renew
+		 * is a count they could run round.
 		 */
 		if (sender != NULL && !clawt_message_is_from_system(message) &&
 			!g_str_has_prefix(sender, "grok:") &&
+			clawt_sender_kind_of(sender) != CLAWT_SENDER_REMOTE &&
 			clawt_agent_manager_get(self->agents, sender) == NULL) {
 			for (i = 0; i < recipients->len; i++)
 				clawt_loop_guard_renew_pairs_of(self->guard,

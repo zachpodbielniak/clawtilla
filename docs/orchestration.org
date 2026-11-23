@@ -949,6 +949,7 @@ Served over each agent's link as an MCP endpoint.
 | ~clawtilla_decision_answer~ | answer a decision raised inside work you delegated |
 | ~clawtilla_skill_propose~ | write down a procedure it worked out -- a new skill or a change to one -- as a disabled draft and a decision for the operator; see [[file:skills.org::*Skills agents propose][Skills agents propose]] |
 | ~clawtilla_list_teams~ | who is on which team, and who leads it |
+| ~clawtilla_federation_peers~ | the fleets this one is linked with; with =agents.tools.federation=, write to their agents as ~AGENT@ALIAS~ ([[file:federation.org::#messages][federation.org]]) |
 | ~clawtilla_fleet_cost~ | what the fleet has spent, and one task's budget |
 | ~clawtilla_wait_until~ / ~clawtilla_wait_list~ / ~clawtilla_wait_cancel~ | be told when a condition holds, checked by code; see [[*Waits: a condition checked by code][Waits]] |
 | ~clawtilla_create_agent~, ~_agent_options~ | grow the fleet |

@@ -281,8 +281,8 @@ the tooling that reads it expects markdown.
 
 `data/skills/clawtilla/` is the manual an agent reads before changing a
 fleet -- the operator's own coding agent through `make install-skill`,
-and the fleet's chief of staff and anyone with `tools.manage_fleet` or
-`tools.office` (the custodial team) because the daemon embeds it as a
+and the fleet's chief of staff and anyone with `tools.manage_fleet`,
+`tools.office` (the custodial team) or `tools.federation` because the daemon embeds it as a
 bundled skill and assigns it to them (`clawt_skill_bundled_for_agent()`).
 Those agents run with no `docs/` beside them, so the skill is their only
 copy of the truth, and a stale one is followed. **It is docs, and it is
@@ -423,6 +423,8 @@ Fleets link over a Cloudflare tunnel, a tailnet, a LAN or a socket (docs/federat
 - **Grant fields are a table** (`clawt_fed_grant_field_count()/_nth()`); a new one is a row there, and the CLI, the three editors and `explain` pick it up. Limits are integers.
 - **Plain text is decided by `clawt_fed_transport_check()`**, never by a caller: loopback and tailnet yes, LAN with `federation.allow_lan_plaintext`, public never.
 - **Keep-alives are not activity.** Successful hellos and pings are not audited, or every client's Federation page redraws every few seconds.
+- **A conversation with another fleet is a `fed:ALIAS:LOCAL:REMOTE` room, and the bus is the wire.** What our side says there is forwarded by `forward_from_room()` (only the local member speaks for us; clawtilla's own notes never cross); inbound goes through `receive_message()`, which judges it against *our* grant to them -- reach (an ongoing conversation is not re-judged), `max_hops_in`, `messages_per_hour`, then the `message` mode, holding `ask`/`review`/`hand_back` as a `fed-hold-*` decision persisted in `holds.json`. Every outcome reaches the sender as an answer or a `delivery` envelope; never drop one silently. Remote words reach an agent only through `clawt_fed_fence()` under a preamble, with the room recording the raw text (`clawt_message_set_delivered_body()`).
+- **An answer invites nothing.** A forwarded agent message invites a reply only when it was sent on purpose (`fed_invites`, set by `clawt_daemon_federation_send_ref()`) or by the operator; anything else is an answer, delivered with `invites_reply` false so two fleets' agents cannot sign off at each other. A `fleet:` sender never renews the pair budget.
 - Tests: `tests/test-fed-*.c`; the two-daemon test runs every scenario over HTTP and IPC through one table, on unix sockets (loopback TCP is integration-only, `tests/test-ipc-tls.c`).
 
 ## Shapes That Keep Recurring

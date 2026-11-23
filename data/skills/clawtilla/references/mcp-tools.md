@@ -127,13 +127,14 @@ clawtilla agent restart ID
 
 | Tool | Does | Key args (* required) | Gate | Class |
 |---|---|---|---|---|
-| `clawtilla_message_agent` *hop* | queue a message to an agent (works if stopped) | agent_id*, body*, reply (answer/none), priority (low..urgent), turn_room | peer | message |
+| `clawtilla_message_agent` *hop* | queue a message to an agent (works if stopped); `agent_id` may be `AGENT@ALIAS` in a linked fleet, with `tools.federation` | agent_id*, body*, reply (answer/none), priority (low..urgent), turn_room | peer | message |
 | `clawtilla_ask_agent` *hop* | ask a question; answer arrives as a later message | agent_id*, message*, consult, turn_room | peer | message |
 | `clawtilla_message_user` | say something to the human operator | body*, attachments, turn_room | none | message |
 | `clawtilla_post_room` | post to a room; delivered only to @named members | room_id*, body*, reply, turn_room | peer | message |
 | `clawtilla_create_room` | create a room you are a member of | room_id*, members* (comma-separated), name | peer | fleet_admin |
 | `clawtilla_room_history` | recent messages of a room, or your DM with an agent id | room_id*, limit | none | read |
 | `clawtilla_list_teams` | teams, leads, members, running counts | -- | peer | read |
+| `clawtilla_federation_peers` | the linked fleets: alias, name, owner, tier, health | -- | `tools.federation` | read |
 | `clawtilla_mailbox_list` | messages waiting (empty while running: delivery acks) | limit | none | read |
 | `clawtilla_mailbox_read` | read one mailbox message | message_id* | none | read |
 | `clawtilla_mailbox_ack` | mark a message dealt with | message_id* | none | write |

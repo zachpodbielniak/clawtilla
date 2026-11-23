@@ -1741,6 +1741,22 @@ clawt_web_room_body(ClawtWebApp *app, const gchar *room_id)
         return g_steal_pointer(&main_el);
     }
 
+    /*
+     * A conversation with another fleet's agent says so above it, every
+     * time: what is written here leaves this fleet (0.68.0).  The line is
+     * the library's, so the three clients say the same thing.
+     */
+    if (clawt_fed_room_parse(room_id, NULL, NULL, NULL)) {
+        g_autoptr(JsonNode) list = clawt_web_app_call(app, "agent.list", NULL);
+        g_autofree gchar *line = clawt_fed_room_banner(
+            room_id, clawt_web_member_array(clawt_web_root(list), "fleets"));
+        g_autoptr(HtmxDiv) banner = htmx_div_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(banner), "fed-banner");
+        htmx_node_set_text_content(HTMX_NODE(banner), line);
+        htmx_node_add_child(HTMX_NODE(main_el), HTMX_NODE(banner));
+    }
+
     {
         g_autoptr(HtmxDiv) body = htmx_div_new();
         g_autoptr(HtmxButton) pill = htmx_button_new_with_label("New messages");

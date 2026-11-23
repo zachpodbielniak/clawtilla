@@ -173,11 +173,14 @@ clawt_skill_bundled_for_agent(ClawtConfig *config, ClawtAgentConfig *agent)
      * custodial team's template turns tools.office on).  Read through the
      * agent getters, so tools.office's role default -- TRUE for the chief
      * -- is the same answer the tool list gets.  An agent that cannot
-     * change the fleet has no use for a manual on changing it.
+     * change the fleet has no use for a manual on changing it.  One that
+     * may write to other fleets (tools.federation, 0.68.0) needs its
+     * federation reference: what a ref is, what holds and refusals mean.
      */
     if (clawt_agent_config_get_boolean(agent, "chief_of_staff") ||
         clawt_agent_config_get_boolean(agent, "tools.manage_fleet") ||
-        clawt_agent_config_get_boolean(agent, "tools.office"))
+        clawt_agent_config_get_boolean(agent, "tools.office") ||
+        clawt_agent_config_get_boolean(agent, "tools.federation"))
         g_strv_builder_add(names, CLAWT_SKILL_BUNDLED_CLAWTILLA);
 
     return g_strv_builder_end(names);

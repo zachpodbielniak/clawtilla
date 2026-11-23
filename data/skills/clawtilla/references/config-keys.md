@@ -431,6 +431,7 @@ see security.md).
 | `federation.max_body_bytes` | integer | `1048576` |  | The largest request another fleet may send, in bytes. |
 | `federation.ping_seconds` | integer | `30` |  | How often each linked fleet is pinged to keep its link health current. |
 | `federation.reconnect_max_seconds` | integer | `300` |  | The longest wait between attempts to reach a fleet that is not answering; the wait doubles from one second up to this. |
+| `federation.outbox_hours` | integer | `72` |  | How long a message to a linked fleet that cannot be reached waits in the outbox (<state_dir>/federation/outbox.json) before it is given up, with a note in its conversation saying so. |
 | `federation.audit_retention_days` | integer | `90` |  | How long the record of every request between fleets (<state_dir>/federation/audit.ndjson) is kept. |
 | `federation.rules` | list of strings |  |  | Grant overrides for every linked fleet a selector matches, applied in order after the fleet's tier and before its own overrides, each `SELECTOR: field=value; field=value`. |
 
@@ -678,6 +679,7 @@ see security.md).
 | `agents.integrations.webhook.bind_address` | string | `127.0.0.1` |  | Which address to listen on. |
 | `agents.integrations.local` | boolean | `false` |  | libreclaw's stdin/stdout channel. |
 | `agents.integrations.cmacs` | boolean | `false` |  | libreclaw's in-process cmacs channel. |
+| `agents.federation_reach` | list of strings |  |  | Which linked fleets may reach this agent, as peer selectors (`tier:owned`, `tag:client-acme`, `name:lab`, `owner:Dana`, `*`; see docs/federation.org#selectors). |
 | `agents.tools` | section |  |  | Which orchestration tools this agent may call. |
 | `agents.tools.allow` | list of strings |  |  | Tool names permitted. |
 | `agents.tools.deny` | list of strings |  |  | Tool names refused. |
@@ -686,6 +688,7 @@ see security.md).
 | `agents.policy.ask_timeout_seconds` | integer |  |  | How long an `ask` waits for a person. |
 | `agents.tools.manage_fleet` | boolean | `false` |  | **D** Whether this agent may create other agents. |
 | `agents.tools.ephemeral` | boolean | `false` |  | **D** Whether this agent may spawn ephemeral agents: temporary helpers that do one piece of work and are then reaped (clawtilla_ephemeral_spawn, clawtilla_ephemeral_reap). |
+| `agents.tools.federation` | boolean | `false` |  | **D** Whether this agent may start conversations with agents in linked fleets (clawtilla_message_agent and clawtilla_delegate with `AGENT@ALIAS`) and sees them in clawtilla_list_agents. |
 | `agents.tools.office` | boolean | `false` |  | Whether this agent may read, change and apply the office's world packs and import assets into them (clawtilla_office_*). |
 | `agents.tools.schedule` | boolean | `true` |  | Whether this agent may schedule its own routines. |
 | `agents.tools.schedule_limit` | integer | `8` |  | How many routines may run on this agent before it can add no more of its own. |

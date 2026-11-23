@@ -96,7 +96,7 @@ Keys and their effects: [config-keys.md](config-keys.md), [agents.md](agents.md)
 
 | Command | What it does |
 |---|---|
-| `clawtilla send <agent-or-room> <message...>` | send; words after the target are joined, quoting optional. Mid-turn it is held (steered) until the turn ends |
+| `clawtilla send <agent-or-room-or-AGENT@FLEET> <message...>` | send; words after the target are joined, quoting optional. Mid-turn it is held (steered) until the turn ends. `AGENT@FLEET` writes to a linked fleet's agent and prints the `fed:` room (read it with `room history`) |
 | `clawtilla chat <agent>` | interactive chat |
 | `clawtilla mailbox list <agent>` / `dead <agent>` | queued items / dead-lettered ones (a running agent's mailbox is empty: delivery acks at the socket) |
 | `clawtilla mailbox ack <agent> <item>` / `requeue <agent> <item>` | settle or retry one item |

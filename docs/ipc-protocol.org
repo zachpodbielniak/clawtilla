@@ -1327,7 +1327,9 @@ Since 0.66.0: ~federation.status~, ~federation.tiers~,
 ~federation.expose~; the events ~federation.peer~ (~alias~, ~change~) and
 ~federation.audit~ (~direction~, ~kind~, ~outcome~); since 0.67.0 also
 ~federation.roster~ (~alias~), and ~agent.list~ carries ~fleets~, one
-entry per linked fleet with the agents it shows us.  Every payload and
+entry per linked fleet with the agents it shows us; since 0.68.0
+~federation.open~ (~ref~ → ~room~), ~msg.send~ to ~AGENT@ALIAS~ (answers
+~room~), and the event ~federation.delivery~ (~id~, ~state~, ~detail~).  Every payload and
 answer is tabled in [[file:federation.org::#requests][federation.org]].  With =federation.enabled=
 off, ~federation.status~ answers ~enabled: false~ and a hint, and the rest
 refuse with =not_supported=.

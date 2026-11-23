@@ -2487,7 +2487,7 @@ cmd_send(int argc, char *argv[])
     g_autofree gchar *body = NULL;
 
     if (argc < 4) {
-        g_printerr("Usage: clawtilla send <agent-or-room> <message>\n");
+        g_printerr("Usage: clawtilla send <agent-or-room-or-AGENT@FLEET> <message>\n");
         return EXIT_FAILURE;
     }
 
@@ -2528,6 +2528,11 @@ cmd_send(int argc, char *argv[])
             g_print("Held: %s is mid-turn. It will be sent when this turn "
                     "ends, and is not in the transcript until then.\n",
                     argv[2]);
+        /* Another fleet's agent: it went to the outbox of that link. */
+        else if (json_object_has_member(payload, "room"))
+            g_print("Sent to %s, in another fleet. Its fleet decides whether "
+                    "it lands; read the conversation with: clawtilla room history %s.\n",
+                    argv[2], json_object_get_string_member(payload, "room"));
         else if (queued == 0)
             /*
              * Not "check the room's members", which is what this used

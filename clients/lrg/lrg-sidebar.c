@@ -1418,8 +1418,33 @@ fed_header(ClawtLrgApp *app, JsonObject *fleet, guint shown, gboolean folded)
     return header;
 }
 
+static void
+on_fed_opened(ClawtLrgApp *app, JsonNode *reply, const GError *error, gpointer user_data)
+{
+    JsonObject *o = clawt_ipc_reply_object(reply);
+    const gchar *room = o != NULL ? clawt_ipc_payload_string(o, "room") : NULL;
+
+    (void)error;
+    (void)user_data;
+    if (room != NULL)
+        clawt_lrg_select_room(app, room);
+}
+
+/* A remote agent clicked: open the conversation with it, a `fed:` room. */
+static void
+on_fed_agent_clicked(ClawtLrgApp *app, gpointer user_data)
+{
+    JsonObject *o = json_object_new();
+    JsonNode *payload = json_node_new(JSON_NODE_OBJECT);
+
+    json_object_set_string_member(o, "ref", user_data);
+    json_node_take_object(payload, o);
+    clawt_lrg_request(app, "federation.open", payload, CLAWT_LRG_REQUEST_NONE,
+                      on_fed_opened, NULL, NULL);
+}
+
 static LrgWidget *
-fed_agent_row(JsonObject *fleet, JsonObject *agent)
+fed_agent_row(ClawtLrgApp *app, JsonObject *fleet, JsonObject *agent)
 {
     const gchar *tone = NULL;
     const gchar *presence = clawt_fed_agent_presence(agent, &tone);
@@ -1432,11 +1457,15 @@ fed_agent_row(JsonObject *fleet, JsonObject *agent)
                                                 : clawt_ipc_payload_string(agent, "id"),
                                    line);
 
+    LrgWidget *clickable;
+
     (void)fleet;
     lrg_container_set_padding(LRG_CONTAINER(row), 6.0f);
     clawt_lrg_row_add_prefix(row, clawt_lrg_badge("\342\227\217", clawt_fed_badge_tone(tone)));
-    lrg_widget_set_name(row, "clawt-fed-agent");
-    return row;
+    clickable = clickable_new(app, row, on_fed_agent_clicked,
+                              g_strdup(clawt_ipc_payload_string(agent, "ref")), g_free);
+    lrg_widget_set_name(clickable, "clawt-fed-agent");
+    return clickable;
 }
 
 /*
@@ -1519,7 +1548,7 @@ append_fleets(ClawtLrgApp *app)
         clawt_lrg_take(sidebar.list, fed_header(app, fleet, n, folded));
         for (j = 0; !folded && j < n; j++)
             clawt_lrg_take(sidebar.list,
-                           fed_agent_row(fleet, json_array_get_object_element(agents, j)));
+                           fed_agent_row(app, fleet, json_array_get_object_element(agents, j)));
     }
 }
 

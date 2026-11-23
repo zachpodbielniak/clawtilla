@@ -2653,6 +2653,12 @@ federation:
   # answering; the wait doubles from one second up to this.
   reconnect_max_seconds: 300
 
+  # How long a message to a linked fleet that cannot be reached waits in
+  # the outbox (<state_dir>/federation/outbox.json) before it is given up,
+  # with a note in its conversation saying so. It is sent the moment the
+  # fleet answers again; nothing is dropped silently.
+  outbox_hours: 72
+
   # How long the record of every request between fleets
   # (<state_dir>/federation/audit.ndjson) is kept.
   audit_retention_days: 90
@@ -4639,6 +4645,14 @@ agents:
       # libreclaw's in-process cmacs channel.
       cmacs: false
 
+    # Which linked fleets may reach this agent, as peer selectors
+    # (`tier:owned`, `tag:client-acme`, `name:lab`, `owner:Dana`, `*`; see
+    # docs/federation.org#selectors). A fleet must match one of them *and* be
+    # allowed by its own grant: this can only take reach away, never give it.
+    # Unset, the grant alone decides. A conversation already under way is not
+    # cut off by a change here; a new one is.
+    federation_reach: []
+
     # Which orchestration tools this agent may call.
     #
     # The clawtilla_* tools let an agent message its peers, delegate work,
@@ -4693,6 +4707,19 @@ agents:
       # it reaps it; only that agent or you can. See docs/ephemeral-agents.org.
       # DANGEROUS: read docs/security.org before enabling this.
       ephemeral: false
+
+      # Whether this agent may start conversations with agents in linked
+      # fleets (clawtilla_message_agent and clawtilla_delegate with
+      # `AGENT@ALIAS`) and sees them in clawtilla_list_agents.
+      #
+      # Off by default: what this agent writes leaves this machine for
+      # somebody else's fleet. Answering a message another fleet sent it needs
+      # nothing -- the answer goes back where the question came from. What the
+      # other fleet lets it reach is that fleet's grant, not this key. With
+      # tools.manage_fleet as well it may also manage links
+      # (clawtilla_federation_*). See docs/federation.org#messages.
+      # DANGEROUS: read docs/security.org before enabling this.
+      federation: false
 
       # Whether this agent may read, change and apply the office's world packs
       # and import assets into them (clawtilla_office_*).

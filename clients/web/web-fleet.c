@@ -924,7 +924,10 @@ append_linked_fleets(HtmxDiv *scroll, JsonArray *fleets,
             const gchar *tone = NULL;
             const gchar *presence = clawt_fed_agent_presence(agent, &tone);
             const gchar *team = clawt_web_member(agent, "team", "");
-            g_autoptr(HtmxDiv) row = htmx_div_new();
+            g_autofree gchar *escaped = g_uri_escape_string(
+                clawt_web_member(agent, "ref", ""), NULL, FALSE);
+            g_autofree gchar *href = g_strdup_printf("/fleet/%s", escaped);
+            g_autoptr(HtmxA) row = htmx_a_new_with_href(href);
             g_autoptr(HtmxSpan) mark = htmx_span_new();
             g_autoptr(HtmxSpan) who = htmx_span_new();
             g_autoptr(HtmxSpan) state = htmx_span_new();
@@ -934,8 +937,8 @@ append_linked_fleets(HtmxDiv *scroll, JsonArray *fleets,
                                                      *team != '\0' ? " \302\267 " : "",
                                                      team);
             g_autofree gchar *tip = g_strdup_printf(
-                "%s, in %s. Messaging agents in other fleets arrives with the "
-                "next release.", clawt_web_member(agent, "ref", "?"),
+                "%s, in %s. Open to write to them; their fleet's grant decides "
+                "whether it lands.", clawt_web_member(agent, "ref", "?"),
                 clawt_web_member(fleet, "label", alias));
 
             htmx_element_add_class(HTMX_ELEMENT(row), "fed-agent");
@@ -1777,6 +1780,35 @@ on_agent_root(HtmxRequest *request, GHashTable *params, gpointer user_data)
 }
 
 /*
+ * A remote agent's row: the daemon makes (or finds) the conversation with
+ * it, a `fed:` room, and the browser goes there.  Under /fleet/, never
+ * /a/, so the catch-all cannot swallow it.
+ */
+static HtmxResponse *
+on_fleet_open(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    const gchar *ref = params != NULL ? g_hash_table_lookup(params, "ref") : NULL;
+    g_autoptr(JsonBuilder) b = json_builder_new();
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *room;
+
+    json_builder_begin_object(b);
+    json_builder_set_member_name(b, "ref");
+    json_builder_add_string_value(b, ref != NULL ? ref : "");
+    json_builder_end_object(b);
+    reply = clawt_web_app_call(app, "federation.open", json_builder_get_root(b));
+    room = clawt_web_member(clawt_web_root(reply), "room", NULL);
+    if (room == NULL)
+        return clawt_web_redirect(request, "/");
+    {
+        g_autofree gchar *escaped = g_uri_escape_string(room, NULL, FALSE);
+        g_autofree gchar *where = g_strdup_printf("/r/%s", escaped);
+        return clawt_web_redirect(request, where);
+    }
+}
+
+/*
  * A linked-fleet chip or fold caret: switch one term in this browser's
  * `clawt_fed_filter` cookie and go back.  The way back is a path on this
  * site and nothing else -- `back` came off a form, and a redirect to
@@ -2284,6 +2316,7 @@ clawt_web_register_fleet(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_get(router, "/a/:id", on_agent_root, app);
     htmx_router_get(router, "/f/sidebar", on_sidebar_fragment, app);
     htmx_router_post(router, "/fleet-filter", on_fleet_filter, app);
+    htmx_router_get(router, "/fleet/:ref", on_fleet_open, app);
 
     /*
      * The room routes live in their own space rather than under /a/, so

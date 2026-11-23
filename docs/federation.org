@@ -335,7 +335,47 @@ Each override is checked against the field's kind before anything is stored; one
 :CUSTOM_ID: agent-reach
 :END:
 
-An agent may narrow which fleets reach it, never widen: arrives with messaging (0.68.0) as ~agents.federation_reach~, a list of peer selectors the peer must also match.
+An agent may narrow which fleets reach it, never widen (0.68.0): =agents.federation_reach= is a list of peer [[#selectors][selectors]], and a fleet must match one of them as well as its grant.  It drops the agent from that fleet's roster and refuses that fleet's new conversations with it; one already under way carries on.
+
+#+begin_src yaml
+agents:
+  - id: billing
+    federation_reach: ["tier:owned", "tag:client-acme"]
+#+end_src
+
+** Messages
+:PROPERTIES:
+:CUSTOM_ID: messages
+:END:
+
+Since 0.68.0 a person, or an agent allowed to, writes to another fleet's agent by its ref, =AGENT@ALIAS= -- =atlas@lab= is the agent =atlas= in the fleet you call =lab=.  =user@ALIAS= is that fleet's operator, reachable only in a conversation its operator started.
+
+*** Where a conversation lives
+Each conversation is a room of its own, =fed:ALIAS:LOCAL:REMOTE=, named for whom it is with (=atlas@lab=, or =support ↔ atlas@lab= for one of your agents).  Its members are your side (=user= or an agent) and the remote sender =fleet:ALIAS:AGENT=.  Whatever your side says in it goes to the other fleet; whatever they say lands in it.  Rooms come back after a restart, and the transcript is the record.
+
+*** Sending
+- From a client :: click an agent under *Linked fleets* in the sidebar.  The daemon opens (or makes) the conversation with it (~federation.open~) and it opens like any room; write in it as in any chat.
+- From the CLI :: ~clawtilla send atlas@lab "can you check the nightly build?"~ -- it prints the room, and ~clawtilla room history fed:lab:user:atlas~ reads it.
+- From an agent :: ~clawtilla_message_agent~ with =agent_id: atlas@lab=, for an agent with =agents.tools.federation= (off by default; such an agent also sees other fleets' agents in ~clawtilla_list_agents~ and the links in ~clawtilla_federation_peers~).  An agent without it is told so, never silently dropped.
+
+A message goes to an *outbox* (=<state_dir>/federation/outbox.json=), sent at once when the fleet is reachable and the moment it answers again when it is not: on our link to it as a signed =message= envelope, or -- when it dials us -- pushed down the connection it keeps.  A message waiting longer than =federation.outbox_hours= (72) is given up, with a note saying so.
+
+*** What the receiving fleet does
+In this order, every step against the grant it gave *you*:
+
+1. Well-formed: an id, a sender that is an id, UTF-8 text of at most 64 KiB.
+2. Reach: an agent it may reach (=reach=, =agents=, the agent's own =federation_reach=), or the inbox agent when none is named.  "No such agent" and "not for you" are one answer, so a grant is never a directory.  A conversation already under way is not re-judged.
+3. Hops: within =max_hops_in= (each hop between fleets counts one; a person's message starts at nought).
+4. Rate: within =messages_per_hour=.
+5. The grant's =message= mode: =allow= delivers it; =deny= declines it; =ask=, =review= and =hand_back= *hold* it as a decision in that fleet's operator's inbox -- *Deliver* or *Decline* -- kept on disk (~holds.json~ in the federation state directory) so a restart does not orphan it.
+
+The sender always hears what happened.  Delivered is silent; anything else is a line in the conversation from clawtilla: "Bravo Lab is holding this message for its operator's approval", "Bravo Lab declined this message: ...", "Not delivered to Bravo Lab: ...".  Each change is also the event ~federation.delivery~ (=id=, =state=: sent, delivered, held, declined, refused, expired; =detail=).
+
+*** How the agent sees it
+The transcript shows exactly what they wrote.  The agent receives it under a preamble that names the fleet, its owner and tier, says it is another organisation's agent and not the operator, and puts their words inside a backtick fence longer than any backtick run in them, with any forged =[clawtilla]= marker escaped (~clawt_fed_fence()~) -- so nothing in the message can close the fence and speak as clawtilla.
+
+*** One request, one answer
+A message invites one answer, as between agents here.  The agent's closing text is that answer and goes back to them; the answer arrives on their side marked as an answer -- inviting nothing -- so their agent's closing text is not sent back, and two fleets' agents cannot sign off at each other for ever.  To write again, an agent sends a new message (~clawtilla_message_agent~); a person just writes in the conversation.  The pair budget is never renewed by another fleet's sender, and =max_hops_in= bounds a chain of deliberate messages.
 
 ** Managing links
 :PROPERTIES:
@@ -437,7 +477,7 @@ Outstanding invites (with their secrets) live in =<secrets.dir>/federation/invit
 :CUSTOM_ID: not-operator
 :END:
 
-Inside this fleet a remote agent is a sender of its own kind (=fleet:ALIAS:AGENT=).  Only the operator and clawtilla itself may write into a room they are not members of; every other sender -- agents, integrations, other fleets -- is held to membership.  (Before 0.66.0 any sender that was not a local agent had the operator's reach.)  From 0.68.0 a remote message is fenced in its preamble as coming from another fleet, with that fleet's name, owner and tier.
+Inside this fleet a remote agent is a sender of its own kind (=fleet:ALIAS:AGENT=).  Only the operator and clawtilla itself may write into a room they are not members of; every other sender -- agents, integrations, other fleets -- is held to membership.  (Before 0.66.0 any sender that was not a local agent had the operator's reach.)  Since 0.68.0 a remote message is fenced as coming from another fleet, with that fleet's name, owner and tier (see [[#messages][Messages]]), and a remote sender never renews the pair budget that stops two agents looping.
 
 *** The audit
 :PROPERTIES:
@@ -462,9 +502,9 @@ The GTK, web and libregnum clients each have a Federation page in the Fleet sect
 :CUSTOM_ID: sidebar
 :END:
 
-Since 0.67.0 every client's sidebar ends with *Linked fleets*: one section per fleet after your own, each with a fold caret, its health dot, its name, its tier badge (coloured by tier) and how many of its agents you can see.  Under it, those agents, each with a presence dot and word -- /working/, /idle/, /stopped/ or /unknown/ -- and its team.  Hover a heading for the fleet's whole line (tier, owner, tags, health, latency).
+Since 0.67.0 every client's sidebar ends with *Linked fleets*: one section per fleet after your own, each with a fold caret, its health dot, its name, its tier badge (coloured by tier) and how many of its agents you can see.  Under it, those agents, each with a presence dot and word -- /working/, /idle/, /stopped/ or /unknown/ -- and its team.  Hover a heading for the fleet's whole line (tier, owner, tags, health, latency).  Click an agent to write to it ([[#messages][Messages]]).
 
-What is listed is exactly what the other fleet's grant lets you see (=see_roster=, =reach=, =agents=, =see_presence=, =see_typing=), filtered on their side before it is sent.  A fleet that is offline keeps its people listed as /unknown/, never frozen at what they were last doing; one that withholds presence shows them /unknown/ too.  Remote agents cannot be messaged yet (0.68.0); their rows say so on hover.
+What is listed is exactly what the other fleet's grant lets you see (=see_roster=, =reach=, =agents=, =see_presence=, =see_typing=), filtered on their side before it is sent.  A fleet that is offline keeps its people listed as /unknown/, never frozen at what they were last doing; one that withholds presence shows them /unknown/ too.
 
 Above the sections, *filter chips*, offered from what is there (~clawt_fed_filter_chips()~, so the three clients draw the same chips in the same order): /Online/ and each tier present always, each owner and tag behind *More...* -- a chip that is switched on is never folded away -- and *Show hidden* when a fleet is hidden.  Chips of one kind are alternatives and kinds combine: /Trusted/, /Owned/ and /#gpu/ shows a trusted-or-owned fleet tagged gpu (~clawt_fed_filter_matches()~).  The chips and the folds are the person's, not the fleet's: GTK and lrg keep them for the window, the web client in a cookie (=clawt_fed_filter=) per browser.  *Hide* and *Mute* (Federation page or ~clawtilla federation hide~) are the fleet's and every client agrees: a hidden fleet is left out unless Show hidden is on, a muted one is drawn dimmed.
 
@@ -502,12 +542,14 @@ A linked fleet's running agents visit your office (kind /external/, id =ALIAS:AG
 | ~federation.audit~ | ={alias?, limit?}= | ={entries: [{time, direction, peer, kind, outcome, detail}]}= |
 | ~federation.rotate_key~ | | ={key_index, fleet_id, told}= |
 | ~federation.expose~ | ={hostname?}= | ={cloudflared_config, public_url, socket, next}= |
+| ~federation.open~ | ={ref}= | ={room}=: the operator's conversation with =AGENT@ALIAS=, made if new (0.68.0) |
+| ~msg.send~ to =AGENT@ALIAS= | ={target, body, from?}= | ={queued: 0, steered: false, room}= (0.68.0) |
 
-Events: ~federation.peer~ (=alias=, =change=: added, changed, health, revoked, removed), ~federation.roster~ (=alias=, since 0.67.0: that fleet's roster changed) and ~federation.audit~ (=direction=, =kind=, =outcome=).
+Events: ~federation.peer~ (=alias=, =change=: added, changed, health, revoked, removed), ~federation.roster~ (=alias=, since 0.67.0: that fleet's roster changed), ~federation.delivery~ (subject the conversation's room; =id=, =state=, =alias=, =detail=; since 0.68.0) and ~federation.audit~ (=direction=, =kind=, =outcome=).
 
 ~agent.list~ carries, since 0.67.0, =fleets=: one object per linked fleet that is not revoked, in the registry's order, with =alias=, =label=, =fleet_id=, =tier=, =tier_label=, =tier_tone=, =owner=, =tags=, =health=, =health_label=, =health_tone=, =hidden=, =muted=, =latency_ms= (when known), =teams= (=[{id, name}]=) and =agents= (=[{id, ref, fleet, name, team?, color?, inbox, state?, busy?}]=, =ref= being =AGENT@ALIAS=; =state= is =unknown= for a fleet that is not live).  The tones are the library's words (=success=, =accent=, =warning=, =error=, =neutral=); ~clawt_fed_badge_tone()~ turns them into the web and lrg badge names.
 
-Between fleets: =GET /fed/v1/hello= (public, signed: who this fleet is), =POST /fed/v1/invite/accept=, =POST /fed/v1/envelope=, =GET /fed/v1/events= (WebSocket, 0.67.0); on the IPC port the frames ~fed.hello~, ~fed.invite~, ~fed.envelope~ and, from the far side, ~fed.push~.  Envelope kinds: =hello=, =ping=, =revoke=, =rotate= (0.66.0), =roster= (0.67.0); anything else is answered "not understood yet", naming the version.
+Between fleets: =GET /fed/v1/hello= (public, signed: who this fleet is), =POST /fed/v1/invite/accept=, =POST /fed/v1/envelope=, =GET /fed/v1/events= (WebSocket, 0.67.0); on the IPC port the frames ~fed.hello~, ~fed.invite~, ~fed.envelope~ and, from the far side, ~fed.push~.  Envelope kinds: =hello=, =ping=, =revoke=, =rotate= (0.66.0), =roster= (0.67.0), =message= (={id, from, to, body, depth, invites}=, answered ={state, detail?}=) and =delivery= (={id, state, detail?}=, what became of a message that was pushed or held) (0.68.0); anything else is answered "not understood yet", naming the version.
 
 ** Configuration
 :PROPERTIES:
@@ -527,6 +569,9 @@ Every key is in [[file:configuration-options.org][configuration-options.org]]; t
 | =federation.seal= | auto | sealing |
 | =federation.inbox_agent= | the chief | who an inbox-only peer reaches |
 | =federation.rules= | | grant rules |
+| =federation.outbox_hours= | 72 | how long an unsent message waits |
+| =agents.tools.federation= | false | the agent may write to other fleets |
+| =agents.federation_reach= | | which fleets may reach the agent |
 
 ** Troubleshooting
 :PROPERTIES:
@@ -541,4 +586,8 @@ Every key is in [[file:configuration-options.org][configuration-options.org]]; t
 - "that invite was used, revoked or has expired" :: ask for a new one; an invite is single-use.
 - a peer stays offline :: ~clawtilla federation show ALIAS~ prints the last error.  For a tunnel: is cloudflared running, and does =curl https://HOST/fed/v1/hello= answer?  For a tailnet: does the ACL allow the port?  For =clawtilla://=: is =daemon.tcp_address= or the tailnet listener bound on the other side?
 - cloudflared answers 502 :: it cannot reach the socket: the =service: unix:...= path must be the daemon's =<state_dir>/federation.sock=, and the daemon must be running with federation on.
+- "Not delivered to X: there is no agent here you may reach by that name" :: their grant's =reach=/=agents=, or the agent's own =federation_reach=, does not include it; ~clawtilla federation show ALIAS~ prints what they allow you.  Write to their inbox agent instead (=user@ALIAS= is reachable only in a conversation their operator started).
+- "X is holding this message" :: their grant asks first; their operator answers it in the Decisions inbox.  Nothing to do here.
+- an agent's message to another fleet is refused with "agents.tools.federation is off" :: turn it on for that agent (=clawtilla agent set AGENT tools.federation true=) if it should write to other fleets.
+- a message sits unsent :: the fleet is not reachable (=federation list= shows its health); it goes when it answers, or is given up after =federation.outbox_hours=.
 - "unknown fleet or key" from a peer :: it revoked or forgot you, or you rotated while it was unreachable for more than a day; link again.

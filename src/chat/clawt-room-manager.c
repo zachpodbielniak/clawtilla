@@ -559,6 +559,34 @@ clawt_room_manager_get_direct(ClawtRoomManager *self, const gchar *a,
     return insert_room(self, room);
 }
 
+ClawtRoom *
+clawt_room_manager_get_fed(ClawtRoomManager *self, const gchar *alias,
+                           const gchar *local, const gchar *remote)
+{
+    g_autofree gchar *room_id = NULL;
+    g_autofree gchar *sender = NULL;
+    g_autofree gchar *name = NULL;
+    ClawtRoom *room;
+
+    g_return_val_if_fail(CLAWT_IS_ROOM_MANAGER(self), NULL);
+
+    room_id = clawt_fed_room_id(alias, local, remote);
+    if (!clawt_fed_room_parse(room_id, NULL, NULL, NULL))
+        return NULL;
+    room = g_hash_table_lookup(self->rooms, room_id);
+    if (room != NULL)
+        return room;
+
+    sender = clawt_fed_sender_id(alias, remote);
+    /* Named for whom it is with, which every client draws as its title. */
+    name = clawt_fed_room_title(room_id);
+    room = clawt_room_new(room_id, name);
+    clawt_room_add_member(room, local);
+    clawt_room_add_member(room, sender);
+
+    return insert_room(self, room);
+}
+
 guint
 clawt_room_manager_load_direct(ClawtRoomManager *self)
 {
@@ -603,6 +631,19 @@ clawt_room_manager_load_direct(ClawtRoomManager *self)
                       ? NULL : team, NULL);
             restored++;
             continue;
+        }
+
+        /* A conversation with another fleet: its members are in its id. */
+        {
+            g_autofree gchar *alias = NULL;
+            g_autofree gchar *local = NULL;
+            g_autofree gchar *remote = NULL;
+
+            if (clawt_fed_room_parse(room_id, &alias, &local, &remote)) {
+                clawt_room_manager_get_fed(self, alias, local, remote);
+                restored++;
+                continue;
+            }
         }
 
         if (!g_str_has_prefix(room_id, "dm:"))

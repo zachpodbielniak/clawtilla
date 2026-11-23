@@ -59,6 +59,7 @@ daemon_yaml(
         "federation:\n  enabled: true\n  name: \"%s\"\n  owner: \"Owner of %s\"\n"
         "  ping_seconds: 1\n  listen: [\"unix:%s/%s-fed.sock\"]\n"
         "agents:\n  - id: %s-chief\n    chief_of_staff: true\n"
+        "    tools:\n      federation: true\n"
         "    runtime:\n      autostart: false\n"
         "  - id: %s-worker\n    runtime:\n      autostart: false\n",
         dir, who, dir, who, dir, who, dir, who, dir, who, name, name, dir, who, who, who);
@@ -427,6 +428,15 @@ test_rosters_follow_grants(
     }
     wait_for_visitors(&p, "bravo-lab:b-chief bravo-lab:b-worker");
 
+    /* An agent's own reach only narrows: B's worker takes owned fleets only. */
+    {
+        g_autoptr(JsonObject) set = ask(p.cb, "agent.set",
+            payload_of("{\"agent\":\"b-worker\",\"key\":\"federation_reach\","
+                       "\"value\":\"tier:owned\"}"), &error);
+        g_assert_no_error(error);
+    }
+    wait_for_refs(&p, p.ca, "b-chief@bravo-lab");
+
     /* A takes the roster away from B entirely. */
     {
         g_autofree gchar *req = g_strdup_printf("{\"alias\":\"%s\",\"grant\":{\"see_roster\":\"false\"}}",
@@ -436,6 +446,235 @@ test_rosters_follow_grants(
     }
     wait_for_refs(&p, p.cb, "");
     (void)b_alias_on_a;
+    pair_down(&p);
+}
+
+/* "sender: body" for each message in @room, newest last, one per line. */
+static gchar *
+room_lines(
+    ClawtClient *client,
+    const gchar *room
+){
+    g_autofree gchar *req = g_strdup_printf("{\"room\":\"%s\"}", room);
+    g_autoptr(JsonObject) history = ask(client, "room.history", payload_of(req), NULL);
+    JsonArray *messages = history != NULL && json_object_has_member(history, "messages")
+        ? json_object_get_array_member(history, "messages") : NULL;
+    GString *out = g_string_new(NULL);
+    guint i;
+
+    for (i = 0; messages != NULL && i < json_array_get_length(messages); i++) {
+        JsonObject *m = json_array_get_object_element(messages, i);
+        g_string_append_printf(out, "%s: %s\n", json_object_get_string_member(m, "sender"),
+                               json_object_get_string_member(m, "body"));
+    }
+    return g_string_free(out, FALSE);
+}
+
+static void
+wait_for_line(
+    Pair        *p,
+    ClawtClient *client,
+    const gchar *room,
+    const gchar *want
+){
+    gint64 deadline = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+
+    for (;;) {
+        g_autofree gchar *got = room_lines(client, room);
+        if (strstr(got, want) != NULL)
+            return;
+        if (g_get_monotonic_time() > deadline)
+            g_error("expected \"%s\" in %s, have:\n%s", want, room, got);
+        g_main_context_iteration(p->context, FALSE);
+        g_usleep(20000);
+    }
+}
+
+static void
+send_as_operator(
+    ClawtClient *client,
+    const gchar *target,
+    const gchar *body,
+    const gchar *want_room
+){
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *req = g_strdup_printf("{\"target\":\"%s\",\"body\":\"%s\"}", target, body);
+    g_autoptr(JsonObject) sent = ask(client, "msg.send", payload_of(req), &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpstr(json_object_get_string_member(sent, "room"), ==, want_room);
+}
+
+/*
+ * Messages between fleets (0.68.0), both ways, through both fleets'
+ * grants.  A's operator writes to B's chief, which B's grant to A
+ * reaches; the chief's answer comes back into A's conversation (B dials
+ * nothing, so it is pushed).  B's worker is beyond A's reach and A is
+ * told so in the conversation, not left waiting.  Then B makes A ask
+ * first: the message is held as a decision, A is told, and B's operator
+ * delivering it lands it.  A fleet's words reach the agent fenced.
+ */
+static void
+test_messages_cross(
+    gconstpointer data
+){
+    const Transport *t = data;
+    Pair p;
+    g_autofree gchar *alias = NULL;
+    g_autoptr(GError) error = NULL;
+    const gchar *a_room = "fed:bravo-lab:user:b-chief";
+    const gchar *b_room = "fed:alpha:b-chief:user";
+
+    memset(&p, 0, sizeof(p));
+    pair_up(&p);
+    alias = link_them(&p, t);
+    g_assert_cmpstr(alias, ==, "bravo-lab");
+    wait_for_refs(&p, p.ca, "b-chief@bravo-lab");
+
+    /* Out, in, and the answer back. */
+    send_as_operator(p.ca, "b-chief@bravo-lab", "hello from alpha", a_room);
+    wait_for_line(&p, p.ca, a_room, "user: hello from alpha");
+    wait_for_line(&p, p.cb, b_room, "fleet:alpha:user: hello from alpha");
+    /* B's chief (stopped, so it is in the mailbox) gets it fenced, under a preamble. */
+    {
+        ClawtAgent *chief = clawt_agent_manager_get(p.b->agents, "b-chief");
+        g_autoptr(GPtrArray) items = clawt_mailbox_list(clawt_agent_get_mailbox(chief), NULL);
+        g_autofree gchar *delivered = NULL;
+
+        g_assert_cmpuint(items->len, >, 0);
+        delivered = clawt_mailbox_item_dup_delivered_body(g_ptr_array_index(items, items->len - 1));
+        g_assert_true(g_str_has_prefix(delivered, CLAWT_PREAMBLE_MARKER));
+        g_assert_nonnull(strstr(delivered, "not your operator"));
+        g_assert_nonnull(strstr(delivered, "```untrusted-message-from-user@alpha"));
+        g_assert_nonnull(strstr(delivered, "hello from alpha"));
+    }
+    {
+        g_autoptr(ClawtMessage) reply = clawt_message_new(b_room, "b-chief", "hello back");
+        g_assert_cmpint(clawt_mailbox_router_send(p.b->router, reply, &error), >=, 0);
+        g_assert_no_error(error);
+    }
+    wait_for_line(&p, p.ca, a_room, "fleet:bravo-lab:b-chief: hello back");
+
+    /* Beyond reach: said in the conversation. */
+    send_as_operator(p.ca, "b-worker@bravo-lab", "psst", "fed:bravo-lab:user:b-worker");
+    wait_for_line(&p, p.ca, "fed:bravo-lab:user:b-worker", "Not delivered to Bravo Lab");
+    {
+        g_autofree gchar *b_side = room_lines(p.cb, "fed:alpha:b-worker:user");
+        g_assert_null(strstr(b_side, "psst"));
+    }
+
+    /* Held for B's operator, then delivered. */
+    {
+        g_autoptr(JsonObject) set = ask(p.cb, "federation.peer.set",
+            payload_of("{\"alias\":\"alpha\",\"grant\":{\"message\":\"ask\"}}"), &error);
+        g_assert_no_error(error);
+    }
+    send_as_operator(p.ca, "b-chief@bravo-lab", "needs approval", a_room);
+    wait_for_line(&p, p.ca, a_room, "holding this message for its operator");
+    {
+        g_autofree gchar *b_side = room_lines(p.cb, b_room);
+        g_autoptr(GPtrArray) open = clawt_decision_store_list(p.b->decisions, TRUE);
+        const gchar *held = NULL;
+        guint i;
+
+        g_assert_null(strstr(b_side, "needs approval"));
+        for (i = 0; open != NULL && i < open->len; i++)
+            if (g_str_has_prefix(clawt_decision_get_id(g_ptr_array_index(open, i)), "fed-hold-"))
+                held = clawt_decision_get_id(g_ptr_array_index(open, i));
+        g_assert_nonnull(held);
+        {
+            g_autofree gchar *req = g_strdup_printf("{\"decision\":\"%s\",\"answer\":\"deliver\"}",
+                                                    held);
+            g_autoptr(JsonObject) answered = ask(p.cb, "decision.answer", payload_of(req), &error);
+            g_assert_no_error(error);
+        }
+    }
+    wait_for_line(&p, p.cb, b_room, "fleet:alpha:user: needs approval");
+    g_assert_cmpuint(g_hash_table_size(p.b->fed_holds), ==, 0);
+    pair_down(&p);
+}
+
+/* One agent tool call on @daemon, as @agent_id; what it said. */
+static gchar *
+call_tool(
+    ClawtDaemon *daemon,
+    const gchar *agent_id,
+    const gchar *tool,
+    const gchar *arguments,
+    gboolean    *is_error
+){
+    g_autofree gchar *request = g_strdup_printf(
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"%s\",\"arguments\":%s}}", tool, arguments);
+    g_autoptr(JsonNode) req = json_from_string(request, NULL);
+    g_autoptr(JsonNode) response = clawt_mcp_tools_call(clawt_daemon_get_mcp_tools(daemon),
+                                                        agent_id, NULL, req);
+    JsonObject *result = json_object_get_object_member(json_node_get_object(response), "result");
+    JsonArray *content = json_object_get_array_member(result, "content");
+
+    *is_error = json_object_get_boolean_member_with_default(result, "isError", FALSE);
+    return g_strdup(json_object_get_string_member(json_array_get_object_element(content, 0),
+                                                  "text"));
+}
+
+/*
+ * An agent writes to another fleet only with tools.federation; it sees
+ * the agents it may write to, and the answer reaches it as an answer --
+ * one that asks for nothing back, so two fleets' agents cannot sign off
+ * at each other for ever.
+ */
+static void
+test_agent_tools(void)
+{
+    Pair p;
+    g_autofree gchar *alias = NULL;
+    g_autoptr(GError) error = NULL;
+    gboolean is_error = FALSE;
+    const gchar *a_room = "fed:bravo-lab:a-chief:b-chief";
+    const gchar *b_room = "fed:alpha:b-chief:a-chief";
+
+    memset(&p, 0, sizeof(p));
+    pair_up(&p);
+    alias = link_them(&p, &transports[1]);
+    wait_for_refs(&p, p.ca, "b-chief@bravo-lab");
+
+    {
+        g_autofree gchar *said = call_tool(p.a, "a-worker", "clawtilla_message_agent",
+            "{\"agent_id\":\"b-chief@bravo-lab\",\"body\":\"hi\"}", &is_error);
+        g_assert_true(is_error);
+        g_assert_nonnull(strstr(said, "tools.federation"));
+    }
+    {
+        g_autofree gchar *listing = call_tool(p.a, "a-chief", "clawtilla_list_agents", "{}",
+                                              &is_error);
+        g_autofree gchar *peers = call_tool(p.a, "a-chief", "clawtilla_federation_peers", "{}",
+                                            &is_error);
+        g_assert_false(is_error);
+        g_assert_nonnull(strstr(listing, "b-chief@bravo-lab"));
+        g_assert_nonnull(strstr(peers, "bravo-lab"));
+    }
+    {
+        g_autofree gchar *said = call_tool(p.a, "a-chief", "clawtilla_message_agent",
+            "{\"agent_id\":\"b-chief@bravo-lab\",\"body\":\"from the chief\"}", &is_error);
+        g_assert_false(is_error);
+    }
+    wait_for_line(&p, p.cb, b_room, "fleet:alpha:a-chief: from the chief");
+    {
+        g_autoptr(ClawtMessage) reply = clawt_message_new(b_room, "b-chief", "the answer");
+        g_assert_cmpint(clawt_mailbox_router_send(p.b->router, reply, &error), >=, 0);
+        g_assert_no_error(error);
+    }
+    wait_for_line(&p, p.ca, a_room, "fleet:bravo-lab:b-chief: the answer");
+    {
+        ClawtAgent *chief = clawt_agent_manager_get(p.a->agents, "a-chief");
+        g_autoptr(GPtrArray) items = clawt_mailbox_list(clawt_agent_get_mailbox(chief), NULL);
+        g_autofree gchar *delivered = NULL;
+
+        g_assert_cmpuint(items->len, >, 0);
+        delivered = clawt_mailbox_item_dup_delivered_body(g_ptr_array_index(items, items->len - 1));
+        g_assert_nonnull(strstr(delivered, "This is their answer"));
+        g_assert_nonnull(strstr(delivered, "the answer"));
+    }
     pair_down(&p);
 }
 
@@ -585,9 +824,15 @@ main(int argc, char *argv[])
                                                   transports[i].name);
         g_test_add_data_func(path, &transports[i], test_link_ping_revoke);
         g_test_add_data_func(rpath, &transports[i], test_rosters_follow_grants);
+        {
+            g_autofree gchar *mpath = g_strdup_printf("/fed-link/%s/messages-cross",
+                                                      transports[i].name);
+            g_test_add_data_func(mpath, &transports[i], test_messages_cross);
+        }
     }
     g_test_add_func("/fed-link/fleet-connection-is-fenced", test_fleet_connection_is_fenced);
     g_test_add_func("/fed-link/grant-override-and-explain", test_grant_override_and_explain);
+    g_test_add_func("/fed-link/agent-tools", test_agent_tools);
 
     return g_test_run();
 }

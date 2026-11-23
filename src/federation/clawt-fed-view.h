@@ -133,4 +133,114 @@ const gchar *clawt_fed_agent_presence(JsonObject   *agent,
  */
 const gchar *clawt_fed_badge_tone(const gchar *tone);
 
+/**
+ * clawt_fed_ref_parse:
+ * @ref: `AGENT@ALIAS`, how a person writes another fleet's agent
+ * @out_agent: (out) (optional) (transfer full): the agent id
+ * @out_alias: (out) (optional) (transfer full): the linked fleet's alias
+ *
+ * Both halves must be ids as clawtilla spells one (clawt_is_valid_id()),
+ * so `zach@bob.com` is not a ref.  `user@ALIAS` is that fleet's operator.
+ *
+ * Returns: %TRUE if @ref is one
+ */
+gboolean clawt_fed_ref_parse(const gchar  *ref,
+                             gchar       **out_agent,
+                             gchar       **out_alias);
+
+/**
+ * clawt_fed_sender_id:
+ * @alias: the linked fleet, as known here
+ * @agent: its agent (or `user`)
+ *
+ * Returns: (transfer full): `fleet:ALIAS:AGENT`, the sender id a remote
+ *   agent's messages carry here -- a #CLAWT_SENDER_REMOTE
+ */
+gchar *clawt_fed_sender_id(const gchar *alias,
+                           const gchar *agent);
+
+/**
+ * clawt_fed_sender_parse:
+ * @sender: a sender id
+ * @out_alias: (out) (optional) (transfer full): the fleet's alias
+ * @out_agent: (out) (optional) (transfer full): its agent
+ *
+ * Returns: %TRUE if @sender is `fleet:ALIAS:AGENT`
+ */
+gboolean clawt_fed_sender_parse(const gchar  *sender,
+                                gchar       **out_alias,
+                                gchar       **out_agent);
+
+/**
+ * clawt_fed_room_id:
+ * @alias: the linked fleet
+ * @local: our side: an agent id or `user`
+ * @remote: their agent (or `user`)
+ *
+ * The room a conversation with another fleet's agent happens in.  A colon
+ * marks it derived (clawt_room_is_declared()), so it can never collide
+ * with a room somebody named.
+ *
+ * Returns: (transfer full): `fed:ALIAS:LOCAL:REMOTE`
+ */
+gchar *clawt_fed_room_id(const gchar *alias,
+                         const gchar *local,
+                         const gchar *remote);
+
+/**
+ * clawt_fed_room_parse:
+ * @room_id: a room id
+ * @out_alias: (out) (optional) (transfer full): the linked fleet
+ * @out_local: (out) (optional) (transfer full): our side
+ * @out_remote: (out) (optional) (transfer full): their agent
+ *
+ * Returns: %TRUE if @room_id is a `fed:` room with three valid ids
+ */
+gboolean clawt_fed_room_parse(const gchar  *room_id,
+                              gchar       **out_alias,
+                              gchar       **out_local,
+                              gchar       **out_remote);
+
+/**
+ * clawt_fed_fence:
+ * @who: who wrote @text, for the label (`atlas@lab`)
+ * @text: another fleet's words
+ *
+ * @text with any forged `[clawtilla]` marker escaped, inside a backtick
+ * fence longer than any backtick run in it -- so nothing it says can
+ * close the fence and speak as clawtilla.
+ *
+ * Returns: (transfer full): the fenced text
+ */
+gchar *clawt_fed_fence(const gchar *who,
+                       const gchar *text);
+
+/**
+ * clawt_fed_room_title:
+ * @room_id: a room id
+ *
+ * What a conversation with another fleet's agent is called: `atlas@lab`
+ * for the operator's, `support ↔ atlas@lab` for an agent's.  The room
+ * manager names the room with it, and a client titles the chat with it.
+ *
+ * Returns: (transfer full) (nullable): the title, or %NULL when @room_id
+ *   is not a `fed:` room
+ */
+gchar *clawt_fed_room_title(const gchar *room_id);
+
+/**
+ * clawt_fed_room_banner:
+ * @room_id: a room id
+ * @fleets: (nullable): `agent.list`'s `fleets`
+ *
+ * The line a chat with another fleet's agent carries under its title, so
+ * nobody forgets whom they are writing to: the fleet, its tier, its owner
+ * and whether it is reachable now.
+ *
+ * Returns: (transfer full) (nullable): the line, or %NULL when @room_id
+ *   is not a `fed:` room
+ */
+gchar *clawt_fed_room_banner(const gchar *room_id,
+                             JsonArray   *fleets);
+
 G_END_DECLS

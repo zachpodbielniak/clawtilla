@@ -2885,6 +2885,12 @@ static const ClawtSchemaEntry schema[] = {
   "The longest wait between attempts to reach a fleet that is not\n"
   "answering; the wait doubles from one second up to this.", "0.66.0" },
 
+{ "federation.outbox_hours", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "72", NULL,
+  "How long a message to a linked fleet that cannot be reached waits in\n"
+  "the outbox (<state_dir>/federation/outbox.json) before it is given up,\n"
+  "with a note in its conversation saying so. It is sent the moment the\n"
+  "fleet answers again; nothing is dropped silently.", "0.68.0" },
+
 { "federation.audit_retention_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "90", NULL,
   "How long the record of every request between fleets\n"
   "(<state_dir>/federation/audit.ndjson) is kept.", "0.66.0" },
@@ -5054,6 +5060,15 @@ static const ClawtSchemaEntry schema[] = {
   "false", NULL,
   "libreclaw's in-process cmacs channel.", "0.1.0" },
 
+{ "agents.federation_reach", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "Which linked fleets may reach this agent, as peer selectors\n"
+  "(`tier:owned`, `tag:client-acme`, `name:lab`, `owner:Dana`, `*`; see\n"
+  "docs/federation.org#selectors). A fleet must match one of them *and* be\n"
+  "allowed by its own grant: this can only take reach away, never give it.\n"
+  "Unset, the grant alone decides. A conversation already under way is not\n"
+  "cut off by a change here; a new one is.", "0.68.0" },
+
 { "agents.tools", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Which orchestration tools this agent may call.\n"
   "\n"
@@ -5114,6 +5129,20 @@ static const ClawtSchemaEntry schema[] = {
   "its parent's. It stays, across restarts, until the agent that spawned\n"
   "it reaps it; only that agent or you can. See docs/ephemeral-agents.org.",
   "0.55.0" },
+
+{ "agents.tools.federation", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_DANGEROUS, "false", NULL,
+  "Whether this agent may start conversations with agents in linked\n"
+  "fleets (clawtilla_message_agent and clawtilla_delegate with\n"
+  "`AGENT@ALIAS`) and sees them in clawtilla_list_agents.\n"
+  "\n"
+  "Off by default: what this agent writes leaves this machine for\n"
+  "somebody else's fleet. Answering a message another fleet sent it needs\n"
+  "nothing -- the answer goes back where the question came from. What the\n"
+  "other fleet lets it reach is that fleet's grant, not this key. With\n"
+  "tools.manage_fleet as well it may also manage links\n"
+  "(clawtilla_federation_*). See docs/federation.org#messages.",
+  "0.68.0" },
 
 { "agents.tools.office", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,

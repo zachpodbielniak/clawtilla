@@ -127,6 +127,27 @@ ClawtRoom *clawt_room_manager_get_direct(ClawtRoomManager *self,
                                          const gchar      *b);
 
 /**
+ * clawt_room_manager_get_fed:
+ * @self: a #ClawtRoomManager
+ * @alias: the linked fleet
+ * @local: our side, an agent id or `user`
+ * @remote: their agent, or `user`
+ *
+ * The room a conversation with another fleet's agent happens in
+ * (clawt_fed_room_id()), created if it does not exist.  Its members are
+ * @local and the remote sender `fleet:ALIAS:REMOTE`, so a message from
+ * that sender reaches @local and nobody else, and @local's answer stays
+ * in the room it was asked in.
+ *
+ * Returns: (transfer none) (nullable): the room, or %NULL when an id is
+ *   not one
+ */
+ClawtRoom *clawt_room_manager_get_fed(ClawtRoomManager *self,
+                                      const gchar      *alias,
+                                      const gchar      *local,
+                                      const gchar      *remote);
+
+/**
  * clawt_room_manager_get_routine:
  * @self: a #ClawtRoomManager
  * @routine_id: which routine

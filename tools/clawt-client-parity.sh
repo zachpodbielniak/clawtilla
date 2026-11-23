@@ -360,6 +360,9 @@ declare -A AFFORDANCES=(
     ["linked fleet chips"]="clawt_fed_filter_chips|clawt_fed_filter_chips|clawt_fed_filter_chips"
     ["linked fleet filter"]="clawt_fed_filter_matches|clawt_fed_filter_matches|clawt_fed_filter_matches"
     ["remote agent presence"]="clawt_fed_agent_presence|clawt_fed_agent_presence|clawt_fed_agent_presence"
+    # federation (0.68.0): writing to another fleet's agent
+    ["open remote conversation"]="on_fed_agent_pressed|on_fleet_open|on_fed_agent_clicked"
+    ["remote chat banner"]="clawt_fed_room_banner|clawt_fed_room_banner|clawt_fed_room_banner"
     #
     # The Office page (0.56.0): the roster line from the library, and the
     # slot the drawn office goes in -- a note in a build without OFFICE=1.

@@ -8,7 +8,7 @@ Read this before linking this fleet with another clawtilla fleet, changing what 
 - **Safety words** (four words from the fleet id) are what two people read to each other while one accepts the other's invite.
 - A **peer** is a linked fleet, known here by an **alias** (a valid id, never renamed). Peers live in `<state_dir>/federation/peers.yaml`, written by the daemon. Do not edit it; use `clawtilla federation` or a client's Settings → Federation page.
 - **Every request and every answer between fleets is a signed envelope.** That holds over any transport. Kind, from, to, time, nonce, body digest, and what it was sent to are all signed. Answers are bound to the request's nonce.
-- What crosses: hello, ping, revoke, rotate (0.66.0); rosters, pushed live (0.67.0). Not yet: messages (0.68.0), delegation (0.69.0), shared rooms (0.70.0). A kind the other side does not know is answered 501 "not understood yet", naming its version.
+- What crosses: hello, ping, revoke, rotate (0.66.0); rosters, pushed live (0.67.0); messages and their delivery states (0.68.0). Not yet: delegation (0.69.0), shared rooms (0.70.0). A kind the other side does not know is answered 501 "not understood yet", naming its version.
 
 ## Turn it on
 
@@ -126,7 +126,18 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 - To let a peer see *fewer* of your agents: `clawtilla federation set ALIAS reach=listed agents=atlas,team:web`, or `see_roster=false` for none; `see_presence=false` shows them without state. The peer's sidebar follows without a restart.
 - **Office**: a linked fleet's *running* agents visit your office as `external` participants (`ALIAS:AGENT`), drawn idle when presence is withheld, working when busy. Hidden or not-live fleets stay off the floor. `office.peers` still works but is superseded; a fleet in both is drawn once, from the link.
 - Health `degraded` = requests work, the live stream does not (rosters still arrive with each hello).
-- Remote agents cannot be messaged until 0.68.0.
+
+## Messages (0.68.0)
+
+- A remote agent is `AGENT@ALIAS` (`atlas@lab`). `user@ALIAS` is that fleet's operator, reachable only in a conversation its operator started.
+- A conversation is a room `fed:ALIAS:LOCAL:REMOTE` (members: our side, and the sender `fleet:ALIAS:AGENT`), named `atlas@lab` or `support ↔ atlas@lab`. Anything our side says in it is sent; anything they say lands in it.
+- Send: click the agent under Linked fleets (IPC `federation.open {ref}` -> `{room}`), `clawtilla send atlas@lab "text"`, or as an agent `clawtilla_message_agent agent_id=atlas@lab` -- only with `agents.tools.federation: true` (default false; dangerous: words leave the machine). Such an agent also sees remote agents in `clawtilla_list_agents` and links in `clawtilla_federation_peers`.
+- Messages queue in `<state_dir>/federation/outbox.json` and go when the fleet answers; given up after `federation.outbox_hours` (72) with a note.
+- The receiving fleet checks, against **its** grant to us: well-formed (<= 64 KiB) -> reach (grant `reach`/`agents`, the agent's own `agents.federation_reach`; an ongoing conversation is not re-judged) -> `max_hops_in` -> `messages_per_hour` -> `message` mode: `allow` delivers, `deny` declines, `ask`/`review`/`hand_back` hold it as a `fed-hold-*` decision (Deliver / Decline) in its operator's inbox, persisted in `holds.json`.
+- The sender sees every outcome except delivered as a clawtilla note in the conversation ("holding", "declined", "Not delivered to ..."), and the event `federation.delivery` (`sent|delivered|held|declined|refused|expired`).
+- The agent receives remote words under a preamble (fleet, owner, tier, "not your operator") inside a backtick fence longer than any run in them, `[clawtilla]` escaped. The transcript shows only what they wrote.
+- One request, one answer: an agent's closing text answers a message and goes back; the answer arrives inviting nothing, so it is not answered again. Write again with a new `clawtilla_message_agent`. Remote senders never renew the pair budget.
+- To keep an agent away from most fleets: `clawtilla agent set billing federation_reach tier:owned` (selectors; only narrows).
 
 ## Diagnose
 
@@ -142,6 +153,10 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 | sidebar shows a fleet with no agents | their grant gives you `see_roster=false`, or `reach`/`agents` matches none; ask them; `clawtilla federation show ALIAS` prints "What it lets this fleet do there" |
 | a fleet's agents all `unknown` | it is not live, or it withholds `see_presence` |
 | a fleet missing from the sidebar | hidden (`federation unhide`), or a chip filters it out |
+| "Not delivered ... no agent here you may reach" | their grant or the agent's `federation_reach` excludes it; write to their inbox agent |
+| "agents.tools.federation is off" | `clawtilla agent set AGENT tools.federation true`, if it should write to other fleets |
+| a message never arrives, no note | the fleet is unreachable; it is in the outbox until it answers or `federation.outbox_hours` passes |
+| "holding this message" | their operator must Deliver it in their Decisions inbox |
 | "unknown fleet or key" | the peer revoked/forgot you, or a rotation was missed; link again |
 
 `clawtilla federation log [ALIAS]` is the audit (`<state_dir>/federation/audit.ndjson`). It records every request between fleets, refusals included, except successful keep-alive hellos and pings.

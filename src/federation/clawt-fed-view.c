@@ -308,3 +308,151 @@ clawt_fed_badge_tone(
         return "bad";
     return "neutral";
 }
+
+/* "user" is an operator, not an agent id, and still a valid half of a ref. */
+static gboolean
+ref_half_ok(
+    const gchar *id
+){
+    return id != NULL && (g_strcmp0(id, "user") == 0 || clawt_is_valid_id(id));
+}
+
+gboolean
+clawt_fed_ref_parse(
+    const gchar  *ref,
+    gchar       **out_agent,
+    gchar       **out_alias
+){
+    const gchar *at;
+    g_autofree gchar *agent = NULL;
+
+    if (ref == NULL || (at = strchr(ref, '@')) == NULL || strchr(at + 1, '@') != NULL)
+        return FALSE;
+    agent = g_strndup(ref, (gsize)(at - ref));
+    if (!ref_half_ok(agent) || !clawt_is_valid_id(at + 1))
+        return FALSE;
+    if (out_agent != NULL)
+        *out_agent = g_steal_pointer(&agent);
+    if (out_alias != NULL)
+        *out_alias = g_strdup(at + 1);
+    return TRUE;
+}
+
+gchar *
+clawt_fed_sender_id(
+    const gchar *alias,
+    const gchar *agent
+){
+    return g_strdup_printf("fleet:%s:%s", alias, agent);
+}
+
+gboolean
+clawt_fed_sender_parse(
+    const gchar  *sender,
+    gchar       **out_alias,
+    gchar       **out_agent
+){
+    g_auto(GStrv) parts = NULL;
+
+    if (sender == NULL || !g_str_has_prefix(sender, "fleet:"))
+        return FALSE;
+    parts = g_strsplit(sender, ":", -1);
+    if (g_strv_length(parts) != 3 || !clawt_is_valid_id(parts[1]) || !ref_half_ok(parts[2]))
+        return FALSE;
+    if (out_alias != NULL)
+        *out_alias = g_strdup(parts[1]);
+    if (out_agent != NULL)
+        *out_agent = g_strdup(parts[2]);
+    return TRUE;
+}
+
+gchar *
+clawt_fed_room_id(
+    const gchar *alias,
+    const gchar *local,
+    const gchar *remote
+){
+    return g_strdup_printf("fed:%s:%s:%s", alias, local, remote);
+}
+
+gboolean
+clawt_fed_room_parse(
+    const gchar  *room_id,
+    gchar       **out_alias,
+    gchar       **out_local,
+    gchar       **out_remote
+){
+    g_auto(GStrv) parts = NULL;
+
+    if (room_id == NULL || !g_str_has_prefix(room_id, "fed:"))
+        return FALSE;
+    parts = g_strsplit(room_id, ":", -1);
+    if (g_strv_length(parts) != 4 || !clawt_is_valid_id(parts[1])
+        || !ref_half_ok(parts[2]) || !ref_half_ok(parts[3]))
+        return FALSE;
+    if (out_alias != NULL)
+        *out_alias = g_strdup(parts[1]);
+    if (out_local != NULL)
+        *out_local = g_strdup(parts[2]);
+    if (out_remote != NULL)
+        *out_remote = g_strdup(parts[3]);
+    return TRUE;
+}
+
+gchar *
+clawt_fed_fence(
+    const gchar *who,
+    const gchar *text
+){
+    g_autofree gchar *escaped = clawt_preamble_escape_all(text != NULL ? text : "");
+    g_autofree gchar *label = g_strdup_printf("untrusted-message-from-%s",
+                                              who != NULL ? who : "another-fleet");
+
+    return clawt_incident_fence(label, escaped);
+}
+
+gchar *
+clawt_fed_room_title(
+    const gchar *room_id
+){
+    g_autofree gchar *alias = NULL;
+    g_autofree gchar *local = NULL;
+    g_autofree gchar *remote = NULL;
+
+    if (!clawt_fed_room_parse(room_id, &alias, &local, &remote))
+        return NULL;
+    return g_strcmp0(local, "user") == 0
+        ? g_strdup_printf("%s@%s", remote, alias)
+        : g_strdup_printf("%s \342\206\224 %s@%s", local, remote, alias);
+}
+
+gchar *
+clawt_fed_room_banner(
+    const gchar *room_id,
+    JsonArray   *fleets
+){
+    g_autofree gchar *alias = NULL;
+    JsonObject *fleet = NULL;
+    guint i;
+
+    if (!clawt_fed_room_parse(room_id, &alias, NULL, NULL))
+        return NULL;
+    for (i = 0; fleets != NULL && i < json_array_get_length(fleets); i++) {
+        JsonObject *f = json_array_get_object_element(fleets, i);
+        if (f != NULL && g_strcmp0(str(f, "alias"), alias) == 0)
+            fleet = f;
+    }
+    if (fleet == NULL)
+        return g_strdup_printf("in the fleet %s, which is no longer linked", alias);
+    {
+        const gchar *owner = str(fleet, "owner");
+        return g_strdup_printf("in %s \302\267 %s%s%s \302\267 %s \302\267 another fleet: "
+                               "what you write here leaves this one",
+                               str(fleet, "label") != NULL ? str(fleet, "label") : alias,
+                               str(fleet, "tier") != NULL ? str(fleet, "tier") : "?",
+                               owner != NULL && *owner != '\0' ? " \302\267 " : "",
+                               owner != NULL && *owner != '\0' ? owner : "",
+                               str(fleet, "health_label") != NULL ? str(fleet, "health_label")
+                                                                  : "unknown");
+    }
+}

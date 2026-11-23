@@ -4035,6 +4035,17 @@ current. Three missed answers mark it offline.
 The longest wait between attempts to reach a fleet that is not
 answering; the wait doubles from one second up to this.
 
+*** =federation.outbox_hours=
+
+- Type :: integer
+- Default :: =72=
+- Since :: 0.68.0
+
+How long a message to a linked fleet that cannot be reached waits in
+the outbox (<state_dir>/federation/outbox.json) before it is given up,
+with a note in its conversation saying so. It is sent the moment the
+fleet answers again; nothing is dropped silently.
+
 *** =federation.audit_retention_days=
 
 - Type :: integer
@@ -7079,6 +7090,19 @@ taking from the daemon.
 
 libreclaw's in-process cmacs channel.
 
+*** =agents.federation_reach=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.68.0
+
+Which linked fleets may reach this agent, as peer selectors
+(`tier:owned`, `tag:client-acme`, `name:lab`, `owner:Dana`, `*`; see
+docs/federation.org#selectors). A fleet must match one of them *and* be
+allowed by its own grant: this can only take reach away, never give it.
+Unset, the grant alone decides. A conversation already under way is not
+cut off by a change here; a new one is.
+
 ** =agents.tools=
 
 Which orchestration tools this agent may call.
@@ -7165,6 +7189,24 @@ model, tools, skills -- and can never do more: it cannot spawn helpers
 of its own, cannot create agents, and gets a computer no stronger than
 its parent's. It stays, across restarts, until the agent that spawned
 it reaps it; only that agent or you can. See docs/ephemeral-agents.org.
+
+*** =agents.tools.federation=
+
+- Type :: boolean
+- Default :: =false=
+- Warning :: hands over real authority; see [[file:security.org][security.org]]
+- Since :: 0.68.0
+
+Whether this agent may start conversations with agents in linked
+fleets (clawtilla_message_agent and clawtilla_delegate with
+`AGENT@ALIAS`) and sees them in clawtilla_list_agents.
+
+Off by default: what this agent writes leaves this machine for
+somebody else's fleet. Answering a message another fleet sent it needs
+nothing -- the answer goes back where the question came from. What the
+other fleet lets it reach is that fleet's grant, not this key. With
+tools.manage_fleet as well it may also manage links
+(clawtilla_federation_*). See docs/federation.org#messages.
 
 *** =agents.tools.office=
 

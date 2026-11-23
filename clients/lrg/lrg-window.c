@@ -156,6 +156,8 @@ update_header(ClawtLrgApp *app)
     JsonObject *agent = clawt_lrg_selected_agent(app);
     const gchar *name = NULL;
     const gchar *description = NULL;
+    g_autofree gchar *fed_title = NULL;
+    g_autofree gchar *fed_banner = NULL;
 
     clawt_lrg_clear(shell.header_avatar_slot);
 
@@ -180,6 +182,21 @@ update_header(ClawtLrgApp *app)
     } else if (app->room_id != NULL) {
         name = app->room_id;
         description = "Room";
+        /*
+         * Another fleet's agent: titled for whom it is with, and the
+         * subtitle says the conversation leaves this fleet (0.68.0).
+         */
+        fed_title = clawt_fed_room_title(app->room_id);
+        if (fed_title != NULL) {
+            JsonObject *root = clawt_ipc_reply_object(app->agents);
+            JsonNode *member = root != NULL ? json_object_get_member(root, "fleets") : NULL;
+
+            fed_banner = clawt_fed_room_banner(app->room_id,
+                (member != NULL && JSON_NODE_HOLDS_ARRAY(member))
+                    ? json_node_get_array(member) : NULL);
+            name = fed_title;
+            description = fed_banner;
+        }
     }
 
     lrg_label_set_text(LRG_LABEL(shell.header_title),

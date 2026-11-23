@@ -132,6 +132,14 @@ See [connectors.md](connectors.md), [integrations.md](integrations.md).
 4. Narrow it: `clawtilla federation set ALIAS reach=listed agents=atlas cap.exec=deny`; tag it: `clawtilla federation tag ALIAS +client-acme`.
 5. Through a tunnel: `clawtilla federation expose --cloudflare --hostname H`, then `federation.public_url`. See [federation.md](federation.md).
 
+## Write to an agent in another fleet
+
+1. Find it: the sidebar's Linked fleets, or `clawtilla agent list` (its `fleets`), as `AGENT@ALIAS`.
+2. `clawtilla send atlas@lab "can you check last night's build?"`; read the answer with `clawtilla room history fed:lab:user:atlas`.
+3. Let one of your agents do it too: `clawtilla agent set support tools.federation true`; it then uses `clawtilla_message_agent agent_id=atlas@lab`.
+4. Make a fleet's messages wait for you: `clawtilla federation set ALIAS message=ask` -- each lands as a Deliver/Decline decision.
+5. Keep an agent out of reach of most fleets: `clawtilla agent set billing federation_reach tier:owned`. See [federation.md](federation.md), "Messages".
+
 ## Check spend and plan limits
 
 1. `clawtilla cost --today`, `clawtilla cost --days 7 --by origin`, `clawtilla cost --by model --csv > spend.csv`.

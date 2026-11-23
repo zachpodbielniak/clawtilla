@@ -641,6 +641,38 @@ void clawt_mcp_tools_set_ephemeral_hooks(ClawtMcpTools                *self,
                                          GDestroyNotify                destroy);
 
 /**
+ * ClawtMcpFederationHooks:
+ * @send: writes @body to the linked fleet's agent @ref (`AGENT@ALIAS`) as
+ *   @agent_id, answering what to tell the agent, with @is_error set on a
+ *   refusal (transfer full)
+ * @list: the other fleets' agents @agent_id can see, as text, or %NULL
+ *   for none (transfer full)
+ * @peers: the linked fleets, as text (transfer full)
+ *
+ * What the daemon supplies for federation (since 0.68.0).  Unset, no
+ * agent is offered another fleet; set, only an agent with
+ * `tools.federation` is.
+ */
+typedef struct {
+    gchar *(*send)(const gchar *agent_id, const gchar *ref, const gchar *body,
+                   gboolean *is_error, gpointer user_data);
+    gchar *(*list)(const gchar *agent_id, gpointer user_data);
+    gchar *(*peers)(const gchar *agent_id, gpointer user_data);
+} ClawtMcpFederationHooks;
+
+/**
+ * clawt_mcp_tools_set_federation_hooks:
+ * @self: a #ClawtMcpTools
+ * @hooks: (nullable): the hooks, copied
+ * @user_data: passed to each hook
+ * @destroy: frees @user_data
+ */
+void clawt_mcp_tools_set_federation_hooks(ClawtMcpTools                 *self,
+                                          const ClawtMcpFederationHooks *hooks,
+                                          gpointer                       user_data,
+                                          GDestroyNotify                 destroy);
+
+/**
  * clawt_mcp_tools_grok_bot_tools:
  *
  * The tools a Grok bot is offered on `/mcp/grok`, as a `tools/list`

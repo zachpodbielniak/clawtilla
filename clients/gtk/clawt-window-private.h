@@ -518,6 +518,8 @@ struct _ClawtWindow {
     GPtrArray         *schema_rows;         /* SchemaRow*, owned */
     GHashTable        *collapsed_teams;   /* team id -> GINT_TO_POINTER(1) */
     GPtrArray         *fed_filter;        /* the fleet chips switched on (terms) */
+    JsonArray         *fed_fleets;        /* agent.list's fleets, last seen */
+    GtkWidget         *fed_banner;        /* "in Acme · limited · ..." over a fed: chat */
     gboolean           fed_show_hidden;
     gboolean           fed_more_filters;  /* owner and tag chips drawn */
     ModelChooser       inspector_models;
