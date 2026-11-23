@@ -360,7 +360,7 @@ Each conversation is a room of its own, =fed:ALIAS:LOCAL:REMOTE=, named for whom
 - From the CLI :: ~clawtilla send atlas@lab "can you check the nightly build?"~ -- it prints the room, and ~clawtilla room history fed:lab:user:atlas~ reads it.
 - From an agent :: ~clawtilla_message_agent~ with =agent_id: atlas@lab=, for an agent with =agents.tools.federation= (off by default; such an agent also sees other fleets' agents in ~clawtilla_list_agents~ and the links in ~clawtilla_federation_peers~).  An agent without it is told so, never silently dropped.
 
-A message goes to an *outbox* (=<state_dir>/federation/outbox.json=), sent at once when the fleet is reachable and the moment it answers again when it is not: on our link to it as a signed =message= envelope, or -- when it dials us -- pushed down the connection it keeps.  A message waiting longer than =federation.outbox_hours= (72) is given up, with a note saying so.
+A message goes to an *outbox* (~federation.db~, see [[#storage][Storage]]), sent at once when the fleet is reachable and the moment it answers again when it is not: on our link to it as a signed =message= envelope, or -- when it dials us -- pushed down the connection it keeps.  A message waiting longer than =federation.outbox_hours= (72) is given up, with a note saying so.
 
 *** What the receiving fleet does
 In this order, every step against the grant it gave *you*:
@@ -369,9 +369,9 @@ In this order, every step against the grant it gave *you*:
 2. Reach: an agent it may reach (=reach=, =agents=, the agent's own =federation_reach=), or the inbox agent when none is named.  "No such agent" and "not for you" are one answer, so a grant is never a directory.  A conversation already under way is not re-judged.
 3. Hops: within =max_hops_in= (each hop between fleets counts one; a person's message starts at nought).
 4. Rate: within =messages_per_hour=.
-5. The grant's =message= mode: =allow= delivers it; =deny= declines it; =ask=, =review= and =hand_back= *hold* it as a decision in that fleet's operator's inbox -- *Deliver* or *Decline* -- kept on disk (~holds.json~ in the federation state directory) so a restart does not orphan it.
+5. The grant's =message= mode: =allow= delivers it; =deny= declines it; =ask=, =review= and =hand_back= *hold* it as a decision in that fleet's operator's inbox -- *Deliver* or *Decline* -- kept in ~federation.db~ so a restart does not orphan it.
 
-The sender always hears what happened.  Delivered is silent; anything else is a line in the conversation from clawtilla: "Bravo Lab is holding this message for its operator's approval", "Bravo Lab declined this message: ...", "Not delivered to Bravo Lab: ...".  Each change is also the event ~federation.delivery~ (=id=, =state=: sent, delivered, held, declined, refused, expired; =detail=).
+The sender always hears what happened.  Every message sent carries a tick under it in every client (0.73.0) -- /waiting to go/, /sent/ (pushed to a fleet that dials us), /delivered/, /held for their operator/, /declined/, /not delivered/, /gave up/ -- kept in ~federation.db~ and given on ~room.history~ as =delivery= (and =delivery_detail=), redrawn when ~federation.delivery~ arrives.  Anything but delivered is also a line in the conversation from clawtilla: "Bravo Lab is holding this message for its operator's approval", "Bravo Lab declined this message: ...", "Not delivered to Bravo Lab: ...".  Each change is also the event ~federation.delivery~ (=id=, =state=: sent, delivered, held, declined, refused, expired; =detail=).
 
 *** How the agent sees it
 The transcript shows exactly what they wrote.  The agent receives it under a preamble that names the fleet, its owner and tier, says it is another organisation's agent and not the operator, and puts their words inside a backtick fence longer than any backtick run in them, with any forged =[clawtilla]= marker escaped (~clawt_fed_fence()~) -- so nothing in the message can close the fence and speak as clawtilla.
@@ -404,7 +404,7 @@ Against its grant to you, like a message: well-formed, an agent it may reach, =m
 The delegator's proxy says what happened in its notes ("Bravo Lab took it", "is holding it for its operator's approval") and fails with the reason on a refusal, so the delegator is told as for any failed task.
 
 *** The estimate before delegating
-Since 0.71.0 a fleet's answer to every hello tells you, of your work there: what it allows a day (=budget_cents_per_day=), what your tasks have used in the last 24 hours, how many run at once of how many allowed, and its =delegate= mode.  A finished task reports what it cost there, and this fleet keeps the running average (~costs.json~ in the federation state directory).  Together they are the estimate an agent is told when it delegates ("Bravo Lab allows $5.00 a day of your work; $1.20 is used, $3.80 left. Tasks there have cost $0.40 on average."), what ~clawtilla_federation_peers~ lists under each fleet, and the =escrow= line of ~federation.peer.show~ (~clawtilla federation show~ prints it as "Before delegating").  It is the other fleet's word about its own ledger: shown, never enforced here -- the fleet doing the work enforces its own budget.
+Since 0.71.0 a fleet's answer to every hello tells you, of your work there: what it allows a day (=budget_cents_per_day=), what your tasks have used in the last 24 hours, how many run at once of how many allowed, and its =delegate= mode.  A finished task reports what it cost there, and this fleet keeps the running average (in ~federation.db~).  Together they are the estimate an agent is told when it delegates ("Bravo Lab allows $5.00 a day of your work; $1.20 is used, $3.80 left. Tasks there have cost $0.40 on average."), what ~clawtilla_federation_peers~ lists under each fleet, and the =escrow= line of ~federation.peer.show~ (~clawtilla federation show~ prints it as "Before delegating").  It is the other fleet's word about its own ledger: shown, never enforced here -- the fleet doing the work enforces its own budget.
 
 *** Spend
 Spend is charged where the work runs: the doing fleet's usage ledger and task budgets count it, and its =budget_cents_per_day= caps it.  The proxy costs the delegating fleet nothing.
@@ -531,6 +531,23 @@ Every pushed roster is verified like a request (known fleet, key, clock, address
 
 ~clawtilla federation rotate-key~ makes a new key and tells every linked fleet with an envelope signed by the *old* key, carrying the new one and a signature by the new one over this fleet's id.  The fleet id stays the same.  Peers accept the old key for 24 hours after.  The old seed is kept beside the new one, numbered.  A peer that was unreachable at the rotation and stays so past the 24 hours has to be linked again.
 
+** Storage
+:PROPERTIES:
+:CUSTOM_ID: storage
+:END:
+
+Since 0.73.0 everything federation keeps between restarts is one SQLite file, =<state_dir>/federation/federation.db= (0600, WAL), through ~ClawtFedStore~:
+
+| Table | What |
+|-------+------|
+| =audit= | every request between fleets ([[#audit][The audit]]), pruned to =federation.audit_retention_days= |
+| =nonces= | the nonces the replay guard has seen, so a restart does not reopen the window to a replay |
+| =msg_outbox= | envelopes waiting for a fleet that is not answering |
+| =deliveries= | what became of each message sent: the ticks a conversation draws |
+| =kv= | held messages and tasks (=holds=), what work at each fleet has cost (=costs=), the rooms shared (=shares=) |
+
+The links themselves stay in ~peers.yaml~, which a person may read, and the key and invites in the secrets directory.  A daemon upgraded from 0.72.0 or older reads its ~outbox.json~, ~holds.json~, ~costs.json~, ~shared-rooms.json~, ~audit.ndjson~ and =nonces= into the database once and renames each to =*.imported=.
+
 ** Security
 :PROPERTIES:
 :CUSTOM_ID: security
@@ -552,7 +569,7 @@ What is refused, in order, before the body is read as JSON:
 - a stamp signed for another route or request;
 - a body whose digest is not the signed one;
 - a bad signature;
-- a nonce already seen from that fleet inside the window (the guard is saved to =<state_dir>/federation/nonces=, so a restart does not reopen the window).
+- a nonce already seen from that fleet inside the window (the guard is kept in ~federation.db~, so a restart does not reopen the window).
 
 Answers are checked the same way by the asker: signed by the peer it asked, to it, bound to its request's nonce.  Cloudflare ends TLS at its edge; this is how a fleet knows the answer came from the fleet and not from whoever sits in between.
 
@@ -579,7 +596,7 @@ Inside this fleet a remote agent is a sender of its own kind (=fleet:ALIAS:AGENT
 :CUSTOM_ID: audit
 :END:
 
-Every request in either direction, refusals included -- except a link's successful keep-alive hellos and pings, which would bury everything else -- is one line in =<state_dir>/federation/audit.ndjson= (kept =federation.audit_retention_days=) and a ~federation.audit~ event; ~clawtilla federation log~ and every client's Activity tab read it.
+Every request in either direction, refusals included -- except a link's successful keep-alive hellos and pings, which would bury everything else -- is one row of ~federation.db~'s audit (kept =federation.audit_retention_days=) and a ~federation.audit~ event; ~clawtilla federation log~ and every client's Activity tab read it.
 
 ** Clients
 :PROPERTIES:
@@ -649,7 +666,7 @@ A linked fleet's running agents visit your office (kind /external/, id =ALIAS:AG
 | ~room.share~, ~room.unshare~ | ={room, alias}= | ={}= (0.70.0) |
 | ~task.create~ with =agent: AGENT@ALIAS= | ={prompt, agent, title?}= | ={task}=, the proxy (0.69.0); every task object carries =remote_peer= when it crosses fleets |
 
-Events: ~federation.peer~ (=alias=, =change=: added, changed, health, revoked, removed), ~federation.roster~ (=alias=, since 0.67.0: that fleet's roster changed), ~federation.delivery~ (subject the conversation's room; =id=, =state=, =alias=, =detail=; since 0.68.0) and ~federation.audit~ (=direction=, =kind=, =outcome=).
+Events: ~federation.peer~ (=alias=, =change=: added, changed, health, revoked, removed), ~federation.roster~ (=alias=, since 0.67.0: that fleet's roster changed), ~federation.presence~ (=ref=, =state=) and ~federation.typing~ (=ref=, =typing=) for one agent's change (0.73.0), ~federation.delivery~ (subject the conversation's room; =id=, =state=, =alias=, =detail=; since 0.68.0) and ~federation.audit~ (=direction=, =kind=, =outcome=).
 
 ~agent.list~ carries, since 0.67.0, =fleets=: one object per linked fleet that is not revoked, in the registry's order, with =alias=, =label=, =fleet_id=, =tier=, =tier_label=, =tier_tone=, =owner=, =tags=, =health=, =health_label=, =health_tone=, =hidden=, =muted=, =latency_ms= (when known), =teams= (=[{id, name}]=) and =agents= (=[{id, ref, fleet, name, team?, color?, inbox, state?, busy?}]=, =ref= being =AGENT@ALIAS=; =state= is =unknown= for a fleet that is not live).  The tones are the library's words (=success=, =accent=, =warning=, =error=, =neutral=); ~clawt_fed_badge_tone()~ turns them into the web and lrg badge names.
 

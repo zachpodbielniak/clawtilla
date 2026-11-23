@@ -179,6 +179,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/federation/clawt-fed-server.h \
 	$(SRCDIR)/federation/clawt-fed-link.h \
 	$(SRCDIR)/federation/clawt-fed-view.h \
+	$(SRCDIR)/federation/clawt-fed-store.h \
 	$(SRCDIR)/net/clawt-egress-gate.h \
 	$(SRCDIR)/net/clawt-egress-broker.h \
 	$(SRCDIR)/computer/clawt-computer.h \
@@ -439,6 +440,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/federation/clawt-fed-server.c \
 	$(SRCDIR)/federation/clawt-fed-link.c \
 	$(SRCDIR)/federation/clawt-fed-view.c \
+	$(SRCDIR)/federation/clawt-fed-store.c \
 	$(SRCDIR)/computer/clawt-observable.c \
 	$(SRCDIR)/computer/clawt-screen.c \
 	$(SRCDIR)/computer/clawt-saved-steps.c \

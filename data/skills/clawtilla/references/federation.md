@@ -132,8 +132,8 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 - A remote agent is `AGENT@ALIAS` (`atlas@lab`). `user@ALIAS` is that fleet's operator, reachable only in a conversation its operator started.
 - A conversation is a room `fed:ALIAS:LOCAL:REMOTE` (members: our side, and the sender `fleet:ALIAS:AGENT`), named `atlas@lab` or `support ↔ atlas@lab`. Anything our side says in it is sent; anything they say lands in it.
 - Send: click the agent under Linked fleets (IPC `federation.open {ref}` -> `{room}`), `clawtilla send atlas@lab "text"`, or as an agent `clawtilla_message_agent agent_id=atlas@lab` -- only with `agents.tools.federation: true` (default false; dangerous: words leave the machine). Such an agent also sees remote agents in `clawtilla_list_agents` and links in `clawtilla_federation_peers`.
-- Messages queue in `<state_dir>/federation/outbox.json` and go when the fleet answers; given up after `federation.outbox_hours` (72) with a note.
-- The receiving fleet checks, against **its** grant to us: well-formed (<= 64 KiB) -> reach (grant `reach`/`agents`, the agent's own `agents.federation_reach`; an ongoing conversation is not re-judged) -> `max_hops_in` -> `messages_per_hour` -> `message` mode: `allow` delivers, `deny` declines, `ask`/`review`/`hand_back` hold it as a `fed-hold-*` decision (Deliver / Decline) in its operator's inbox, persisted in `holds.json`.
+- Messages queue in the outbox (`federation.db`) and go when the fleet answers; given up after `federation.outbox_hours` (72) with a note.
+- The receiving fleet checks, against **its** grant to us: well-formed (<= 64 KiB) -> reach (grant `reach`/`agents`, the agent's own `agents.federation_reach`; an ongoing conversation is not re-judged) -> `max_hops_in` -> `messages_per_hour` -> `message` mode: `allow` delivers, `deny` declines, `ask`/`review`/`hand_back` hold it as a `fed-hold-*` decision (Deliver / Decline) in its operator's inbox, persisted in `federation.db`.
 - The sender sees every outcome except delivered as a clawtilla note in the conversation ("holding", "declined", "Not delivered to ..."), and the event `federation.delivery` (`sent|delivered|held|declined|refused|expired`).
 - The agent receives remote words under a preamble (fleet, owner, tier, "not your operator") inside a backtick fence longer than any run in them, `[clawtilla]` escaped. The transcript shows only what they wrote.
 - One request, one answer: an agent's closing text answers a message and goes back; the answer arrives inviting nothing, so it is not answered again. Write again with a new `clawtilla_message_agent`. Remote senders never renew the pair budget.
@@ -160,7 +160,7 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 - `clawtilla federation discover` asks every online tailnet machine at its `daemon.tcp_port` (tailscaled status, no subprocess) `whois`; lists fleets that answer (address, name, owner, version, host, safety words, `linked_as`). `--candidate ENDPOINT` (repeatable) for LAN addresses or sockets. Links nothing. IPC `federation.discover {candidates?}` (deferred, 5 s).
 - `clawtilla federation migrate-office` lists `office.peers` entries and whether each is linked; `migrate-office NAME` links it as owned via `federation.link` with its stored pairing token. Then remove the entry from `office.peers` and revoke that device on the other machine (this fleet cannot).
 - **Weather**: each sidebar fleet heading shows a traffic sparkline (envelopes per 5 min, last 20 min, none when quiet); hover adds the full hour and latency of the last 12 answers. `federation show` prints "Weather:". Data: `weather {latency, volume}` on `agent.list` fleets and `federation.peer.show`.
-- **Estimate before delegating**: their hello reports your work there (allowance `budget_cents_per_day`, 24 h used, running/max concurrent, `delegate` mode); finished tasks report their cost and an average is kept (`costs.json`). Shown in `clawtilla_delegate`'s answer, `clawtilla_federation_peers`, and `federation show` ("Before delegating"). Their word, not enforced here.
+- **Estimate before delegating**: their hello reports your work there (allowance `budget_cents_per_day`, 24 h used, running/max concurrent, `delegate` mode); finished tasks report their cost and an average is kept (`federation.db`). Shown in `clawtilla_delegate`'s answer, `clawtilla_federation_peers`, and `federation show` ("Before delegating"). Their word, not enforced here.
 
 ## Reach out, mentions, rules, admin tools, signed posts (0.72.0)
 
@@ -171,6 +171,12 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 - Admin tools for an agent with `tools.federation` + `tools.manage_fleet`: `clawtilla_federation_invite` (limited/untrusted only), `_set_tier` (lower now; raise -> `fed-tier-*` decision), `_tag`, `_revoke`. All `fleet_admin`.
 - Shared-room posts carry the author fleet's signature over room, id, author, text; the host relays it untouched; a receiver linked with the author checks it and refuses a forgery; an unknown author is the host's word.
 - `clawtilla federation log -f` follows the audit.
+
+## Storage, ticks, presence (0.73.0)
+
+- Everything federation keeps is `<state_dir>/federation/federation.db` (SQLite, 0600): tables `audit`, `nonces`, `msg_outbox`, `deliveries`, `kv` (holds, costs, shares). Peers stay in `peers.yaml`; key and invites in the secrets dir. Older files (`outbox.json`, `holds.json`, `costs.json`, `shared-rooms.json`, `audit.ndjson`, `nonces`) are imported once and renamed `*.imported`.
+- Each message sent to another fleet shows a tick in every client: waiting to go, sent, delivered, held for their operator, declined, not delivered, gave up. `room.history` carries `delivery`/`delivery_detail`; `federation.delivery` redraws it.
+- Events `federation.presence` (`ref`, `state`) and `federation.typing` (`ref`, `typing`) name the one remote agent that changed.
 
 ## Diagnose
 
@@ -196,7 +202,7 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 | a tool refused "its grant caps what may be done for it" | the turn works for a linked fleet whose `cap.CLASS` is stricter; widen with `federation set ALIAS cap.exec=ask` |
 | "unknown fleet or key" | the peer revoked/forgot you, or a rotation was missed; link again |
 
-`clawtilla federation log [ALIAS]` is the audit (`<state_dir>/federation/audit.ndjson`). It records every request between fleets, refusals included, except successful keep-alive hellos and pings.
+`clawtilla federation log [ALIAS]` is the audit (`federation.db`). It records every request between fleets, refusals included, except successful keep-alive hellos and pings.
 
 ## Security facts to keep straight
 

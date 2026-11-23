@@ -589,3 +589,24 @@ clawt_fed_post_text(
                            strlen(from != NULL ? from : ""), from != NULL ? from : "",
                            strlen(body != NULL ? body : ""), body != NULL ? body : "");
 }
+
+const gchar *
+clawt_fed_delivery_label(
+    const gchar *state
+){
+    static const struct { const gchar *state; const gchar *label; } ticks[] = {
+        { "queued",    "\342\227\213 waiting to go" },
+        { "sent",      "\342\234\223 sent" },
+        { "delivered", "\342\234\223\342\234\223 delivered" },
+        { "held",      "\342\217\270 held for their operator" },
+        { "declined",  "\342\234\227 declined" },
+        { "refused",   "\342\234\227 not delivered" },
+        { "expired",   "\342\234\227 gave up" },
+    };
+    guint i;
+
+    for (i = 0; state != NULL && i < G_N_ELEMENTS(ticks); i++)
+        if (g_strcmp0(ticks[i].state, state) == 0)
+            return ticks[i].label;
+    return NULL;
+}

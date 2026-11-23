@@ -431,8 +431,8 @@ see security.md).
 | `federation.max_body_bytes` | integer | `1048576` |  | The largest request another fleet may send, in bytes. |
 | `federation.ping_seconds` | integer | `30` |  | How often each linked fleet is pinged to keep its link health current. |
 | `federation.reconnect_max_seconds` | integer | `300` |  | The longest wait between attempts to reach a fleet that is not answering; the wait doubles from one second up to this. |
-| `federation.outbox_hours` | integer | `72` |  | How long a message to a linked fleet that cannot be reached waits in the outbox (<state_dir>/federation/outbox.json) before it is given up, with a note in its conversation saying so. |
-| `federation.audit_retention_days` | integer | `90` |  | How long the record of every request between fleets (<state_dir>/federation/audit.ndjson) is kept. |
+| `federation.outbox_hours` | integer | `72` |  | How long a message to a linked fleet that cannot be reached waits in the outbox (<state_dir>/federation/federation.db) before it is given up, with a note in its conversation saying so. |
+| `federation.audit_retention_days` | integer | `90` |  | How long the record of every request between fleets (<state_dir>/federation/federation.db) is kept. |
 | `federation.rules` | list of strings |  |  | Grant overrides for every linked fleet a selector matches, applied in order after the fleet's tier and before its own overrides, each `SELECTOR: field=value; field=value`. |
 
 ## `routines` ([config/routines.md](config/routines.md))

@@ -58,6 +58,7 @@
 #include "federation/clawt-fed-server.h"
 #include "federation/clawt-fed-link.h"
 #include "federation/clawt-fed-view.h"
+#include "federation/clawt-fed-store.h"
 #include "net/clawt-egress-gate.h"
 #include "net/clawt-egress-broker.h"
 #include "computer/clawt-observable.h"

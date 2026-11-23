@@ -319,4 +319,15 @@ gchar *clawt_fed_post_text(const gchar *room,
                            const gchar *from,
                            const gchar *body);
 
+/**
+ * clawt_fed_delivery_label:
+ * @state: (nullable): a message's delivery state
+ *
+ * The tick a client draws under a message sent to another fleet (0.73.0):
+ * one spelling for the three clients.
+ *
+ * Returns: (transfer none) (nullable): the label, or %NULL for no tick
+ */
+const gchar *clawt_fed_delivery_label(const gchar *state);
+
 G_END_DECLS

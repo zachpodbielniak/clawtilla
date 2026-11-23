@@ -975,6 +975,10 @@ clawt_lrg_window_event(ClawtLrgApp *app, ClawtEvent *event)
         clawt_lrg_settings_devices_event(app, event);
     if (g_str_has_prefix(kind, "federation."))
         clawt_lrg_settings_federation_event(app, event);
+    /* a tick changed in the conversation on screen: redraw it (0.73.0) */
+    if (g_strcmp0(kind, "federation.delivery") == 0
+        && g_strcmp0(clawt_event_get_subject(event), app->room_id) == 0)
+        clawt_lrg_chat_reload(app);
 
     if (g_strcmp0(kind, "broker.changed") == 0)
         clawt_lrg_settings_connectors_event(app, event);

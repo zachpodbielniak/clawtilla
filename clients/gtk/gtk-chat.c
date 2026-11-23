@@ -2639,6 +2639,26 @@ clawt_gtk_mark_waiting(ClawtWindow *self, const gchar *waiting_on)
     gtk_box_append(self->transcript, label);
 }
 
+/* A message's tick in a conversation with another fleet (0.73.0). */
+void
+clawt_gtk_mark_delivery(ClawtWindow *self, const gchar *state, const gchar *detail)
+{
+    const gchar *tick = clawt_fed_delivery_label(state);
+    GtkWidget *label;
+
+    if (tick == NULL)
+        return;
+    label = gtk_label_new(tick);
+    gtk_widget_add_css_class(label, "caption");
+    gtk_widget_add_css_class(label, "dim-label");
+    gtk_widget_add_css_class(label, "clawt-fed-delivery");
+    gtk_widget_set_halign(label, GTK_ALIGN_END);
+    if (detail != NULL)
+        gtk_widget_set_tooltip_text(label, detail);
+    gtk_widget_set_margin_end(label, CHAT_ROW_MARGIN);
+    gtk_box_append(self->transcript, label);
+}
+
 /* ── Folding a long request from another agent ─────────────────── */
 
 static void
@@ -5251,6 +5271,8 @@ clawt_gtk_load_history(ClawtWindow *self)
                                      clawt_json_string(message, "answer_from", NULL));
             clawt_gtk_mark_waiting(self,
                                      clawt_json_string(message, "waiting_on", NULL));
+            clawt_gtk_mark_delivery(self, clawt_json_string(message, "delivery", NULL),
+                                    clawt_json_string(message, "delivery_detail", NULL));
             clawt_gtk_append_round_marks(self, 0,
                                      clawt_json_string(message, "skipped", NULL),
                                      clawt_json_string(message, "skip_reason", NULL),

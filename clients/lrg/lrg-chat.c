@@ -1624,6 +1624,23 @@ append_waiting_mark(ClawtLrgApp *app, const gchar *waiting_on)
     clawt_lrg_take(chat.transcript, line);
 }
 
+/* A message's tick in a conversation with another fleet (0.73.0). */
+static void
+append_delivery_mark(ClawtLrgApp *app, const gchar *state)
+{
+    const gchar *tick = clawt_fed_delivery_label(state);
+    LrgWidget *line;
+    LrgInsets margin = { px(app, CHAT_ROW_MARGIN), 0.0f, px(app, CHAT_ROW_MARGIN), 0.0f };
+
+    if (tick == NULL || chat.transcript == NULL)
+        return;
+    line = clawt_lrg_label(tick, "caption");
+    lrg_widget_set_halign(line, LRG_ALIGN_END);
+    lrg_widget_set_margin(line, &margin);
+    lrg_widget_set_name(line, "clawt-fed-delivery");
+    clawt_lrg_take(chat.transcript, line);
+}
+
 static void
 on_task_chip(LrgButton *button, gpointer user_data)
 {
@@ -3113,6 +3130,7 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps,
                                                         "answer_from"));
         append_waiting_mark(app,
                             clawt_ipc_payload_string(message, "waiting_on"));
+        append_delivery_mark(app, clawt_ipc_payload_string(message, "delivery"));
         append_round_marks(app, 0,
                            clawt_ipc_payload_string(message, "skipped"),
                            clawt_ipc_payload_string(message, "skip_reason"),
@@ -3422,6 +3440,14 @@ clawt_lrg_chat_reopen(ClawtLrgApp *app)
     g_clear_pointer(&chat.conversation, g_free);
     load_history(app);
     fill_conversation_bar(app);
+}
+
+void
+clawt_lrg_chat_reload(ClawtLrgApp *app)
+{
+    /* the transcript on screen, read again: a tick under it changed (0.73.0) */
+    if (chat.page != NULL)
+        load_history(app);
 }
 
 static void

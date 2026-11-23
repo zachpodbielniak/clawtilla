@@ -387,6 +387,20 @@ wait_for_visitors(
     }
 }
 
+static void set_agent(ClawtClient *client, const gchar *agent, const gchar *key,
+                      const gchar *value);
+
+static void
+count_presence(
+    ClawtEventBus *bus,
+    ClawtEvent    *event,
+    gpointer       user_data
+){
+    (void)bus;
+    if (g_strcmp0(clawt_event_get_kind(event), "federation.presence") == 0)
+        (*(guint *)user_data)++;
+}
+
 /*
  * Each fleet sees exactly what the other's grant lets it: B gave A the
  * limited tier (its inbox, the chief, only), A gave B trusted (all).  A
@@ -416,6 +430,34 @@ test_rosters_follow_grants(
         g_assert_no_error(error);
     }
     wait_for_refs(&p, p.ca, "b-chief@bravo-lab b-worker@bravo-lab");
+
+    /* ...and A hears each agent's presence change as an event of its own (0.73.0). */
+    {
+        guint presence = 0;
+        gulong handler = g_signal_connect(p.a->bus, "event", G_CALLBACK(count_presence), &presence);
+        gint64 deadline = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+
+        set_agent(p.cb, "b-worker", "description", "changed to push a roster");
+        {
+            g_autoptr(JsonObject) set = ask(p.cb, "federation.peer.set",
+                payload_of("{\"alias\":\"alpha\",\"grant\":{\"see_presence\":\"false\"}}"),
+                &error);
+            g_assert_no_error(error);
+        }
+        while (presence == 0) {
+            if (g_get_monotonic_time() > deadline)
+                g_error("no federation.presence event");
+            g_main_context_iteration(p.context, FALSE);
+            g_usleep(20000);
+        }
+        g_signal_handler_disconnect(p.a->bus, handler);
+        {
+            g_autoptr(JsonObject) set = ask(p.cb, "federation.peer.set",
+                payload_of("{\"alias\":\"alpha\",\"grant\":{\"see_presence\":\"\"}}"),
+                &error);
+            g_assert_no_error(error);
+        }
+    }
 
     /* Nobody is running, so nobody visits A's office... */
     wait_for_visitors(&p, "");
@@ -606,6 +648,34 @@ test_messages_cross(
     }
     wait_for_line(&p, p.cb, b_room, "fleet:alpha:user: needs approval");
     g_assert_cmpuint(g_hash_table_size(p.b->fed_holds), ==, 0);
+    /* every message A sent carries its tick in A's history (0.73.0) */
+    {
+        gint64 deadline = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+
+        for (;;) {
+            g_autoptr(JsonObject) history = ask(p.ca, "room.history",
+                                                payload_of("{\"room\":\"fed:bravo-lab:user:b-chief\"}"),
+                                                &error);
+            JsonArray *messages = json_object_get_array_member(history, "messages");
+            guint delivered = 0;
+            guint m;
+
+            g_assert_no_error(error);
+            for (m = 0; m < json_array_get_length(messages); m++) {
+                JsonObject *one = json_array_get_object_element(messages, m);
+                if (g_strcmp0(json_object_get_string_member(one, "sender"), "user") == 0
+                    && g_strcmp0(json_object_get_string_member_with_default(one, "delivery", ""),
+                                 "delivered") == 0)
+                    delivered++;
+            }
+            if (delivered == 2)
+                break;
+            if (g_get_monotonic_time() > deadline)
+                g_error("expected two delivered ticks, have %u", delivered);
+            g_main_context_iteration(p.context, FALSE);
+            g_usleep(20000);
+        }
+    }
     pair_down(&p);
 }
 

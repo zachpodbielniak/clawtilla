@@ -284,6 +284,7 @@ clawt_web_stylesheet(void)
       "text-overflow:ellipsis;white-space:nowrap;min-width:0}"
     ".fed-presence{font-size:9px}"
     ".fed-weather{font-size:10px;color:var(--muted);letter-spacing:-1px}"
+    ".fed-delivery{text-align:right;font-size:11px;color:var(--muted);padding:0 24px 4px}"
     ".fed-banner{background:var(--info-bg);color:var(--info-fg);"
       "padding:8px 20px;font-size:13px}"
     ".agent-row{display:block;padding:9px 20px;text-decoration:none;"

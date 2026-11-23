@@ -325,12 +325,8 @@ audit(
     const gchar *detail
 ){
     g_autoptr(JsonBuilder) b = json_builder_new();
-    g_autoptr(JsonGenerator) g = json_generator_new();
     g_autoptr(JsonNode) root = NULL;
-    g_autofree gchar *line = NULL;
-    g_autofree gchar *path = NULL;
     g_autoptr(ClawtEvent) event = NULL;
-    FILE *f;
 
     /*
      * A link's keep-alive is not activity: a successful hello or ping
@@ -364,14 +360,9 @@ audit(
     while (g_queue_get_length(self->fed_audit) > AUDIT_RING)
         json_object_unref(g_queue_pop_head(self->fed_audit));
 
-    json_generator_set_root(g, root);
-    line = json_generator_to_data(g, NULL);
-    path = state_path(self, "audit.ndjson");
-    f = fopen(path, "a");
-    if (f != NULL) {
-        fprintf(f, "%s\n", line);
-        fclose(f);
-    }
+    /* federation.db's audit table (0.73.0). */
+    if (self->fed_store != NULL)
+        clawt_fed_store_audit_add(self->fed_store, json_node_get_object(root));
 
     if (self->bus != NULL) {
         event = clawt_event_new("federation.audit", peer);
@@ -389,31 +380,9 @@ static void
 audit_prune(
     ClawtDaemon *self
 ){
-    g_autofree gchar *path = state_path(self, "audit.ndjson");
-    g_autofree gchar *text = NULL;
-    g_auto(GStrv) lines = NULL;
-    g_autoptr(GString) kept = g_string_new(NULL);
-    gint64 cutoff;
-    guint i;
-    guint dropped = 0;
-
-    cutoff = now_s() - clawt_config_get_int(self->config, "federation.audit_retention_days") * 86400;
-    if (!g_file_get_contents(path, &text, NULL, NULL))
-        return;
-    lines = g_strsplit(text, "\n", -1);
-    for (i = 0; lines[i] != NULL; i++) {
-        const gchar *t = strstr(lines[i], "\"time\":");
-        if (*lines[i] == '\0')
-            continue;
-        if (t != NULL && g_ascii_strtoll(t + 7, NULL, 10) < cutoff) {
-            dropped++;
-            continue;
-        }
-        g_string_append(kept, lines[i]);
-        g_string_append_c(kept, '\n');
-    }
-    if (dropped > 0)
-        clawt_write_file_atomic(path, kept->str, kept->len, 0600, FALSE, NULL);
+    if (self->fed_store != NULL)
+        clawt_fed_store_audit_prune(self->fed_store, now_s() -
+            clawt_config_get_int(self->config, "federation.audit_retention_days") * 86400);
 }
 
 static void
@@ -867,6 +836,47 @@ store_roster(
     ps->roster_at = now_s();
     if (g_strcmp0(digest, ps->roster_digest) == 0)
         return;
+    /*
+     * Who changed, as events of their own (0.73.0): an agent's presence
+     * (`federation.presence`, its state) and whether it is mid-turn
+     * (`federation.typing`), so a client can update one row and an
+     * office its one visitor without reading the whole roster again.
+     */
+    if (self->bus != NULL && ps->roster != NULL) {
+        JsonArray *before = json_object_get_array_member(ps->roster, "agents");
+        JsonArray *after = json_object_get_array_member(clean, "agents");
+        guint i;
+        guint j;
+
+        for (i = 0; after != NULL && i < json_array_get_length(after); i++) {
+            JsonObject *now_a = json_array_get_object_element(after, i);
+            const gchar *id = obj_str(now_a, "id");
+            JsonObject *was = NULL;
+
+            for (j = 0; before != NULL && j < json_array_get_length(before); j++)
+                if (g_strcmp0(obj_str(json_array_get_object_element(before, j), "id"), id) == 0)
+                    was = json_array_get_object_element(before, j);
+            if (was == NULL || g_strcmp0(obj_str(was, "state"), obj_str(now_a, "state")) != 0) {
+                g_autoptr(ClawtEvent) e = clawt_event_new("federation.presence", ps->alias);
+                g_autofree gchar *ref = g_strdup_printf("%s@%s", id, ps->alias);
+
+                clawt_event_set_detail(e, "ref", ref);
+                clawt_event_set_detail(e, "state", obj_str(now_a, "state") != NULL
+                                                   ? obj_str(now_a, "state") : "unknown");
+                clawt_event_bus_publish(self->bus, e);
+            }
+            if ((was != NULL ? json_object_get_boolean_member_with_default(was, "busy", FALSE) : FALSE)
+                != json_object_get_boolean_member_with_default(now_a, "busy", FALSE)) {
+                g_autoptr(ClawtEvent) e = clawt_event_new("federation.typing", ps->alias);
+                g_autofree gchar *ref = g_strdup_printf("%s@%s", id, ps->alias);
+
+                clawt_event_set_detail(e, "ref", ref);
+                clawt_event_set_detail_int(e, "typing",
+                    json_object_get_boolean_member_with_default(now_a, "busy", FALSE) ? 1 : 0);
+                clawt_event_bus_publish(self->bus, e);
+            }
+        }
+    }
     if (ps->roster != NULL)
         json_object_unref(ps->roster);
     ps->roster = g_steal_pointer(&clean);
@@ -1617,6 +1627,9 @@ receive(
         answer_error(answer, 401, "replayed");
         return;
     }
+    /* remembered across a restart, in federation.db (0.73.0) */
+    if (self->fed_store != NULL)
+        clawt_fed_store_nonce_add(self->fed_store, stamp->from, stamp->nonce, stamp->time);
     if (g_strcmp0(peer->status, "revoked") == 0) {
         answer_error(answer, 403, "this link was revoked");
         return;
@@ -2220,10 +2233,6 @@ on_tick(
             save_registry(self);
         audit_prune(self);
     }
-    {
-        g_autofree gchar *path = state_path(self, "nonces");
-        clawt_fed_replay_guard_save(self->fed_guard, path, now, NULL);
-    }
     return G_SOURCE_CONTINUE;
 }
 
@@ -2234,6 +2243,87 @@ clawt_daemon_federation_fleet_id(
     ClawtDaemon *self
 ){
     return self->fed_fleet_id;
+}
+
+/* An earlier release's file, read once into federation.db and renamed. */
+static gchar *
+legacy_read(
+    ClawtDaemon *self,
+    const gchar *name
+){
+    g_autofree gchar *path = state_path(self, name);
+    g_autofree gchar *done = NULL;
+    gchar *text = NULL;
+
+    if (path == NULL || !g_file_get_contents(path, &text, NULL, NULL))
+        return NULL;
+    done = g_strconcat(path, ".imported", NULL);
+    if (g_rename(path, done) != 0)
+        g_warning("federation: %s was read into federation.db but not renamed", path);
+    return text;
+}
+
+static void
+import_legacy(
+    ClawtDaemon *self
+){
+    g_autofree gchar *outbox = legacy_read(self, "outbox.json");
+    g_autofree gchar *holds = legacy_read(self, "holds.json");
+    g_autofree gchar *costs = legacy_read(self, "costs.json");
+    g_autofree gchar *shares = legacy_read(self, "shared-rooms.json");
+    g_autofree gchar *audit_text = legacy_read(self, "audit.ndjson");
+
+    if (outbox != NULL) {
+        g_autoptr(JsonParser) parser = json_parser_new();
+        JsonNode *root;
+        guint i;
+
+        if (json_parser_load_from_data(parser, outbox, -1, NULL)
+            && (root = json_parser_get_root(parser)) != NULL && JSON_NODE_HOLDS_ARRAY(root))
+            for (i = 0; i < json_array_get_length(json_node_get_array(root)); i++)
+                clawt_fed_store_outbox_put(self->fed_store,
+                    json_array_get_object_element(json_node_get_array(root), i));
+    }
+    {
+        const gchar *tables[] = { "holds", "costs", "shares" };
+        const gchar *texts[] = { holds, costs, shares };
+        guint t;
+
+        for (t = 0; t < G_N_ELEMENTS(tables); t++) {
+            g_autoptr(JsonObject) all = texts[t] != NULL ? parse_object(texts[t]) : NULL;
+            GList *members;
+            GList *l;
+
+            if (all == NULL)
+                continue;
+            members = json_object_get_members(all);
+            for (l = members; l != NULL; l = l->next) {
+                JsonNode *v = json_object_get_member(all, l->data);
+
+                if (JSON_NODE_HOLDS_OBJECT(v)) {
+                    clawt_fed_store_kv_set(self->fed_store, tables[t], l->data,
+                                           json_node_get_object(v));
+                } else if (JSON_NODE_HOLDS_ARRAY(v)) {
+                    g_autoptr(JsonObject) row = json_object_new();
+                    json_object_set_array_member(row, "aliases", json_array_ref(json_node_get_array(v)));
+                    clawt_fed_store_kv_set(self->fed_store, tables[t], l->data, row);
+                }
+            }
+            g_list_free(members);
+        }
+    }
+    if (audit_text != NULL) {
+        g_auto(GStrv) lines = g_strsplit(audit_text, "\n", -1);
+        guint i;
+
+        for (i = 0; lines[i] != NULL; i++) {
+            g_autoptr(JsonObject) row = *lines[i] != '\0' ? parse_object(lines[i]) : NULL;
+            if (row != NULL)
+                clawt_fed_store_audit_add(self->fed_store, row);
+        }
+    }
+    /* the nonce file was read into the guard just before this; it is retired */
+    g_free(legacy_read(self, "nonces"));
 }
 
 void
@@ -2282,8 +2372,37 @@ clawt_daemon_federation_setup(
     }
     self->fed_guard = clawt_fed_replay_guard_new(
         (guint)clawt_config_get_int(self->config, "federation.clock_skew_seconds"));
+    /*
+     * federation.db (0.73.0): the record federation keeps.  What earlier
+     * releases kept in files is taken in once and the files renamed, so a
+     * restart after an upgrade loses no outbox, hold or nonce.
+     */
+    {
+        g_autofree gchar *db = state_path(self, "federation.db");
+
+        self->fed_store = clawt_fed_store_open(db, &error);
+        if (self->fed_store == NULL) {
+            g_warning("federation: %s: %s; the outbox, holds and audit are kept in memory only",
+                      db, error->message);
+            g_clear_error(&error);
+        }
+    }
     nonces = state_path(self, "nonces");
     clawt_fed_replay_guard_load(self->fed_guard, nonces, now_s());
+    if (self->fed_store != NULL) {
+        g_autoptr(JsonArray) seen = NULL;
+        gint64 now = now_s();
+        guint skew = (guint)clawt_config_get_int(self->config, "federation.clock_skew_seconds");
+        guint k;
+
+        import_legacy(self);
+        seen = clawt_fed_store_nonces(self->fed_store, now - (gint64)skew * 2);
+        for (k = 0; k < json_array_get_length(seen); k++) {
+            JsonObject *n = json_array_get_object_element(seen, k);
+            clawt_fed_replay_guard_admit(self->fed_guard, obj_str(n, "fleet"), obj_str(n, "nonce"),
+                                         json_object_get_int_member_with_default(n, "time", 0), now);
+        }
+    }
     self->fed_links = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                             (GDestroyNotify)peer_state_free);
     self->fed_audit = g_queue_new();
@@ -2376,10 +2495,7 @@ clawt_daemon_federation_teardown(
         g_source_destroy(self->fed_push_soon);
         g_clear_pointer(&self->fed_push_soon, g_source_unref);
     }
-    if (self->fed_guard != NULL && self->state_dir != NULL) {
-        g_autofree gchar *nonces = state_path(self, "nonces");
-        clawt_fed_replay_guard_save(self->fed_guard, nonces, now_s(), NULL);
-    }
+
     g_clear_pointer(&self->fed_links, g_hash_table_unref);
     g_clear_pointer(&self->fed_outbox, g_ptr_array_unref);
     g_clear_pointer(&self->fed_holds, g_hash_table_unref);
@@ -2388,6 +2504,7 @@ clawt_daemon_federation_teardown(
     g_clear_pointer(&self->fed_room_depth, g_hash_table_unref);
     g_clear_pointer(&self->fed_room_seen, g_hash_table_unref);
     g_clear_pointer(&self->fed_post_authors, g_hash_table_unref);
+    g_clear_object(&self->fed_store);
     g_clear_pointer(&self->fed_shares, json_object_unref);
     if (self->fed_server != NULL)
         clawt_fed_server_stop(self->fed_server);
@@ -2424,15 +2541,16 @@ static void
 save_outbox(
     ClawtDaemon *self
 ){
-    g_autoptr(JsonArray) list = json_array_new();
-    g_autoptr(JsonNode) node = json_node_new(JSON_NODE_ARRAY);
-    g_autofree gchar *path = state_path(self, "outbox.json");
-    g_autofree gchar *text = NULL;
+    g_autoptr(JsonArray) stored = NULL;
+    g_autoptr(GHashTable) live = g_hash_table_new(g_str_hash, g_str_equal);
     guint i;
 
+    /* federation.db's msg_outbox, kept equal to what is in memory (0.73.0). */
+    if (self->fed_store == NULL)
+        return;
     for (i = 0; self->fed_outbox != NULL && i < self->fed_outbox->len; i++) {
         FedOut *out = g_ptr_array_index(self->fed_outbox, i);
-        JsonObject *o = json_object_new();
+        g_autoptr(JsonObject) o = json_object_new();
 
         json_object_set_string_member(o, "id", out->id);
         json_object_set_string_member(o, "alias", out->alias);
@@ -2441,35 +2559,32 @@ save_outbox(
         if (out->room != NULL)
             json_object_set_string_member(o, "room", out->room);
         json_object_set_int_member(o, "queued", out->queued);
-        json_array_add_object_element(list, o);
+        clawt_fed_store_outbox_put(self->fed_store, o);
+        g_hash_table_add(live, out->id);
     }
-    json_node_set_array(node, list);
-    text = json_to_string(node, FALSE);
-    if (path != NULL && !clawt_write_file_atomic(path, text, -1, 0600, FALSE, NULL))
-        g_warning("federation: the outbox was not saved to %s", path);
+    stored = clawt_fed_store_outbox(self->fed_store);
+    for (i = 0; i < json_array_get_length(stored); i++) {
+        const gchar *id = obj_str(json_array_get_object_element(stored, i), "id");
+        if (id != NULL && !g_hash_table_contains(live, id))
+            clawt_fed_store_outbox_remove(self->fed_store, id);
+    }
 }
 
 static void
 load_outbox(
     ClawtDaemon *self
 ){
-    g_autofree gchar *path = state_path(self, "outbox.json");
-    g_autofree gchar *text = NULL;
-    g_autoptr(JsonParser) parser = json_parser_new();
-    JsonNode *root;
+    g_autoptr(JsonArray) stored = NULL;
     guint i;
 
-    if (path == NULL || !g_file_get_contents(path, &text, NULL, NULL)
-        || !json_parser_load_from_data(parser, text, -1, NULL))
+    if (self->fed_store == NULL)
         return;
-    root = json_parser_get_root(parser);
-    if (root == NULL || !JSON_NODE_HOLDS_ARRAY(root))
-        return;
-    for (i = 0; i < json_array_get_length(json_node_get_array(root)); i++) {
-        JsonObject *o = json_array_get_object_element(json_node_get_array(root), i);
+    stored = clawt_fed_store_outbox(self->fed_store);
+    for (i = 0; i < json_array_get_length(stored); i++) {
+        JsonObject *o = json_array_get_object_element(stored, i);
         FedOut *out;
 
-        if (o == NULL || obj_str(o, "id") == NULL || obj_str(o, "alias") == NULL
+        if (obj_str(o, "id") == NULL || obj_str(o, "alias") == NULL
             || obj_str(o, "kind") == NULL || obj_str(o, "body") == NULL)
             continue;
         out = g_new0(FedOut, 1);
@@ -2489,45 +2604,41 @@ static void
 save_holds(
     ClawtDaemon *self
 ){
-    g_autoptr(JsonObject) all = json_object_new();
-    g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
-    g_autofree gchar *path = state_path(self, "holds.json");
-    g_autofree gchar *text = NULL;
+    g_autoptr(JsonObject) stored = NULL;
     GHashTableIter iter;
     gpointer key;
     gpointer value;
+    GList *members;
+    GList *l;
 
+    if (self->fed_store == NULL)
+        return;
     g_hash_table_iter_init(&iter, self->fed_holds);
     while (g_hash_table_iter_next(&iter, &key, &value))
-        json_object_set_object_member(all, key, json_object_ref(value));
-    json_node_set_object(node, all);
-    text = json_to_string(node, FALSE);
-    if (path != NULL && !clawt_write_file_atomic(path, text, -1, 0600, FALSE, NULL))
-        g_warning("federation: the held messages were not saved to %s", path);
+        clawt_fed_store_kv_set(self->fed_store, "holds", key, value);
+    stored = clawt_fed_store_kv_all(self->fed_store, "holds");
+    members = json_object_get_members(stored);
+    for (l = members; l != NULL; l = l->next)
+        if (!g_hash_table_contains(self->fed_holds, l->data))
+            clawt_fed_store_kv_set(self->fed_store, "holds", l->data, NULL);
+    g_list_free(members);
 }
 
 static void
 load_holds(
     ClawtDaemon *self
 ){
-    g_autofree gchar *path = state_path(self, "holds.json");
-    g_autofree gchar *text = NULL;
     g_autoptr(JsonObject) all = NULL;
     GList *members;
     GList *l;
 
-    if (path == NULL || !g_file_get_contents(path, &text, NULL, NULL))
+    if (self->fed_store == NULL)
         return;
-    all = parse_object(text);
-    if (all == NULL)
-        return;
+    all = clawt_fed_store_kv_all(self->fed_store, "holds");
     members = json_object_get_members(all);
-    for (l = members; l != NULL; l = l->next) {
-        JsonNode *n = json_object_get_member(all, l->data);
-        if (n != NULL && JSON_NODE_HOLDS_OBJECT(n))
-            g_hash_table_replace(self->fed_holds, g_strdup(l->data),
-                                 json_object_ref(json_node_get_object(n)));
-    }
+    for (l = members; l != NULL; l = l->next)
+        g_hash_table_replace(self->fed_holds, g_strdup(l->data),
+                             json_object_ref(json_object_get_object_member(all, l->data)));
     g_list_free(members);
 }
 
@@ -2549,6 +2660,9 @@ apply_delivery(
     const gchar *who = peer != NULL && peer->label != NULL ? peer->label : alias;
     g_autofree gchar *note = NULL;
 
+    /* the message's tick, kept for its conversation (0.73.0) */
+    if (room != NULL && id != NULL && self->fed_store != NULL)
+        clawt_fed_store_delivery_set(self->fed_store, id, room, state, detail);
     if (self->bus != NULL) {
         g_autoptr(ClawtEvent) event = clawt_event_new("federation.delivery",
                                                       room != NULL ? room : alias);
@@ -2596,6 +2710,9 @@ enqueue(
     g_ptr_array_add(self->fed_outbox, out);
     if (room != NULL)
         g_hash_table_replace(self->fed_sent, g_strdup(id), g_strdup(room));
+    /* the message's first tick: waiting to go (0.73.0) */
+    if (room != NULL && g_strcmp0(kind, "message") == 0 && self->fed_store != NULL)
+        clawt_fed_store_delivery_set(self->fed_store, id, room, "queued", NULL);
     save_outbox(self);
     flush_outbox(self, alias);
 }
@@ -2728,6 +2845,8 @@ flush_outbox(
             continue;
         }
         if (push_envelope(self, peer, ps, out->kind, out->body) > 0) {
+            if (g_strcmp0(out->kind, "message") == 0 && out->room != NULL && self->fed_store != NULL)
+                clawt_fed_store_delivery_set(self->fed_store, out->id, out->room, "sent", NULL);
             if (g_strcmp0(out->kind, "message") == 0 && self->bus != NULL) {
                 g_autoptr(ClawtEvent) event = clawt_event_new(
                     "federation.delivery", out->room != NULL ? out->room : alias);
@@ -3663,26 +3782,20 @@ record_cost(
     const gchar *alias,
     gint64       cents
 ){
-    g_autofree gchar *path = state_path(self, "costs.json");
-    g_autofree gchar *text = NULL;
     g_autoptr(JsonObject) all = NULL;
-    JsonObject *one;
+    g_autoptr(JsonObject) one = json_object_new();
+    JsonObject *was;
 
-    if (path == NULL)
+    if (self->fed_store == NULL)
         return;
-    if (g_file_get_contents(path, &text, NULL, NULL))
-        all = parse_object(text);
-    if (all == NULL)
-        all = json_object_new();
-    if (!json_object_has_member(all, alias))
-        json_object_set_object_member(all, alias, json_object_new());
-    one = json_object_get_object_member(all, alias);
-    json_object_set_int_member(one, "tasks", json_object_get_int_member_with_default(one, "tasks", 0) + 1);
+    all = clawt_fed_store_kv_all(self->fed_store, "costs");
+    was = json_object_has_member(all, alias) ? json_object_get_object_member(all, alias) : NULL;
+    json_object_set_int_member(one, "tasks",
+                               (was != NULL ? json_object_get_int_member_with_default(was, "tasks", 0) : 0) + 1);
     json_object_set_int_member(one, "cents",
-                               json_object_get_int_member_with_default(one, "cents", 0) + cents);
-    g_free(text);
-    text = object_text(all);
-    clawt_write_file_atomic(path, text, -1, 0600, FALSE, NULL);
+                               (was != NULL ? json_object_get_int_member_with_default(was, "cents", 0) : 0)
+                               + cents);
+    clawt_fed_store_kv_set(self->fed_store, "costs", alias, one);
 }
 
 /*
@@ -3700,9 +3813,8 @@ escrow_line(
     ClawtFedPeer *peer = clawt_fed_registry_get(self->fed_registry, alias);
     const gchar *who = peer != NULL && peer->label != NULL ? peer->label : alias;
     g_autoptr(GString) out = g_string_new(NULL);
-    g_autofree gchar *path = state_path(self, "costs.json");
-    g_autofree gchar *text = NULL;
-    g_autoptr(JsonObject) costs = NULL;
+    g_autoptr(JsonObject) costs = self->fed_store != NULL
+        ? clawt_fed_store_kv_all(self->fed_store, "costs") : NULL;
 
     if (ps != NULL && ps->their_budget != NULL) {
         JsonObject *b = ps->their_budget;
@@ -3724,8 +3836,7 @@ escrow_line(
         if (json_object_has_member(b, "delegate"))
             g_string_append_printf(out, "New work: %s. ", obj_str(b, "delegate"));
     }
-    if (path != NULL && g_file_get_contents(path, &text, NULL, NULL)
-        && (costs = parse_object(text)) != NULL && json_object_has_member(costs, alias)) {
+    if (costs != NULL && json_object_has_member(costs, alias)) {
         JsonObject *one = json_object_get_object_member(costs, alias);
         gint64 n = json_object_get_int_member_with_default(one, "tasks", 0);
 
@@ -4162,11 +4273,27 @@ static void
 save_shares(
     ClawtDaemon *self
 ){
-    g_autofree gchar *path = state_path(self, "shared-rooms.json");
-    g_autofree gchar *text = object_text(self->fed_shares);
+    g_autoptr(JsonObject) stored = NULL;
+    GList *members;
+    GList *l;
 
-    if (path != NULL && !clawt_write_file_atomic(path, text, -1, 0600, FALSE, NULL))
-        g_warning("federation: the shared rooms were not saved to %s", path);
+    if (self->fed_store == NULL || self->fed_shares == NULL)
+        return;
+    members = json_object_get_members(self->fed_shares);
+    for (l = members; l != NULL; l = l->next) {
+        g_autoptr(JsonObject) row = json_object_new();
+
+        json_object_set_array_member(row, "aliases",
+            json_array_ref(json_object_get_array_member(self->fed_shares, l->data)));
+        clawt_fed_store_kv_set(self->fed_store, "shares", l->data, row);
+    }
+    g_list_free(members);
+    stored = clawt_fed_store_kv_all(self->fed_store, "shares");
+    members = json_object_get_members(stored);
+    for (l = members; l != NULL; l = l->next)
+        if (!json_object_has_member(self->fed_shares, l->data))
+            clawt_fed_store_kv_set(self->fed_store, "shares", l->data, NULL);
+    g_list_free(members);
 }
 
 /*
@@ -4217,13 +4344,24 @@ static void
 load_shares(
     ClawtDaemon *self
 ){
-    g_autofree gchar *path = state_path(self, "shared-rooms.json");
-    g_autofree gchar *text = NULL;
-    JsonObject *loaded = NULL;
+    g_autoptr(JsonObject) all = self->fed_store != NULL
+        ? clawt_fed_store_kv_all(self->fed_store, "shares") : NULL;
+    GList *members;
+    GList *l;
 
-    if (path != NULL && g_file_get_contents(path, &text, NULL, NULL))
-        loaded = parse_object(text);
-    self->fed_shares = loaded != NULL ? loaded : json_object_new();
+    self->fed_shares = json_object_new();
+    if (all == NULL)
+        return;
+    members = json_object_get_members(all);
+    for (l = members; l != NULL; l = l->next) {
+        JsonObject *row = json_object_get_object_member(all, l->data);
+        JsonNode *list = row != NULL ? json_object_get_member(row, "aliases") : NULL;
+
+        if (list != NULL && JSON_NODE_HOLDS_ARRAY(list))
+            json_object_set_array_member(self->fed_shares, l->data,
+                                         json_array_ref(json_node_get_array(list)));
+    }
+    g_list_free(members);
 }
 
 /* This fleet's signature on a word in a shared room (0.72.0). */
@@ -5046,6 +5184,18 @@ clawt_daemon_federation_mention_names(
                 obj_str(json_array_get_object_element(agents, j), "id"), alias));
     }
     return out;
+}
+
+/* What became of each message in @room_id, for its ticks; NULL for none. */
+JsonObject *
+clawt_daemon_federation_deliveries(
+    ClawtDaemon *self,
+    const gchar *room_id
+){
+    if (!fed_on(self) || self->fed_store == NULL || room_id == NULL
+        || !clawt_fed_room_parse(room_id, NULL, NULL, NULL))
+        return NULL;
+    return clawt_fed_store_deliveries(self->fed_store, room_id);
 }
 
 /* ---- the agent tools' hooks ------------------------------------------- */
@@ -6455,13 +6605,18 @@ handle_audit(
     GList *l;
     gint64 n = 0;
 
-    /* Newest first. */
-    for (l = self->fed_audit->tail; l != NULL && n < limit; l = l->prev) {
-        JsonObject *row = l->data;
-        if (alias != NULL && g_strcmp0(obj_str(row, "peer"), alias) != 0)
-            continue;
-        json_array_add_object_element(a, json_object_ref(row));
-        n++;
+    /* Newest first, from federation.db; the ring when there is no store. */
+    if (self->fed_store != NULL) {
+        json_array_unref(a);
+        a = clawt_fed_store_audit_list(self->fed_store, alias, (guint)CLAMP(limit, 1, 10000));
+    } else {
+        for (l = self->fed_audit->tail; l != NULL && n < limit; l = l->prev) {
+            JsonObject *row = l->data;
+            if (alias != NULL && g_strcmp0(obj_str(row, "peer"), alias) != 0)
+                continue;
+            json_array_add_object_element(a, json_object_ref(row));
+            n++;
+        }
     }
     json_object_set_array_member(o, "entries", a);
     return reply_object(request, o);

@@ -2378,6 +2378,12 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
      * and the sidebar's fleet sections for anything but the audit.
      */
     if (g_str_has_prefix(kind != NULL ? kind : "", "federation.")) {
+        /* a tick changed in the conversation on screen: redraw it (0.73.0) */
+        if (g_strcmp0(kind, "federation.delivery") == 0) {
+            if (g_strcmp0(clawt_event_get_subject(event), self->selected_room_entry) == 0)
+                clawt_gtk_load_history(self);
+            return;
+        }
         if (self->settings != NULL)
             clawt_gtk_federation_on_event(self, event);
         if (g_strcmp0(kind, "federation.audit") != 0)

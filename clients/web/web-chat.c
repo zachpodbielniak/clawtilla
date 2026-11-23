@@ -1166,6 +1166,22 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
                                            */
                                           peer != NULL ? agent_id
                                                        : NULL));
+            /* A message's tick in a conversation with another fleet (0.73.0). */
+            {
+                const gchar *tick = clawt_fed_delivery_label(
+                    clawt_web_member(one, "delivery", NULL));
+
+                if (tick != NULL) {
+                    g_autoptr(HtmxDiv) mark = htmx_div_new();
+
+                    htmx_element_add_class(HTMX_ELEMENT(mark), "fed-delivery");
+                    if (clawt_web_member(one, "delivery_detail", NULL) != NULL)
+                        htmx_element_set_attribute(HTMX_ELEMENT(mark), "title",
+                            clawt_web_member(one, "delivery_detail", ""));
+                    htmx_node_set_text_content(HTMX_NODE(mark), tick);
+                    htmx_node_add_child(HTMX_NODE(inner), HTMX_NODE(mark));
+                }
+            }
         }
 
         /*

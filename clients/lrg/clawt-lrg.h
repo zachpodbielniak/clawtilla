@@ -332,6 +332,9 @@ void clawt_lrg_chat_open_conversation(ClawtLrgApp *app, const gchar *peer);
  */
 void clawt_lrg_chat_reopen(ClawtLrgApp *app);
 
+/* The transcript on screen, read again (0.73.0: a delivery tick changed). */
+void clawt_lrg_chat_reload(ClawtLrgApp *app);
+
 /*
  * Tells the daemon the operator has read @room_id up to @upto (the
  * newest message when %NULL), so its count clears in every client

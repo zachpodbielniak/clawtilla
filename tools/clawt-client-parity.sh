@@ -368,6 +368,8 @@ declare -A AFFORDANCES=(
     # federation (0.72.0)
     ["federation rules editor"]="clawt-fed-rule|fed-rule|clawt-fed-rule"
     ["office.peers deprecation notice"]="clawt-fed-deprecated|fed-deprecated|clawt-fed-deprecated"
+    # federation (0.73.0)
+    ["message delivery ticks"]="clawt-fed-delivery|fed-delivery|clawt-fed-delivery"
     #
     # The Office page (0.56.0): the roster line from the library, and the
     # slot the drawn office goes in -- a note in a build without OFFICE=1.

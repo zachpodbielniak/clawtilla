@@ -684,6 +684,83 @@ test_mentions_rules_and_refs(void)
     g_assert_true(clawt_fed_ref_parse(ref, NULL, NULL));
 }
 
+/* federation.db keeps the audit, nonces, outbox, ticks and keyed rows across a reopen. */
+static void
+test_store(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-fedstore-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "federation.db", NULL);
+    g_autoptr(GError) error = NULL;
+
+    {
+        g_autoptr(ClawtFedStore) store = clawt_fed_store_open(path, &error);
+        g_autoptr(JsonObject) row = json_object_new();
+        g_autoptr(JsonObject) out = json_object_new();
+        g_autoptr(JsonObject) hold = json_object_new();
+
+        g_assert_no_error(error);
+        json_object_set_int_member(row, "time", 100);
+        json_object_set_string_member(row, "direction", "in");
+        json_object_set_string_member(row, "peer", "lab");
+        json_object_set_string_member(row, "kind", "message");
+        json_object_set_string_member(row, "outcome", "ok");
+        clawt_fed_store_audit_add(store, row);
+        json_object_set_int_member(row, "time", 200);
+        json_object_set_string_member(row, "peer", "acme");
+        clawt_fed_store_audit_add(store, row);
+        clawt_fed_store_nonce_add(store, "FLEET", "n1", 1000);
+        clawt_fed_store_nonce_add(store, "FLEET", "old", 10);
+        json_object_set_string_member(out, "id", "m1");
+        json_object_set_string_member(out, "alias", "lab");
+        json_object_set_string_member(out, "kind", "message");
+        json_object_set_string_member(out, "body", "{}");
+        json_object_set_string_member(out, "room", "fed:lab:user:atlas");
+        json_object_set_int_member(out, "queued", 5);
+        clawt_fed_store_outbox_put(store, out);
+        clawt_fed_store_delivery_set(store, "m1", "fed:lab:user:atlas", "held", "asks first");
+        json_object_set_string_member(hold, "alias", "lab");
+        clawt_fed_store_kv_set(store, "holds", "fed-hold-1", hold);
+    }
+    {
+        g_autoptr(ClawtFedStore) store = clawt_fed_store_open(path, &error);
+        g_autoptr(JsonArray) all = clawt_fed_store_audit_list(store, NULL, 10);
+        g_autoptr(JsonArray) lab = clawt_fed_store_audit_list(store, "lab", 10);
+        g_autoptr(JsonArray) nonces = clawt_fed_store_nonces(store, 500);
+        g_autoptr(JsonArray) outbox = clawt_fed_store_outbox(store);
+        g_autoptr(JsonObject) ticks = clawt_fed_store_deliveries(store, "fed:lab:user:atlas");
+        g_autoptr(JsonObject) holds = clawt_fed_store_kv_all(store, "holds");
+        g_autoptr(JsonArray) pruned = NULL;
+
+        g_assert_no_error(error);
+        g_assert_cmpuint(json_array_get_length(all), ==, 2);
+        /* newest first */
+        g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(all, 0), "peer"),
+                        ==, "acme");
+        g_assert_cmpuint(json_array_get_length(lab), ==, 1);
+        g_assert_cmpuint(json_array_get_length(nonces), ==, 1);
+        g_assert_cmpuint(json_array_get_length(outbox), ==, 1);
+        g_assert_cmpstr(json_object_get_string_member(
+            json_object_get_object_member(ticks, "m1"), "state"), ==, "held");
+        g_assert_true(json_object_has_member(holds, "fed-hold-1"));
+
+        clawt_fed_store_outbox_remove(store, "m1");
+        clawt_fed_store_kv_set(store, "holds", "fed-hold-1", NULL);
+        clawt_fed_store_audit_prune(store, 150);
+        pruned = clawt_fed_store_audit_list(store, NULL, 10);
+        g_assert_cmpuint(json_array_get_length(pruned), ==, 1);
+        {
+            g_autoptr(JsonArray) empty = clawt_fed_store_outbox(store);
+            g_autoptr(JsonObject) gone = clawt_fed_store_kv_all(store, "holds");
+            g_assert_cmpuint(json_array_get_length(empty), ==, 0);
+            g_assert_false(json_object_has_member(gone, "fed-hold-1"));
+        }
+    }
+    g_assert_cmpstr(clawt_fed_delivery_label("delivered"), ==,
+                    "\342\234\223\342\234\223 delivered");
+    g_assert_null(clawt_fed_delivery_label("nonsense"));
+    clawt_test_remove_tree(dir);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -706,6 +783,7 @@ main(int argc, char *argv[])
     g_test_add_func("/fed-model/refs-and-fence", test_refs_and_fence);
     g_test_add_func("/fed-model/weather-and-tailnet", test_weather_and_tailnet);
     g_test_add_func("/fed-model/mentions-rules-and-refs", test_mentions_rules_and_refs);
+    g_test_add_func("/fed-model/store", test_store);
 
     return g_test_run();
 }

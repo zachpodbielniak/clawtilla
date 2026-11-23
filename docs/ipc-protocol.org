@@ -1342,7 +1342,10 @@ frame a client sends).  Since 0.71.0 ~federation.discover~ (~candidates~; deferr
 ~federation.migrate_office~ (~name~); ~federation.peer.show~ and each
 ~agent.list~ fleet carry ~weather~, and a peer listing ~escrow~.  Since
 0.72.0 ~federation.rules~ (~rules~: read, or replace whole, each checked),
-and ~room.list~ carries ~mention_names~ for a room that crosses fleets.  Every payload and
+and ~room.list~ carries ~mention_names~ for a room that crosses fleets.  Since 0.73.0
+~room.history~ gives each message sent to another fleet its ~delivery~
+tick, and the events ~federation.presence~ (~ref~, ~state~) and
+~federation.typing~ (~ref~, ~typing~) say which remote agent changed.  Every payload and
 answer is tabled in [[file:federation.org::#requests][federation.org]].  With =federation.enabled=
 off, ~federation.status~ answers ~enabled: false~ and a hint, and the rest
 refuse with =not_supported=.

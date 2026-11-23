@@ -1821,13 +1821,13 @@ federation:
   reconnect_max_seconds: 300
 
   # How long a message to a linked fleet that cannot be reached waits in
-  # the outbox (<state_dir>/federation/outbox.json) before it is given up,
+  # the outbox (<state_dir>/federation/federation.db) before it is given up,
   # with a note in its conversation saying so. It is sent the moment the
   # fleet answers again; nothing is dropped silently.
   outbox_hours: 72
 
   # How long the record of every request between fleets
-  # (<state_dir>/federation/audit.ndjson) is kept.
+  # (<state_dir>/federation/federation.db) is kept.
   audit_retention_days: 90
 
   # # Grant overrides for every linked fleet a selector matches, applied in

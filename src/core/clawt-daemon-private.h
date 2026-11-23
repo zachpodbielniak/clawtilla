@@ -342,6 +342,7 @@ struct _ClawtDaemon {
      * written through to <state_dir>/federation/, so a restart neither
      * loses a message nor leaves a held one unanswerable.
      */
+    ClawtFedStore           *fed_store;       /* federation.db (0.73.0) */
     GPtrArray               *fed_outbox;      /* FedOut*, oldest first */
     GHashTable              *fed_holds;       /* decision id -> JsonObject */
     GHashTable              *fed_invites;     /* message id -> invites a reply */
@@ -2730,6 +2731,7 @@ gchar    *clawt_daemon_federation_open(ClawtDaemon  *self,
                                        GError      **error);
 JsonArray *clawt_daemon_federation_remote_agents(ClawtDaemon *self);
 GPtrArray *clawt_daemon_federation_mention_names(ClawtDaemon *self, const gchar *room_id);
+JsonObject *clawt_daemon_federation_deliveries(ClawtDaemon *self, const gchar *room_id);
 gchar    *clawt_daemon_federation_delegate(ClawtDaemon  *self,
                                            const gchar  *from,
                                            const gchar  *ref,

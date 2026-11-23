@@ -2887,13 +2887,13 @@ static const ClawtSchemaEntry schema[] = {
 
 { "federation.outbox_hours", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "72", NULL,
   "How long a message to a linked fleet that cannot be reached waits in\n"
-  "the outbox (<state_dir>/federation/outbox.json) before it is given up,\n"
+  "the outbox (<state_dir>/federation/federation.db) before it is given up,\n"
   "with a note in its conversation saying so. It is sent the moment the\n"
   "fleet answers again; nothing is dropped silently.", "0.68.0" },
 
 { "federation.audit_retention_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "90", NULL,
   "How long the record of every request between fleets\n"
-  "(<state_dir>/federation/audit.ndjson) is kept.", "0.66.0" },
+  "(<state_dir>/federation/federation.db) is kept.", "0.66.0" },
 
 { "federation.rules", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Grant overrides for every linked fleet a selector matches, applied in\n"

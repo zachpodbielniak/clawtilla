@@ -180,7 +180,7 @@ answering; the wait doubles from one second up to this.
 - Since: 0.68.0
 
 How long a message to a linked fleet that cannot be reached waits in
-the outbox (<state_dir>/federation/outbox.json) before it is given up,
+the outbox (<state_dir>/federation/federation.db) before it is given up,
 with a note in its conversation saying so. It is sent the moment the
 fleet answers again; nothing is dropped silently.
 
@@ -191,7 +191,7 @@ fleet answers again; nothing is dropped silently.
 - Since: 0.66.0
 
 How long the record of every request between fleets
-(<state_dir>/federation/audit.ndjson) is kept.
+(<state_dir>/federation/federation.db) is kept.
 
 ### `federation.rules`
 

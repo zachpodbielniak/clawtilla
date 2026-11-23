@@ -1132,8 +1132,15 @@ clawt_daemon_handle_room(
         json_builder_set_member_name(builder, "messages");
         json_builder_begin_array(builder);
 
+        {
+        /* A conversation with another fleet carries each message's tick (0.73.0). */
+        g_autoptr(JsonObject) deliveries =
+            clawt_daemon_federation_deliveries(self, clawt_room_get_id(room));
+
         for (i = 0; i < history->len; i++) {
             ClawtMessage *message = g_ptr_array_index(history, i);
+            JsonNode *tick = deliveries != NULL
+                ? json_object_get_member(deliveries, clawt_message_get_id(message)) : NULL;
 
             json_builder_begin_object(builder);
             json_builder_set_member_name(builder, "id");
@@ -1148,6 +1155,18 @@ clawt_daemon_handle_room(
             json_builder_set_member_name(builder, "ts");
             json_builder_add_int_value(
                 builder, clawt_message_get_timestamp(message));
+            if (tick != NULL && JSON_NODE_HOLDS_OBJECT(tick)) {
+                JsonObject *t = json_node_get_object(tick);
+
+                json_builder_set_member_name(builder, "delivery");
+                json_builder_add_string_value(builder,
+                    json_object_get_string_member_with_default(t, "state", "queued"));
+                if (json_object_has_member(t, "detail")) {
+                    json_builder_set_member_name(builder, "delivery_detail");
+                    json_builder_add_string_value(builder,
+                        json_object_get_string_member(t, "detail"));
+                }
+            }
 
             /*
              * The task this message belongs to, when it belongs to one.
@@ -1262,6 +1281,7 @@ clawt_daemon_handle_room(
 			}
 
             json_builder_end_object(builder);
+        }
         }
 
         json_builder_end_array(builder);
