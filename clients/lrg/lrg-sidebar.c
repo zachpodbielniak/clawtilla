@@ -1396,7 +1396,14 @@ fed_header(ClawtLrgApp *app, JsonObject *fleet, guint shown, gboolean folded)
     clawt_lrg_take(box, clawt_lrg_badge(
         clawt_fed_health_glyph(clawt_ipc_payload_string(fleet, "health")),
         clawt_fed_badge_tone(clawt_ipc_payload_string(fleet, "health_tone"))));
-    title = clawt_lrg_label(label != NULL ? label : alias, "heading");
+    /*
+     * A muted or hidden-but-shown fleet is drawn quiet, as GTK dims its
+     * header and the web greys it; this one was drawn at full strength.
+     */
+    title = clawt_lrg_label(label != NULL ? label : alias,
+                            clawt_ipc_payload_boolean(fleet, "muted", FALSE)
+                                || clawt_ipc_payload_boolean(fleet, "hidden", FALSE)
+                            ? "muted" : "heading");
     lrg_widget_set_fill_weight(title, 1.0f);
     lrg_widget_set_valign(title, LRG_ALIGN_CENTER);
     lrg_label_set_ellipsize(LRG_LABEL(title), TRUE);

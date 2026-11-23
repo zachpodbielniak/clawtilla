@@ -1102,6 +1102,7 @@ clawt_daemon_federation_office_visitors(
             g_autofree gchar *ours = NULL;
             g_autofree gchar *call_peer = NULL;
             g_autofree gchar *call_room = NULL;
+            gint64 call_since = 0;
             JsonObject *visitor;
 
             if (id == NULL)
@@ -1134,6 +1135,7 @@ clawt_daemon_federation_office_visitors(
                     activity = "on_call";
                     call_peer = g_strdup(r_local);
                     call_room = g_strdup(room_key);
+                    call_since = GPOINTER_TO_INT(when);
                     break;
                 }
             }
@@ -1152,7 +1154,13 @@ clawt_daemon_federation_office_visitors(
             if (color != NULL && color[0] == '#'
                 && clawt_office_character_background_is_valid(color))
                 json_object_set_string_member(visitor, "color", color);
-            json_object_set_int_member(visitor, "since", 0);
+            /*
+             * When the call was last heard, in seconds like the floor's own
+             * stamps; nothing otherwise, so the roster line names no time
+             * rather than "since 0" -- which read as 20780 days ago.
+             */
+            if (call_since > 0)
+                json_object_set_int_member(visitor, "since", call_since);
             json_array_add_object_element(participants, visitor);
         }
         if (fleets_drawn != NULL)

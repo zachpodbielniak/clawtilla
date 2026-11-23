@@ -111,7 +111,7 @@ See [routines-and-triggers.md](routines-and-triggers.md), [grok-and-venture.md](
 | `clawtilla teach list` / `start <agent> [agent\|host-demo\|guest-demo] [goal]` / `stop <id>` / `show <id>` / `rm <id>` / `draft <id>` / `commit <id>` | record a task, draft a SKILL.md, add it (disabled) |
 | `clawtilla attachment list <agent\|room>` / `get <id> [-o FILE\|-]` | files a conversation carried |
 | `clawtilla plugin list` | loaded plugins |
-| `clawtilla office who` / `worlds` / `layout` / `choreography` | who is where; world packs; seats; built-in rules |
+| `clawtilla office who` / `worlds` / `layout` / `choreography` | who is where, visitors from linked fleets too (`ALIAS:AGENT`); world packs; seats; built-in rules |
 | `clawtilla office on` / `off` / `use WORLD` / `renderer auto\|2d\|3d` / `open` | switch it, pick a world, renderer, start clawtilla-office |
 | `clawtilla office custodians [install [--team NAME]]` / `character AGENT [--direct]` / `api-key higgsfield\|comfyui` | custodial team; regenerate a character; store the asset key (stdin) |
 | `clawtilla office peers` / `peer-pair NAME CODE` | office visitors from another daemon (superseded by federation) |

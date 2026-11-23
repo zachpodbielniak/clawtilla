@@ -2308,7 +2308,7 @@ versions apart.
 - Never widen where `clawtilla-web` listens because an address was missing
 - Never register a route in the web client after `/a/:id/:view`
 - Never pass `clawt_web_app_last_error()` to anything that renders
-- Never pair `g_autoptr` with a helper that takes the reference
+- Never pair `g_autoptr` with a helper that takes the reference (`tests/test-client-ownership.sh` scans the web and lrg clients for it; it found seven on the web Federation page and one in lrg)
 - Never emit a CSS rule for an appearance field somebody left empty
 - Never assert a layout with a track count when the number of items can change
 - Never re-arm an async read, or schedule a timer, without naming the context;

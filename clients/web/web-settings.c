@@ -2655,7 +2655,7 @@ fed_preview_card(JsonObject *preview, const gchar *invite_text)
     {
         g_autoptr(HtmxButton) go = clawt_web_button("Link", "primary");
         htmx_element_set_attribute(HTMX_ELEMENT(go), "type", "submit");
-        clawt_web_add(form, go);
+        clawt_web_add(form, g_steal_pointer(&go));
     }
     htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
     return HTMX_ELEMENT(g_steal_pointer(&card));
@@ -2752,7 +2752,7 @@ fed_peer_item(ClawtWebApp *app, JsonObject *peer)
         {
             g_autoptr(HtmxButton) save = clawt_web_button("Set tier", NULL);
             htmx_element_set_attribute(HTMX_ELEMENT(save), "type", "submit");
-            clawt_web_add(tier_form, save);
+            clawt_web_add(tier_form, g_steal_pointer(&save));
         }
         htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(tier_form));
 
@@ -2782,7 +2782,7 @@ fed_peer_item(ClawtWebApp *app, JsonObject *peer)
         {
             g_autoptr(HtmxButton) save = clawt_web_button("Apply", NULL);
             htmx_element_set_attribute(HTMX_ELEMENT(save), "type", "submit");
-            clawt_web_add(grant_form, save);
+            clawt_web_add(grant_form, g_steal_pointer(&save));
         }
         htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(grant_form));
     }
@@ -2858,7 +2858,7 @@ federation_content(ClawtWebApp *app, JsonObject *invite, JsonObject *preview,
         {
             g_autoptr(HtmxButton) go = clawt_web_button("Make invite", "primary");
             htmx_element_set_attribute(HTMX_ELEMENT(go), "type", "submit");
-            clawt_web_add(make, go);
+            clawt_web_add(make, g_steal_pointer(&go));
         }
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(make));
 
@@ -2866,7 +2866,7 @@ federation_content(ClawtWebApp *app, JsonObject *invite, JsonObject *preview,
         {
             g_autoptr(HtmxButton) go = clawt_web_button("Read it", NULL);
             htmx_element_set_attribute(HTMX_ELEMENT(go), "type", "submit");
-            clawt_web_add(read, go);
+            clawt_web_add(read, g_steal_pointer(&go));
         }
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(read));
         htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
@@ -2910,7 +2910,7 @@ federation_content(ClawtWebApp *app, JsonObject *invite, JsonObject *preview,
             htmx_element_add_class(HTMX_ELEMENT(remove), "fed-rule");
             clawt_web_add(remove, clawt_web_text(json_array_get_string_element(rules, i), "mono"));
             htmx_element_set_attribute(HTMX_ELEMENT(go), "type", "submit");
-            clawt_web_add(remove, go);
+            clawt_web_add(remove, g_steal_pointer(&go));
             htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(remove));
         }
         clawt_web_add(add, clawt_web_field("Add a rule", "rule", NULL,
@@ -2918,7 +2918,7 @@ federation_content(ClawtWebApp *app, JsonObject *invite, JsonObject *preview,
         {
             g_autoptr(HtmxButton) go = clawt_web_button("Add", NULL);
             htmx_element_set_attribute(HTMX_ELEMENT(go), "type", "submit");
-            clawt_web_add(add, go);
+            clawt_web_add(add, g_steal_pointer(&go));
         }
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(add));
         htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));

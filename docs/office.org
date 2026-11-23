@@ -43,7 +43,7 @@ The roster, the presence and the layout are in every build, because they cost no
 #+begin_src bash
 clawtilla office on                    # or the switch on the Office page
 clawtilla office use cozy-town         # or the World picker; modern-office is the default
-clawtilla office who                   # the roster
+clawtilla office who                   # the roster, linked fleets' visitors included (ALIAS:AGENT)
 clawtilla office worlds                # what packs are available
 #+end_src
 

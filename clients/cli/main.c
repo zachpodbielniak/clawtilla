@@ -5956,8 +5956,12 @@ cmd_office(int argc, char *argv[])
     client = connect_to_daemon();
     if (client == NULL)
         return EXIT_FAILURE;
-    reply = call(client, g_strcmp0(verb, "who") == 0 ? "office.snapshot"
-                         : g_strcmp0(verb, "worlds") == 0 ? "office.worlds" : "office.layout",
+    /*
+     * `who` reads the layout, not the snapshot: the snapshot is what this
+     * fleet publishes and leaves linked fleets' visitors out on purpose, so
+     * `who` listed nobody from another fleet while the office drew them.
+     */
+    reply = call(client, g_strcmp0(verb, "worlds") == 0 ? "office.worlds" : "office.layout",
                  NULL);
     if (reply == NULL)
         return EXIT_FAILURE;

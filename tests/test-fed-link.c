@@ -1191,8 +1191,12 @@ test_rooms_and_transcripts(
                 JsonObject *v = json_array_get_object_element(floor, i);
                 if (g_strcmp0(json_object_get_string_member(v, "id"), "alpha:a-chief") == 0
                     && g_strcmp0(json_object_get_string_member(v, "activity"), "on_call") == 0
-                    && g_strcmp0(json_object_get_string_member(v, "peer"), "b-chief") == 0)
+                    && g_strcmp0(json_object_get_string_member(v, "peer"), "b-chief") == 0) {
+                    /* stamped when the call was heard: a zero read as the epoch */
+                    g_assert_cmpint(json_object_get_int_member_with_default(v, "since", 0),
+                                    >, g_get_real_time() / G_USEC_PER_SEC - 300);
                     on_call = TRUE;
+                }
             }
             if (on_call)
                 break;
