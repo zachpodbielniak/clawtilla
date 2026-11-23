@@ -42,7 +42,7 @@ clawtilla cost --by day --csv > spending.csv
 
 Task budget facts:
 - Test is spend >= budget (fires AT the figure). 0 disables it. `config show` prints the file as written: no `task_budget_usd` line means the $5 default applies.
-- Charged flat on the task id when the agent answers (each reply drains what that agent spent since its previous turn). No walk to the parent: a chief's ten subtasks each have their own full budget, so it bounds one agent's work on one assignment, not a fan-out in dollars (the schema text "and everything it spawns" overstates it). `orchestration.tree_message_budget` bounds fan-out in messages ([orchestration.md](orchestration.md)).
+- Charged flat on the task id when the agent answers (each reply drains what that agent spent since its previous turn). No walk to the parent: a chief's ten subtasks each have their own full budget, so it bounds one agent's work on one assignment, not a fan-out in dollars. `orchestration.tree_message_budget` bounds fan-out in messages ([orchestration.md](orchestration.md)).
 - Ordinary chat has no task id and is outside the task budget; the daily caps cover it.
 - First drain on an agent after daemon start sets a watermark and charges nothing; restored tasks' spend is reseeded from the ledgers, so the budget keeps counting across restarts. Row ids prevent double charging.
 

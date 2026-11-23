@@ -104,6 +104,11 @@ event name, and every event podomation ships is named that way.
 | ~on_routine_changed~ | A routine was added, edited or removed | --- |
 | ~on_routine_turned_off~ | A routine was turned off because its computer did not start =routines.max_start_failures= runs in a row | ~agent~, ~failures~, ~error~ |
 | ~on_integration_changed~ | An integration was added, edited or removed | --- |
+| ~on_trigger_fired~ | A webhook delivery started a turn (since 0.65.1) | --- |
+| ~on_trigger_posted~ | A =mode: post= delivery was written into its room (since 0.65.1) | --- |
+| ~on_trigger_changed~ | A trigger was added, edited, removed or rotated (since 0.65.1) | --- |
+| ~on_trigger_refused~ | A webhook delivery did not authenticate (since 0.65.1) | --- |
+| ~on_trigger_verified~ | A trigger's setup handshake was captured (since 0.65.1) | --- |
 | ~on_daemon_started~ | The daemon came up | --- |
 | ~on_daemon_reloaded~ | The configuration was reloaded | --- |
 | ~on_daemon_stopped~ | The daemon is going away | --- |
@@ -112,7 +117,7 @@ Every event also carries ~timestamp~, which is microseconds since the
 epoch, and ~subject~ -- *what the event is about*, which is not always an
 agent.  For the ~on_agent_*~ kinds it is the agent id; for ~on_message~
 it is the *room*; for ~on_routine_ran~, ~on_routine_changed~ and
-~on_routine_turned_off~ the routine id; for ~on_integration_changed~ the instance name.  The three
+~on_routine_turned_off~ the routine id; for ~on_integration_changed~ the instance name; for the ~on_trigger_*~ kinds the trigger id.  The three
 ~on_daemon_*~ kinds have no subject at all, and carry only a timestamp.
 
 ~agent~ is present when the event is about one: the subject for the

@@ -1109,8 +1109,8 @@ about an attacker rather than about a forge.
 
 All five are bindable from a podomation pod as ~on_trigger_fired~,
 ~on_trigger_posted~, ~on_trigger_changed~, ~on_trigger_refused~ and
-~on_trigger_verified~ --
-the DSL's lexer cannot parse a dot in an event name.  See
+~on_trigger_verified~ (since 0.65.1; before it the pod bridge did not
+forward them, though this page said it did) -- the DSL's lexer cannot parse a dot in an event name.  See
 [[file:automation.org][automation.org]].
 
 A rate-limited or dropped delivery publishes *nothing*; it is in the

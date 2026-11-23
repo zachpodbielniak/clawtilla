@@ -67,6 +67,22 @@ static const EventName events[] = {
       "max_start_failures runs in a row; `failures` and `error` say why" },
     { "on_integration_changed", "integration.changed",
       "An integration was added, edited or removed" },
+    /*
+     * docs/triggers.org promised these five to pods from the start, and
+     * the daemon has always published them; this table, which is the
+     * only thing a pod can bind to, never had them.  The subject is the
+     * trigger id.
+     */
+    { "on_trigger_fired", "trigger.fired",
+      "A webhook delivery started a turn" },
+    { "on_trigger_posted", "trigger.posted",
+      "A mode: post delivery was written into its room" },
+    { "on_trigger_changed", "trigger.changed",
+      "A trigger was added, edited, removed or rotated" },
+    { "on_trigger_refused", "trigger.refused",
+      "A webhook delivery did not authenticate" },
+    { "on_trigger_verified", "trigger.verified",
+      "A trigger's setup handshake was captured" },
     { "on_daemon_started", "daemon.started", "The daemon came up" },
     { "on_daemon_reloaded", "daemon.reloaded",
       "The configuration was reloaded" },

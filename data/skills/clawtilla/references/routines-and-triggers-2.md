@@ -40,7 +40,7 @@ Names are `on_*` (the DSL cannot parse dots). Every event carries `timestamp` (m
 | `on_integration_changed` | -- (subject = instance) |
 | `on_daemon_started` / `_reloaded` / `_stopped` | timestamp only |
 
-Not forwarded (cannot be bound): `config.changed`, `room.*`, `team.changed`, `message.refused`, `mailbox.*`, `decision.*`, `computer.exec`, `image.*`, and every `trigger.*` kind (docs/triggers.org says `on_trigger_*` are bindable; the event table in src/plugin/clawt-pod-module.c has none of them). The forwarder copies a fixed set of detail keys, so a new daemon detail does not reach pods until added there.
+Not forwarded (cannot be bound): `config.changed`, `room.*`, `team.changed`, `message.refused`, `mailbox.*`, `decision.*`, `computer.exec` and `image.*`. Trigger events are bindable since 0.65.1: `on_trigger_fired`, `on_trigger_posted`, `on_trigger_changed`, `on_trigger_refused`, `on_trigger_verified` (subject: the trigger id). `on_trigger_refused` is the one worth binding -- a burst on a trigger nobody is rotating is somebody guessing at the endpoint. The forwarder copies a fixed set of detail keys, so a new daemon detail does not reach pods until added there.
 
 ## Actions
 

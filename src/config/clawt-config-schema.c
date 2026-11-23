@@ -712,8 +712,13 @@ static const ClawtSchemaEntry schema[] = {
 
 { "orchestration.task_budget_usd", CLAWT_SCHEMA_DOUBLE, CLAWT_SCHEMA_FLAG_NONE,
   "5.0", NULL,
-  "Spend cap for one delegated task and everything it spawns.\n"
-  "0 disables the cap.", "0.1.0" },
+  "Spend cap for one delegated task: what its assignee's turns on it cost.\n"
+  "\n"
+  "Per task, not per tree.  Spend is booked on the task the reply is\n"
+  "about and never rolled up to its parent, so each subtask a lead hands\n"
+  "out has a budget of its own.  A fan-out is bounded in messages by\n"
+  "orchestration.tree_message_budget, and a project's work in money by\n"
+  "its monthly_budget_usd.  0 disables the cap.", "0.1.0" },
 
 { "orchestration.idle_hours", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "72", NULL,

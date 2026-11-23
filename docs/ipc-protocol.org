@@ -2280,9 +2280,11 @@ web client cannot disagree about what exists.
 
 ~agent~ and ~tools~ are what a client filters on, and they answer two
 different questions.  ~agent~ is whether libreclaw can run an agent on
-it -- six CLI backends, and anything else is silently rewritten to
-~claude-code~, so offering the rest let a person pick OpenAI and get
-Claude Code with ~gpt-4o~ in the model field.  ~tools~ is whether it can
+it -- the CLI backends libreclaw's ~lc_provider_type_normalize()~ names
+(eight today), and libreclaw refuses anything else, so offering the rest
+let a person pick OpenAI and get an agent that cannot run a turn.  (It
+used to be rewritten to ~claude-code~ instead, which ran Claude Code with
+~gpt-4o~ in the model field.)  ~tools~ is whether it can
 be given tool definitions, which is what the agent designer needs.  A
 client that filters on neither is offering both lists at once, and
 roughly half of what it shows will not work.

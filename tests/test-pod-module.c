@@ -85,6 +85,56 @@ test_every_event_is_spelled_the_way_the_dsl_can_read_it(void)
     }
 }
 
+/*
+ * The table in docs/automation.org is what a pod author binds from, and
+ * docs/triggers.org once promised five on_trigger_* events this module
+ * never forwarded: a pod naming one loaded and never fired.  So the doc
+ * table and the module's own list must name exactly the same events.
+ */
+static void
+test_the_documented_events_are_the_forwarded_ones(void)
+{
+    g_autofree gchar *path = g_build_filename(CLAWT_TEST_SRCDIR, "docs",
+                                              "automation.org", NULL);
+    g_autofree gchar *text = NULL;
+    g_auto(GStrv) lines = NULL;
+    g_autoptr(GHashTable) documented = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                             g_free, NULL);
+    const PodEventDataFieldInfo *fields;
+    guint n_events = 0;
+    guint i;
+
+    g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
+    lines = g_strsplit(text, "\n", -1);
+    for (i = 0; lines[i] != NULL; i++) {
+        const gchar *start;
+        const gchar *end;
+
+        if (!g_str_has_prefix(lines[i], "| ~on_"))
+            continue;
+        start = lines[i] + 3;
+        end = strchr(start, '~');
+        g_assert_nonnull(end);
+        g_hash_table_add(documented, g_strndup(start, end - start));
+    }
+
+    fields = clawt_pod_module_events(&n_events);
+    for (i = 0; i < n_events; i++) {
+        if (!g_hash_table_remove(documented, fields[i].name))
+            g_error("%s is forwarded to pods but missing from docs/automation.org",
+                    fields[i].name);
+    }
+    if (g_hash_table_size(documented) > 0) {
+        GHashTableIter iter;
+        gpointer key;
+
+        g_hash_table_iter_init(&iter, documented);
+        g_hash_table_iter_next(&iter, &key, NULL);
+        g_error("docs/automation.org documents %s, which no pod ever receives",
+                (const gchar *)key);
+    }
+}
+
 static void
 test_the_events_a_pod_may_bind_to(void)
 {
@@ -633,6 +683,8 @@ main(int argc, char *argv[])
 
     g_test_add_func("/pod-module/event-names",
                     test_every_event_is_spelled_the_way_the_dsl_can_read_it);
+    g_test_add_func("/pod-module/documented-events",
+                    test_the_documented_events_are_the_forwarded_ones);
     g_test_add_func("/pod-module/supported-events",
                     test_the_events_a_pod_may_bind_to);
     g_test_add_func("/pod-module/event-reaches-pod",

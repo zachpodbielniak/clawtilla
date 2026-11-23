@@ -61,8 +61,13 @@ Uses local midnight and persisted usage; in-flight work can overshoot.
 - Default: `5.0`
 - Since: 0.1.0
 
-Spend cap for one delegated task and everything it spawns.
-0 disables the cap.
+Spend cap for one delegated task: what its assignee's turns on it cost.
+
+Per task, not per tree.  Spend is booked on the task the reply is
+about and never rolled up to its parent, so each subtask a lead hands
+out has a budget of its own.  A fan-out is bounded in messages by
+orchestration.tree_message_budget, and a project's work in money by
+its monthly_budget_usd.  0 disables the cap.
 
 ### `orchestration.idle_hours`
 

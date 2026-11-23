@@ -2469,12 +2469,13 @@ task id, and a chat has none.
 
 **** It is per task, not per tree of tasks
 
-The schema calls this a cap on "one delegated task and everything it
-spawns", and that is not what happens.  Spend is a flat table keyed on
-task id with no walk to a parent -- and no task in production *has* a
-parent, since every creation path passes NULL.  So a chief that delegates
+Spend is a flat table keyed on task id with no walk to a parent.  A
+delegated task does record its parent (from the delegating agent's
+turn), but the budget does not follow that link: a chief that delegates
 ten subtasks creates ten tasks each with its own full $5.00, and the
-$5.00 it was itself given bounds only its own turns.
+$5.00 it was itself given bounds only its own turns.  (Before 0.65.1 the
+schema described this as a cap on "one delegated task and everything it
+spawns", which it never was.)
 
 The practical reading: ~task_budget_usd~ bounds *one agent's work on one
 assignment*, which is still the runaway case it was built for.  It does

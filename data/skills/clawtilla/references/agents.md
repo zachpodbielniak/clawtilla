@@ -60,7 +60,7 @@ Managed regions (`# BEGIN clawtilla tools|integrations|computer|skills` in `TOOL
 
 ## Backends (model.provider)
 
-libreclaw drives CLIs only. `lc_provider_type_normalize()` accepts eight (AGENTS.md's "six" predates `codex-cli` and `acp`); anything else is an error and every turn is refused until fixed.
+libreclaw drives CLIs only. `lc_provider_type_normalize()` accepts eight; anything else is an error and every turn is refused until fixed.
 
 | Provider | Aliases | Notes |
 |---|---|---|

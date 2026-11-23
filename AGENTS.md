@@ -705,17 +705,22 @@ critical fired.
 - `libreclaw-1.0.pc` has an incomplete `Requires:`; replicate `PKG_DEPS` in
   `config.mk` rather than trusting it. `liblc-1.0.a` holds only libreclaw's own
   objects -- a static link must also pull in all five bundled dep archives.
-- **It drives six CLI backends and nothing else.**
-  `lc_provider_type_normalize()` knows `claude-code`, `claude-tmux`, `opencode`,
-  `grok-build`, `antigravity` and `cursor`. Anything else is not an error: it is
-  rewritten to `claude-code` with a `g_warning`, so an agent configured for
-  `openai` runs Claude Code and is handed `gpt-4o` as a model name. The HTTP
-  providers belong to ai-glib and can only drive the agent *designer*, which
-  needs tool calls. Hence `agent` and `tools` as separate flags on
-  `ClawtProviderInfo`.
+- **It drives the CLI backends `lc_provider_type_normalize()` names, and
+  nothing else** -- today eight: `claude-code`, `claude-tmux`, `opencode`,
+  `grok-build`, `antigravity`, `cursor`, `codex-cli` and `acp` (any program
+  speaking the Agent Client Protocol over stdio). Read that function for the
+  current list rather than this sentence, which said six for two releases
+  after `codex-cli` and `acp` arrived. Anything else is refused: the
+  function warns and returns NULL, and the entry is not used. It used to be
+  rewritten to `claude-code`, so an agent configured for `openai` ran Claude
+  Code holding `gpt-4o` as a model name -- under an account and a credit pool
+  nobody chose. The HTTP providers belong to ai-glib and can only drive the
+  agent *designer*, which needs tool calls. Hence `agent` and `tools` as
+  separate flags on `ClawtProviderInfo`.
 - **A name added to clawtilla's catalog and not to libreclaw is worse than one
-  left out**: the client offers it, the agent is created, and it runs on Claude
-  Code holding a model name Claude Code rejects.
+  left out**: the client offers it, the agent is created, and it cannot run
+  -- libreclaw refuses the type, so every turn fails until the config is
+  fixed.
   `tests/test-model-catalog.c` pins the `agent` column to
   `lc_provider_type_normalize()` itself, so the two cannot drift.
 - `lc_client_factory_matches_type()` answers "is this client that cli_type"

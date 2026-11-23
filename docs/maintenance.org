@@ -14,13 +14,35 @@
 ~/.clawtilla/                     (daemon.state_dir)
   config.yaml                     the fleet; the only thing you write by hand
   agents.sock                     agents dial in here
-  routines.yaml                   run state for the schedules; never in config.yaml
+  daemon.lock                     one daemon per state directory; see below
+  tcp-token                       GENERATED on the first network listener; 0600
+  devices.yaml                    paired devices: a digest of each token, never the token
+  fleet-id                        this fleet's id, for federation; written once
+  events/YYYY-MM-DD.ndjson        what happened -- the record
+  transcripts/<room>.ndjson       what was said
+  transcripts.db                  its search index
+  tasks.db                        every task, its journal, the incidents, the VENTURE outbox
+  task-sources.tsv                which turns were charged to which task
   decisions.db                    the decision inbox
-  tasks.db                        every task, its journal, and the incidents
   revisions.db                    every version of the config, personas, skills
   reads.db                        how far the operator has read each conversation (0.52.0)
   notices.db                      the notification list and the muted agents (0.52.0)
-  daemon.lock                     one daemon per state directory; see below
+  handoffs.db  triggers.db        handoffs; webhook deliveries and receipts
+  grok-jobs.db  grok/             Grok jobs and their bot keys
+  routines.yaml                   run state for the schedules; never in config.yaml
+  waits/                          what agents are waiting for
+  crosstalk-summaries.json        which exchanges were already summarised
+  connector-tools.yaml            each connector's tool list, as last fetched
+  hold.yaml                       the pause, while the fleet is held
+  ephemeral.yaml                  ephemeral agents, never in config.yaml
+  sentinel.yaml                   the last sentinel report
+  OPERATOR.org  memories/         the operator profile; fleet-scope memories
+  bundled-skills/                 skills clawtilla ships, rewritten when they change
+  skill-settings/  skill-proposals/  teach/  saved-steps/
+  office/worlds/  office/characters/   the custodial team's packs; generated characters
+  attachments/  frames/  browsers/  displays/<agent>/
+                                  chat files; screen frames; browser and display sessions
+  egress/  broker/                the egress gate's sockets; the integration broker
   .git/ .gitignore                daemon.git; the ignore block is clawtilla's
   agents/<id>/                    also the workspace, unless agents.workspace moves it
     SOUL.org IDENTITY.org …       the persona; yours to edit
@@ -31,11 +53,9 @@
     memory.db                     the searchable memory store
     credentials/                  GENERATED from secret references; 0600
     sessions/libreclaw.db         libreclaw's own database
-  transcripts/<room>.ndjson       what was said
-  events/YYYY-MM-DD.ndjson        what happened
-  tcp-token                       GENERATED on the first network listener; 0600
   secrets/                        (secrets.dir) 0700
-    connector-<name>.json         a connected account's credential; 0600
+    connectors/<name>/token.json  a connected account's credential; 0600
+    connector-auth/<name>.json    the client registration a sign-in reuses
 
 $XDG_DATA_HOME/clawtilla/images/     (defaults.image_dir) cloud images, shared
 $XDG_DATA_HOME/clawtilla/vms/<id>/   a VM agent's overlay, seed and generated key
@@ -43,6 +63,13 @@ $XDG_DATA_HOME/clawtilla/boxes/<id>/ a distrobox agent's home
 $XDG_DATA_HOME/clawtilla/exchange/   files agents pass around
 $XDG_RUNTIME_DIR/clawtilla/daemon.sock
 #+end_example
+
+Most of the files from ~hold.yaml~ down appear only once the feature
+that writes them has been used.  A connector's credential has a
+directory of its own so a confined agent's box can bind the directory
+and see a renewal ([[file:security.org][security.org]]); one still in the flat
+~secrets/connector-<name>.json~ layout of earlier releases is moved
+there when the daemon starts.
 
 Two of those are worth reading twice.  The database an agent's spending
 is computed from is ~sessions/libreclaw.db~, *not* ~libreclaw.db~ beside
@@ -750,9 +777,11 @@ clawtilla agent start researcher
 *** A connector's credential
 
 ~clawtilla connector connect~ again, or ~key~ again for a pasted token.
-Both overwrite ~secrets/connector-<name>.json~ in place, and agents pick
-the new one up on their next call -- the relay reads the file itself, so
-nothing was holding a copy.
+Both replace ~secrets/connectors/<name>/token.json~ (by writing a new
+file and renaming it over the old), and agents pick the new one up on
+their next call -- the relay reads the file itself, so nothing was
+holding a copy, and a confined agent's box binds the directory, so it
+sees the rename.
 
 #+begin_src bash
 clawtilla connector list                      # expiry, and whether it renews itself
