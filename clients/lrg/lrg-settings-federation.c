@@ -556,8 +556,13 @@ static void
 on_rules_saved(ClawtLrgApp *app, JsonNode *reply, const GError *error, gpointer user_data)
 {
     (void)reply;
-    (void)error;
-    (void)user_data;
+    /*
+     * An added rule leaves the entry once it is saved; a second Add of
+     * the text still sitting there wrote the same rule twice.  A refused
+     * one stays, to be corrected.
+     */
+    if (error == NULL && GPOINTER_TO_INT(user_data) && fed.rule_entry != NULL)
+        lrg_text_input_set_text(LRG_TEXT_INPUT(fed.rule_entry), "");
     refresh(app);
 }
 
@@ -579,7 +584,7 @@ send_rules(ClawtLrgApp *app, gint drop, const gchar *added)
     json_builder_end_array(b);
     json_builder_end_object(b);
     clawt_lrg_request(app, "federation.rules", json_builder_get_root(b), CLAWT_LRG_REQUEST_NONE,
-                      on_rules_saved, NULL, NULL);
+                      on_rules_saved, GINT_TO_POINTER(added != NULL && *added != '\0'), NULL);
 }
 
 static void
