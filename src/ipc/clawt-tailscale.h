@@ -33,6 +33,7 @@
 #endif
 
 #include <glib.h>
+#include <json-glib/json-glib.h>
 
 G_BEGIN_DECLS
 
@@ -115,5 +116,47 @@ void clawt_tailscale_dns_name_async(GMainContext        *context,
  */
 gchar *clawt_tailscale_dns_name_finish(GAsyncResult  *result,
                                        GError       **error);
+
+/**
+ * clawt_tailscale_peers_from_status:
+ * @body: (array length=length): tailscaled's `/localapi/v0/status` answer
+ * @length: its length, or -1
+ * @error: (out) (optional): why it could not be read
+ *
+ * The other machines on the tailnet (0.71.0), for `federation discover`:
+ * each as `{name, host, os, address, online}`, `name` the MagicDNS name
+ * without its trailing dot and `address` the first tailnet address.
+ *
+ * Returns: (transfer full) (nullable): the peers, or %NULL
+ */
+JsonArray *clawt_tailscale_peers_from_status(const gchar  *body,
+                                             gssize        length,
+                                             GError      **error);
+
+/**
+ * clawt_tailscale_peers_async:
+ * @context: (nullable): the context the answer is delivered on
+ * @cancellable: (nullable): a #GCancellable
+ * @callback: called with the answer
+ * @user_data: data for @callback
+ *
+ * Asks tailscaled which other machines are on the tailnet.  As with
+ * clawt_tailscale_dns_name_async(), it reaches the machine's own
+ * tailscaled and is never called by a test or at daemon start.
+ */
+void clawt_tailscale_peers_async(GMainContext        *context,
+                                 GCancellable        *cancellable,
+                                 GAsyncReadyCallback  callback,
+                                 gpointer             user_data);
+
+/**
+ * clawt_tailscale_peers_finish:
+ * @result: the #GAsyncResult
+ * @error: (out) (optional): why there are none
+ *
+ * Returns: (transfer full) (nullable): the peers
+ */
+JsonArray *clawt_tailscale_peers_finish(GAsyncResult  *result,
+                                        GError       **error);
 
 G_END_DECLS

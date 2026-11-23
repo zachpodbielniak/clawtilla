@@ -327,7 +327,9 @@ Superseded: since 0.67.0 a linked fleet's people visit from the link
 itself ([[file:federation.org::#office][federation.org, "In the office"]]), as that fleet's grant allows,
 with no device token on the other daemon.  =office.peers= still works
 and is drawn as described here; a fleet both linked and listed is drawn
-once, from the link.  Prefer linking: ~clawtilla federation link~.
+once, from the link.  Prefer linking: ~clawtilla federation migrate-office~
+lists the entries and links each one you name with the token it was
+paired with (see [[file:federation.org::#migrate-office][federation.org]]).
 
 Not built here: anything that acts across fleets -- messages, delegation, handing a task to another fleet's agent.  Visiting is looking.
 

@@ -1338,7 +1338,9 @@ envelope kinds ~task~, ~task.state~ and ~task.cancel~ carry delegated work
 fleet, and ~room.share~ / ~room.unshare~ (~room~, ~alias~) share a
 declared room; a room another fleet shares is listed as ~fedroom:HOST:ROOM~.
 Between fleets, ~room.post~ carries a word said in a shared room (never a
-frame a client sends).  Every payload and
+frame a client sends).  Since 0.71.0 ~federation.discover~ (~candidates~; deferred) and
+~federation.migrate_office~ (~name~); ~federation.peer.show~ and each
+~agent.list~ fleet carry ~weather~, and a peer listing ~escrow~.  Every payload and
 answer is tabled in [[file:federation.org::#requests][federation.org]].  With =federation.enabled=
 off, ~federation.status~ answers ~enabled: false~ and a hint, and the rest
 refuse with =not_supported=.

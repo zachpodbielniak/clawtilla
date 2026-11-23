@@ -1408,6 +1408,18 @@ fed_header(ClawtLrgApp *app, JsonObject *fleet, guint shown, gboolean folded)
         lrg_widget_set_name(badge, "clawt-fed-tier");
         clawt_lrg_take(box, badge);
     }
+    /* The link's weather (0.71.0): its traffic as a sparkline. */
+    {
+        g_autofree gchar *spark = clawt_fed_traffic_spark(fleet);
+        g_autofree gchar *weather = clawt_fed_weather_line(fleet);
+
+        (void)weather;
+        if (*spark != '\0') {
+            LrgWidget *bars = clawt_lrg_label(spark, "caption");
+            lrg_widget_set_name(bars, "clawt-fed-weather");
+            clawt_lrg_take(box, bars);
+        }
+    }
     clawt_lrg_take(box, clawt_lrg_label(count, "muted"));
 
     header = clickable_new(app, box, on_fed_fold_clicked,

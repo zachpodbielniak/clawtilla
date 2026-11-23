@@ -914,6 +914,20 @@ append_linked_fleets(HtmxDiv *scroll, JsonArray *fleets,
         htmx_element_add_class(HTMX_ELEMENT(tier), "fed-tier");
         clawt_web_add(head, tier);
 
+        /* The link's weather (0.71.0): its traffic as a sparkline, the rest on hover. */
+        {
+            g_autofree gchar *spark = clawt_fed_traffic_spark(fleet);
+            g_autofree gchar *weather = clawt_fed_weather_line(fleet);
+
+            if (*spark != '\0') {
+                g_autoptr(HtmxSpan) bars = htmx_span_new();
+
+                htmx_element_add_class(HTMX_ELEMENT(bars), "fed-weather");
+                htmx_element_set_attribute(HTMX_ELEMENT(bars), "title", weather);
+                htmx_node_set_text_content(HTMX_NODE(bars), spark);
+                htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(bars));
+            }
+        }
         htmx_element_add_class(HTMX_ELEMENT(tally), "team-tally");
         htmx_node_set_text_content(HTMX_NODE(tally), count);
         htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(tally));

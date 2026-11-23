@@ -269,4 +269,37 @@ gboolean clawt_fed_shared_room_parse(const gchar  *room_id,
                                      gchar       **out_host,
                                      gchar       **out_room);
 
+/**
+ * clawt_fed_sparkline:
+ * @values: (nullable): numbers, oldest first
+ *
+ * The numbers as block characters, one each, scaled to their largest.
+ *
+ * Returns: (transfer full): the line, empty for no values
+ */
+gchar *clawt_fed_sparkline(JsonArray *values);
+
+/**
+ * clawt_fed_weather_line:
+ * @fleet: a peer listing or an `agent.list` fleet, with `weather`
+ *
+ * A link's weather in a line (0.71.0): its traffic over the last hour in
+ * five-minute steps, and the latency of its last answers.  Every client
+ * draws this, so they agree on what the bars mean.
+ *
+ * Returns: (transfer full): the line, empty when there is no weather
+ */
+gchar *clawt_fed_weather_line(JsonObject *fleet);
+
+/**
+ * clawt_fed_traffic_spark:
+ * @fleet: as for clawt_fed_weather_line()
+ *
+ * The last twenty minutes' traffic, for a heading that shares its line
+ * with the fleet's name; empty when the link was quiet.
+ *
+ * Returns: (transfer full): the sparkline, or ""
+ */
+gchar *clawt_fed_traffic_spark(JsonObject *fleet);
+
 G_END_DECLS

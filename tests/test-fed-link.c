@@ -874,6 +874,31 @@ test_delegation(
                                                     "Bash", CLAWT_ACTION_EXEC),
                         ==, CLAWT_POLICY_ALLOW);
     }
+    /* The estimate before delegating, and the weather, from A's view of B. */
+    {
+        gint64 deadline = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+        const gchar *escrow = NULL;
+
+        for (;;) {
+            g_autoptr(JsonObject) shown = ask(p.ca, "federation.peer.show",
+                                              payload_of("{\"alias\":\"bravo-lab\"}"), &error);
+            g_autofree gchar *weather = NULL;
+
+            g_assert_no_error(error);
+            escrow = json_object_has_member(shown, "escrow")
+                ? json_object_get_string_member(shown, "escrow") : NULL;
+            weather = clawt_fed_weather_line(shown);
+            if (escrow != NULL && strstr(escrow, "allows $5.00 a day") != NULL
+                && strstr(escrow, "on average") != NULL) {
+                g_assert_nonnull(strstr(weather, "traffic"));
+                break;
+            }
+            if (g_get_monotonic_time() > deadline)
+                g_error("no estimate: %s", escrow != NULL ? escrow : "(none)");
+            g_main_context_iteration(p.context, FALSE);
+            g_usleep(20000);
+        }
+    }
     /* A worker without tools.federation may not hand work to another fleet. */
     {
         g_autofree gchar *said = call_tool(p.a, "a-worker", "clawtilla_delegate",
@@ -1051,6 +1076,70 @@ test_rooms_and_transcripts(
     pair_down(&p);
 }
 
+/*
+ * 0.71.0.  discover finds a fleet at an endpoint it is given (and
+ * nothing at one that is not there), saying it is linked once it is;
+ * migrate-office links an office.peers entry as a fleet A owns; and once
+ * work has crossed, A's view of B carries the estimate shown before
+ * delegating and the link's weather.
+ */
+static void
+test_discover_and_migrate(void)
+{
+    Pair p;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *b_sock = NULL;
+    g_autofree gchar *req = NULL;
+
+    memset(&p, 0, sizeof(p));
+    pair_up(&p);
+    b_sock = g_build_filename(p.dir, "b.sock", NULL);
+
+    req = g_strdup_printf("{\"candidates\":[\"unix:%s#ipc\",\"unix:%s/none.sock#ipc\"]}",
+                          b_sock, p.dir);
+    {
+        g_autoptr(JsonObject) found = ask(p.ca, "federation.discover", payload_of(req), &error);
+        JsonArray *fleets;
+        JsonObject *f;
+
+        g_assert_no_error(error);
+        fleets = json_object_get_array_member(found, "fleets");
+        g_assert_cmpuint(json_array_get_length(fleets), ==, 1);
+        f = json_array_get_object_element(fleets, 0);
+        g_assert_cmpstr(json_object_get_string_member(f, "name"), ==, "Bravo Lab");
+        g_assert_cmpstr(json_object_get_string_member(f, "fleet_id"), ==, p.b->fed_fleet_id);
+        g_assert_false(json_object_has_member(f, "linked_as"));
+    }
+
+    /* office.peers -> a link */
+    {
+        g_autofree gchar *entry = g_strdup_printf("lab=%s", b_sock);
+        const gchar *entries[] = { entry, NULL };
+        g_autoptr(JsonObject) listed = NULL;
+        g_autoptr(JsonObject) linked = NULL;
+        JsonArray *rows;
+
+        g_assert_true(clawt_config_set_string_list(p.a->config, "office.peers", entries));
+        listed = ask(p.ca, "federation.migrate_office", NULL, &error);
+        g_assert_no_error(error);
+        rows = json_object_get_array_member(listed, "entries");
+        g_assert_cmpuint(json_array_get_length(rows), ==, 1);
+        g_assert_false(json_object_has_member(json_array_get_object_element(rows, 0), "linked_as"));
+        linked = ask(p.ca, "federation.migrate_office", payload_of("{\"name\":\"lab\"}"), &error);
+        g_assert_no_error(error);
+        g_assert_cmpstr(json_object_get_string_member(linked, "tier"), ==, "owned");
+    }
+    {
+        g_autoptr(JsonObject) found = ask(p.ca, "federation.discover", payload_of(req), &error);
+        JsonObject *f;
+
+        g_assert_no_error(error);
+        f = json_array_get_object_element(json_object_get_array_member(found, "fleets"), 0);
+        g_assert_cmpstr(json_object_get_string_member(f, "linked_as"), ==, "lab");
+    }
+    pair_down(&p);
+}
+
 /* What B's hello says when signed by A, for a hand-made connection. */
 static const gchar *
 hello_as_a(
@@ -1216,6 +1305,7 @@ main(int argc, char *argv[])
     g_test_add_func("/fed-link/fleet-connection-is-fenced", test_fleet_connection_is_fenced);
     g_test_add_func("/fed-link/grant-override-and-explain", test_grant_override_and_explain);
     g_test_add_func("/fed-link/agent-tools", test_agent_tools);
+    g_test_add_func("/fed-link/discover-and-migrate", test_discover_and_migrate);
 
     return g_test_run();
 }

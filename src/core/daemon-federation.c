@@ -38,6 +38,8 @@
 #include <glib/gstdio.h>
 
 #define AUDIT_RING (500)
+#define WEATHER_SLOTS (12)
+#define WEATHER_BUCKET (300)
 #define FED_PROTOCOL_VERSION (1)
 
 typedef struct {
@@ -59,6 +61,13 @@ typedef struct {
     GPtrArray       *sockets;       /* SoupWebsocketConnection*: its streams to us */
     gint64           msg_window;    /* the hour messages_per_hour counts in */
     guint            msg_count;
+    /* Fleet weather (0.71.0): the last twelve answers' latency, and the
+     * envelopes each way in the last twelve five-minute buckets. */
+    gint64           latency_ring[WEATHER_SLOTS];
+    guint            latency_n;
+    guint            volume[WEATHER_SLOTS];
+    gint64           volume_bucket; /* now / WEATHER_BUCKET of volume[0] */
+    JsonObject      *their_budget;  /* what its hello says of our work there */
 } PeerState;
 
 /* One envelope waiting to go to another fleet (0.68.0). */
@@ -74,6 +83,9 @@ typedef struct {
 
 static void fed_out_free(FedOut *out);
 static void load_shares(ClawtDaemon *self);
+static JsonNode *handle_discover(ClawtDaemon *self, JsonNode *request, JsonObject *payload);
+static JsonNode *handle_link(ClawtDaemon *self, JsonNode *request, JsonObject *payload);
+static gchar *escrow_line(ClawtDaemon *self, const gchar *alias);
 static void forget_rooms(ClawtDaemon *self, const gchar *alias);
 static JsonNode *reply_object(JsonNode *request, JsonObject *o);
 static ClawtFedPeer *peer_from_payload(ClawtDaemon *self, JsonObject *payload, JsonNode *request,
@@ -131,6 +143,8 @@ peer_state_free(
     }
     if (ps->roster != NULL)
         json_object_unref(ps->roster);
+    if (ps->their_budget != NULL)
+        json_object_unref(ps->their_budget);
     g_free(ps->roster_digest);
     g_free(ps->alias);
     g_free(ps->error);
@@ -227,6 +241,74 @@ fleet_name(
 
 /* ---- audit ------------------------------------------------------------- */
 
+/* Moves @ps's traffic buckets on to @now, zeroing the ones that passed. */
+static void
+weather_roll(
+    PeerState *ps,
+    gint64     now
+){
+    gint64 bucket = now / WEATHER_BUCKET;
+    gint64 steps = ps->volume_bucket == 0 ? WEATHER_SLOTS : bucket - ps->volume_bucket;
+    gint64 k;
+
+    if (steps <= 0)
+        return;
+    for (k = 0; k < MIN(steps, WEATHER_SLOTS); k++) {
+        memmove(&ps->volume[0], &ps->volume[1], sizeof(guint) * (WEATHER_SLOTS - 1));
+        ps->volume[WEATHER_SLOTS - 1] = 0;
+    }
+    ps->volume_bucket = bucket;
+}
+
+/* One more envelope with @alias, in this five minutes' bucket. */
+static void
+weather_count(
+    ClawtDaemon *self,
+    const gchar *alias
+){
+    PeerState *ps = self->fed_links != NULL && alias != NULL
+        ? g_hash_table_lookup(self->fed_links, alias) : NULL;
+
+    if (ps == NULL)
+        return;
+    weather_roll(ps, now_s());
+    ps->volume[WEATHER_SLOTS - 1]++;
+}
+
+static void
+weather_latency(
+    PeerState *ps,
+    gint64     ms
+){
+    if (ps->latency_n == WEATHER_SLOTS) {
+        memmove(&ps->latency_ring[0], &ps->latency_ring[1], sizeof(gint64) * (WEATHER_SLOTS - 1));
+        ps->latency_n--;
+    }
+    ps->latency_ring[ps->latency_n++] = ms;
+}
+
+/* `{latency: [...], volume: [...]}`, oldest first, for a client's sparklines. */
+static JsonObject *
+weather_json(
+    PeerState *ps
+){
+    JsonObject *o = json_object_new();
+    JsonArray *latency = json_array_new();
+    JsonArray *volume = json_array_new();
+    guint i;
+
+    if (ps != NULL) {
+        weather_roll(ps, now_s());
+        for (i = 0; i < ps->latency_n; i++)
+            json_array_add_int_element(latency, ps->latency_ring[i]);
+        for (i = 0; i < WEATHER_SLOTS; i++)
+            json_array_add_int_element(volume, ps->volume[i]);
+    }
+    json_object_set_array_member(o, "latency", latency);
+    json_object_set_array_member(o, "volume", volume);
+    return o;
+}
+
 static void
 audit(
     ClawtDaemon *self,
@@ -253,6 +335,8 @@ audit(
     if (g_strcmp0(outcome, "ok") == 0
         && (g_strcmp0(kind, "hello") == 0 || g_strcmp0(kind, "ping") == 0))
         return;
+    if (g_strcmp0(direction, "local") != 0)
+        weather_count(self, peer);
 
     json_builder_begin_object(b);
     json_builder_set_member_name(b, "time");
@@ -1097,6 +1181,7 @@ clawt_daemon_federation_fleets(
             json_object_set_string_member(fleet, "owner", "");
         if (ps != NULL && ps->latency_ms > 0)
             json_object_set_int_member(fleet, "latency_ms", ps->latency_ms);
+        json_object_set_object_member(fleet, "weather", weather_json(ps));
         if (ps != NULL && ps->roster != NULL) {
             JsonArray *list = json_object_get_array_member(ps->roster, "agents");
             JsonArray *tl = json_object_get_array_member(ps->roster, "teams");
@@ -1358,6 +1443,38 @@ flush_soon(
     g_source_unref(source);
 }
 
+/* What this fleet runs for @alias now, and has spent on its work in 24 h. */
+static void
+peer_work_stats(
+    ClawtDaemon *self,
+    const gchar *alias,
+    guint       *out_running,
+    gdouble     *out_spent
+){
+    g_autoptr(GPtrArray) all = self->tasks != NULL
+        ? clawt_task_manager_list(self->tasks, NULL, TRUE) : NULL;
+    gint64 now = now_s();
+    guint running = 0;
+    gdouble spent = 0.0;
+    guint i;
+
+    for (i = 0; all != NULL && i < all->len; i++) {
+        ClawtTask *task = g_ptr_array_index(all, i);
+
+        if (g_strcmp0(clawt_task_get_remote_peer(task), alias) != 0
+            || clawt_sender_kind_of(clawt_task_get_origin(task)) != CLAWT_SENDER_REMOTE)
+            continue;
+        if (!clawt_task_state_is_finished(clawt_task_get_state(task)))
+            running++;
+        if (now - clawt_task_get_created_at(task) < 86400 && self->guard != NULL)
+            spent += clawt_loop_guard_get_task_spend(self->guard, clawt_task_get_id(task));
+    }
+    if (out_running != NULL)
+        *out_running = running;
+    if (out_spent != NULL)
+        *out_spent = spent;
+}
+
 static void
 receive_hello(
     ClawtDaemon  *self,
@@ -1415,8 +1532,21 @@ receive_hello(
     json_object_set_string_member(me, "tier", clawt_fed_tier_nick(peer->tier));
     json_object_set_string_member(me, "status", peer->status);
     if (g_strcmp0(peer->status, "active") == 0) {
+        guint running = 0;
+        gdouble spent = 0.0;
+        JsonObject *budget = json_object_new();
+
         json_object_set_object_member(me, "roster", roster_for(self, peer));
         flush_soon(self, peer->alias);
+        /* Their work here, for the estimate they show before delegating (0.71.0). */
+        peer_work_stats(self, peer->alias, &running, &spent);
+        json_object_set_int_member(budget, "cents_per_day", grant->budget_cents_per_day);
+        json_object_set_int_member(budget, "spent_cents", (gint64)(spent * 100.0 + 0.5));
+        json_object_set_int_member(budget, "running", running);
+        json_object_set_int_member(budget, "max_concurrent", grant->max_concurrent_tasks);
+        json_object_set_string_member(budget, "delegate",
+                                      clawt_enum_to_nick(CLAWT_TYPE_POLICY_MODE, grant->delegate));
+        json_object_set_object_member(me, "budget", budget);
     }
     answer_set(answer, 200, object_text(me));
 }
@@ -1449,6 +1579,17 @@ receive(
     }
     if (invite_route) {
         receive_invite(self, stamp, body, binding, answer);
+        return;
+    }
+
+    /*
+     * Who this fleet is, for anybody who asks: the same public facts the
+     * HTTP listener's GET /fed/v1/hello gives, on the doors that have no
+     * such route -- what `federation discover` reads on the IPC port.
+     */
+    if (g_strcmp0(stamp->kind, "whois") == 0) {
+        g_autoptr(JsonObject) me = self_description(self);
+        answer_set(answer, 200, object_text(me));
         return;
     }
 
@@ -1932,6 +2073,14 @@ on_ping(
             ps->misses = 0;
             ps->backoff = 0;
             ps->latency_ms = (g_get_monotonic_time() - call->started) / 1000;
+            weather_latency(ps, ps->latency_ms);
+            /* What it says of our work there: its allowance, what is used. */
+            if (o != NULL && json_object_has_member(o, "budget")
+                && JSON_NODE_HOLDS_OBJECT(json_object_get_member(o, "budget"))) {
+                if (ps->their_budget != NULL)
+                    json_object_unref(ps->their_budget);
+                ps->their_budget = json_object_ref(json_object_get_object_member(o, "budget"));
+            }
             ps->next_try = now + clawt_config_get_int(self->config, "federation.ping_seconds");
             if (o != NULL && json_object_has_member(o, "roster")
                 && JSON_NODE_HOLDS_OBJECT(json_object_get_member(o, "roster")))
@@ -3276,7 +3425,6 @@ receive_task(
     gint depth = o != NULL ? (gint)json_object_get_int_member_with_default(o, "depth", 0) : 0;
     g_autoptr(ClawtFedGrant) grant = NULL;
     g_autoptr(JsonObject) facts = NULL;
-    g_autoptr(GPtrArray) all = NULL;
     g_autoptr(ClawtTeamSpec) spec = NULL;
     g_auto(GStrv) reach = NULL;
     ClawtAgent *agent;
@@ -3284,8 +3432,6 @@ receive_task(
     const gchar *team;
     guint running = 0;
     gdouble spent = 0.0;
-    gint64 now = now_s();
-    guint i;
 
     (void)ps;
     if (!plain_token(id, 80) || from == NULL
@@ -3323,18 +3469,7 @@ receive_task(
     }
 
     /* What this fleet already does for them. */
-    all = clawt_task_manager_list(self->tasks, NULL, TRUE);
-    for (i = 0; all != NULL && i < all->len; i++) {
-        ClawtTask *task = g_ptr_array_index(all, i);
-
-        if (g_strcmp0(clawt_task_get_remote_peer(task), peer->alias) != 0
-            || clawt_sender_kind_of(clawt_task_get_origin(task)) != CLAWT_SENDER_REMOTE)
-            continue;
-        if (!clawt_task_state_is_finished(clawt_task_get_state(task)))
-            running++;
-        if (now - clawt_task_get_created_at(task) < 86400 && self->guard != NULL)
-            spent += clawt_loop_guard_get_task_spend(self->guard, clawt_task_get_id(task));
-    }
+    peer_work_stats(self, peer->alias, &running, &spent);
     if (grant->max_concurrent_tasks > 0 && running >= (guint)grant->max_concurrent_tasks) {
         g_autofree gchar *why = g_strdup_printf("this fleet runs %d of your tasks at a time",
                                                 grant->max_concurrent_tasks);
@@ -3454,6 +3589,89 @@ apply_task_answer(
                                     note, NULL);
 }
 
+/* What work at @alias has cost, kept in <state_dir>/federation/costs.json. */
+static void
+record_cost(
+    ClawtDaemon *self,
+    const gchar *alias,
+    gint64       cents
+){
+    g_autofree gchar *path = state_path(self, "costs.json");
+    g_autofree gchar *text = NULL;
+    g_autoptr(JsonObject) all = NULL;
+    JsonObject *one;
+
+    if (path == NULL)
+        return;
+    if (g_file_get_contents(path, &text, NULL, NULL))
+        all = parse_object(text);
+    if (all == NULL)
+        all = json_object_new();
+    if (!json_object_has_member(all, alias))
+        json_object_set_object_member(all, alias, json_object_new());
+    one = json_object_get_object_member(all, alias);
+    json_object_set_int_member(one, "tasks", json_object_get_int_member_with_default(one, "tasks", 0) + 1);
+    json_object_set_int_member(one, "cents",
+                               json_object_get_int_member_with_default(one, "cents", 0) + cents);
+    g_free(text);
+    text = object_text(all);
+    clawt_write_file_atomic(path, text, -1, 0600, FALSE, NULL);
+}
+
+/*
+ * The estimate shown before handing work to @alias (0.71.0): what it
+ * allows us a day and what its last hello said is used, how many of our
+ * tasks it runs at once, and what tasks there have cost on average.
+ * NULL when there is nothing to say.
+ */
+static gchar *
+escrow_line(
+    ClawtDaemon *self,
+    const gchar *alias
+){
+    PeerState *ps = state_of(self, alias);
+    ClawtFedPeer *peer = clawt_fed_registry_get(self->fed_registry, alias);
+    const gchar *who = peer != NULL && peer->label != NULL ? peer->label : alias;
+    g_autoptr(GString) out = g_string_new(NULL);
+    g_autofree gchar *path = state_path(self, "costs.json");
+    g_autofree gchar *text = NULL;
+    g_autoptr(JsonObject) costs = NULL;
+
+    if (ps != NULL && ps->their_budget != NULL) {
+        JsonObject *b = ps->their_budget;
+        gint64 per_day = json_object_get_int_member_with_default(b, "cents_per_day", 0);
+        gint64 spent = json_object_get_int_member_with_default(b, "spent_cents", 0);
+        gint64 running = json_object_get_int_member_with_default(b, "running", 0);
+        gint64 max = json_object_get_int_member_with_default(b, "max_concurrent", 0);
+
+        if (per_day > 0)
+            g_string_append_printf(out, "%s allows $%.2f a day of your work; $%.2f is used, "
+                                   "$%.2f left. ", who, per_day / 100.0, spent / 100.0,
+                                   MAX(per_day - spent, 0) / 100.0);
+        else
+            g_string_append_printf(out, "%s sets no daily limit on your work ($%.2f used in the "
+                                   "last 24 h). ", who, spent / 100.0);
+        if (max > 0)
+            g_string_append_printf(out, "%" G_GINT64_FORMAT " of %" G_GINT64_FORMAT
+                                   " tasks at a time are running. ", running, max);
+        if (json_object_has_member(b, "delegate"))
+            g_string_append_printf(out, "New work: %s. ", obj_str(b, "delegate"));
+    }
+    if (path != NULL && g_file_get_contents(path, &text, NULL, NULL)
+        && (costs = parse_object(text)) != NULL && json_object_has_member(costs, alias)) {
+        JsonObject *one = json_object_get_object_member(costs, alias);
+        gint64 n = json_object_get_int_member_with_default(one, "tasks", 0);
+
+        if (n > 0)
+            g_string_append_printf(out, "Tasks there have cost $%.2f on average (%" G_GINT64_FORMAT
+                                   " so far).",
+                                   json_object_get_int_member_with_default(one, "cents", 0) / 100.0 / n,
+                                   n);
+    }
+    g_strchomp(out->str);
+    return out->str[0] != '\0' ? g_string_free(g_steal_pointer(&out), FALSE) : NULL;
+}
+
 /* The real task's progress, onto our proxy, which tells the delegator. */
 static void
 receive_task_state(
@@ -3477,6 +3695,18 @@ receive_task_state(
     if (clawt_task_state_is_finished(clawt_task_get_state(proxy)))
         return;
     audit(self, "in", peer->alias, "task.state", state, NULL);
+    if (json_object_has_member(o, "spent_cents")) {
+        gint64 cents = json_object_get_int_member(o, "spent_cents");
+        g_autofree gchar *note = g_strdup_printf("It cost %s $%.2f.",
+                                                 peer->label != NULL ? peer->label : peer->alias,
+                                                 cents / 100.0);
+
+        if (cents >= 0 && cents < 100000000) {
+            record_cost(self, peer->alias, cents);
+            clawt_task_manager_add_note(self->tasks, proxy_id, "clawtilla",
+                                        CLAWT_TASK_NOTE_PROGRESS, note, NULL);
+        }
+    }
     who = g_strdup_printf("fleet:%s", peer->alias);
     if (g_strcmp0(state, "running") == 0) {
         clawt_task_manager_start(self->tasks, proxy_id);
@@ -3550,6 +3780,10 @@ on_fed_task_changed(
             json_object_set_string_member(o, "result", clawt_task_get_result(task));
         if (clawt_task_get_reason(task) != NULL && state != CLAWT_TASK_COMPLETED)
             json_object_set_string_member(o, "detail", clawt_task_get_reason(task));
+        /* What it cost here, so the fleet that asked can estimate the next one. */
+        if (clawt_task_state_is_finished((ClawtTaskState)state) && self->guard != NULL)
+            json_object_set_int_member(o, "spent_cents", (gint64)(clawt_loop_guard_get_task_spend(
+                self->guard, task_id) * 100.0 + 0.5));
         body = object_text(o);
         out_id = g_strdup_printf("state-%s-%s", clawt_task_get_remote_task(task), nick);
         enqueue(self, alias, "task.state", out_id, body, NULL);
@@ -4241,6 +4475,303 @@ handle_transcript(
     return NULL;
 }
 
+/* ---- discover (0.71.0) ------------------------------------------------- */
+
+#define DISCOVER_MAX (64)
+#define DISCOVER_SECONDS (5)
+
+typedef struct {
+    ClawtDaemon     *daemon;
+    ClawtIpcPending *pending;
+    GCancellable    *cancellable;
+    GSource         *deadline;
+    JsonArray       *found;
+    guint            asked;
+    guint            waiting;
+    gboolean         answered;
+} Discover;
+
+typedef struct {
+    Discover     *discover;
+    ClawtFedLink *link;
+    gchar        *endpoint;
+    gchar        *name;
+} Probe;
+
+static void
+discover_finish(
+    Discover *d
+){
+    g_autoptr(JsonObject) o = json_object_new();
+    JsonNode *node;
+
+    if (d->answered)
+        return;
+    d->answered = TRUE;
+    g_cancellable_cancel(d->cancellable);
+    json_object_set_array_member(o, "fleets", json_array_ref(d->found));
+    json_object_set_int_member(o, "checked", d->asked);
+    node = json_node_new(JSON_NODE_OBJECT);
+    json_node_set_object(node, o);
+    clawt_ipc_pending_respond(d->pending,
+                              clawt_ipc_response_new(clawt_ipc_pending_get_request(d->pending), node));
+}
+
+static void
+discover_unref(
+    Discover *d
+){
+    if (d->waiting > 0)
+        return;
+    if (d->deadline != NULL) {
+        g_source_destroy(d->deadline);
+        g_source_unref(d->deadline);
+    }
+    g_object_unref(d->cancellable);
+    json_array_unref(d->found);
+    g_object_unref(d->daemon);
+    g_free(d);
+}
+
+static gboolean
+on_discover_deadline(
+    gpointer user_data
+){
+    Discover *d = user_data;
+
+    discover_finish(d);
+    return G_SOURCE_REMOVE;
+}
+
+/* A probe's answer: whoever answered `whois` is a clawtilla fleet. */
+static void
+on_probe(
+    GObject      *source,
+    GAsyncResult *result,
+    gpointer      user_data
+){
+    Probe *probe = user_data;
+    Discover *d = probe->discover;
+    g_autoptr(ClawtFedExchange) exchange = clawt_fed_link_exchange_finish(CLAWT_FED_LINK(source),
+                                                                          result, NULL);
+
+    if (exchange != NULL && exchange->status == 200 && !d->answered) {
+        g_autoptr(JsonObject) who = parse_object(exchange->body);
+        const gchar *fleet = who != NULL ? obj_str(who, "fleet") : NULL;
+
+        if (fleet != NULL && g_strcmp0(fleet, d->daemon->fed_fleet_id) != 0) {
+            ClawtFedPeer *known = clawt_fed_registry_by_fleet(d->daemon->fed_registry, fleet);
+            JsonObject *e = json_object_new();
+
+            json_object_set_string_member(e, "endpoint", probe->endpoint);
+            json_object_set_string_member(e, "fleet_id", fleet);
+            json_object_set_string_member(e, "name", obj_str(who, "name") != NULL
+                                                     ? obj_str(who, "name") : "?");
+            if (obj_str(who, "owner") != NULL)
+                json_object_set_string_member(e, "owner", obj_str(who, "owner"));
+            if (obj_str(who, "version") != NULL)
+                json_object_set_string_member(e, "version", obj_str(who, "version"));
+            if (probe->name != NULL)
+                json_object_set_string_member(e, "host", probe->name);
+            if (known != NULL && g_strcmp0(known->status, "revoked") != 0)
+                json_object_set_string_member(e, "linked_as", known->alias);
+            {
+                g_autofree gchar *words = clawt_fed_safety_words(fleet);
+                json_object_set_string_member(e, "words", words);
+            }
+            json_array_add_object_element(d->found, e);
+        }
+    }
+    g_object_unref(probe->link);
+    g_free(probe->endpoint);
+    g_free(probe->name);
+    g_free(probe);
+    d->waiting--;
+    if (d->waiting == 0)
+        discover_finish(d);
+    discover_unref(d);
+}
+
+static void
+discover_probe(
+    Discover    *d,
+    const gchar *endpoint,
+    const gchar *name
+){
+    g_autoptr(GError) error = NULL;
+    ClawtFedLink *link;
+    Probe *probe;
+
+    if (d->asked >= DISCOVER_MAX)
+        return;
+    link = clawt_fed_link_new(d->daemon->fed_key, d->daemon->fed_key_index,
+                              d->daemon->fed_fleet_id, endpoint, d->daemon->main_context, &error);
+    if (link == NULL)
+        return;
+    d->asked++;
+    d->waiting++;
+    probe = g_new0(Probe, 1);
+    probe->discover = d;
+    probe->link = link;
+    probe->endpoint = g_strdup(endpoint);
+    probe->name = g_strdup(name);
+    clawt_fed_link_exchange_async(link, "POST /fed/v1/envelope", "whois", NULL, "{}",
+                                  d->cancellable, on_probe, probe);
+}
+
+/* The tailnet's machines, each asked at its daemon port. */
+static void
+on_discover_peers(
+    GObject      *source,
+    GAsyncResult *result,
+    gpointer      user_data
+){
+    Discover *d = user_data;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonArray) peers = clawt_tailscale_peers_finish(result, &error);
+    gint64 port = clawt_config_get_int(d->daemon->config, "daemon.tcp_port");
+    guint i;
+
+    (void)source;
+    d->waiting--;
+    if (peers == NULL && !d->answered) {
+        d->answered = TRUE;
+        clawt_ipc_pending_respond(d->pending, clawt_ipc_error_new(
+            clawt_ipc_pending_get_request(d->pending), error->code, error->message));
+    }
+    for (i = 0; peers != NULL && !d->answered && i < json_array_get_length(peers); i++) {
+        JsonObject *p = json_array_get_object_element(peers, i);
+        g_autofree gchar *endpoint = NULL;
+        const gchar *address = json_object_get_string_member_with_default(p, "address", NULL);
+
+        if (!json_object_get_boolean_member_with_default(p, "online", FALSE) || address == NULL)
+            continue;
+        endpoint = strchr(address, ':') != NULL
+            ? g_strdup_printf("clawtilla://[%s]:%" G_GINT64_FORMAT, address, port)
+            : g_strdup_printf("clawtilla://%s:%" G_GINT64_FORMAT, address, port);
+        discover_probe(d, endpoint, json_object_get_string_member_with_default(p, "name", NULL));
+    }
+    if (d->waiting == 0)
+        discover_finish(d);
+    discover_unref(d);
+}
+
+/*
+ * Which other clawtilla fleets are within reach (0.71.0): every online
+ * machine on the tailnet asked `whois` at its daemon port, or the
+ * `candidates` given -- addresses on a LAN, or sockets.  Five seconds,
+ * then whatever answered.  Reading only: nothing is linked.
+ */
+static JsonNode *
+handle_discover(
+    ClawtDaemon *self,
+    JsonNode    *request,
+    JsonObject  *payload
+){
+    JsonNode *given = json_object_get_member(payload, "candidates");
+    ClawtIpcPending *pending = clawt_ipc_server_defer(self->ipc_server, request);
+    Discover *d;
+
+    if (pending == NULL)
+        return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED, "this request cannot be answered later");
+    d = g_new0(Discover, 1);
+    d->daemon = g_object_ref(self);
+    d->pending = pending;
+    d->cancellable = g_cancellable_new();
+    d->found = json_array_new();
+    d->deadline = g_timeout_source_new_seconds(DISCOVER_SECONDS);
+    g_source_set_callback(d->deadline, on_discover_deadline, d, NULL);
+    g_source_attach(d->deadline, self->main_context);
+    d->waiting = 1;
+
+    if (given != NULL && JSON_NODE_HOLDS_ARRAY(given)) {
+        JsonArray *list = json_node_get_array(given);
+        guint i;
+
+        for (i = 0; i < json_array_get_length(list); i++) {
+            const gchar *endpoint = json_array_get_string_element(list, i);
+            if (endpoint != NULL)
+                discover_probe(d, endpoint, NULL);
+        }
+        d->waiting--;
+        if (d->waiting == 0)
+            discover_finish(d);
+        discover_unref(d);
+        return NULL;
+    }
+    clawt_tailscale_peers_async(self->main_context, d->cancellable, on_discover_peers, d);
+    return NULL;
+}
+
+/* ---- migrating office.peers (0.71.0) ----------------------------------- */
+
+/*
+ * office.peers onto links.  Without a name: each entry, and whether its
+ * fleet is linked already.  With one: that entry linked as a fleet you
+ * own -- with the device token it was paired with, read here and never
+ * sent back -- through federation.link, so the answer is the new peer.
+ * The entry stays in office.peers (a fleet in both is drawn once, from
+ * the link) until the operator removes it, and the device that token
+ * belongs to is the operator's to revoke over there: this fleet cannot.
+ */
+static JsonNode *
+handle_migrate_office(
+    ClawtDaemon *self,
+    JsonNode    *request,
+    JsonObject  *payload
+){
+    g_autoptr(JsonArray) entries = clawt_daemon_office_peers_entries(self);
+    const gchar *name = clawt_ipc_payload_string(payload, "name");
+    guint i;
+
+    if (name == NULL) {
+        JsonObject *o = json_object_new();
+        JsonArray *list = json_array_new();
+
+        for (i = 0; i < json_array_get_length(entries); i++) {
+            JsonObject *e = json_array_get_object_element(entries, i);
+            JsonObject *row = json_object_new();
+            const gchar *fleet = obj_str(e, "fleet");
+            ClawtFedPeer *known = fleet != NULL
+                ? clawt_fed_registry_by_fleet(self->fed_registry, fleet) : NULL;
+
+            json_object_set_string_member(row, "name", obj_str(e, "name"));
+            json_object_set_string_member(row, "where", obj_str(e, "where"));
+            if (known != NULL && g_strcmp0(known->status, "revoked") != 0)
+                json_object_set_string_member(row, "linked_as", known->alias);
+            json_object_set_boolean_member(row, "has_token", obj_str(e, "token") != NULL);
+            json_array_add_object_element(list, row);
+        }
+        json_object_set_array_member(o, "entries", list);
+        return reply_object(request, o);
+    }
+    for (i = 0; i < json_array_get_length(entries); i++) {
+        JsonObject *e = json_array_get_object_element(entries, i);
+        const gchar *fleet = obj_str(e, "fleet");
+        ClawtFedPeer *known;
+        g_autoptr(JsonObject) link = NULL;
+        g_autofree gchar *alias = NULL;
+
+        if (g_strcmp0(obj_str(e, "name"), name) != 0)
+            continue;
+        known = fleet != NULL ? clawt_fed_registry_by_fleet(self->fed_registry, fleet) : NULL;
+        if (known != NULL && g_strcmp0(known->status, "revoked") != 0) {
+            g_autofree gchar *why = g_strdup_printf(
+                "%s is linked already, as %s: remove it from office.peers", name, known->alias);
+            return clawt_ipc_error_new(request, CLAWT_ERROR_ALREADY_EXISTS, why);
+        }
+        alias = g_ascii_strdown(name, -1);
+        link = json_object_new();
+        json_object_set_string_member(link, "target", obj_str(e, "where"));
+        if (obj_str(e, "token") != NULL)
+            json_object_set_string_member(link, "token", obj_str(e, "token"));
+        if (clawt_is_valid_id(alias))
+            json_object_set_string_member(link, "alias", alias);
+        return handle_link(self, request, link);
+    }
+    return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND, "office.peers names no such fleet");
+}
+
 /* ---- the agent tools' hooks ------------------------------------------- */
 
 static gchar *
@@ -4283,10 +4814,18 @@ hook_delegate(
         *is_error = TRUE;
         return g_strdup_printf("Not delegated to %s: %s", ref, error->message);
     }
-    return g_strdup_printf("Delegated to %s, in another fleet, as task %s. Their fleet decides "
-                           "whether to take it (it may hold it for its operator); you will be "
-                           "notified here when it settles, as with any task. Cancelling it "
-                           "cancels the work there too.", ref, task_id);
+    {
+        g_autofree gchar *alias = NULL;
+        g_autofree gchar *escrow = NULL;
+
+        clawt_fed_ref_parse(ref, NULL, &alias);
+        escrow = alias != NULL ? escrow_line(self, alias) : NULL;
+        return g_strdup_printf("Delegated to %s, in another fleet, as task %s. Their fleet decides "
+                               "whether to take it (it may hold it for its operator); you will be "
+                               "notified here when it settles, as with any task. Cancelling it "
+                               "cancels the work there too.%s%s", ref, task_id,
+                               escrow != NULL ? " " : "", escrow != NULL ? escrow : "");
+    }
 }
 
 static ClawtPolicyMode
@@ -4339,12 +4878,16 @@ hook_peers(
 
         if (g_strcmp0(peer->status, "revoked") == 0 || peer->hidden)
             continue;
+        g_autofree gchar *escrow = escrow_line(self, peer->alias);
+
         g_string_append_printf(out, "%s -- \"%s\"%s%s, tier %s, %s\n", peer->alias,
                                peer->label != NULL ? peer->label : peer->alias,
                                peer->owner != NULL ? ", owned by " : "",
                                peer->owner != NULL ? peer->owner : "",
                                clawt_fed_tier_nick(peer->tier),
                                clawt_fed_health_label(health_of(self, peer)));
+        if (escrow != NULL)
+            g_string_append_printf(out, "    %s\n", escrow);
     }
     if (out->len == 0)
         g_string_append(out, "This fleet is not linked with any other.");
@@ -4365,6 +4908,13 @@ peer_listing(
 
     json_object_set_string_member(o, "tier_label", clawt_fed_tier_label(peer->tier));
     json_object_set_string_member(o, "health_label", clawt_fed_health_label(health));
+    /* The estimate before delegating, and the link's weather (0.71.0). */
+    {
+        g_autofree gchar *escrow = escrow_line(self, peer->alias);
+        if (escrow != NULL)
+            json_object_set_string_member(o, "escrow", escrow);
+        json_object_set_object_member(o, "weather", weather_json(ps));
+    }
     if (peer->owner == NULL)
         json_object_set_string_member(o, "owner", "");
     words = clawt_fed_safety_words(peer->fleet_id);
@@ -5636,6 +6186,10 @@ clawt_daemon_handle_federation(
      */
     if (g_strcmp0(kind, "federation.transcript") == 0)
         return handle_transcript(self, request, payload);
+    if (g_strcmp0(kind, "federation.discover") == 0)
+        return handle_discover(self, request, payload);
+    if (g_strcmp0(kind, "federation.migrate_office") == 0)
+        return handle_migrate_office(self, request, payload);
     if (g_strcmp0(kind, "federation.open") == 0) {
         g_autoptr(GError) error = NULL;
         g_autofree gchar *room = clawt_daemon_federation_open(

@@ -1477,6 +1477,7 @@ gchar   *clawt_daemon_office_commission_character(ClawtDaemon  *self,
 
 /* Other fleets' people, visiting (daemon-office-peers.c, 0.64.0). */
 void      clawt_daemon_office_peers_touch(ClawtDaemon *self);
+JsonArray *clawt_daemon_office_peers_entries(ClawtDaemon *self);
 void      clawt_daemon_office_peers_merge(ClawtDaemon *self, JsonArray *participants,
                                           gint64 now);
 JsonNode *clawt_daemon_office_peers_status(ClawtDaemon *self);

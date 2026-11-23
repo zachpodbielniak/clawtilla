@@ -492,3 +492,85 @@ clawt_fed_shared_room_parse(
         *out_room = g_strdup(parts[2]);
     return TRUE;
 }
+
+gchar *
+clawt_fed_sparkline(
+    JsonArray *values
+){
+    static const gchar *const bars[] = {
+        "\342\226\201", "\342\226\202", "\342\226\203", "\342\226\204",
+        "\342\226\205", "\342\226\206", "\342\226\207", "\342\226\210"
+    };
+    GString *out = g_string_new(NULL);
+    gint64 max = 0;
+    guint n = values != NULL ? json_array_get_length(values) : 0;
+    guint i;
+
+    for (i = 0; i < n; i++)
+        max = MAX(max, json_array_get_int_element(values, i));
+    for (i = 0; i < n; i++) {
+        gint64 v = json_array_get_int_element(values, i);
+        guint level = max > 0 ? (guint)((v * 7 + max - 1) / max) : 0;
+
+        g_string_append(out, bars[MIN(level, 7)]);
+    }
+    return g_string_free(out, FALSE);
+}
+
+static JsonArray *
+weather_part(
+    JsonObject  *fleet,
+    const gchar *part
+){
+    JsonNode *w = fleet != NULL ? json_object_get_member(fleet, "weather") : NULL;
+    JsonObject *o = w != NULL && JSON_NODE_HOLDS_OBJECT(w) ? json_node_get_object(w) : NULL;
+    JsonNode *a = o != NULL ? json_object_get_member(o, part) : NULL;
+
+    return a != NULL && JSON_NODE_HOLDS_ARRAY(a) ? json_node_get_array(a) : NULL;
+}
+
+gchar *
+clawt_fed_traffic_spark(
+    JsonObject *fleet
+){
+    JsonArray *volume = weather_part(fleet, "volume");
+    g_autoptr(JsonArray) recent = json_array_new();
+    guint n = volume != NULL ? json_array_get_length(volume) : 0;
+    gint64 total = 0;
+    guint i;
+
+    /*
+     * The last twenty minutes only, and nothing for a quiet link: a heading
+     * shares its line with the fleet's name, and twelve bars of nothing
+     * cost the name its room.  The whole hour is in the weather line.
+     */
+    for (i = n > 4 ? n - 4 : 0; i < n; i++) {
+        json_array_add_int_element(recent, json_array_get_int_element(volume, i));
+        total += json_array_get_int_element(volume, i);
+    }
+    if (total == 0)
+        return g_strdup("");
+    return clawt_fed_sparkline(recent);
+}
+
+gchar *
+clawt_fed_weather_line(
+    JsonObject *fleet
+){
+    JsonArray *volume = weather_part(fleet, "volume");
+    JsonArray *latency = weather_part(fleet, "latency");
+    g_autofree gchar *v = clawt_fed_sparkline(volume);
+    g_autofree gchar *l = clawt_fed_sparkline(latency);
+    gint64 total = 0;
+    gint64 last = 0;
+    guint i;
+
+    if (volume == NULL && latency == NULL)
+        return g_strdup("");
+    for (i = 0; volume != NULL && i < json_array_get_length(volume); i++)
+        total += json_array_get_int_element(volume, i);
+    if (latency != NULL && json_array_get_length(latency) > 0)
+        last = json_array_get_int_element(latency, json_array_get_length(latency) - 1);
+    return g_strdup_printf("traffic %s %" G_GINT64_FORMAT " in the last hour \302\267 latency %s %"
+                           G_GINT64_FORMAT " ms", v, total, l, last);
+}

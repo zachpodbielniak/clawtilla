@@ -4934,6 +4934,13 @@ fed_print_show(JsonObject *o)
                     member_or(f, "source", ""));
         }
     }
+    {
+        g_autofree gchar *weather = clawt_fed_weather_line(o);
+        if (*weather != '\0')
+            g_print("  Weather: %s\n", weather);
+    }
+    if (json_object_has_member(o, "escrow"))
+        g_print("  Before delegating: %s\n", json_object_get_string_member(o, "escrow"));
     if (json_object_has_member(o, "their_grant")) {
         JsonObject *theirs = json_object_get_object_member(o, "their_grant");
         g_print("\n  What it lets this fleet do there: reach %s, message %s, delegate %s\n",
@@ -4994,6 +5001,13 @@ cmd_federation(int argc, char *argv[])
                 "  forget ALIAS               remove a revoked fleet's record\n"
                 "  invites | uninvite ID      outstanding invites; withdraw one\n"
                 "  log [ALIAS] [--limit N]    every request between fleets, newest first\n"
+                "  discover [--candidate ENDPOINT]...\n"
+                "                             clawtilla fleets within reach: every online\n"
+                "                             tailnet machine's daemon port, or the\n"
+                "                             endpoints given; links nothing\n"
+                "  migrate-office [NAME]      office.peers entries and whether each is\n"
+                "                             linked; with NAME, link that one as a fleet\n"
+                "                             you own, with the token it was paired with\n"
                 "  transcript ALIAS (--task ID | --agent AGENT) [--limit N]\n"
                 "                             read back work you gave that fleet (by\n"
                 "                             your task id), or its conversations with\n"
@@ -5317,6 +5331,84 @@ cmd_federation(int argc, char *argv[])
                     member_or(e, "kind", ""), member_or(e, "outcome", ""),
                     member_or(e, "detail", ""));
         }
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "discover") == 0) {
+        g_autoptr(JsonBuilder) b = json_builder_new();
+        JsonArray *fleets;
+        gint k;
+
+        json_builder_begin_object(b);
+        {
+            gboolean any = FALSE;
+            for (k = 3; k + 1 < argc; k++) {
+                if (g_strcmp0(argv[k], "--candidate") != 0)
+                    continue;
+                if (!any) {
+                    json_builder_set_member_name(b, "candidates");
+                    json_builder_begin_array(b);
+                    any = TRUE;
+                }
+                json_builder_add_string_value(b, argv[k + 1]);
+            }
+            if (any)
+                json_builder_end_array(b);
+        }
+        json_builder_end_object(b);
+        reply = fed_call(client, "federation.discover", json_builder_get_root(b), 15);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        o = json_node_get_object(reply);
+        if (json) {
+            g_autofree gchar *text = json_to_string(reply, TRUE);
+            g_print("%s\n", text);
+            return EXIT_SUCCESS;
+        }
+        fleets = json_object_get_array_member(o, "fleets");
+        if (fleets == NULL || json_array_get_length(fleets) == 0) {
+            g_print("No clawtilla fleet answered (%" G_GINT64_FORMAT " asked).\n",
+                    json_object_get_int_member_with_default(o, "checked", 0));
+            return EXIT_SUCCESS;
+        }
+        for (i = 0; i < json_array_get_length(fleets); i++) {
+            JsonObject *f = json_array_get_object_element(fleets, i);
+            g_print("%-28s %-20s %s%s%s\n    words: %s%s%s\n", member_or(f, "endpoint", "?"),
+                    member_or(f, "name", "?"), member_or(f, "owner", ""),
+                    json_object_has_member(f, "host") ? "  on " : "", member_or(f, "host", ""),
+                    member_or(f, "words", ""),
+                    json_object_has_member(f, "linked_as") ? "    linked as " : "",
+                    member_or(f, "linked_as", ""));
+        }
+        g_print("\nLink one you own: clawtilla federation link HOST:PORT --alias NAME\n");
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "migrate-office") == 0) {
+        reply = fed_call(client, "federation.migrate_office",
+                         build_payload("name", alias, NULL), alias != NULL ? 30 : 0);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        o = json_node_get_object(reply);
+        if (alias == NULL) {
+            JsonArray *rows = json_object_get_array_member(o, "entries");
+
+            if (rows == NULL || json_array_get_length(rows) == 0) {
+                g_print("office.peers is empty: nothing to migrate.\n");
+                return EXIT_SUCCESS;
+            }
+            for (i = 0; i < json_array_get_length(rows); i++) {
+                JsonObject *e = json_array_get_object_element(rows, i);
+                g_print("%-16s %-32s %s\n", member_or(e, "name", "?"), member_or(e, "where", "?"),
+                        json_object_has_member(e, "linked_as")
+                            ? "linked -- remove it from office.peers"
+                            : "not linked: clawtilla federation migrate-office NAME");
+            }
+            return EXIT_SUCCESS;
+        }
+        g_print("Linked %s as %s (tier owned).  Remove it from office.peers, and revoke the "
+                "device it was paired as on that machine (clawtilla device list, then "
+                "device revoke there).\n", alias, member_or(o, "alias", alias));
         return EXIT_SUCCESS;
     }
 

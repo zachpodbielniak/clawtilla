@@ -398,6 +398,9 @@ Against its grant to you, like a message: well-formed, an agent it may reach, =m
 
 The delegator's proxy says what happened in its notes ("Bravo Lab took it", "is holding it for its operator's approval") and fails with the reason on a refusal, so the delegator is told as for any failed task.
 
+*** The estimate before delegating
+Since 0.71.0 a fleet's answer to every hello tells you, of your work there: what it allows a day (=budget_cents_per_day=), what your tasks have used in the last 24 hours, how many run at once of how many allowed, and its =delegate= mode.  A finished task reports what it cost there, and this fleet keeps the running average (~costs.json~ in the federation state directory).  Together they are the estimate an agent is told when it delegates ("Bravo Lab allows $5.00 a day of your work; $1.20 is used, $3.80 left. Tasks there have cost $0.40 on average."), what ~clawtilla_federation_peers~ lists under each fleet, and the =escrow= line of ~federation.peer.show~ (~clawtilla federation show~ prints it as "Before delegating").  It is the other fleet's word about its own ledger: shown, never enforced here -- the fleet doing the work enforces its own budget.
+
 *** Spend
 Spend is charged where the work runs: the doing fleet's usage ledger and task budgets count it, and its =budget_cents_per_day= caps it.  The proxy costs the delegating fleet nothing.
 
@@ -431,6 +434,22 @@ Since 0.70.0 a room this fleet declared can be shared with linked fleets: ~clawt
 :END:
 
 A grant's ~cap.CLASS~ fields (~cap.read~, ~cap.write~, ~cap.delete~, ~cap.message~, ~cap.exec~, ~cap.external~, ~cap.desktop_input~, ~cap.fleet_admin~) cap what this fleet's agents may do *for* that fleet (0.69.0).  A turn works for a fleet when it runs in a conversation with it (a =fed:= room) or carries a task that came from it, or one above it.  Every call such a turn makes -- clawtilla's own tools and the agent CLI's own (Bash, edits) through the permission hook -- takes the stricter of the agent's action rule and the cap (~clawt_fed_policy_stricter()~: deny, hand back, ask, review, allow), and a refusal names the cap.  ~cap.fleet_admin~ is always deny, and with =subdelegate= false the turn may not delegate further.  With =federation.enabled= on, every agent gets the permission hook, because which turns work for another fleet is only known per call.
+
+** Finding fleets
+:PROPERTIES:
+:CUSTOM_ID: discover
+:END:
+
+~clawtilla federation discover~ (0.71.0; IPC ~federation.discover~, deferred, five seconds) asks every online machine on your tailnet -- from tailscaled's own status, never a subprocess -- at its daemon port (=daemon.tcp_port=) who it is, and lists those that answer as clawtilla fleets: address, name, owner, version, host, safety words, and the alias if you are linked already.  ~--candidate ENDPOINT~ (repeatable) asks those instead -- LAN addresses or sockets.  It links nothing; link one you own with ~clawtilla federation link HOST:PORT~.
+
+The question is the =whois= envelope kind: signed like every request, and answered to anybody with the same public facts the HTTP listener's =GET /fed/v1/hello= gives.
+
+** Moving off office.peers
+:PROPERTIES:
+:CUSTOM_ID: migrate-office
+:END:
+
+~clawtilla federation migrate-office~ (0.71.0; IPC ~federation.migrate_office~) lists the =office.peers= entries and whether each fleet is linked already.  ~migrate-office NAME~ links that entry as a fleet you own, through ~federation.link~, with the device token it was paired with (read from the secrets directory, never sent back).  Then remove the entry from =office.peers= -- a fleet in both is drawn once, from the link -- and revoke the device on the other machine (~clawtilla device list~, ~device revoke~ there): this fleet cannot revoke a device on another.
 
 ** Managing links
 :PROPERTIES:
@@ -565,6 +584,9 @@ Above the sections, *filter chips*, offered from what is there (~clawt_fed_filte
 
 Each fleet entry is ~agent.list~'s =fleets= member (see [[#requests][Requests]]), so a client draws it and never assembles it.
 
+*** Fleet weather
+Since 0.71.0 each linked fleet's heading in the sidebar carries its weather: a sparkline of the envelopes between the two fleets in the last twenty minutes, five minutes a bar (nothing for a quiet link), with the latency of its last twelve answers on hover (~clawt_fed_weather_line()~).  ~federation.peer.show~ and every ~agent.list~ fleet carry =weather= (={latency: [ms...], volume: [count...]}=, oldest first), and ~clawtilla federation show~ prints the line.  Keep-alives are not counted.
+
 *** In the office
 :PROPERTIES:
 :CUSTOM_ID: office
@@ -599,6 +621,8 @@ A linked fleet's running agents visit your office (kind /external/, id =ALIAS:AG
 | ~federation.expose~ | ={hostname?}= | ={cloudflared_config, public_url, socket, next}= |
 | ~federation.open~ | ={ref}= | ={room}=: the operator's conversation with =AGENT@ALIAS=, made if new (0.68.0) |
 | ~msg.send~ to =AGENT@ALIAS= | ={target, body, from?}= | ={queued: 0, steered: false, room}= (0.68.0) |
+| ~federation.discover~ | ={candidates?: [endpoint]}= | ={fleets: [{endpoint, fleet_id, name, owner?, version?, host?, words, linked_as?}], checked}= (deferred; 0.71.0) |
+| ~federation.migrate_office~ | ={name?}= | without a name ={entries: [{name, where, linked_as?, has_token}]}=; with one, the new peer (deferred; 0.71.0) |
 | ~federation.transcript~ | ={alias, task?, agent?, limit?}= | ={task?: {state, progress?, result?}, rooms: [{room, title?, messages: [{sender, body, ts}]}]}= (deferred; 0.70.0) |
 | ~room.share~, ~room.unshare~ | ={room, alias}= | ={}= (0.70.0) |
 | ~task.create~ with =agent: AGENT@ALIAS= | ={prompt, agent, title?}= | ={task}=, the proxy (0.69.0); every task object carries =remote_peer= when it crosses fleets |
@@ -607,7 +631,7 @@ Events: ~federation.peer~ (=alias=, =change=: added, changed, health, revoked, r
 
 ~agent.list~ carries, since 0.67.0, =fleets=: one object per linked fleet that is not revoked, in the registry's order, with =alias=, =label=, =fleet_id=, =tier=, =tier_label=, =tier_tone=, =owner=, =tags=, =health=, =health_label=, =health_tone=, =hidden=, =muted=, =latency_ms= (when known), =teams= (=[{id, name}]=) and =agents= (=[{id, ref, fleet, name, team?, color?, inbox, state?, busy?}]=, =ref= being =AGENT@ALIAS=; =state= is =unknown= for a fleet that is not live).  The tones are the library's words (=success=, =accent=, =warning=, =error=, =neutral=); ~clawt_fed_badge_tone()~ turns them into the web and lrg badge names.
 
-Between fleets: =GET /fed/v1/hello= (public, signed: who this fleet is), =POST /fed/v1/invite/accept=, =POST /fed/v1/envelope=, =GET /fed/v1/events= (WebSocket, 0.67.0); on the IPC port the frames ~fed.hello~, ~fed.invite~, ~fed.envelope~ and, from the far side, ~fed.push~.  Envelope kinds: =hello=, =ping=, =revoke=, =rotate= (0.66.0), =roster= (0.67.0), =message= (={id, from, to, body, depth, invites}=, answered ={state, detail?}=) and =delivery= (={id, state, detail?}=, what became of a message that was pushed or held) (0.68.0), =task= (={id, from, to, prompt, reason?, depth}=, answered ={task, state: accepted|held|refused|declined, detail?}=), ~task.state~ (={task, state, result?, detail?}=) and ~task.cancel~ (={task, reason?}=) (0.69.0), =transcript= (={task?, agent?, limit}=) and ~room.share~, ~room.unshare~, ~room.post~ (={room, id, from, body}=) (0.70.0); anything else is answered "not understood yet", naming the version.
+Between fleets: =GET /fed/v1/hello= (public, signed: who this fleet is), =POST /fed/v1/invite/accept=, =POST /fed/v1/envelope=, =GET /fed/v1/events= (WebSocket, 0.67.0); on the IPC port the frames ~fed.hello~, ~fed.invite~, ~fed.envelope~ and, from the far side, ~fed.push~.  Envelope kinds: =hello=, =ping=, =revoke=, =rotate= (0.66.0), =roster= (0.67.0), =message= (={id, from, to, body, depth, invites}=, answered ={state, detail?}=) and =delivery= (={id, state, detail?}=, what became of a message that was pushed or held) (0.68.0), =task= (={id, from, to, prompt, reason?, depth}=, answered ={task, state: accepted|held|refused|declined, detail?}=), ~task.state~ (={task, state, result?, detail?}=) and ~task.cancel~ (={task, reason?}=) (0.69.0), =whois= (answered to anybody; 0.71.0), =transcript= (={task?, agent?, limit}=) and ~room.share~, ~room.unshare~, ~room.post~ (={room, id, from, body}=) (0.70.0); anything else is answered "not understood yet", naming the version.
 
 ** Configuration
 :PROPERTIES:

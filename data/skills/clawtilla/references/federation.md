@@ -8,7 +8,7 @@ Read this before linking this fleet with another clawtilla fleet, changing what 
 - **Safety words** (four words from the fleet id) are what two people read to each other while one accepts the other's invite.
 - A **peer** is a linked fleet, known here by an **alias** (a valid id, never renamed). Peers live in `<state_dir>/federation/peers.yaml`, written by the daemon. Do not edit it; use `clawtilla federation` or a client's Settings → Federation page.
 - **Every request and every answer between fleets is a signed envelope.** That holds over any transport. Kind, from, to, time, nonce, body digest, and what it was sent to are all signed. Answers are bound to the request's nonce.
-- What crosses: hello, ping, revoke, rotate (0.66.0); rosters, pushed live (0.67.0); messages and their delivery states (0.68.0); delegated tasks, their states and cancels (0.69.0); transcripts and shared rooms (0.70.0). A kind the other side does not know is answered 501 "not understood yet", naming its version.
+- What crosses: hello, ping, revoke, rotate (0.66.0); rosters, pushed live (0.67.0); messages and their delivery states (0.68.0); delegated tasks, their states and cancels (0.69.0); transcripts and shared rooms (0.70.0); `whois` for discovery (0.71.0). A kind the other side does not know is answered 501 "not understood yet", naming its version.
 
 ## Turn it on
 
@@ -154,6 +154,13 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 - **Transcripts** (the grant's `transcripts`, theirs to you): `none`; `own_tasks` = work you gave them, by your proxy id -- state, progress, result, and that task's messages; `reachable` = also every conversation you have had with an agent you may reach. `clawtilla federation transcript ALIAS --task PROXY-ID` or `--agent AGENT` (IPC `federation.transcript`, deferred; needs a link to them). Max 200 messages, 8000 chars each.
 - **Shared rooms**: `clawtilla room share design lab` (IPC `room.share {room, alias}`; `room.unshare`). Only a declared room; your grant to them needs `join_rooms`, and theirs to you too or no mirror is made. The host fans every word out to the fleets sharing it except the speaker's; their words reach your agents by the room's rules, fenced, sender `fleet:ALIAS:AGENT`. They see `fedroom:HOST:ROOM` ("design @ lab") in their sidebar; what their operator writes there comes to you. Revoking a link removes its mirrors and its shares.
 - **Handshake**: a visitor that spoke with one of your agents in the last 2 minutes is drawn on a call with it in your office (`peer`, `room` on the visitor).
+
+## Discover, migrate, weather, estimate (0.71.0)
+
+- `clawtilla federation discover` asks every online tailnet machine at its `daemon.tcp_port` (tailscaled status, no subprocess) `whois`; lists fleets that answer (address, name, owner, version, host, safety words, `linked_as`). `--candidate ENDPOINT` (repeatable) for LAN addresses or sockets. Links nothing. IPC `federation.discover {candidates?}` (deferred, 5 s).
+- `clawtilla federation migrate-office` lists `office.peers` entries and whether each is linked; `migrate-office NAME` links it as owned via `federation.link` with its stored pairing token. Then remove the entry from `office.peers` and revoke that device on the other machine (this fleet cannot).
+- **Weather**: each sidebar fleet heading shows a traffic sparkline (envelopes per 5 min, last 20 min, none when quiet); hover adds the full hour and latency of the last 12 answers. `federation show` prints "Weather:". Data: `weather {latency, volume}` on `agent.list` fleets and `federation.peer.show`.
+- **Estimate before delegating**: their hello reports your work there (allowance `budget_cents_per_day`, 24 h used, running/max concurrent, `delegate` mode); finished tasks report their cost and an average is kept (`costs.json`). Shown in `clawtilla_delegate`'s answer, `clawtilla_federation_peers`, and `federation show` ("Before delegating"). Their word, not enforced here.
 
 ## Diagnose
 

@@ -610,3 +610,44 @@ clawt_daemon_office_peer_pair(ClawtDaemon *self, JsonNode *request, const gchar 
         g_main_context_pop_thread_default(self->main_context);
     return NULL;
 }
+
+/*
+ * office.peers as federation sees it, for `federation migrate-office`
+ * (0.71.0): each entry's name, where it is, the fleet id it last gave
+ * (when it has answered) and its stored token, read from the file -- the
+ * one thing that cannot be got again without pairing.
+ */
+JsonArray *
+clawt_daemon_office_peers_entries(ClawtDaemon *self)
+{
+    g_auto(GStrv) entries = clawt_config_get_string_list(self->config, "office.peers");
+    JsonArray *out = json_array_new();
+    guint i;
+    guint j;
+
+    for (i = 0; entries != NULL && entries[i] != NULL; i++) {
+        g_autofree gchar *name = NULL;
+        g_autofree gchar *target = NULL;
+        g_autofree gchar *path = NULL;
+        g_autofree gchar *token = NULL;
+        JsonObject *e;
+
+        if (!parse_entry(entries[i], &name, &target))
+            continue;
+        e = json_object_new();
+        json_object_set_string_member(e, "name", name);
+        json_object_set_string_member(e, "where", target);
+        path = token_path(self, name);
+        if (target[0] != '/' && path != NULL && g_file_get_contents(path, &token, NULL, NULL)) {
+            g_strstrip(token);
+            json_object_set_string_member(e, "token", token);
+        }
+        for (j = 0; self->office_peers != NULL && j < self->office_peers->len; j++) {
+            Peer *peer = g_ptr_array_index(self->office_peers, j);
+            if (g_strcmp0(peer->name, name) == 0 && peer->fleet != NULL)
+                json_object_set_string_member(e, "fleet", peer->fleet);
+        }
+        json_array_add_object_element(out, e);
+    }
+    return out;
+}

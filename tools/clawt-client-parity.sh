@@ -363,6 +363,8 @@ declare -A AFFORDANCES=(
     # federation (0.68.0): writing to another fleet's agent
     ["open remote conversation"]="on_fed_agent_pressed|on_fleet_open|on_fed_agent_clicked"
     ["remote chat banner"]="clawt_fed_room_banner|clawt_fed_room_banner|clawt_fed_room_banner"
+    # federation (0.71.0)
+    ["fleet weather"]="clawt_fed_traffic_spark|clawt_fed_traffic_spark|clawt_fed_traffic_spark"
     #
     # The Office page (0.56.0): the roster line from the library, and the
     # slot the drawn office goes in -- a note in a build without OFFICE=1.

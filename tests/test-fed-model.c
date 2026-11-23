@@ -595,6 +595,59 @@ test_refs_and_fence(void)
     g_assert_nonnull(strstr(fenced, CLAWT_PREAMBLE_ESCAPED));
 }
 
+/* Sparklines scale to their largest value; a tailnet status reads as peers. */
+static void
+test_weather_and_tailnet(void)
+{
+    g_autoptr(JsonArray) values = json_array_new();
+    g_autofree gchar *spark = NULL;
+    g_autofree gchar *none = clawt_fed_sparkline(NULL);
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autofree gchar *line = NULL;
+    g_autoptr(JsonArray) peers = NULL;
+    static const gchar status[] =
+        "{\"Self\":{\"DNSName\":\"me.tail.ts.net.\"},\"Peer\":{"
+        " \"a\":{\"DNSName\":\"box.tail.ts.net.\",\"HostName\":\"box\",\"OS\":\"linux\","
+        "       \"TailscaleIPs\":[\"100.64.0.7\",\"fd7a:115c:a1e0::7\"],\"Online\":true},"
+        " \"b\":{\"DNSName\":\"phone.tail.ts.net.\",\"TailscaleIPs\":[],\"Online\":true}}}";
+    JsonObject *box;
+
+    json_array_add_int_element(values, 0);
+    json_array_add_int_element(values, 4);
+    json_array_add_int_element(values, 8);
+    spark = clawt_fed_sparkline(values);
+    g_assert_cmpstr(spark, ==, "\342\226\201\342\226\205\342\226\210");
+    g_assert_cmpstr(none, ==, "");
+
+    g_assert_true(json_parser_load_from_data(parser,
+        "{\"weather\":{\"latency\":[3,5],\"volume\":[0,2,1]}}", -1, NULL));
+    line = clawt_fed_weather_line(json_node_get_object(json_parser_get_root(parser)));
+    g_assert_nonnull(strstr(line, "3 in the last hour"));
+    g_assert_nonnull(strstr(line, "5 ms"));
+
+    {
+        g_autoptr(JsonParser) quiet = json_parser_new();
+        g_autofree gchar *nothing = NULL;
+        g_autofree gchar *half = NULL;
+
+        g_assert_true(json_parser_load_from_data(quiet,
+            "{\"weather\":{\"volume\":[9,0,0,0,0,0,0,0]}}", -1, NULL));
+        nothing = clawt_fed_traffic_spark(json_node_get_object(json_parser_get_root(quiet)));
+        g_assert_cmpstr(nothing, ==, "");
+        half = clawt_fed_traffic_spark(json_node_get_object(json_parser_get_root(parser)));
+        g_assert_cmpuint(g_utf8_strlen(half, -1), ==, 3);
+    }
+
+    peers = clawt_tailscale_peers_from_status(status, -1, NULL);
+    g_assert_nonnull(peers);
+    g_assert_cmpuint(json_array_get_length(peers), ==, 1);
+    box = json_array_get_object_element(peers, 0);
+    g_assert_cmpstr(json_object_get_string_member(box, "name"), ==, "box.tail.ts.net");
+    g_assert_cmpstr(json_object_get_string_member(box, "address"), ==, "100.64.0.7");
+    g_assert_true(json_object_get_boolean_member(box, "online"));
+    g_assert_null(clawt_tailscale_peers_from_status("not json", -1, NULL));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -615,6 +668,7 @@ main(int argc, char *argv[])
     g_test_add_func("/fed-model/sidebar-presence", test_sidebar_presence);
     g_test_add_func("/fed-model/badge-tones", test_badge_tones);
     g_test_add_func("/fed-model/refs-and-fence", test_refs_and_fence);
+    g_test_add_func("/fed-model/weather-and-tailnet", test_weather_and_tailnet);
 
     return g_test_run();
 }

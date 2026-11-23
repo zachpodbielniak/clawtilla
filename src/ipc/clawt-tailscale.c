@@ -213,6 +213,20 @@ on_status_read(GObject *source, GAsyncResult *result, gpointer user_data)
         return;
     }
 
+    /* The same status, read for the peers when that is what was asked. */
+    if (g_object_get_data(G_OBJECT(task), "clawt-want-peers") != NULL) {
+        gsize length = 0;
+        const gchar *data = g_bytes_get_data(body, &length);
+        JsonArray *peers = clawt_tailscale_peers_from_status(data, (gssize)length, &error);
+
+        if (peers == NULL)
+            g_task_return_error(task, g_steal_pointer(&error));
+        else
+            g_task_return_pointer(task, peers, (GDestroyNotify)json_array_unref);
+        g_object_unref(task);
+        return;
+    }
+
     {
         gsize length = 0;
         const gchar *data = g_bytes_get_data(body, &length);
@@ -229,11 +243,99 @@ on_status_read(GObject *source, GAsyncResult *result, gpointer user_data)
     g_object_unref(task);
 }
 
+static void status_async(GMainContext *context, GCancellable *cancellable,
+                         GAsyncReadyCallback callback, gpointer user_data,
+                         gboolean want_peers);
+
 void
 clawt_tailscale_dns_name_async(GMainContext        *context,
                                GCancellable        *cancellable,
                                GAsyncReadyCallback  callback,
                                gpointer             user_data)
+{
+    status_async(context, cancellable, callback, user_data, FALSE);
+}
+
+void
+clawt_tailscale_peers_async(GMainContext        *context,
+                            GCancellable        *cancellable,
+                            GAsyncReadyCallback  callback,
+                            gpointer             user_data)
+{
+    status_async(context, cancellable, callback, user_data, TRUE);
+}
+
+JsonArray *
+clawt_tailscale_peers_finish(GAsyncResult  *result,
+                             GError       **error)
+{
+    g_return_val_if_fail(g_task_is_valid(result, NULL), NULL);
+
+    return g_task_propagate_pointer(G_TASK(result), error);
+}
+
+JsonArray *
+clawt_tailscale_peers_from_status(const gchar  *body,
+                                  gssize        length,
+                                  GError      **error)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    JsonNode *root;
+    JsonObject *peers;
+    JsonArray *out;
+    GList *members;
+    GList *l;
+
+    if (body == NULL || !json_parser_load_from_data(parser, body, length, NULL)
+        || (root = json_parser_get_root(parser)) == NULL || !JSON_NODE_HOLDS_OBJECT(root)) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "tailscaled's status was not JSON");
+        return NULL;
+    }
+    out = json_array_new();
+    if (!json_object_has_member(json_node_get_object(root), "Peer")
+        || !JSON_NODE_HOLDS_OBJECT(json_object_get_member(json_node_get_object(root), "Peer")))
+        return out;
+    peers = json_object_get_object_member(json_node_get_object(root), "Peer");
+    members = json_object_get_members(peers);
+    for (l = members; l != NULL; l = l->next) {
+        JsonNode *node = json_object_get_member(peers, l->data);
+        JsonObject *p;
+        JsonObject *e;
+        JsonNode *ips;
+        const gchar *dns;
+        g_autofree gchar *name = NULL;
+
+        if (node == NULL || !JSON_NODE_HOLDS_OBJECT(node))
+            continue;
+        p = json_node_get_object(node);
+        ips = json_object_get_member(p, "TailscaleIPs");
+        if (ips == NULL || !JSON_NODE_HOLDS_ARRAY(ips)
+            || json_array_get_length(json_node_get_array(ips)) == 0)
+            continue;
+        dns = json_object_get_string_member_with_default(p, "DNSName", "");
+        name = g_str_has_suffix(dns, ".") ? g_strndup(dns, strlen(dns) - 1) : g_strdup(dns);
+        e = json_object_new();
+        json_object_set_string_member(e, "name", name);
+        json_object_set_string_member(e, "host",
+            json_object_get_string_member_with_default(p, "HostName", ""));
+        json_object_set_string_member(e, "os", json_object_get_string_member_with_default(p, "OS", ""));
+        json_object_set_string_member(e, "address",
+            json_array_get_string_element(json_node_get_array(ips), 0));
+        json_object_set_boolean_member(e, "online",
+            json_object_get_boolean_member_with_default(p, "Online", FALSE));
+        json_array_add_object_element(out, e);
+    }
+    g_list_free(members);
+    return out;
+}
+
+static void
+status_async(GMainContext        *context,
+             GCancellable        *cancellable,
+             GAsyncReadyCallback  callback,
+             gpointer             user_data,
+             gboolean             want_peers)
 {
     g_autoptr(GSocketAddress) address = NULL;
     g_autoptr(SoupSession) session = NULL;
@@ -252,6 +354,8 @@ clawt_tailscale_dns_name_async(GMainContext        *context,
 
     task = g_task_new(NULL, cancellable, callback, user_data);
     g_task_set_source_tag(task, clawt_tailscale_dns_name_async);
+    if (want_peers)
+        g_object_set_data(G_OBJECT(task), "clawt-want-peers", GINT_TO_POINTER(1));
 
     if (!g_file_test(TAILSCALED_SOCKET, G_FILE_TEST_EXISTS)) {
         g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,

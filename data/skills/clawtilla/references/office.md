@@ -148,7 +148,7 @@ IPC (see mcp-tools.md / architecture.md for the wire): `office.snapshot`, `offic
 
 ## Federation (read-only visiting)
 
-Linking fleets for real -- keys, invites, tiers, grants -- is [federation.md](federation.md). Since 0.67.0 a linked fleet's running agents visit from the link's roster with no device token (federation.md, "Sidebar and office"); prefer `clawtilla federation link` to `office.peers`. What follows is the older 0.64.0 visiting, still read: a fleet both linked and in `office.peers` is drawn once, from the link.
+Linking fleets for real -- keys, invites, tiers, grants -- is [federation.md](federation.md). Since 0.67.0 a linked fleet's running agents visit from the link's roster with no device token (federation.md, "Sidebar and office"); prefer `clawtilla federation link` to `office.peers`; `clawtilla federation migrate-office [NAME]` moves an entry onto a link (0.71.0). What follows is the older 0.64.0 visiting, still read: a fleet both linked and in `office.peers` is drawn once, from the link.
 
 ```yaml
 office:

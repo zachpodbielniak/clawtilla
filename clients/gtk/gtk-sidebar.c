@@ -2062,6 +2062,24 @@ fed_header(ClawtWindow *self, JsonObject *fleet, guint shown)
     }
     gtk_box_append(GTK_BOX(box), tier);
 
+    /* The link's weather (0.71.0): its traffic as a sparkline, the rest on hover. */
+    {
+        g_autofree gchar *spark = clawt_fed_traffic_spark(fleet);
+        g_autofree gchar *weather = clawt_fed_weather_line(fleet);
+        g_autofree gchar *full = *weather != '\0'
+            ? g_strdup_printf("%s\n%s", tooltip, weather) : g_strdup(tooltip);
+
+        if (*spark != '\0') {
+            GtkWidget *bars = gtk_label_new(spark);
+            gtk_widget_add_css_class(bars, "dim-label");
+            gtk_widget_add_css_class(bars, "caption");
+            gtk_widget_add_css_class(bars, "clawt-fed-weather");
+            gtk_box_append(GTK_BOX(box), bars);
+        }
+        g_free(tooltip);
+        tooltip = g_steal_pointer(&full);
+    }
+
     count = gtk_label_new(tally);
     gtk_widget_add_css_class(count, "dim-label");
     gtk_widget_add_css_class(count, "caption");
