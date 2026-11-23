@@ -126,8 +126,8 @@ See [connectors.md](connectors.md), [integrations.md](integrations.md).
 ## Link this fleet with another
 
 1. Both fleets: `federation: {enabled: true, name: ..., owner: ...}`, restart the daemon; `clawtilla federation status`.
-2. Your own other daemon: `clawtilla federation link 100.64.0.7:8792 --alias homelab` (tailnet; asks for its owner token) or a socket path.
-3. Anyone else: `clawtilla federation invite --tier limited` here, send the `clawt-fed1-...` string;
+2. Two fleets you own (your other daemon): `clawtilla federation link 100.64.0.7:8792 --alias homelab` (tailnet; asks for its owner token) or a socket path.
+3. A colleague, or anyone else: `clawtilla federation invite --tier limited` here, send the `clawt-fed1-...` string;
    there: `clawtilla federation inspect ...` then `clawtilla federation accept ... --tier trusted --alias you`; read the safety words to each other.
 4. Lock one fleet down to one agent: `clawtilla federation set ALIAS reach=listed agents=atlas cap.exec=deny`; check with `clawtilla federation explain ALIAS`.
 5. Tag fleets and write one rule for all of them: `clawtilla federation tag ALIAS +client-acme`, then in clawtilla.yaml (`clawtilla config edit`) `federation.rules: ["tag:client-acme: reach=listed; cap.exec=deny"]` (or the Rules editor in any client) and `clawtilla config reload`; rules apply after the tier, before the fleet's own overrides.

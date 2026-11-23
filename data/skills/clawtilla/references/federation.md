@@ -151,6 +151,8 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 - **Caps**: a turn works for a fleet when it is in a `fed:` room with it or carries (or descends from) a task that came from it. Every call then takes the stricter of the agent's action rule and that fleet's `cap.CLASS` -- clawtilla tools and, via the permission hook, the CLI's own Bash/edits. `cap.fleet_admin` is always deny; `subdelegate=false` denies `clawtilla_delegate` in such turns. With `federation.enabled`, every agent gets the permission hook.
 - Tighten a fleet: `clawtilla federation set ALIAS cap.exec=deny cap.write=ask max_concurrent_tasks=1 budget_cents_per_day=300 delegate=ask`.
 
+- Watching delegated work: a proxy is an ordinary task, so `task.changed` (with `remote_peer`) reports it; there is no `federation.task` event.
+
 ## Transcripts, shared rooms, the handshake (0.70.0)
 
 - **Transcripts** (the grant's `transcripts`, theirs to you): `none`; `own_tasks` = work you gave them, by your proxy id -- state, progress, result, and that task's messages; `reachable` = also every conversation you have had with an agent you may reach. `clawtilla federation transcript ALIAS --task PROXY-ID` or `--agent AGENT` (IPC `federation.transcript`, deferred; needs a link to them). Max 200 messages, 8000 chars each.
