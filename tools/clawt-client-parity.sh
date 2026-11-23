@@ -365,6 +365,9 @@ declare -A AFFORDANCES=(
     ["remote chat banner"]="clawt_fed_room_banner|clawt_fed_room_banner|clawt_fed_room_banner"
     # federation (0.71.0)
     ["fleet weather"]="clawt_fed_traffic_spark|clawt_fed_traffic_spark|clawt_fed_traffic_spark"
+    # federation (0.72.0)
+    ["federation rules editor"]="clawt-fed-rule|fed-rule|clawt-fed-rule"
+    ["office.peers deprecation notice"]="clawt-fed-deprecated|fed-deprecated|clawt-fed-deprecated"
     #
     # The Office page (0.56.0): the roster line from the library, and the
     # slot the drawn office goes in -- a note in a build without OFFICE=1.

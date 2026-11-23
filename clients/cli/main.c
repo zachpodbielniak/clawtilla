@@ -4951,6 +4951,29 @@ fed_print_show(JsonObject *o)
         g_print("  ! %s\n", json_array_get_string_element(problems, i));
 }
 
+/* One line of the federation audit, as it happens (`federation log -f`). */
+static void
+on_fed_audit_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
+{
+    const gchar *alias = user_data;
+    g_autoptr(GDateTime) now = g_date_time_new_now_local();
+    g_autofree gchar *stamp = g_date_time_format(now, "%F %T");
+
+    (void)client;
+    if (g_strcmp0(clawt_event_get_kind(event), "federation.audit") != 0
+        || (alias != NULL && g_strcmp0(clawt_event_get_subject(event), alias) != 0))
+        return;
+    g_print("%s  %-5s %-16s %-14s %-8s %s\n", stamp,
+            clawt_event_get_detail(event, "direction") != NULL
+                ? clawt_event_get_detail(event, "direction") : "?",
+            clawt_event_get_subject(event) != NULL ? clawt_event_get_subject(event) : "",
+            clawt_event_get_detail(event, "kind") != NULL ? clawt_event_get_detail(event, "kind") : "",
+            clawt_event_get_detail(event, "outcome") != NULL
+                ? clawt_event_get_detail(event, "outcome") : "",
+            clawt_event_get_detail(event, "detail") != NULL
+                ? clawt_event_get_detail(event, "detail") : "");
+}
+
 static gint
 cmd_federation(int argc, char *argv[])
 {
@@ -5000,7 +5023,9 @@ cmd_federation(int argc, char *argv[])
                 "  revoke ALIAS               end the link (and tell the other fleet)\n"
                 "  forget ALIAS               remove a revoked fleet's record\n"
                 "  invites | uninvite ID      outstanding invites; withdraw one\n"
-                "  log [ALIAS] [--limit N]    every request between fleets, newest first\n"
+                "  log [ALIAS] [--limit N] [-f]\n"
+                "                             every request between fleets, newest first;\n"
+                "                             -f keeps printing new ones\n"
                 "  discover [--candidate ENDPOINT]...\n"
                 "                             clawtilla fleets within reach: every online\n"
                 "                             tailnet machine's daemon port, or the\n"
@@ -5330,6 +5355,17 @@ cmd_federation(int argc, char *argv[])
                     member_or(e, "direction", "?"), member_or(e, "peer", ""),
                     member_or(e, "kind", ""), member_or(e, "outcome", ""),
                     member_or(e, "detail", ""));
+        }
+        /* -f: and every new line as it happens, until interrupted (0.72.0). */
+        if (fed_has_flag(argc, argv, "-f") || fed_has_flag(argc, argv, "--follow")) {
+            g_autoptr(GMainLoop) loop = g_main_loop_new(NULL, FALSE);
+
+            g_signal_connect(client, "event", G_CALLBACK(on_fed_audit_event), (gpointer)alias);
+            if (!clawt_client_subscribe(client, 0, NULL, NULL)) {
+                g_printerr("clawtilla: could not subscribe to the event stream\n");
+                return EXIT_FAILURE;
+            }
+            g_main_loop_run(loop);
         }
         return EXIT_SUCCESS;
     }

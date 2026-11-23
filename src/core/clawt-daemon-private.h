@@ -349,6 +349,7 @@ struct _ClawtDaemon {
     GHashTable              *fed_room_depth;  /* fed: room -> last depth in */
     JsonObject              *fed_shares;      /* our room -> [aliases]: rooms we share (0.70.0) */
     GHashTable              *fed_room_seen;   /* fed: room -> unix seconds of its last word */
+    GHashTable              *fed_post_authors; /* message id -> its author's signature block */
 
     /*
      * Who to tell when something is worth interrupting somebody for.
@@ -2728,6 +2729,7 @@ gchar    *clawt_daemon_federation_open(ClawtDaemon  *self,
                                        const gchar  *ref,
                                        GError      **error);
 JsonArray *clawt_daemon_federation_remote_agents(ClawtDaemon *self);
+GPtrArray *clawt_daemon_federation_mention_names(ClawtDaemon *self, const gchar *room_id);
 gchar    *clawt_daemon_federation_delegate(ClawtDaemon  *self,
                                            const gchar  *from,
                                            const gchar  *ref,

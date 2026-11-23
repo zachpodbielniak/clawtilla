@@ -1762,6 +1762,15 @@ clawt_lrg_room_roster(JsonNode *rooms, const gchar *room_id)
                 g_ptr_array_add(roster, g_strdup(member));
         }
 
+        /* Other fleets' agents a room that crosses fleets can name (0.72.0). */
+        members = object_array(room, "mention_names");
+        for (m = 0; members != NULL && m < json_array_get_length(members); m++) {
+            const gchar *name = json_array_get_string_element(members, m);
+
+            if (name != NULL && *name != '\0')
+                g_ptr_array_add(roster, g_strdup(name));
+        }
+
         break;
     }
 

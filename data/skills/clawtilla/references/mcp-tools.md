@@ -135,6 +135,10 @@ clawtilla agent restart ID
 | `clawtilla_room_history` | recent messages of a room, or your DM with an agent id | room_id*, limit | none | read |
 | `clawtilla_list_teams` | teams, leads, members, running counts | -- | peer | read |
 | `clawtilla_federation_peers` | the linked fleets: alias, name, owner, tier, health | -- | `tools.federation` | read |
+| `clawtilla_federation_invite` | one-use invite at limited/untrusted (more trusted is the operator's) | tier, note, endpoint | `tools.federation` + `tools.manage_fleet` | fleet_admin |
+| `clawtilla_federation_set_tier` | lower a linked fleet's tier at once; a raise becomes a `fed-tier-*` decision for the operator | alias*, tier* | `tools.federation` + `tools.manage_fleet` | fleet_admin |
+| `clawtilla_federation_tag` | add/remove a linked fleet's tags | alias*, add, remove | `tools.federation` + `tools.manage_fleet` | fleet_admin |
+| `clawtilla_federation_revoke` | end a link (the fleet is told) | alias* | `tools.federation` + `tools.manage_fleet` | fleet_admin |
 | `clawtilla_mailbox_list` | messages waiting (empty while running: delivery acks) | limit | none | read |
 | `clawtilla_mailbox_read` | read one mailbox message | message_id* | none | read |
 | `clawtilla_mailbox_ack` | mark a message dealt with | message_id* | none | write |

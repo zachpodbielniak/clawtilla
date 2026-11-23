@@ -7103,6 +7103,19 @@ allowed by its own grant: this can only take reach away, never give it.
 Unset, the grant alone decides. A conversation already under way is not
 cut off by a change here; a new one is.
 
+*** =agents.federation_may_reach=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.72.0
+
+Which linked fleets this agent may write to and hand work to, as peer
+selectors (`tier:owned`, `tag:client-acme`, `name:lab`, `*`; see
+docs/federation.org#selectors). Unset, an agent with tools.federation may
+reach any linked fleet; set, only those that match -- and it sees only
+their agents in clawtilla_list_agents. The other fleet's grant still
+decides what lands there.
+
 ** =agents.tools=
 
 Which orchestration tools this agent may call.

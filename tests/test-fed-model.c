@@ -648,6 +648,42 @@ test_weather_and_tailnet(void)
     g_assert_null(clawt_tailscale_peers_from_status("not json", -1, NULL));
 }
 
+/* 0.72.0: remote mentions, their completion, rule checks, post text, Go-to refs. */
+static void
+test_mentions_rules_and_refs(void)
+{
+    g_autoptr(GPtrArray) refs = clawt_mention_remote_list(
+        "@atlas@lab and @Kudu@Studio, not zach@bob.com nor @x@y@z, again @atlas@lab");
+    g_autofree gchar *prefix = clawt_mention_prefix_at("ask @atlas@la", strlen("ask @atlas@la"));
+    g_autofree gchar *plain = clawt_mention_prefix_at("ask @atl", strlen("ask @atl"));
+    g_autofree gchar *a = clawt_fed_post_text("design", "m1", "user", "hi");
+    g_autofree gchar *b = clawt_fed_post_text("design", "m1", "use", "rhi");
+    g_autofree gchar *ref = NULL;
+    g_autoptr(GError) error = NULL;
+
+    g_assert_cmpuint(refs->len, ==, 2);
+    g_assert_cmpstr(g_ptr_array_index(refs, 0), ==, "atlas@lab");
+    g_assert_cmpstr(g_ptr_array_index(refs, 1), ==, "kudu@studio");
+    g_assert_cmpstr(prefix, ==, "atlas@la");
+    g_assert_cmpstr(plain, ==, "atl");
+
+    g_assert_true(clawt_fed_rule_check("tag:lab: cap.exec=deny; reach=listed", NULL));
+    g_assert_false(clawt_fed_rule_check("tag:lab cap.exec=deny", &error));
+    g_clear_error(&error);
+    g_assert_false(clawt_fed_rule_check("tag:lab: cap.nonsense=deny", &error));
+    g_clear_error(&error);
+    g_assert_false(clawt_fed_rule_check("tag:: reach=all", &error));
+    g_clear_error(&error);
+
+    /* no two different posts sign the same text */
+    g_assert_cmpstr(a, !=, b);
+
+    ref = clawt_open_target_normalize("clawtilla://atlas@lab", &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(ref, ==, "atlas@lab");
+    g_assert_true(clawt_fed_ref_parse(ref, NULL, NULL));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -669,6 +705,7 @@ main(int argc, char *argv[])
     g_test_add_func("/fed-model/badge-tones", test_badge_tones);
     g_test_add_func("/fed-model/refs-and-fence", test_refs_and_fence);
     g_test_add_func("/fed-model/weather-and-tailnet", test_weather_and_tailnet);
+    g_test_add_func("/fed-model/mentions-rules-and-refs", test_mentions_rules_and_refs);
 
     return g_test_run();
 }

@@ -343,6 +343,8 @@ agents:
     federation_reach: ["tier:owned", "tag:client-acme"]
 #+end_src
 
+And the other way (0.72.0): =agents.federation_may_reach= lists the peer selectors of the fleets an agent with =agents.tools.federation= may write to and hand work to.  Unset is every linked fleet; set, a message or delegation to any other is refused, naming the key, and ~clawtilla_list_agents~ shows that agent only the fleets it may reach.
+
 ** Messages
 :PROPERTIES:
 :CUSTOM_ID: messages
@@ -373,6 +375,9 @@ The sender always hears what happened.  Delivered is silent; anything else is a 
 
 *** How the agent sees it
 The transcript shows exactly what they wrote.  The agent receives it under a preamble that names the fleet, its owner and tier, says it is another organisation's agent and not the operator, and puts their words inside a backtick fence longer than any backtick run in them, with any forged =[clawtilla]= marker escaped (~clawt_fed_fence()~) -- so nothing in the message can close the fence and speak as clawtilla.
+
+*** Mentions
+=@atlas@lab= is one token (0.72.0): it never wakes a local agent called atlas, and a plain address like =zach@bob.com= is not one (~clawt_mention_remote_list()~).  In a room you share with lab, writing it wakes atlas there (see [[#shared-rooms][Shared rooms]]).  Every client's =@= completion offers, in a room that crosses fleets, the other fleets' agents (~room.list~'s =mention_names=): =AGENT@ALIAS= in a room you share, the host's agents by their own names in a room shared with you; typing =@atlas@la= completes as one name.  ~clawtilla-gtk --open atlas@lab~, the web client's =/r/atlas@lab= and lrg's open all open the conversation with atlas.
 
 *** One request, one answer
 A message invites one answer, as between agents here.  The agent's closing text is that answer and goes back to them; the answer arrives on their side marked as an answer -- inviting nothing -- so their agent's closing text is not sent back, and two fleets' agents cannot sign off at each other for ever.  To write again, an agent sends a new message (~clawtilla_message_agent~); a person just writes in the conversation.  The pair budget is never renewed by another fleet's sender, and =max_hops_in= bounds a chain of deliberate messages.
@@ -426,7 +431,8 @@ Since 0.70.0 a room this fleet declared can be shared with linked fleets: ~clawt
 
 - The *host* is authoritative.  Everything said in the room -- by your people, your agents, or another fleet sharing it -- is sent to every fleet it is shared with except the one that said it.  A fleet's word arriving in the room is delivered by the room's own rules (mentions, rounds) to your agents, under the preamble and fence any remote message gets, with the sender =fleet:ALIAS:AGENT= made a member.
 - The *joining* fleet gets a mirror, =fedroom:HOST:ROOM= (titled =design @ lab=), listed in every client's sidebar beside its own rooms, with the banner a conversation with another fleet carries.  What the host's room says is recorded there and wakes nobody; what its operator writes there goes to the host.
-- Every post is a signed envelope, so authorship is the fleet's key, end to end.  Unsharing, or revoking the link, removes the mirror; a revoked link is struck from every room shared with it.
+- =@AGENT@ALIAS= in the host's room wakes that agent in the fleet it names (0.72.0), if that fleet's grant to the host reaches it: the joining fleet makes it a member of its mirror and delivers the post to it, fenced; its answer is posted in the room.
+- Every post carries its author fleet's own signature (0.72.0): the fleet that wrote it signs the room, its id, who wrote it and the text (~clawt_fed_post_text()~), and the host relays that signature untouched.  A fleet receiving a post checks it with the author fleet's key whenever it is linked with that fleet too, and refuses a post that fails -- so a host cannot put words in another fleet's mouth.  A post by a fleet it does not know is the host's word.  A post a joining fleet sends the host must be signed by that fleet.  Unsharing, or revoking the link, removes the mirror; a revoked link is struck from every room shared with it.
 
 ** Caps
 :PROPERTIES:
@@ -434,6 +440,21 @@ Since 0.70.0 a room this fleet declared can be shared with linked fleets: ~clawt
 :END:
 
 A grant's ~cap.CLASS~ fields (~cap.read~, ~cap.write~, ~cap.delete~, ~cap.message~, ~cap.exec~, ~cap.external~, ~cap.desktop_input~, ~cap.fleet_admin~) cap what this fleet's agents may do *for* that fleet (0.69.0).  A turn works for a fleet when it runs in a conversation with it (a =fed:= room) or carries a task that came from it, or one above it.  Every call such a turn makes -- clawtilla's own tools and the agent CLI's own (Bash, edits) through the permission hook -- takes the stricter of the agent's action rule and the cap (~clawt_fed_policy_stricter()~: deny, hand back, ask, review, allow), and a refusal names the cap.  ~cap.fleet_admin~ is always deny, and with =subdelegate= false the turn may not delegate further.  With =federation.enabled= on, every agent gets the permission hook, because which turns work for another fleet is only known per call.
+
+** Rules, from a client
+The Federation page of every client lists =federation.rules= with a Remove on each and a line to add one (0.72.0), through ~federation.rules~ (={rules?}=: read, or replace whole).  Each rule is checked as it is written (~clawt_fed_rule_check()~: the selector and every assignment), so a rule that would not apply is refused there rather than skipped by the resolver; saving tells every linked fleet what it now sees.
+
+** Agents managing links
+An agent with =agents.tools.federation= *and* =agents.tools.manage_fleet= is offered (0.72.0):
+
+| Tool | |
+|------+-|
+| ~clawtilla_federation_invite~ | an invite at limited or untrusted (=tier=, =note=, =endpoint=); a more trusted link is the operator's |
+| ~clawtilla_federation_set_tier~ | lowering applies at once; *raising is put to the operator as a decision* (=fed-tier-*=, Approve/Deny) |
+| ~clawtilla_federation_tag~ | =add=, =remove= (comma-separated) |
+| ~clawtilla_federation_revoke~ | ends the link, as the operator's revoke does |
+
+All are action class =fleet_admin=, so the agent's own action rules apply too, and each runs the operator's own request underneath.  ~clawtilla federation log -f~ follows the audit as it happens.
 
 ** Finding fleets
 :PROPERTIES:
@@ -449,7 +470,7 @@ The question is the =whois= envelope kind: signed like every request, and answer
 :CUSTOM_ID: migrate-office
 :END:
 
-~clawtilla federation migrate-office~ (0.71.0; IPC ~federation.migrate_office~) lists the =office.peers= entries and whether each fleet is linked already.  ~migrate-office NAME~ links that entry as a fleet you own, through ~federation.link~, with the device token it was paired with (read from the secrets directory, never sent back).  Then remove the entry from =office.peers= -- a fleet in both is drawn once, from the link -- and revoke the device on the other machine (~clawtilla device list~, ~device revoke~ there): this fleet cannot revoke a device on another.
+While =office.peers= has entries, ~federation.status~ says so (=deprecated=) and every client's Federation page shows it as a notice (0.72.0).  ~clawtilla federation migrate-office~ (0.71.0; IPC ~federation.migrate_office~) lists the =office.peers= entries and whether each fleet is linked already.  ~migrate-office NAME~ links that entry as a fleet you own, through ~federation.link~, with the device token it was paired with (read from the secrets directory, never sent back).  Then remove the entry from =office.peers= -- a fleet in both is drawn once, from the link -- and revoke the device on the other machine (~clawtilla device list~, ~device revoke~ there): this fleet cannot revoke a device on another.
 
 ** Managing links
 :PROPERTIES:
@@ -621,6 +642,7 @@ A linked fleet's running agents visit your office (kind /external/, id =ALIAS:AG
 | ~federation.expose~ | ={hostname?}= | ={cloudflared_config, public_url, socket, next}= |
 | ~federation.open~ | ={ref}= | ={room}=: the operator's conversation with =AGENT@ALIAS=, made if new (0.68.0) |
 | ~msg.send~ to =AGENT@ALIAS= | ={target, body, from?}= | ={queued: 0, steered: false, room}= (0.68.0) |
+| ~federation.rules~ | ={rules?: [rule]}= | ={rules}=; with =rules=, each checked, then saved whole (0.72.0) |
 | ~federation.discover~ | ={candidates?: [endpoint]}= | ={fleets: [{endpoint, fleet_id, name, owner?, version?, host?, words, linked_as?}], checked}= (deferred; 0.71.0) |
 | ~federation.migrate_office~ | ={name?}= | without a name ={entries: [{name, where, linked_as?, has_token}]}=; with one, the new peer (deferred; 0.71.0) |
 | ~federation.transcript~ | ={alias, task?, agent?, limit?}= | ={task?: {state, progress?, result?}, rooms: [{room, title?, messages: [{sender, body, ts}]}]}= (deferred; 0.70.0) |
@@ -654,6 +676,7 @@ Every key is in [[file:configuration-options.org][configuration-options.org]]; t
 | =federation.outbox_hours= | 72 | how long an unsent message waits |
 | =agents.tools.federation= | false | the agent may write to other fleets |
 | =agents.federation_reach= | | which fleets may reach the agent |
+| =agents.federation_may_reach= | | which fleets the agent may write to |
 
 ** Troubleshooting
 :PROPERTIES:

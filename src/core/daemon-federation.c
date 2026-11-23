@@ -86,6 +86,10 @@ static void load_shares(ClawtDaemon *self);
 static JsonNode *handle_discover(ClawtDaemon *self, JsonNode *request, JsonObject *payload);
 static JsonNode *handle_link(ClawtDaemon *self, JsonNode *request, JsonObject *payload);
 static gchar *escrow_line(ClawtDaemon *self, const gchar *alias);
+static JsonNode *handle_invite_create(ClawtDaemon *self, JsonNode *request, JsonObject *payload);
+static JsonNode *handle_peer_set(ClawtDaemon *self, JsonNode *request, JsonObject *payload);
+static JsonNode *handle_peer_tag(ClawtDaemon *self, JsonNode *request, JsonObject *payload);
+static JsonNode *handle_peer_revoke(ClawtDaemon *self, JsonNode *request, JsonObject *payload);
 static void forget_rooms(ClawtDaemon *self, const gchar *alias);
 static JsonNode *reply_object(JsonNode *request, JsonObject *o);
 static ClawtFedPeer *peer_from_payload(ClawtDaemon *self, JsonObject *payload, JsonNode *request,
@@ -96,6 +100,8 @@ static gchar *hook_send(const gchar *agent_id, const gchar *ref, const gchar *bo
                         gboolean *is_error, gpointer user_data);
 static gchar *hook_list(const gchar *agent_id, gpointer user_data);
 static gchar *hook_peers(const gchar *agent_id, gpointer user_data);
+static gchar *hook_admin(const gchar *agent_id, const gchar *tool, JsonObject *arguments,
+                         gboolean *is_error, gpointer user_data);
 static void load_outbox(ClawtDaemon *self);
 static void load_holds(ClawtDaemon *self);
 static void forward_from_room(ClawtDaemon *self, ClawtEvent *event);
@@ -372,6 +378,8 @@ audit(
         clawt_event_set_detail(event, "direction", direction);
         clawt_event_set_detail(event, "kind", kind != NULL ? kind : "");
         clawt_event_set_detail(event, "outcome", outcome);
+        if (detail != NULL)
+            clawt_event_set_detail(event, "detail", detail);
         clawt_event_bus_publish(self->bus, event);
     }
 }
@@ -2288,6 +2296,8 @@ clawt_daemon_federation_setup(
     load_outbox(self);
     load_holds(self);
     self->fed_room_seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    self->fed_post_authors = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                                   (GDestroyNotify)json_object_unref);
     load_shares(self);
 
     /* The HTTP door; a door that will not open is a warning. */
@@ -2332,7 +2342,7 @@ clawt_daemon_federation_setup(
     clawt_daemon_federation_refresh_links(self);
     if (self->mcp_tools != NULL) {
         static const ClawtMcpFederationHooks hooks = {
-            hook_send, hook_list, hook_peers, hook_delegate, hook_cap
+            hook_send, hook_list, hook_peers, hook_delegate, hook_cap, hook_admin
         };
         clawt_mcp_tools_set_federation_hooks(self->mcp_tools, &hooks, self, NULL);
     }
@@ -2377,6 +2387,7 @@ clawt_daemon_federation_teardown(
     g_clear_pointer(&self->fed_sent, g_hash_table_unref);
     g_clear_pointer(&self->fed_room_depth, g_hash_table_unref);
     g_clear_pointer(&self->fed_room_seen, g_hash_table_unref);
+    g_clear_pointer(&self->fed_post_authors, g_hash_table_unref);
     g_clear_pointer(&self->fed_shares, json_object_unref);
     if (self->fed_server != NULL)
         clawt_fed_server_stop(self->fed_server);
@@ -3034,7 +3045,9 @@ clawt_daemon_federation_hold_settle(
     ClawtFedPeer *peer;
     gboolean deliver;
 
-    if (decision == NULL || !g_str_has_prefix(clawt_decision_get_id(decision), FED_HOLD_PREFIX))
+    if (decision == NULL
+        || (!g_str_has_prefix(clawt_decision_get_id(decision), FED_HOLD_PREFIX)
+            && !g_str_has_prefix(clawt_decision_get_id(decision), "fed-tier-")))
         return FALSE;
     id = clawt_decision_get_id(decision);
     held = fed_on(self) ? g_hash_table_lookup(self->fed_holds, id) : NULL;
@@ -3045,7 +3058,21 @@ clawt_daemon_federation_hold_settle(
         && g_ascii_strcasecmp(clawt_decision_get_answer(decision) != NULL
                               ? clawt_decision_get_answer(decision) : "", "deliver") == 0;
 
-    if (peer != NULL && g_strcmp0(peer->status, "active") == 0
+    /* An agent's ask to raise a tier (0.72.0): approved, it is set. */
+    if (g_strcmp0(obj_str(held, "kind"), "tier") == 0) {
+        gint wanted = 0;
+
+        if (peer != NULL && g_strcmp0(how, "answered") == 0
+            && g_ascii_strcasecmp(clawt_decision_get_answer(decision) != NULL
+                                  ? clawt_decision_get_answer(decision) : "", "approve") == 0
+            && clawt_enum_from_nick(CLAWT_TYPE_FED_TIER, obj_str(held, "tier"), &wanted)) {
+            peer->tier = (ClawtFedTier)wanted;
+            save_registry(self);
+            clawt_daemon_federation_refresh_links(self);
+            publish_peer(self, peer->alias, "changed");
+            audit(self, "local", peer->alias, "peer.set", "ok", obj_str(held, "tier"));
+        }
+    } else if (peer != NULL && g_strcmp0(peer->status, "active") == 0
         && g_strcmp0(obj_str(held, "kind"), "task") == 0) {
         g_autoptr(JsonObject) answer = NULL;
         g_autofree gchar *body = NULL;
@@ -3157,6 +3184,33 @@ forward_from_room(
     enqueue(self, alias, "message", id, body, room);
 }
 
+/*
+ * Whether local agent @agent_id may write to, or hand work to, @peer
+ * (0.72.0): `agents.federation_may_reach`, peer selectors, any of which
+ * may match; unset is every linked fleet.  The operator is never asked.
+ */
+static gboolean
+agent_may_reach(
+    ClawtDaemon  *self,
+    const gchar  *agent_id,
+    ClawtFedPeer *peer
+){
+    ClawtAgent *agent = agent_id != NULL ? clawt_agent_manager_get(self->agents, agent_id) : NULL;
+    g_auto(GStrv) may = agent != NULL
+        ? clawt_agent_config_get_string_list(clawt_agent_get_config(agent), "federation_may_reach")
+        : NULL;
+    g_autoptr(JsonObject) facts = NULL;
+    guint i;
+
+    if (g_strcmp0(agent_id, "user") == 0 || may == NULL || may[0] == NULL)
+        return TRUE;
+    facts = clawt_fed_peer_selector_json(peer, health_of(self, peer));
+    for (i = 0; may[i] != NULL; i++)
+        if (clawt_fed_selector_matches(may[i], facts))
+            return TRUE;
+    return FALSE;
+}
+
 gchar *
 clawt_daemon_federation_open(
     ClawtDaemon  *self,
@@ -3212,6 +3266,19 @@ clawt_daemon_federation_send_ref(
             || !clawt_agent_config_get_boolean(clawt_agent_get_config(agent), "tools.federation")) {
             g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
                         "%s may not write to other fleets (agents.tools.federation is off)", from);
+            return FALSE;
+        }
+    }
+    {
+        g_autofree gchar *alias = NULL;
+        ClawtFedPeer *peer;
+
+        if (clawt_fed_ref_parse(ref, NULL, &alias)
+            && (peer = clawt_fed_registry_get(self->fed_registry, alias)) != NULL
+            && !agent_may_reach(self, from, peer)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                        "%s may not write to the fleet %s (agents.federation_may_reach)",
+                        from, alias);
             return FALSE;
         }
     }
@@ -3850,6 +3917,12 @@ clawt_daemon_federation_delegate(
                         from);
             return NULL;
         }
+        if (!agent_may_reach(self, from, peer)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                        "%s may not hand work to the fleet %s (agents.federation_may_reach)",
+                        from, alias);
+            return NULL;
+        }
         /* The task the delegator is working on is the proxy's parent. */
         turn_task = clawt_agent_get_turn_task_id_in(agent, turn_room);
         if (turn_task != NULL && clawt_task_manager_get(self->tasks, turn_task) != NULL
@@ -4153,6 +4226,58 @@ load_shares(
     self->fed_shares = loaded != NULL ? loaded : json_object_new();
 }
 
+/* This fleet's signature on a word in a shared room (0.72.0). */
+static JsonObject *
+sign_post(
+    ClawtDaemon *self,
+    const gchar *room,
+    const gchar *id,
+    const gchar *from,
+    const gchar *body
+){
+    g_autofree gchar *text = clawt_fed_post_text(room, id, from, body);
+    g_autofree gchar *sig = clawt_fleet_key_sign_text(self->fed_key, text);
+    JsonObject *author = json_object_new();
+
+    json_object_set_string_member(author, "fleet", self->fed_fleet_id);
+    json_object_set_int_member(author, "key_index", self->fed_key_index);
+    json_object_set_string_member(author, "room", room);
+    json_object_set_string_member(author, "id", id);
+    json_object_set_string_member(author, "from", from);
+    json_object_set_string_member(author, "sig", sig);
+    return author;
+}
+
+/*
+ * Whether @author really wrote @body, checked with the key of the fleet
+ * it names when this fleet knows it.  Answers 1 checked, 0 unknown (a
+ * fleet we are not linked with -- the host vouches for it), -1 forged.
+ */
+static gint
+check_post(
+    ClawtDaemon *self,
+    JsonObject  *author,
+    const gchar *body
+){
+    const gchar *fleet = author != NULL ? obj_str(author, "fleet") : NULL;
+    ClawtFedPeer *known;
+    guint8 key[CLAWT_FLEET_KEY_SIZE];
+    g_autofree gchar *text = NULL;
+
+    if (fleet == NULL || obj_str(author, "sig") == NULL)
+        return -1;
+    known = clawt_fed_registry_by_fleet(self->fed_registry, fleet);
+    if (known == NULL)
+        return 0;
+    if (!clawt_fed_peer_public_key(known,
+                                   (guint)json_object_get_int_member_with_default(author, "key_index", 0),
+                                   now_s(), key))
+        return -1;
+    text = clawt_fed_post_text(obj_str(author, "room"), obj_str(author, "id"),
+                               obj_str(author, "from"), body);
+    return clawt_fleet_key_verify_text(key, text, obj_str(author, "sig")) ? 1 : -1;
+}
+
 /*
  * A word said in a room we share goes to every fleet it is shared with,
  * except the one that said it -- the host fans out, so the fleets that
@@ -4188,6 +4313,7 @@ fan_out_room(
             json_object_set_string_member(o, "id", id);
             json_object_set_string_member(o, "from", from);
             json_object_set_string_member(o, "body", text);
+            json_object_set_object_member(o, "author", sign_post(self, host_room, id, from, text));
             body = object_text(o);
             enqueue(self, host, "room.post", id, body, room);
             return;
@@ -4216,6 +4342,30 @@ fan_out_room(
         json_object_set_string_member(o, "id", id);
         json_object_set_string_member(o, "from", who);
         json_object_set_string_member(o, "body", text);
+        /* Who wrote it, signed by their own fleet: relayed as it came, or ours. */
+        {
+            JsonObject *relayed = g_hash_table_lookup(self->fed_post_authors, id);
+
+            json_object_set_object_member(o, "author", relayed != NULL
+                                          ? json_object_ref(relayed)
+                                          : sign_post(self, room, id, from, text));
+        }
+        /* `@atlas@ALIAS` in the room wakes atlas there (0.72.0). */
+        {
+            g_autoptr(GPtrArray) refs = clawt_mention_remote_list(text);
+            JsonArray *mentions = json_array_new();
+            guint k;
+
+            for (k = 0; k < refs->len; k++) {
+                g_autofree gchar *m_agent = NULL;
+                g_autofree gchar *m_alias = NULL;
+
+                if (clawt_fed_ref_parse(g_ptr_array_index(refs, k), &m_agent, &m_alias)
+                    && g_strcmp0(m_alias, alias) == 0)
+                    json_array_add_string_element(mentions, m_agent);
+            }
+            json_object_set_array_member(o, "mentions", mentions);
+        }
         body = object_text(o);
         enqueue(self, alias, "room.post", out_id, body, NULL);
     }
@@ -4283,6 +4433,21 @@ receive_room(
                 answer_error(answer, 400, "not a post");
             return;
         }
+        JsonNode *author_node = json_object_get_member(o, "author");
+        JsonObject *author = author_node != NULL && JSON_NODE_HOLDS_OBJECT(author_node)
+            ? json_node_get_object(author_node) : NULL;
+
+        /*
+         * The author's own signature (0.72.0): checked with its key when
+         * we know its fleet, so a host cannot put words in a linked
+         * fleet's mouth; a fleet we do not know is the host's word.
+         */
+        if (check_post(self, author, text) < 0) {
+            audit(self, "in", peer->alias, kind, "refused", "the author's signature did not check out");
+            if (answer != NULL)
+                answer_error(answer, 403, "the author's signature did not check out");
+            return;
+        }
         if (as_mirror != NULL) {
             /* The host's room, mirrored: on the record, nobody woken. */
             g_autofree gchar *who = strchr(from, '@') != NULL
@@ -4291,12 +4456,65 @@ receive_room(
             g_autoptr(ClawtMessage) message = clawt_message_new(mirror, who, text);
             g_autoptr(GError) error = NULL;
 
+            JsonNode *mentions = json_object_get_member(o, "mentions");
+            g_autoptr(GString) wake = g_string_new(NULL);
+
             /* a speaker in the host's room is a member of our mirror of it */
             if (!clawt_room_has_member(as_mirror, who))
                 clawt_room_add_member(as_mirror, who);
-            if (!clawt_mailbox_router_record(self->router, message, &error))
+            /*
+             * Our agents it names (`@atlas@us` there), as far as our grant
+             * to the host reaches: members of the mirror, and woken by this
+             * one post, fenced like any word from another fleet.
+             */
+            if (mentions != NULL && JSON_NODE_HOLDS_ARRAY(mentions)) {
+                JsonArray *list = json_node_get_array(mentions);
+                g_autoptr(JsonObject) facts = clawt_fed_peer_selector_json(peer,
+                                                                           CLAWT_FED_HEALTH_LIVE);
+                guint k;
+
+                for (k = 0; k < json_array_get_length(list) && k < 16; k++) {
+                    const gchar *mentioned = json_array_get_string_element(list, k);
+                    ClawtAgent *agent = mentioned != NULL && clawt_is_valid_id(mentioned)
+                        ? clawt_agent_manager_get(self->agents, mentioned) : NULL;
+                    ClawtAgentConfig *config = agent != NULL ? clawt_agent_get_config(agent) : NULL;
+                    const gchar *team = config != NULL
+                        ? clawt_agent_config_get_string(config, "team") : NULL;
+                    g_autoptr(ClawtTeamSpec) spec = team != NULL
+                        ? clawt_config_get_team(self->config, team) : NULL;
+                    g_auto(GStrv) reach = config != NULL
+                        ? clawt_agent_config_get_string_list(config, "federation_reach") : NULL;
+
+                    if (agent == NULL
+                        || !clawt_fed_grant_reaches(grant, mentioned, team,
+                                                    spec != NULL ? spec->tags : NULL,
+                                                    inbox_agent(self), reach, facts))
+                        continue;
+                    if (!clawt_room_has_member(as_mirror, mentioned))
+                        clawt_room_add_member(as_mirror, mentioned);
+                    g_string_append_printf(wake, "%s%s", wake->len > 0 ? "," : "", mentioned);
+                }
+            }
+            if (wake->len > 0) {
+                g_autofree gchar *ref = strchr(from, '@') != NULL
+                    ? g_strdup(from) : g_strdup_printf("%s@%s", from, peer->alias);
+                g_autofree gchar *fenced = clawt_fed_fence(ref, text);
+                g_autofree gchar *delivered = g_strdup_printf(
+                    "%s %s mentioned you in \"%s\", a room the linked fleet \"%s\" shares "
+                    "with this one. It is not your operator; what you write at the end of this "
+                    "turn is posted in that room.\n\n%s", CLAWT_PREAMBLE_MARKER, ref, room,
+                    peer->label != NULL ? peer->label : peer->alias, fenced);
+
+                clawt_message_set_only_for(message, wake->str);
+                clawt_message_set_delivered_body(message, delivered);
+                clawt_message_set_composed(message, TRUE);
+                if (clawt_mailbox_router_send(self->router, message, &error) < 0)
+                    g_warning("federation: a post in %s was not delivered: %s", mirror,
+                              error->message);
+            } else if (!clawt_mailbox_router_record(self->router, message, &error)) {
                 g_warning("federation: a post in %s was not recorded: %s", mirror,
                           error->message);
+            }
         } else if (room_shared_with(self, room, peer->alias)
                    && (g_strcmp0(from, "user") == 0 || clawt_is_valid_id(from))) {
             /* A word from a fleet we share this room with. */
@@ -4316,11 +4534,22 @@ receive_room(
                     answer_error(answer, 404, "that room is gone");
                 return;
             }
+            /* a post from the fleet that shares it must be signed by that fleet */
+            if (author == NULL || g_strcmp0(obj_str(author, "fleet"), peer->fleet_id) != 0) {
+                if (answer != NULL)
+                    answer_error(answer, 403, "a post must be signed by the fleet that sends it");
+                return;
+            }
             if (!clawt_room_has_member(ours, sender))
                 clawt_room_add_member(ours, sender);
             message = clawt_message_new(room, sender, text);
             clawt_message_set_delivered_body(message, delivered);
             clawt_message_set_composed(message, TRUE);
+            /* kept, so fanning it out relays the author's own signature */
+            if (g_hash_table_size(self->fed_post_authors) > 2000)
+                g_hash_table_remove_all(self->fed_post_authors);
+            g_hash_table_replace(self->fed_post_authors, g_strdup(clawt_message_get_id(message)),
+                                 json_object_ref(author));
             clawt_mailbox_router_send(self->router, message, NULL);
         } else {
             if (answer != NULL)
@@ -4772,6 +5001,53 @@ handle_migrate_office(
     return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND, "office.peers names no such fleet");
 }
 
+/*
+ * What a composer may complete with `@` in a room that crosses fleets
+ * (0.72.0): in a room we share, the agents of the fleets it is shared
+ * with as `AGENT@ALIAS`; in our mirror of another fleet's room, its
+ * agents by their plain ids, which is how that room's own rules read a
+ * mention.  NULL for any other room.
+ */
+GPtrArray *
+clawt_daemon_federation_mention_names(
+    ClawtDaemon *self,
+    const gchar *room_id
+){
+    g_autofree gchar *host = NULL;
+    JsonArray *shares;
+    GPtrArray *out;
+    guint i;
+    guint j;
+
+    if (!fed_on(self) || room_id == NULL)
+        return NULL;
+    if (clawt_fed_shared_room_parse(room_id, &host, NULL)) {
+        PeerState *ps = state_of(self, host);
+        JsonArray *agents = ps != NULL && ps->roster != NULL
+            ? json_object_get_array_member(ps->roster, "agents") : NULL;
+
+        out = g_ptr_array_new_with_free_func(g_free);
+        for (i = 0; agents != NULL && i < json_array_get_length(agents); i++)
+            g_ptr_array_add(out, g_strdup(obj_str(json_array_get_object_element(agents, i), "id")));
+        return out;
+    }
+    shares = shares_of(self, room_id);
+    if (shares == NULL)
+        return NULL;
+    out = g_ptr_array_new_with_free_func(g_free);
+    for (i = 0; i < json_array_get_length(shares); i++) {
+        const gchar *alias = json_array_get_string_element(shares, i);
+        PeerState *ps = state_of(self, alias);
+        JsonArray *agents = ps != NULL && ps->roster != NULL
+            ? json_object_get_array_member(ps->roster, "agents") : NULL;
+
+        for (j = 0; agents != NULL && j < json_array_get_length(agents); j++)
+            g_ptr_array_add(out, g_strdup_printf("%s@%s",
+                obj_str(json_array_get_object_element(agents, j), "id"), alias));
+    }
+    return out;
+}
+
 /* ---- the agent tools' hooks ------------------------------------------- */
 
 static gchar *
@@ -4793,6 +5069,184 @@ hook_send(
     return g_strdup_printf("Queued for %s, in another fleet. Their fleet decides whether it "
                            "lands (it may hold it for its operator); if it does not, a note "
                            "says so. Their answer arrives as a message from %s.", ref, ref);
+}
+
+/* An operator request run on an agent's behalf: its payload, or why not. */
+static JsonObject *
+admin_call(
+    ClawtDaemon *self,
+    JsonNode    *(*handler)(ClawtDaemon *, JsonNode *, JsonObject *),
+    const gchar *kind,
+    JsonObject  *payload,
+    gchar      **out_error
+){
+    g_autoptr(JsonNode) request = clawt_ipc_request_new(kind, "agent");
+    g_autoptr(JsonNode) reply = handler(self, request, payload);
+    JsonObject *frame = reply != NULL && JSON_NODE_HOLDS_OBJECT(reply)
+        ? json_node_get_object(reply) : NULL;
+
+    if (frame == NULL || !json_object_get_boolean_member_with_default(frame, "ok", FALSE)) {
+        *out_error = g_strdup(frame != NULL && obj_str(frame, "error") != NULL
+                              ? obj_str(frame, "error") : "it did not answer");
+        return NULL;
+    }
+    /* The frame's payload, which is where a reply's answer is. */
+    {
+        JsonNode *payload_node = json_object_get_member(frame, "payload");
+
+        return payload_node != NULL && JSON_NODE_HOLDS_OBJECT(payload_node)
+            ? json_object_ref(json_node_get_object(payload_node)) : json_object_new();
+    }
+}
+
+#define FED_TIER_PREFIX "fed-tier-"
+
+/*
+ * The federation admin tools (0.72.0), for an agent with
+ * tools.federation and tools.manage_fleet.  Each is the operator's own
+ * request underneath, so it behaves exactly as the CLI does; what an
+ * agent may not do alone -- raise a tier, invite above limited -- is put
+ * to the operator instead.
+ */
+static gchar *
+hook_admin(
+    const gchar *agent_id,
+    const gchar *tool,
+    JsonObject  *arguments,
+    gboolean    *is_error,
+    gpointer     user_data
+){
+    ClawtDaemon *self = user_data;
+    g_autofree gchar *error = NULL;
+    g_autoptr(JsonObject) payload = json_object_new();
+    g_autoptr(JsonObject) done = NULL;
+    const gchar *alias = arguments != NULL ? obj_str(arguments, "alias") : NULL;
+
+    if (!fed_on(self)) {
+        *is_error = TRUE;
+        return g_strdup("Federation is off on this fleet.");
+    }
+    if (g_strcmp0(tool, "clawtilla_federation_invite") == 0) {
+        const gchar *tier = arguments != NULL && obj_str(arguments, "tier") != NULL
+            ? obj_str(arguments, "tier") : "limited";
+
+        if (g_strcmp0(tier, "limited") != 0 && g_strcmp0(tier, "untrusted") != 0) {
+            *is_error = TRUE;
+            return g_strdup("An agent may invite at limited or untrusted only; a more trusted "
+                            "link is your operator's to make (clawtilla federation invite).");
+        }
+        json_object_set_string_member(payload, "tier", tier);
+        if (arguments != NULL && obj_str(arguments, "endpoint") != NULL)
+            json_object_set_string_member(payload, "endpoint", obj_str(arguments, "endpoint"));
+        if (arguments != NULL && obj_str(arguments, "note") != NULL) {
+            g_autofree gchar *note = g_strdup_printf("%s (made by %s)", obj_str(arguments, "note"),
+                                                     agent_id);
+            json_object_set_string_member(payload, "note", note);
+        }
+        done = admin_call(self, handle_invite_create, "federation.invite.create", payload, &error);
+        if (done == NULL) {
+            *is_error = TRUE;
+            return g_strdup_printf("No invite: %s", error);
+        }
+        audit(self, "local", "", "invite.create", "ok", agent_id);
+        return g_strdup_printf("Invite made (tier %s). Send this to the other fleet's operator; "
+                               "it is a one-use secret:\n%s\nSafety words, to read to each other: %s",
+                               tier, obj_str(done, "paste"), obj_str(done, "safety_words"));
+    }
+
+    if (alias == NULL) {
+        *is_error = TRUE;
+        return g_strdup("Name the linked fleet (alias); clawtilla_federation_peers lists them.");
+    }
+    json_object_set_string_member(payload, "alias", alias);
+
+    if (g_strcmp0(tool, "clawtilla_federation_set_tier") == 0) {
+        ClawtFedPeer *peer = clawt_fed_registry_get(self->fed_registry, alias);
+        const gchar *tier = obj_str(arguments, "tier");
+        gint wanted = 0;
+
+        if (peer == NULL || tier == NULL
+            || !clawt_enum_from_nick(CLAWT_TYPE_FED_TIER, tier, &wanted)) {
+            *is_error = TRUE;
+            return g_strdup("Name a linked fleet and a tier: owned, trusted, limited or untrusted.");
+        }
+        /* The enum runs most trusted first: a smaller value is a raise. */
+        if (wanted < (gint)peer->tier) {
+            static const gchar *const options[] = { "approve", "deny", NULL };
+            g_autofree gchar *uuid = g_uuid_string_random();
+            g_autofree gchar *id = g_strconcat(FED_TIER_PREFIX, uuid, NULL);
+            g_autofree gchar *question = g_strdup_printf(
+                "%s asks to raise the linked fleet %s from %s to %s -- more of this fleet "
+                "opens to another organisation.", agent_id, alias,
+                clawt_fed_tier_nick(peer->tier), tier);
+            g_autoptr(ClawtDecision) decision = NULL;
+            g_autofree gchar *stored = NULL;
+            JsonObject *held;
+
+            if (self->decisions == NULL) {
+                *is_error = TRUE;
+                return g_strdup("Raising a tier needs your operator, and there is no inbox to ask in.");
+            }
+            decision = clawt_decision_new(id, agent_id, question);
+            clawt_decision_set_options(decision, options);
+            clawt_daemon_decision_place(self, decision);
+            stored = clawt_decision_store_post(self->decisions, decision, NULL);
+            if (stored == NULL) {
+                *is_error = TRUE;
+                return g_strdup("Asking your operator failed.");
+            }
+            held = json_object_new();
+            json_object_set_string_member(held, "kind", "tier");
+            json_object_set_string_member(held, "alias", alias);
+            json_object_set_string_member(held, "tier", tier);
+            g_hash_table_replace(self->fed_holds, g_strdup(stored), held);
+            save_holds(self);
+            clawt_daemon_publish_decision_asked(self, decision);
+            return g_strdup_printf("Raising %s to %s is your operator's decision; it is in their "
+                                   "inbox. Nothing changed yet.", alias, tier);
+        }
+        json_object_set_string_member(payload, "tier", tier);
+        done = admin_call(self, handle_peer_set, "federation.peer.set", payload, &error);
+        if (done == NULL) {
+            *is_error = TRUE;
+            return g_strdup_printf("Not changed: %s", error);
+        }
+        return g_strdup_printf("%s is now %s.", alias, tier);
+    }
+    if (g_strcmp0(tool, "clawtilla_federation_tag") == 0) {
+        g_auto(GStrv) add = obj_str(arguments, "add") != NULL
+            ? g_strsplit(obj_str(arguments, "add"), ",", -1) : NULL;
+        g_auto(GStrv) remove = obj_str(arguments, "remove") != NULL
+            ? g_strsplit(obj_str(arguments, "remove"), ",", -1) : NULL;
+        JsonArray *a = json_array_new();
+        JsonArray *r = json_array_new();
+        guint i;
+
+        for (i = 0; add != NULL && add[i] != NULL; i++)
+            if (*g_strstrip(add[i]) != '\0')
+                json_array_add_string_element(a, add[i]);
+        for (i = 0; remove != NULL && remove[i] != NULL; i++)
+            if (*g_strstrip(remove[i]) != '\0')
+                json_array_add_string_element(r, remove[i]);
+        json_object_set_array_member(payload, "add", a);
+        json_object_set_array_member(payload, "remove", r);
+        done = admin_call(self, handle_peer_tag, "federation.peer.tag", payload, &error);
+        if (done == NULL) {
+            *is_error = TRUE;
+            return g_strdup_printf("Not tagged: %s", error);
+        }
+        return g_strdup_printf("Tagged %s.", alias);
+    }
+    if (g_strcmp0(tool, "clawtilla_federation_revoke") == 0) {
+        done = admin_call(self, handle_peer_revoke, "federation.peer.revoke", payload, &error);
+        if (done == NULL) {
+            *is_error = TRUE;
+            return g_strdup_printf("Not revoked: %s", error);
+        }
+        return g_strdup_printf("The link with %s is ended; it was told.", alias);
+    }
+    *is_error = TRUE;
+    return g_strdup_printf("No such tool: %s", tool);
 }
 
 static gchar *
@@ -4849,12 +5303,18 @@ hook_list(
     GString *out;
     guint i;
 
-    (void)agent_id;
     if (json_array_get_length(remote) == 0)
         return NULL;
     out = g_string_new("In linked fleets (write to them as AGENT@FLEET):\n");
     for (i = 0; i < json_array_get_length(remote); i++) {
         JsonObject *a = json_array_get_object_element(remote, i);
+        g_autofree gchar *alias = NULL;
+        ClawtFedPeer *peer = clawt_fed_ref_parse(obj_str(a, "ref"), NULL, &alias)
+            ? clawt_fed_registry_get(self->fed_registry, alias) : NULL;
+
+        /* only the fleets this agent may write to */
+        if (peer == NULL || !agent_may_reach(self, agent_id, peer))
+            continue;
         g_string_append_printf(out, "  %s -- %s, in %s (%s), %s\n", obj_str(a, "ref"),
                                obj_str(a, "name"), obj_str(a, "fleet"), obj_str(a, "tier"),
                                obj_str(a, "state"));
@@ -5001,6 +5461,18 @@ handle_status(
         g_autoptr(GPtrArray) invites = clawt_fed_registry_list_invites(self->fed_registry);
         json_object_set_int_member(o, "peers", peers->len);
         json_object_set_int_member(o, "invites", invites->len);
+        /* office.peers is superseded (0.67.0): say so while it has entries. */
+        {
+            g_auto(GStrv) old_peers = clawt_config_get_string_list(self->config, "office.peers");
+            guint n = old_peers != NULL ? g_strv_length(old_peers) : 0;
+
+            if (n > 0) {
+                g_autofree gchar *notice = g_strdup_printf(
+                    "office.peers still names %u fleet%s, which a device token reaches. Move "
+                    "each onto a link: clawtilla federation migrate-office.", n, n == 1 ? "" : "s");
+                json_object_set_string_member(o, "deprecated", notice);
+            }
+        }
     }
     return reply_object(request, o);
 }
@@ -6188,6 +6660,59 @@ clawt_daemon_handle_federation(
         return handle_transcript(self, request, payload);
     if (g_strcmp0(kind, "federation.discover") == 0)
         return handle_discover(self, request, payload);
+    /*
+     * The rules, read or replaced whole (0.72.0): every one checked by
+     * clawt_fed_rule_check() first, so the Federation page refuses a rule
+     * as it is written instead of the resolver skipping it.
+     */
+    if (g_strcmp0(kind, "federation.rules") == 0) {
+        JsonNode *given = json_object_get_member(payload, "rules");
+        JsonObject *o;
+        JsonArray *out = json_array_new();
+        g_auto(GStrv) now = NULL;
+        guint i;
+
+        if (given != NULL && JSON_NODE_HOLDS_ARRAY(given)) {
+            JsonArray *list = json_node_get_array(given);
+            g_autoptr(GPtrArray) rules = g_ptr_array_new_with_free_func(g_free);
+            g_autoptr(GError) error = NULL;
+
+            for (i = 0; i < json_array_get_length(list); i++) {
+                const gchar *rule = json_array_get_string_element(list, i);
+
+                if (rule == NULL || !clawt_fed_rule_check(rule, &error)) {
+                    json_array_unref(out);
+                    return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                               error != NULL ? error->message : "not a rule");
+                }
+                g_ptr_array_add(rules, g_strdup(rule));
+            }
+            g_ptr_array_add(rules, NULL);
+            if (!clawt_config_set_string_list(self->config, "federation.rules",
+                                              (const gchar * const *)rules->pdata)
+                || !clawt_config_save(self->config, &error)) {
+                json_array_unref(out);
+                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                           error != NULL ? error->message : "not saved");
+            }
+            audit(self, "local", "", "rules", "ok", NULL);
+            /* every link's grant may have changed: tell each what it now sees */
+            {
+                g_autoptr(GPtrArray) peers = clawt_fed_registry_list(self->fed_registry);
+                for (i = 0; i < peers->len; i++) {
+                    ClawtFedPeer *peer = g_ptr_array_index(peers, i);
+                    push_roster(self, peer, state_of(self, peer->alias));
+                    publish_peer(self, peer->alias, "changed");
+                }
+            }
+        }
+        now = clawt_config_get_string_list(self->config, "federation.rules");
+        for (i = 0; now != NULL && now[i] != NULL; i++)
+            json_array_add_string_element(out, now[i]);
+        o = json_object_new();
+        json_object_set_array_member(o, "rules", out);
+        return reply_object(request, o);
+    }
     if (g_strcmp0(kind, "federation.migrate_office") == 0)
         return handle_migrate_office(self, request, payload);
     if (g_strcmp0(kind, "federation.open") == 0) {

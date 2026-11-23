@@ -652,6 +652,9 @@ void clawt_mcp_tools_set_ephemeral_hooks(ClawtMcpTools                *self,
  *   the agent (transfer full), with @is_error set on a refusal (0.69.0)
  * @cap: the most a linked fleet's grant lets an agent do when the turn
  *   works for that fleet; %CLAWT_POLICY_ALLOW when it does not (0.69.0)
+ * @admin: runs one of the `clawtilla_federation_*` admin tools (invite,
+ *   set_tier, tag, revoke) as @agent_id, answering what to tell it
+ *   (transfer full) (0.72.0)
  *
  * What the daemon supplies for federation (since 0.68.0).  Unset, no
  * agent is offered another fleet; set, only an agent with
@@ -667,6 +670,8 @@ typedef struct {
                        gpointer user_data);
     ClawtPolicyMode (*cap)(const gchar *agent_id, const gchar *room_id, const gchar *tool,
                            ClawtActionClass action, gpointer user_data);
+    gchar *(*admin)(const gchar *agent_id, const gchar *tool, JsonObject *arguments,
+                    gboolean *is_error, gpointer user_data);
 } ClawtMcpFederationHooks;
 
 /**

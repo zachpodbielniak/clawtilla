@@ -141,4 +141,17 @@ gchar *clawt_mention_prefix_at(const gchar *body, gsize offset);
  */
 GPtrArray *clawt_mention_candidates(const gchar *prefix, GPtrArray *members);
 
+/**
+ * clawt_mention_remote_list:
+ * @body: a message
+ *
+ * The other fleets' agents @body addresses, as `AGENT@ALIAS` (0.72.0):
+ * `@atlas@lab` is one token, at a word boundary on both sides, and a
+ * plain address like `zach@bob.com` is not one -- it has no `@` before
+ * it, and its second half is not an alias.  Lower-cased, each once.
+ *
+ * Returns: (transfer full) (element-type utf8): the refs
+ */
+GPtrArray *clawt_mention_remote_list(const gchar *body);
+
 G_END_DECLS

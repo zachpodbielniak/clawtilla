@@ -522,6 +522,20 @@ clawt_daemon_handle_room(
 
             json_builder_end_array(builder);
 
+            /* Names a composer may complete in a room that crosses fleets (0.72.0). */
+            {
+                g_autoptr(GPtrArray) names = clawt_daemon_federation_mention_names(
+                    self, clawt_room_get_id(room));
+
+                if (names != NULL) {
+                    json_builder_set_member_name(builder, "mention_names");
+                    json_builder_begin_array(builder);
+                    for (j = 0; j < names->len; j++)
+                        json_builder_add_string_value(builder, g_ptr_array_index(names, j));
+                    json_builder_end_array(builder);
+                }
+            }
+
             /*
              * Enough for a client to draw a conversation list without
              * fetching every transcript to find out which rooms have

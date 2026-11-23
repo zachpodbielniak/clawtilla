@@ -4062,6 +4062,30 @@ clawt_gtk_note_room_members(ClawtWindow *self, const gchar *room_id,
     g_hash_table_insert(self->room_rosters, g_strdup(room_id), roster);
 }
 
+void
+clawt_gtk_note_room_mention_names(ClawtWindow *self, const gchar *room_id,
+                                  JsonNode *names)
+{
+    GPtrArray *roster = room_id != NULL
+        ? g_hash_table_lookup(self->room_rosters, room_id) : NULL;
+    JsonArray *array;
+    guint i;
+
+    /*
+     * The other fleets' agents a room that crosses fleets can name
+     * (0.72.0), after its members: room.list's `mention_names`.
+     */
+    if (roster == NULL || names == NULL || !JSON_NODE_HOLDS_ARRAY(names))
+        return;
+    array = json_node_get_array(names);
+    for (i = 0; i < json_array_get_length(array); i++) {
+        const gchar *name = json_array_get_string_element(array, i);
+
+        if (name != NULL && *name != '\0')
+            g_ptr_array_add(roster, g_strdup(name));
+    }
+}
+
 /*
  * The text in the composer up to the cursor.
  *

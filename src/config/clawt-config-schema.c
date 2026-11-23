@@ -5069,6 +5069,15 @@ static const ClawtSchemaEntry schema[] = {
   "Unset, the grant alone decides. A conversation already under way is not\n"
   "cut off by a change here; a new one is.", "0.68.0" },
 
+{ "agents.federation_may_reach", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "Which linked fleets this agent may write to and hand work to, as peer\n"
+  "selectors (`tier:owned`, `tag:client-acme`, `name:lab`, `*`; see\n"
+  "docs/federation.org#selectors). Unset, an agent with tools.federation may\n"
+  "reach any linked fleet; set, only those that match -- and it sees only\n"
+  "their agents in clawtilla_list_agents. The other fleet's grant still\n"
+  "decides what lands there.", "0.72.0" },
+
 { "agents.tools", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Which orchestration tools this agent may call.\n"
   "\n"

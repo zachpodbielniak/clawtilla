@@ -65,6 +65,24 @@ open_now(
 	g_autofree gchar *peer = NULL;
 	g_autofree gchar *room = NULL;
 
+	/* Another fleet's agent: the daemon opens the conversation (0.72.0). */
+	if (clawt_fed_ref_parse(target, NULL, NULL)) {
+		g_autoptr(JsonBuilder) b = json_builder_new();
+		g_autoptr(JsonNode) opened = NULL;
+		const gchar *fed_room;
+
+		json_builder_begin_object(b);
+		json_builder_set_member_name(b, "ref");
+		json_builder_add_string_value(b, target);
+		json_builder_end_object(b);
+		opened = clawt_window_request(self, "federation.open", json_builder_get_root(b));
+		fed_room = opened != NULL
+			? clawt_json_string(clawt_payload_of(opened), "room", NULL) : NULL;
+		if (fed_room != NULL)
+			clawt_gtk_select_room(self, fed_room);
+		return;
+	}
+
 	agents = clawt_window_request(self, "agent.list", NULL);
 	rooms = clawt_window_request(self, "room.list", NULL);
 

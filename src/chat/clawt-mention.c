@@ -264,13 +264,56 @@ clawt_mention_prefix_at(const gchar *body, gsize offset)
         return NULL;
 
     /*
-     * And the same boundary rule delivery applies, so an address does
-     * not open a member list halfway through typing it.
+     * `@atlas@la` is one token, another fleet's agent being typed
+     * (0.72.0): the `@` found is the second, and an id with its own `@`
+     * before it is what is being completed.
      */
-    if (!boundary_before(body, at))
+    if (!boundary_before(body, at)) {
+        const gchar *q = at;
+
+        while (q > body && (g_ascii_isalnum(q[-1]) || q[-1] == '_' || q[-1] == '-'))
+            q--;
+        if (q > body && q[-1] == '@' && q < at && boundary_before(body, q - 1))
+            return g_strndup(q, (gsize)((body + offset) - q));
         return NULL;
+    }
 
     return g_strndup(at + 1, (gsize)((body + offset) - (at + 1)));
+}
+
+GPtrArray *
+clawt_mention_remote_list(const gchar *body)
+{
+    GPtrArray *out = g_ptr_array_new_with_free_func(g_free);
+    const gchar *p;
+
+    for (p = body; p != NULL && *p != '\0'; p++) {
+        const gchar *start;
+        const gchar *end;
+        g_autofree gchar *ref = NULL;
+        guint at_signs = 0;
+
+        if (*p != '@' || !boundary_before(body, p))
+            continue;
+        start = p + 1;
+        for (end = start; *end != '\0'; end++) {
+            if (*end == '@') {
+                if (++at_signs > 1)
+                    break;
+                continue;
+            }
+            if (!g_ascii_isalnum(*end) && *end != '_' && *end != '-')
+                break;
+        }
+        if (at_signs != 1 || end == start || !boundary_after(end, 0))
+            continue;
+        ref = g_ascii_strdown(start, (gssize)(end - start));
+        if (clawt_fed_ref_parse(ref, NULL, NULL)
+            && !g_ptr_array_find_with_equal_func(out, ref, g_str_equal, NULL))
+            g_ptr_array_add(out, g_steal_pointer(&ref));
+        p = end - 1;
+    }
+    return out;
 }
 
 GPtrArray *

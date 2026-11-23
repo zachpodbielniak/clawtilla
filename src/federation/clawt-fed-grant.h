@@ -387,6 +387,20 @@ gboolean clawt_fed_grant_set(ClawtFedGrant *grant,
 JsonObject *clawt_fed_grant_to_json(const ClawtFedGrant *grant);
 
 /**
+ * clawt_fed_rule_check:
+ * @rule: one `federation.rules` entry
+ * @error: (out) (optional): what is wrong with it
+ *
+ * Whether @rule would apply, checked the way clawt_fed_grant_resolve()
+ * reads it -- the selector and every assignment -- so an editor refuses a
+ * rule when it is written rather than the resolver skipping it later.
+ *
+ * Returns: %TRUE if it is well-formed
+ */
+gboolean clawt_fed_rule_check(const gchar  *rule,
+                              GError      **error);
+
+/**
  * clawt_fed_grant_resolve:
  * @tier: the peer's tier
  * @rules: (array zero-terminated=1) (nullable): `federation.rules`, each

@@ -2816,6 +2816,12 @@ federation_content(ClawtWebApp *app, JsonObject *invite, JsonObject *preview,
         return HTMX_ELEMENT(g_steal_pointer(&box));
     }
 
+    /* office.peers is superseded: the daemon says so while it has entries. */
+    if (clawt_web_member(s, "deprecated", NULL) != NULL) {
+        HtmxDiv *notice = clawt_web_notice(clawt_web_member(s, "deprecated", ""), "warn");
+        htmx_element_add_class(HTMX_ELEMENT(notice), "fed-deprecated");
+        clawt_web_add(box, notice);
+    }
     if (invite != NULL)
         clawt_web_add(box, fed_invite_card(invite));
     if (preview != NULL)
@@ -2880,6 +2886,41 @@ federation_content(ClawtWebApp *app, JsonObject *invite, JsonObject *preview,
                 "clawtilla federation link."));
         for (i = 0; peers != NULL && i < json_array_get_length(peers); i++)
             clawt_web_add(body, fed_peer_item(app, json_array_get_object_element(peers, i)));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    /* The rules, editable (0.72.0): each refused as it is written if it would not apply. */
+    {
+        g_autoptr(JsonNode) rules_reply = clawt_web_app_call(app, "federation.rules", NULL);
+        JsonArray *rules = clawt_web_member_array(clawt_web_root(rules_reply), "rules");
+        g_autoptr(HtmxDiv) card = clawt_web_card("Rules",
+            "Applied in order to every fleet a selector matches, after its tier and "
+            "before its own overrides -- e.g. tag:client-acme: reach=listed; cap.exec=deny.");
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxForm) add = clawt_web_form("/settings/federation-rules/add");
+
+        if (rules == NULL || json_array_get_length(rules) == 0)
+            clawt_web_add(body, clawt_web_text("No rules: each fleet's tier and overrides decide.",
+                                               "muted"));
+        for (i = 0; rules != NULL && i < json_array_get_length(rules); i++) {
+            g_autofree gchar *url = g_strdup_printf("/settings/federation-rules/remove/%u", i);
+            g_autoptr(HtmxForm) remove = clawt_web_form(url);
+            g_autoptr(HtmxButton) go = clawt_web_button("Remove", NULL);
+
+            htmx_element_add_class(HTMX_ELEMENT(remove), "fed-rule");
+            clawt_web_add(remove, clawt_web_text(json_array_get_string_element(rules, i), "mono"));
+            htmx_element_set_attribute(HTMX_ELEMENT(go), "type", "submit");
+            clawt_web_add(remove, go);
+            htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(remove));
+        }
+        clawt_web_add(add, clawt_web_field("Add a rule", "rule", NULL,
+                                           "SELECTOR: field=value; field=value"));
+        {
+            g_autoptr(HtmxButton) go = clawt_web_button("Add", NULL);
+            htmx_element_set_attribute(HTMX_ELEMENT(go), "type", "submit");
+            clawt_web_add(add, go);
+        }
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(add));
         htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
     }
 
@@ -2989,6 +3030,41 @@ on_federation_accept(HtmxRequest *request, GHashTable *params, gpointer user_dat
 }
 
 /* Every one-press action on a peer, by the last path segment. */
+/* Adds or removes one rule, sending the list whole (0.72.0). */
+static HtmxResponse *
+on_federation_rules(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *given = clawt_web_param(params, "verb");
+    g_autofree gchar *verb = given != NULL ? g_strdup(given) : g_strdup("add");
+    g_autofree gchar *index = clawt_web_param(params, "index");
+    g_autoptr(JsonNode) now = clawt_web_app_call(app, "federation.rules", NULL);
+    JsonArray *rules = clawt_web_member_array(clawt_web_root(now), "rules");
+    g_autoptr(JsonBuilder) b = json_builder_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+    g_autofree gchar *said = NULL;
+    gint64 drop = index != NULL ? g_ascii_strtoll(index, NULL, 10) : -1;
+    const gchar *rule = clawt_web_form_value(request, "rule");
+    guint i;
+
+    json_builder_begin_object(b);
+    json_builder_set_member_name(b, "rules");
+    json_builder_begin_array(b);
+    for (i = 0; rules != NULL && i < json_array_get_length(rules); i++)
+        if (g_strcmp0(verb, "remove") != 0 || (gint64)i != drop)
+            json_builder_add_string_value(b, json_array_get_string_element(rules, i));
+    if (g_strcmp0(verb, "add") == 0 && rule != NULL && *rule != '\0')
+        json_builder_add_string_value(b, rule);
+    json_builder_end_array(b);
+    json_builder_end_object(b);
+    reply = clawt_web_app_call(app, "federation.rules", json_builder_get_root(b));
+    said = reply == NULL ? g_strdup(clawt_web_app_last_error(app)) : NULL;
+    content = federation_content(app, NULL, NULL, NULL);
+    return settings_response(app, request, "federation", content,
+                             said != NULL ? said : "Saved.", said != NULL);
+}
+
 static HtmxResponse *
 on_federation_peer(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -5227,6 +5303,8 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/settings/federation/invite", on_federation_invite, app);
     htmx_router_post(router, "/settings/federation/inspect", on_federation_inspect, app);
     htmx_router_post(router, "/settings/federation/accept", on_federation_accept, app);
+    htmx_router_post(router, "/settings/federation-rules/add", on_federation_rules, app);
+    htmx_router_post(router, "/settings/federation-rules/:verb/:index", on_federation_rules, app);
     htmx_router_post(router, "/settings/federation/:peer/:verb", on_federation_peer, app);
     htmx_router_post(router, "/settings/connections/:connection/use",
                      on_connection_use, app);

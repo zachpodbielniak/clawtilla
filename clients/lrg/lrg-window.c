@@ -559,6 +559,12 @@ open_pending(ClawtLrgApp *app)
 
     target = g_steal_pointer(&app->open_target);
 
+    /* Another fleet's agent: the daemon opens the conversation (0.72.0). */
+    if (clawt_fed_ref_parse(target, NULL, NULL)) {
+        clawt_lrg_open_remote(app, target);
+        return TRUE;
+    }
+
     if (!clawt_lrg_open_resolve(target, app->agents, app->rooms, &agent,
                                 &peer, &room, &error)) {
         clawt_lrg_toast(app, error->message);

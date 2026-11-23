@@ -235,7 +235,8 @@ const gchar *clawt_message_get_only_for(ClawtMessage *self);
 /**
  * clawt_message_set_only_for:
  * @self: a #ClawtMessage
- * @agent_id: (nullable): the one member whose mailbox may take this
+ * @agent_id: (nullable): the one member whose mailbox may take this, or
+ *   several, comma-separated (0.72.0: another fleet's mention of a few)
  *
  * In-memory only, deliberately: delivery happens in the same breath as
  * routing, and by the time a mailbox holds the item the addressing has

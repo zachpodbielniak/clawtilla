@@ -26,8 +26,9 @@ static gboolean
 target_char_ok(
 	gchar c
 ){
+	/* `@` for another fleet's agent, `atlas@lab` (0.72.0) */
 	return g_ascii_islower(c) || g_ascii_isdigit(c) ||
-	       c == '-' || c == '_' || c == '.' || c == ':';
+	       c == '-' || c == '_' || c == '.' || c == ':' || c == '@';
 }
 
 gchar *
@@ -93,8 +94,8 @@ clawt_open_target_normalize(
 			g_set_error_literal(error, CLAWT_ERROR,
 					    CLAWT_ERROR_INVALID_ARGUMENT,
 					    "An agent or room id is lower-case "
-					    "letters, digits, '-', '_', '.' and "
-					    "':' only");
+					    "letters, digits, '-', '_', '.', "
+					    "':' and '@' only");
 			return NULL;
 		}
 	}

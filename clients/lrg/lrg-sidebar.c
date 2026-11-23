@@ -1442,17 +1442,24 @@ on_fed_opened(ClawtLrgApp *app, JsonNode *reply, const GError *error, gpointer u
         clawt_lrg_select_room(app, room);
 }
 
-/* A remote agent clicked: open the conversation with it, a `fed:` room. */
-static void
-on_fed_agent_clicked(ClawtLrgApp *app, gpointer user_data)
+/* Opens the conversation with another fleet's agent, `AGENT@ALIAS`. */
+void
+clawt_lrg_open_remote(ClawtLrgApp *app, const gchar *ref)
 {
     JsonObject *o = json_object_new();
     JsonNode *payload = json_node_new(JSON_NODE_OBJECT);
 
-    json_object_set_string_member(o, "ref", user_data);
+    json_object_set_string_member(o, "ref", ref);
     json_node_take_object(payload, o);
     clawt_lrg_request(app, "federation.open", payload, CLAWT_LRG_REQUEST_NONE,
                       on_fed_opened, NULL, NULL);
+}
+
+/* A remote agent clicked: open the conversation with it, a `fed:` room. */
+static void
+on_fed_agent_clicked(ClawtLrgApp *app, gpointer user_data)
+{
+    clawt_lrg_open_remote(app, user_data);
 }
 
 static LrgWidget *

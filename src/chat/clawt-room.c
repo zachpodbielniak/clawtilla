@@ -433,8 +433,11 @@ clawt_room_message_is_for(ClawtRoom    *self,
     {
         const gchar *only_for = clawt_message_get_only_for(message);
 
-        if (only_for != NULL)
-            return g_strcmp0(only_for, agent_id) == 0;
+        /* A list, comma-separated: ids cannot hold a comma (0.72.0). */
+        if (only_for != NULL) {
+            g_auto(GStrv) ids = g_strsplit(only_for, ",", -1);
+            return agent_id != NULL && g_strv_contains((const gchar * const *)ids, agent_id);
+        }
     }
 
     /*

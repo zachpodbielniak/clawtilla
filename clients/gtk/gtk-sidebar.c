@@ -2363,6 +2363,8 @@ refresh_agents_once(ClawtWindow *self)
          */
         clawt_gtk_note_room_members(self, clawt_json_string(room, "id", ""),
                                     json_object_get_member(room, "members"));
+        clawt_gtk_note_room_mention_names(self, clawt_json_string(room, "id", ""),
+                                          json_object_get_member(room, "mention_names"));
     }
 
     /*

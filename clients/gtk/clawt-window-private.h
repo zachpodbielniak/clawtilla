@@ -384,6 +384,7 @@ struct _ClawtWindow {
     GtkWidget         *settings_federation;           /* linked fleets */
     GtkWidget         *settings_federation_self;      /* this fleet */
     GtkWidget         *settings_federation_activity;  /* the audit */
+    GtkWidget         *settings_federation_rules; /* federation.rules, editable (0.72.0) */
     GtkWidget         *settings_federation_invite;
     GtkWidget         *settings_federation_accept;
     GtkListBox        *routine_list;
@@ -1220,6 +1221,9 @@ clawt_gtk_stored_draft(ClawtWindow *self, const gchar *agent_id);
 void
 clawt_gtk_note_room_members(ClawtWindow *self, const gchar *room_id,
                             JsonNode *members);
+void
+clawt_gtk_note_room_mention_names(ClawtWindow *self, const gchar *room_id,
+                                  JsonNode *names);
 
 /*
  * Forgets every roster.  Called at the start of a fleet listing.

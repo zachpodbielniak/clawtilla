@@ -25,6 +25,8 @@
 
 /* ── Small helpers ───────────────────────────────────────────────── */
 
+static void fill_rules(ClawtWindow *self);
+
 static JsonObject *
 payload_or_null(JsonNode *reply)
 {
@@ -635,6 +637,8 @@ clawt_gtk_refresh_settings_federation(ClawtWindow *self)
         clawt_gtk_clear_list(GTK_LIST_BOX(self->settings_federation_self));
         clawt_gtk_clear_list(GTK_LIST_BOX(self->settings_federation));
         clawt_gtk_clear_list(GTK_LIST_BOX(self->settings_federation_activity));
+        if (self->settings_federation_rules != NULL)
+            clawt_gtk_clear_list(GTK_LIST_BOX(self->settings_federation_rules));
 
         status = clawt_window_request(self, "federation.status", NULL);
         s = payload_or_null(status);
@@ -649,6 +653,16 @@ clawt_gtk_refresh_settings_federation(ClawtWindow *self)
                 s, "hint", "Set federation.enabled: true and restart the daemon."));
             gtk_list_box_append(GTK_LIST_BOX(self->settings_federation_self), row);
             continue;
+        }
+        /* office.peers is superseded: the daemon says so while it has entries. */
+        if (clawt_json_string(s, "deprecated", NULL) != NULL) {
+            GtkWidget *row = adw_action_row_new();
+            adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+            adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), "office.peers is superseded");
+            adw_action_row_set_subtitle(ADW_ACTION_ROW(row), clawt_json_string(s, "deprecated", ""));
+            gtk_widget_add_css_class(row, "warning");
+            gtk_widget_add_css_class(row, "clawt-fed-deprecated");
+            gtk_list_box_append(GTK_LIST_BOX(self->settings_federation_self), row);
         }
         {
             static const struct { const gchar *title; const gchar *key; } facts[] = {
@@ -681,6 +695,8 @@ clawt_gtk_refresh_settings_federation(ClawtWindow *self)
         for (i = 0; peers != NULL && i < json_array_get_length(peers); i++)
             gtk_list_box_append(GTK_LIST_BOX(self->settings_federation),
                                 peer_row(self, json_array_get_object_element(peers, i)));
+        if (self->settings_federation_rules != NULL)
+            fill_rules(self);
 
         audit = clawt_window_request(self, "federation.audit",
                                      json_from_string("{\"limit\":25}", NULL));
@@ -708,6 +724,99 @@ clawt_gtk_federation_on_event(ClawtWindow *self, ClawtEvent *event)
 {
     (void)event;
     clawt_gtk_refresh_settings_federation(self);
+}
+
+/* ---- rules (0.72.0) ---------------------------------------------------- */
+
+/* Sends the rules whole; the daemon checks each before it saves any. */
+static void
+send_rules(ClawtWindow *self, GPtrArray *rules)
+{
+    g_autoptr(JsonBuilder) b = json_builder_new();
+    g_autoptr(JsonNode) reply = NULL;
+    guint i;
+
+    json_builder_begin_object(b);
+    json_builder_set_member_name(b, "rules");
+    json_builder_begin_array(b);
+    for (i = 0; i < rules->len; i++)
+        json_builder_add_string_value(b, g_ptr_array_index(rules, i));
+    json_builder_end_array(b);
+    json_builder_end_object(b);
+    reply = clawt_window_request(self, "federation.rules", json_builder_get_root(b));
+    if (reply != NULL)
+        clawt_gtk_refresh_settings_federation(self);
+}
+
+static GPtrArray *
+current_rules(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = clawt_window_request(self, "federation.rules", NULL);
+    JsonObject *o = payload_or_null(reply);
+    JsonArray *list = o != NULL && json_object_has_member(o, "rules")
+        ? json_object_get_array_member(o, "rules") : NULL;
+    GPtrArray *out = g_ptr_array_new_with_free_func(g_free);
+    guint i;
+
+    for (i = 0; list != NULL && i < json_array_get_length(list); i++)
+        g_ptr_array_add(out, g_strdup(json_array_get_string_element(list, i)));
+    return out;
+}
+
+static void
+on_rule_remove(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(GPtrArray) rules = current_rules(self);
+    guint index = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "clawt-rule-index"));
+
+    if (index < rules->len) {
+        g_ptr_array_remove_index(rules, index);
+        send_rules(self, rules);
+    }
+}
+
+static void
+on_rule_add(AdwEntryRow *row, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(GPtrArray) rules = current_rules(self);
+    const gchar *text = gtk_editable_get_text(GTK_EDITABLE(row));
+
+    if (text == NULL || *text == '\0')
+        return;
+    g_ptr_array_add(rules, g_strdup(text));
+    send_rules(self, rules);
+}
+
+static void
+fill_rules(ClawtWindow *self)
+{
+    g_autoptr(GPtrArray) rules = current_rules(self);
+    GtkWidget *add = adw_entry_row_new();
+    guint i;
+
+    for (i = 0; i < rules->len; i++) {
+        GtkWidget *row = adw_action_row_new();
+        GtkWidget *remove = gtk_button_new_from_icon_name("user-trash-symbolic");
+
+        adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), g_ptr_array_index(rules, i));
+        gtk_widget_add_css_class(row, "monospace");
+        gtk_widget_add_css_class(remove, "flat");
+        gtk_widget_set_valign(remove, GTK_ALIGN_CENTER);
+        gtk_widget_set_tooltip_text(remove, "Remove this rule");
+        g_object_set_data(G_OBJECT(remove), "clawt-rule-index", GUINT_TO_POINTER(i));
+        g_signal_connect(remove, "clicked", G_CALLBACK(on_rule_remove), self);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), remove);
+        gtk_widget_add_css_class(row, "clawt-fed-rule");
+        gtk_list_box_append(GTK_LIST_BOX(self->settings_federation_rules), row);
+    }
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add),
+                                  "Add a rule: SELECTOR: field=value; field=value");
+    adw_entry_row_set_show_apply_button(ADW_ENTRY_ROW(add), TRUE);
+    g_signal_connect(add, "apply", G_CALLBACK(on_rule_add), self);
+    gtk_list_box_append(GTK_LIST_BOX(self->settings_federation_rules), add);
 }
 
 static GtkWidget *
@@ -760,6 +869,20 @@ clawt_gtk_build_federation_page(ClawtWindow *self)
     self->settings_federation = boxed_list();
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(peers), self->settings_federation);
 
+    {
+        GtkWidget *rules = adw_preferences_group_new();
+
+        adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(rules), "Rules");
+        adw_preferences_group_set_description(
+            ADW_PREFERENCES_GROUP(rules),
+            "Applied in order to every fleet a selector matches, after its tier and "
+            "before its own overrides -- e.g. tag:client-acme: reach=listed; cap.exec=deny. "
+            "A rule that would not apply is refused as it is written.");
+        self->settings_federation_rules = boxed_list();
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(rules), self->settings_federation_rules);
+        g_object_set_data(G_OBJECT(page), "clawt-rules-group", rules);
+    }
+
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(activity), "Activity");
     adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(activity),
                                           "Every request between fleets, newest first.");
@@ -768,6 +891,9 @@ clawt_gtk_build_federation_page(ClawtWindow *self)
 
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(page), ADW_PREFERENCES_GROUP(me));
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(page), ADW_PREFERENCES_GROUP(peers));
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(g_object_get_data(G_OBJECT(page),
+                                                                     "clawt-rules-group")));
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(page), ADW_PREFERENCES_GROUP(activity));
     return page;
 }

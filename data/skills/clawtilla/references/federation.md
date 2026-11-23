@@ -8,7 +8,7 @@ Read this before linking this fleet with another clawtilla fleet, changing what 
 - **Safety words** (four words from the fleet id) are what two people read to each other while one accepts the other's invite.
 - A **peer** is a linked fleet, known here by an **alias** (a valid id, never renamed). Peers live in `<state_dir>/federation/peers.yaml`, written by the daemon. Do not edit it; use `clawtilla federation` or a client's Settings → Federation page.
 - **Every request and every answer between fleets is a signed envelope.** That holds over any transport. Kind, from, to, time, nonce, body digest, and what it was sent to are all signed. Answers are bound to the request's nonce.
-- What crosses: hello, ping, revoke, rotate (0.66.0); rosters, pushed live (0.67.0); messages and their delivery states (0.68.0); delegated tasks, their states and cancels (0.69.0); transcripts and shared rooms (0.70.0); `whois` for discovery (0.71.0). A kind the other side does not know is answered 501 "not understood yet", naming its version.
+- What crosses: hello, ping, revoke, rotate (0.66.0); rosters, pushed live (0.67.0); messages and their delivery states (0.68.0); delegated tasks, their states and cancels (0.69.0); transcripts and shared rooms (0.70.0); `whois` for discovery (0.71.0); signed room posts and mentions (0.72.0). A kind the other side does not know is answered 501 "not understood yet", naming its version.
 
 ## Turn it on
 
@@ -161,6 +161,16 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 - `clawtilla federation migrate-office` lists `office.peers` entries and whether each is linked; `migrate-office NAME` links it as owned via `federation.link` with its stored pairing token. Then remove the entry from `office.peers` and revoke that device on the other machine (this fleet cannot).
 - **Weather**: each sidebar fleet heading shows a traffic sparkline (envelopes per 5 min, last 20 min, none when quiet); hover adds the full hour and latency of the last 12 answers. `federation show` prints "Weather:". Data: `weather {latency, volume}` on `agent.list` fleets and `federation.peer.show`.
 - **Estimate before delegating**: their hello reports your work there (allowance `budget_cents_per_day`, 24 h used, running/max concurrent, `delegate` mode); finished tasks report their cost and an average is kept (`costs.json`). Shown in `clawtilla_delegate`'s answer, `clawtilla_federation_peers`, and `federation show` ("Before delegating"). Their word, not enforced here.
+
+## Reach out, mentions, rules, admin tools, signed posts (0.72.0)
+
+- `agents.federation_may_reach`: peer selectors an agent (with `tools.federation`) may write to / delegate to; unset = all; refused messages name the key; `clawtilla_list_agents` hides the rest. (`federation_reach` is the other direction.)
+- Mentions: `@atlas@lab` is one token, never wakes a local `atlas`; `zach@bob.com` is not one. In a room you share with lab it wakes atlas there (if lab's grant to you reaches it). Composers complete other fleets' agents in rooms that cross fleets (`room.list` `mention_names`); `@atlas@la` completes as one name.
+- Open: `clawtilla-gtk --open atlas@lab`, web `/r/atlas@lab`, lrg open -> the conversation with atlas.
+- Rules editor on every client's Federation page; IPC `federation.rules {rules?}` reads or replaces the list whole, each checked by `clawt_fed_rule_check()` (bad rule refused when written).
+- Admin tools for an agent with `tools.federation` + `tools.manage_fleet`: `clawtilla_federation_invite` (limited/untrusted only), `_set_tier` (lower now; raise -> `fed-tier-*` decision), `_tag`, `_revoke`. All `fleet_admin`.
+- Shared-room posts carry the author fleet's signature over room, id, author, text; the host relays it untouched; a receiver linked with the author checks it and refuses a forgery; an unknown author is the host's word.
+- `clawtilla federation log -f` follows the audit.
 
 ## Diagnose
 

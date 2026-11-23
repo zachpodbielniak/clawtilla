@@ -991,6 +991,41 @@ test_rooms_and_transcripts(
     wait_for_line(&p, p.ca, mirror, "fleet:bravo-lab:user: the design review is at three");
     send_as_operator_plain(p.ca, mirror, "we will be there");
     wait_for_line(&p, p.cb, "design", "fleet:alpha:user: we will be there");
+    /* @a-chief@alpha in B's room wakes A's chief, in A's mirror of it (0.72.0). */
+    send_as_operator_plain(p.cb, "design", "@a-chief@alpha can you take the notes?");
+    wait_for_line(&p, p.ca, mirror, "can you take the notes?");
+    {
+        ClawtAgent *chief = clawt_agent_manager_get(p.a->agents, "a-chief");
+        g_autoptr(GPtrArray) items = clawt_mailbox_list(clawt_agent_get_mailbox(chief), NULL);
+        g_autofree gchar *delivered = NULL;
+
+        g_assert_cmpuint(items->len, >, 0);
+        delivered = clawt_mailbox_item_dup_delivered_body(g_ptr_array_index(items, items->len - 1));
+        g_assert_nonnull(strstr(delivered, "mentioned you"));
+    }
+    /* and B's composer can complete A's agents in the room it shares */
+    {
+        g_autoptr(JsonObject) listed = ask(p.cb, "room.list", NULL, &error);
+        JsonArray *rooms = json_object_get_array_member(listed, "rooms");
+        gboolean offered = FALSE;
+        guint r;
+
+        g_assert_no_error(error);
+        for (r = 0; r < json_array_get_length(rooms); r++) {
+            JsonObject *one = json_array_get_object_element(rooms, r);
+            JsonArray *names;
+            guint n;
+
+            if (g_strcmp0(json_object_get_string_member(one, "id"), "design") != 0
+                || !json_object_has_member(one, "mention_names"))
+                continue;
+            names = json_object_get_array_member(one, "mention_names");
+            for (n = 0; n < json_array_get_length(names); n++)
+                if (g_strcmp0(json_array_get_string_element(names, n), "a-chief@alpha") == 0)
+                    offered = TRUE;
+        }
+        g_assert_true(offered);
+    }
     /* nothing echoes back into A's mirror from A's own post */
     {
         g_autofree gchar *a_side = room_lines(p.ca, mirror);
@@ -1120,6 +1155,12 @@ test_discover_and_migrate(void)
         JsonArray *rows;
 
         g_assert_true(clawt_config_set_string_list(p.a->config, "office.peers", entries));
+        {
+            g_autoptr(JsonObject) status = ask(p.ca, "federation.status", NULL, &error);
+            g_assert_no_error(error);
+            g_assert_nonnull(strstr(json_object_get_string_member(status, "deprecated"),
+                                    "migrate-office"));
+        }
         listed = ask(p.ca, "federation.migrate_office", NULL, &error);
         g_assert_no_error(error);
         rows = json_object_get_array_member(listed, "entries");
@@ -1136,6 +1177,146 @@ test_discover_and_migrate(void)
         g_assert_no_error(error);
         f = json_array_get_object_element(json_object_get_array_member(found, "fleets"), 0);
         g_assert_cmpstr(json_object_get_string_member(f, "linked_as"), ==, "lab");
+    }
+    pair_down(&p);
+}
+
+static void
+set_agent(
+    ClawtClient *client,
+    const gchar *agent,
+    const gchar *key,
+    const gchar *value
+){
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *req = g_strdup_printf("{\"agent\":\"%s\",\"key\":\"%s\",\"value\":\"%s\"}",
+                                            agent, key, value);
+    g_autoptr(JsonObject) r = ask(client, "agent.set", payload_of(req), &error);
+
+    g_assert_no_error(error);
+}
+
+/*
+ * 0.72.0.  An agent's federation_may_reach keeps it to the fleets it
+ * names; the admin tools tag, lower a tier at once, put a raise to the
+ * operator, and invite; the rules editor refuses a rule that would not
+ * apply and saves one that would, which then shows in explain.
+ */
+static void
+test_reach_admin_and_rules(void)
+{
+    Pair p;
+    g_autofree gchar *alias = NULL;
+    g_autoptr(GError) error = NULL;
+    gboolean is_error = FALSE;
+
+    memset(&p, 0, sizeof(p));
+    pair_up(&p);
+    alias = link_them(&p, &transports[1]);
+    wait_for_refs(&p, p.ca, "b-chief@bravo-lab");
+
+    /* B is trusted on A: a chief kept to owned fleets may not write to it */
+    set_agent(p.ca, "a-chief", "federation_may_reach", "tier:owned");
+    {
+        g_autofree gchar *said = call_tool(p.a, "a-chief", "clawtilla_message_agent",
+            "{\"agent_id\":\"b-chief@bravo-lab\",\"body\":\"hi\"}", &is_error);
+        g_autofree gchar *listing = call_tool(p.a, "a-chief", "clawtilla_list_agents", "{}",
+                                              &is_error);
+        g_assert_nonnull(strstr(said, "federation_may_reach"));
+        g_assert_null(strstr(listing, "b-chief@bravo-lab"));
+    }
+    set_agent(p.ca, "a-chief", "federation_may_reach", "*");
+
+    /* The admin tools, for a chief that may also manage the fleet. */
+    set_agent(p.ca, "a-chief", "tools.manage_fleet", "true");
+    {
+        g_autofree gchar *tagged = call_tool(p.a, "a-chief", "clawtilla_federation_tag",
+            "{\"alias\":\"bravo-lab\",\"add\":\"partner\"}", &is_error);
+        if (is_error)
+            g_error("tag said: %s", tagged);
+        g_autofree gchar *raised = NULL;
+        g_autofree gchar *lowered = NULL;
+        g_autofree gchar *invite = NULL;
+        g_autoptr(GPtrArray) open = NULL;
+        g_autofree gchar *held = NULL;
+        guint i;
+
+        g_assert_false(is_error);
+        {
+            g_autoptr(JsonObject) shown = ask(p.ca, "federation.peer.show",
+                                              payload_of("{\"alias\":\"bravo-lab\"}"), &error);
+            JsonArray *tags = json_object_get_array_member(shown, "tags");
+            gboolean found = FALSE;
+            guint t;
+
+            g_assert_no_error(error);
+            for (t = 0; tags != NULL && t < json_array_get_length(tags); t++)
+                if (g_strcmp0(json_array_get_string_element(tags, t), "partner") == 0)
+                    found = TRUE;
+            g_assert_true(found);
+        }
+        raised = call_tool(p.a, "a-chief", "clawtilla_federation_set_tier",
+                           "{\"alias\":\"bravo-lab\",\"tier\":\"owned\"}", &is_error);
+        if (is_error)
+            g_error("set_tier said: %s", raised);
+        g_assert_nonnull(strstr(raised, "operator"));
+        g_assert_cmpstr(peer_field(p.ca, "tier"), ==, "trusted");
+        open = clawt_decision_store_list(p.a->decisions, TRUE);
+        for (i = 0; open != NULL && i < open->len && held == NULL; i++)
+            if (g_str_has_prefix(clawt_decision_get_id(g_ptr_array_index(open, i)), "fed-tier-"))
+                held = g_strdup(clawt_decision_get_id(g_ptr_array_index(open, i)));
+        g_assert_nonnull(held);
+        {
+            g_autofree gchar *req = g_strdup_printf("{\"decision\":\"%s\",\"answer\":\"approve\"}",
+                                                    held);
+            g_autoptr(JsonObject) answered = ask(p.ca, "decision.answer", payload_of(req), &error);
+            g_assert_no_error(error);
+        }
+        g_assert_cmpstr(peer_field(p.ca, "tier"), ==, "owned");
+        lowered = call_tool(p.a, "a-chief", "clawtilla_federation_set_tier",
+                            "{\"alias\":\"bravo-lab\",\"tier\":\"limited\"}", &is_error);
+        g_assert_false(is_error);
+        g_assert_cmpstr(peer_field(p.ca, "tier"), ==, "limited");
+        invite = call_tool(p.a, "a-chief", "clawtilla_federation_invite",
+                           "{\"tier\":\"trusted\"}", &is_error);
+        g_assert_true(is_error);
+        g_free(invite);
+        {
+            g_autofree gchar *args = g_strdup_printf("{\"endpoint\":\"unix:%s/a.sock#ipc\"}", p.dir);
+            invite = call_tool(p.a, "a-chief", "clawtilla_federation_invite", args, &is_error);
+        }
+        if (is_error)
+            g_error("invite said: %s", invite);
+        if (strstr(invite, CLAWT_FED_INVITE_PREFIX) == NULL)
+            g_error("invite said: %s", invite);
+    }
+    /* A worker without manage_fleet is not offered them. */
+    {
+        g_autofree gchar *said = call_tool(p.a, "a-worker", "clawtilla_federation_revoke",
+            "{\"alias\":\"bravo-lab\"}", &is_error);
+        g_assert_true(is_error);
+    }
+
+    /* Rules: refused when they would not apply, explained when they do. */
+    {
+        g_autoptr(JsonObject) bad = ask(p.ca, "federation.rules",
+            payload_of("{\"rules\":[\"tag:partner cap.exec=deny\"]}"), &error);
+        g_autoptr(JsonObject) good = NULL;
+        g_autoptr(JsonObject) shown = NULL;
+        g_autofree gchar *text = NULL;
+        g_autoptr(JsonNode) whole = NULL;
+
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+        g_clear_error(&error);
+        good = ask(p.ca, "federation.rules",
+                   payload_of("{\"rules\":[\"tag:partner: cap.exec=deny\"]}"), &error);
+        g_assert_no_error(error);
+        g_assert_cmpuint(json_array_get_length(json_object_get_array_member(good, "rules")), ==, 1);
+        shown = ask(p.ca, "federation.peer.explain", payload_of("{\"alias\":\"bravo-lab\"}"), &error);
+        g_assert_no_error(error);
+        whole = json_node_init_object(json_node_alloc(), shown);
+        text = json_to_string(whole, FALSE);
+        g_assert_nonnull(strstr(text, "rule 1: tag:partner"));
     }
     pair_down(&p);
 }
@@ -1306,6 +1487,7 @@ main(int argc, char *argv[])
     g_test_add_func("/fed-link/grant-override-and-explain", test_grant_override_and_explain);
     g_test_add_func("/fed-link/agent-tools", test_agent_tools);
     g_test_add_func("/fed-link/discover-and-migrate", test_discover_and_migrate);
+    g_test_add_func("/fed-link/reach-admin-and-rules", test_reach_admin_and_rules);
 
     return g_test_run();
 }

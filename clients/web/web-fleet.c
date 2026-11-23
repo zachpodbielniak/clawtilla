@@ -2068,6 +2068,13 @@ on_room_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
         g_autofree gchar *peer = NULL;
         g_autofree gchar *room = NULL;
 
+        /* Another fleet's agent: the same as its sidebar row (0.72.0). */
+        if (target != NULL && clawt_fed_ref_parse(target, NULL, NULL)) {
+            g_autofree gchar *escaped = g_uri_escape_string(target, NULL, FALSE);
+            g_autofree gchar *where = g_strdup_printf("/fleet/%s", escaped);
+            return clawt_web_redirect(request, where);
+        }
+
         if (target != NULL) {
             agents = clawt_web_app_call(app, "agent.list", NULL);
             rooms = (agents != NULL)

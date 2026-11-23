@@ -302,4 +302,21 @@ gchar *clawt_fed_weather_line(JsonObject *fleet);
  */
 gchar *clawt_fed_traffic_spark(JsonObject *fleet);
 
+/**
+ * clawt_fed_post_text:
+ * @room: the shared room's id at its host
+ * @id: the post's id where it was written
+ * @from: who wrote it, as their own fleet names them (`user`, `atlas`)
+ * @body: what they wrote
+ *
+ * What the author fleet signs for a word in a shared room (0.72.0), so a
+ * third fleet can check who wrote it however many hosts relayed it.
+ *
+ * Returns: (transfer full): the canonical text
+ */
+gchar *clawt_fed_post_text(const gchar *room,
+                           const gchar *id,
+                           const gchar *from,
+                           const gchar *body);
+
 G_END_DECLS

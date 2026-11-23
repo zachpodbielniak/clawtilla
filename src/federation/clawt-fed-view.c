@@ -574,3 +574,18 @@ clawt_fed_weather_line(
     return g_strdup_printf("traffic %s %" G_GINT64_FORMAT " in the last hour \302\267 latency %s %"
                            G_GINT64_FORMAT " ms", v, total, l, last);
 }
+
+gchar *
+clawt_fed_post_text(
+    const gchar *room,
+    const gchar *id,
+    const gchar *from,
+    const gchar *body
+){
+    /* Lengths first, so no field can borrow another's bytes. */
+    return g_strdup_printf("clawtilla-room-post/1\n%zu:%s\n%zu:%s\n%zu:%s\n%zu:%s",
+                           strlen(room != NULL ? room : ""), room != NULL ? room : "",
+                           strlen(id != NULL ? id : ""), id != NULL ? id : "",
+                           strlen(from != NULL ? from : ""), from != NULL ? from : "",
+                           strlen(body != NULL ? body : ""), body != NULL ? body : "");
+}

@@ -475,6 +475,8 @@ void clawt_lrg_hold_refresh(ClawtLrgApp *app);
 void clawt_lrg_agent_action(ClawtLrgApp *app, const gchar *agent_id,
                             const gchar *kind);
 LrgWidget *clawt_lrg_sidebar_build(ClawtLrgApp *app);
+/* Opens the conversation with another fleet's agent, `AGENT@ALIAS` (0.72.0). */
+void       clawt_lrg_open_remote(ClawtLrgApp *app, const gchar *ref);
 void       clawt_lrg_sidebar_refresh(ClawtLrgApp *app);
 
 /* ── lrg-ui.c: the widget kit every page draws with ───────────────── */

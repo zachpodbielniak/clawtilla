@@ -26,12 +26,16 @@ typedef struct {
     LrgWidget *me;
     LrgWidget *list;
     LrgWidget *activity;
+    LrgWidget *rules;        /* federation.rules, editable (0.72.0) */
+    LrgWidget *rule_entry;
+    GPtrArray *rule_text;    /* what the last answer said, for add/remove */
     guint      generation;
 } Federation;
 
 static Federation fed;
 
 static void refresh(ClawtLrgApp *app);
+static void on_rules(ClawtLrgApp *app, JsonNode *reply, const GError *error, gpointer user_data);
 
 /* The tier ids and labels, walked from the library. */
 static LrgWidget *
@@ -519,6 +523,12 @@ on_status(ClawtLrgApp *app, JsonNode *reply, const GError *error, gpointer user_
         clawt_lrg_app_wake(app);
         return;
     }
+    /* office.peers is superseded: the daemon says so while it has entries. */
+    if (clawt_ipc_payload_string(o, "deprecated") != NULL) {
+        LrgWidget *notice = clawt_lrg_paragraph(clawt_ipc_payload_string(o, "deprecated"), "muted");
+        lrg_widget_set_name(notice, "clawt-fed-deprecated");
+        clawt_lrg_take(fed.me, notice);
+    }
     clawt_lrg_take(fed.me, clawt_lrg_row("This fleet", clawt_ipc_payload_string(o, "name")));
     clawt_lrg_take(fed.me, clawt_lrg_row("Fleet id", clawt_ipc_payload_string(o, "fleet_id")));
     clawt_lrg_take(fed.me, clawt_lrg_row("Safety words", clawt_ipc_payload_string(o, "safety_words")));
@@ -531,7 +541,90 @@ on_status(ClawtLrgApp *app, JsonNode *reply, const GError *error, gpointer user_
     clawt_lrg_request(app, "federation.audit",
                       json_from_string("{\"limit\":25}", NULL), CLAWT_LRG_QUIET, on_audit,
                       GUINT_TO_POINTER(fed.generation), NULL);
+    clawt_lrg_request(app, "federation.rules", NULL, CLAWT_LRG_QUIET, on_rules,
+                      GUINT_TO_POINTER(fed.generation), NULL);
     clawt_lrg_app_wake(app);
+}
+
+/* ---- rules (0.72.0) ---------------------------------------------------- */
+
+static void
+on_rules_saved(ClawtLrgApp *app, JsonNode *reply, const GError *error, gpointer user_data)
+{
+    (void)reply;
+    (void)error;
+    (void)user_data;
+    refresh(app);
+}
+
+/* Sends the rules whole, without @drop and with @added; the daemon checks each. */
+static void
+send_rules(ClawtLrgApp *app, gint drop, const gchar *added)
+{
+    g_autoptr(JsonBuilder) b = json_builder_new();
+    guint i;
+
+    json_builder_begin_object(b);
+    json_builder_set_member_name(b, "rules");
+    json_builder_begin_array(b);
+    for (i = 0; fed.rule_text != NULL && i < fed.rule_text->len; i++)
+        if ((gint)i != drop)
+            json_builder_add_string_value(b, g_ptr_array_index(fed.rule_text, i));
+    if (added != NULL && *added != '\0')
+        json_builder_add_string_value(b, added);
+    json_builder_end_array(b);
+    json_builder_end_object(b);
+    clawt_lrg_request(app, "federation.rules", json_builder_get_root(b), CLAWT_LRG_REQUEST_NONE,
+                      on_rules_saved, NULL, NULL);
+}
+
+static void
+on_rule_remove(LrgButton *button, gpointer user_data)
+{
+    send_rules(user_data, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "clawt-rule-index")),
+               NULL);
+}
+
+static void
+on_rule_add(LrgButton *button, gpointer user_data)
+{
+    (void)button;
+    send_rules(user_data, -1, clawt_lrg_entry_text(fed.rule_entry));
+}
+
+static void
+on_rules(ClawtLrgApp *app, JsonNode *reply, const GError *error, gpointer user_data)
+{
+    JsonObject *o = clawt_ipc_reply_object(reply);
+    JsonNode *member = o != NULL ? json_object_get_member(o, "rules") : NULL;
+    JsonArray *list = member != NULL && JSON_NODE_HOLDS_ARRAY(member)
+        ? json_node_get_array(member) : NULL;
+    guint i;
+
+    (void)error;
+    if (GPOINTER_TO_UINT(user_data) != fed.generation)
+        return;
+    clawt_lrg_clear(fed.rules);
+    g_clear_pointer(&fed.rule_text, g_ptr_array_unref);
+    fed.rule_text = g_ptr_array_new_with_free_func(g_free);
+    if (list == NULL || json_array_get_length(list) == 0)
+        clawt_lrg_take(fed.rules, clawt_lrg_paragraph(
+            "No rules: each fleet's tier and overrides decide.", "muted"));
+    for (i = 0; list != NULL && i < json_array_get_length(list); i++) {
+        const gchar *rule = json_array_get_string_element(list, i);
+        LrgWidget *line = clawt_lrg_hbox(8.0f);
+        LrgWidget *text = clawt_lrg_label(rule, "mono");
+        LrgWidget *remove = clawt_lrg_button("Remove", NULL, G_CALLBACK(on_rule_remove), app);
+
+        g_ptr_array_add(fed.rule_text, g_strdup(rule));
+        g_object_set_data(G_OBJECT(remove), "clawt-rule-index", GINT_TO_POINTER((gint)i));
+        lrg_widget_set_fill_weight(text, 1.0f);
+        lrg_label_set_ellipsize(LRG_LABEL(text), TRUE);
+        clawt_lrg_take(line, text);
+        clawt_lrg_take(line, remove);
+        lrg_widget_set_name(line, "clawt-fed-rule");
+        clawt_lrg_take(fed.rules, line);
+    }
 }
 
 static void
@@ -584,6 +677,24 @@ build(ClawtLrgApp *app)
     fed.list = clawt_lrg_vbox(6.0f);
     clawt_lrg_add(box, fed.list);
     g_object_unref(fed.list);
+
+    clawt_lrg_take(box, clawt_lrg_section("Rules"));
+    clawt_lrg_take(box, clawt_lrg_paragraph(
+        "Applied in order to every fleet a selector matches, after its tier and before its "
+        "own overrides -- e.g. tag:client-acme: reach=listed; cap.exec=deny. A rule that "
+        "would not apply is refused as it is written.", "muted"));
+    fed.rules = clawt_lrg_vbox(4.0f);
+    clawt_lrg_add(box, fed.rules);
+    g_object_unref(fed.rules);
+    {
+        LrgWidget *line = clawt_lrg_hbox(8.0f);
+
+        fed.rule_entry = clawt_lrg_entry(NULL, "SELECTOR: field=value; field=value");
+        lrg_widget_set_fill_weight(fed.rule_entry, 1.0f);
+        clawt_lrg_take(line, fed.rule_entry);
+        clawt_lrg_take(line, clawt_lrg_button("Add rule", NULL, G_CALLBACK(on_rule_add), app));
+        clawt_lrg_take(box, line);
+    }
 
     clawt_lrg_take(box, clawt_lrg_section("Activity"));
     fed.activity = clawt_lrg_vbox(2.0f);

@@ -680,6 +680,7 @@ see security.md).
 | `agents.integrations.local` | boolean | `false` |  | libreclaw's stdin/stdout channel. |
 | `agents.integrations.cmacs` | boolean | `false` |  | libreclaw's in-process cmacs channel. |
 | `agents.federation_reach` | list of strings |  |  | Which linked fleets may reach this agent, as peer selectors (`tier:owned`, `tag:client-acme`, `name:lab`, `owner:Dana`, `*`; see docs/federation.org#selectors). |
+| `agents.federation_may_reach` | list of strings |  |  | Which linked fleets this agent may write to and hand work to, as peer selectors (`tier:owned`, `tag:client-acme`, `name:lab`, `*`; see docs/federation.org#selectors). |
 | `agents.tools` | section |  |  | Which orchestration tools this agent may call. |
 | `agents.tools.allow` | list of strings |  |  | Tool names permitted. |
 | `agents.tools.deny` | list of strings |  |  | Tool names refused. |

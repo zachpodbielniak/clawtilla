@@ -40,7 +40,9 @@ G_BEGIN_DECLS
  * Refused, with %CLAWT_ERROR_INVALID_ARGUMENT and a message naming what
  * is allowed: an empty target, one longer than %CLAWT_OPEN_TARGET_MAX,
  * and one holding anything but lower-case letters, digits, `-`, `_`,
- * `.` and `:` -- the characters agent and room ids are made of.  The
+ * `.`, `:` and `@` -- the characters agent and room ids are made of, and
+ * the `@` of another fleet's agent (`atlas@lab`, 0.72.0), which a client
+ * opens through `federation.open` rather than clawt_open_target_resolve().  The
  * check is on the spelling only; whether the room exists is
  * clawt_open_target_resolve()'s question, and needs the daemon.
  *

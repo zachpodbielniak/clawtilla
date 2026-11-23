@@ -1710,6 +1710,18 @@ room_members(ClawtWebApp *app, const gchar *room_id, JsonArray **members)
             continue;
 
         *members = clawt_web_member_array(room, "members");
+        /*
+         * The other fleets' agents a room that crosses fleets can name
+         * (0.72.0), offered after its members.  Added to this reply's own
+         * copy of the list, which nothing else reads.
+         */
+        {
+            JsonArray *names = clawt_web_member_array(room, "mention_names");
+            guint n;
+
+            for (n = 0; *members != NULL && names != NULL && n < json_array_get_length(names); n++)
+                json_array_add_string_element(*members, json_array_get_string_element(names, n));
+        }
         break;
     }
 

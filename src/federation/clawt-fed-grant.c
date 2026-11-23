@@ -857,3 +857,25 @@ clawt_fed_policy_stricter(
 ){
     return strictness(a) >= strictness(b) ? a : b;
 }
+
+gboolean
+clawt_fed_rule_check(
+    const gchar  *rule,
+    GError      **error
+){
+    g_autoptr(ClawtFedGrant) trial = clawt_fed_grant_preset(CLAWT_FED_TIER_LIMITED);
+    g_autoptr(GHashTable) explain = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    g_autofree gchar *selector = NULL;
+    const gchar *split = rule != NULL ? strstr(rule, ": ") : NULL;
+
+    if (split == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "\"%s\": a rule is `SELECTOR: field=value; field=value`",
+                    rule != NULL ? rule : "");
+        return FALSE;
+    }
+    selector = g_strstrip(g_strndup(rule, (gsize)(split - rule)));
+    if (!clawt_fed_selector_check(selector, error))
+        return FALSE;
+    return apply_assignments(trial, split + 2, "check", explain, error);
+}
