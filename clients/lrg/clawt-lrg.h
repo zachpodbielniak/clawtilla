@@ -446,6 +446,9 @@ void clawt_lrg_settings_connections_use_local(ClawtLrgApp *app);
 /* device.* events: the Devices list redraws, a code on screen learns it was used. */
 void clawt_lrg_settings_devices_event(ClawtLrgApp *app, ClawtEvent *event);
 void clawt_lrg_settings_federation_event(ClawtLrgApp *app, ClawtEvent *event);
+/* One linked fleet's row on the Federation page, from a federation.peer.list
+ * entry; (transfer full).  Exported for tests/test-lrgui-widgets.c. */
+LrgWidget *clawt_lrg_settings_federation_peer_row(ClawtLrgApp *app, JsonObject *peer);
 
 /* broker.changed: the integration broker's row on Connectors redraws. */
 void clawt_lrg_settings_connectors_event(ClawtLrgApp *app, ClawtEvent *event);

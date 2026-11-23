@@ -16,6 +16,7 @@
 #include "chat/clawt-open-target.h"
 #include "chat/clawt-chat-run.h"
 #include "chat/clawt-room.h"
+#include "federation/clawt-fed-view.h"
 #include "clawt-error.h"
 
 #include <string.h>
@@ -200,8 +201,15 @@ clawt_open_target_resolve(
 	for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
 		JsonObject *room = array_object(rooms, i);
 
+		/*
+		 * A conversation with another fleet's agent is a room too.
+		 * It has two members, so it used to fall to the direct-room
+		 * branch below, which opened `fleet:lab:atlas` as if it were
+		 * a local agent: an empty chat titled with a sender id.
+		 */
 		if (g_strcmp0(object_string(room, "id"), target) == 0 &&
-		    clawt_room_is_listed(target)) {
+		    (clawt_room_is_listed(target) ||
+		     clawt_fed_room_parse(target, NULL, NULL, NULL))) {
 			if (out_room != NULL)
 				*out_room = g_strdup(target);
 			return TRUE;

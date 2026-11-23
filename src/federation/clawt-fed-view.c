@@ -610,3 +610,17 @@ clawt_fed_delivery_label(
             return ticks[i].label;
     return NULL;
 }
+
+gchar *
+clawt_fed_sender_label(
+    const gchar *sender
+){
+    g_autofree gchar *alias = NULL;
+    g_autofree gchar *agent = NULL;
+
+    if (sender == NULL)
+        return NULL;
+    if (clawt_fed_sender_parse(sender, &alias, &agent))
+        return g_strdup_printf("%s@%s", agent, alias);
+    return g_strdup(sender);
+}

@@ -305,6 +305,45 @@ test_link_ping_revoke(
     pair_down(&p);
 }
 
+/*
+ * The other direction: B, which has no address for A and only answers the
+ * link A keeps to it, revokes.  The notice goes down A's own link as a
+ * push, and until 0.73.2 a pushed revoke was audited and dropped -- found
+ * live, with A saying hello into a 403 every two seconds for ever.
+ */
+static void
+test_revoke_reaches_dialler(
+    gconstpointer data
+){
+    const Transport *t = data;
+    Pair p;
+    g_autofree gchar *alias = NULL;
+    g_autofree gchar *a_on_b = NULL;
+    g_autoptr(GError) error = NULL;
+
+    memset(&p, 0, sizeof(p));
+    pair_up(&p);
+    alias = link_them(&p, t);
+    wait_for(&p, p.ca, "health", "live");
+    wait_for(&p, p.cb, "health", "live");
+    g_test_message("both live");
+    a_on_b = g_strdup(peer_field(p.cb, "alias"));
+    g_assert_cmpstr(a_on_b, !=, "");
+    /* If B could dial A this would test the dial, not the push. */
+    g_assert_null(clawt_fed_registry_get(p.b->fed_registry, a_on_b)->endpoint);
+
+    {
+        g_autofree gchar *req = g_strdup_printf("{\"alias\":\"%s\"}", a_on_b);
+        g_autoptr(JsonObject) gone = ask(p.cb, "federation.peer.revoke", payload_of(req), &error);
+        g_assert_no_error(error);
+        g_assert_cmpstr(json_object_get_string_member(gone, "status"), ==, "revoked");
+    }
+    g_test_message("B revoked %s; waiting for A", a_on_b);
+    wait_for(&p, p.ca, "status", "revoked");
+    g_assert_cmpstr(clawt_fed_registry_get(p.a->fed_registry, alias)->status, ==, "revoked");
+    pair_down(&p);
+}
+
 /* The refs another fleet's agents have in @client's agent.list. */
 static gchar *
 mirrored_refs(
@@ -1551,6 +1590,11 @@ main(int argc, char *argv[])
             g_autofree gchar *rpath2 = g_strdup_printf("/fed-link/%s/rooms-and-transcripts",
                                                        transports[i].name);
             g_test_add_data_func(rpath2, &transports[i], test_rooms_and_transcripts);
+        }
+        {
+            g_autofree gchar *vpath = g_strdup_printf("/fed-link/%s/revoke-reaches-dialler",
+                                                      transports[i].name);
+            g_test_add_data_func(vpath, &transports[i], test_revoke_reaches_dialler);
         }
     }
     g_test_add_func("/fed-link/fleet-connection-is-fenced", test_fleet_connection_is_fenced);

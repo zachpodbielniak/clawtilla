@@ -69,7 +69,8 @@ clawt_open_target_normalize(
  *
  * Which conversation @target is, checked against what exists.
  *
- * - A room a client lists (clawt_room_is_listed()) opens that room;
+ * - A room a client lists (clawt_room_is_listed()), or a conversation
+ *   with another fleet's agent (`fed:ALIAS:LOCAL:REMOTE`), opens that room;
  *   it is looked for first, so a declared room keeps its link even
  *   when an agent of the same name exists.
  * - An agent's id, or its `dm_room`, opens that agent's chat.

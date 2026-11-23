@@ -1983,6 +1983,8 @@ append_message(ClawtLrgApp *app, const gchar *sender, const gchar *body,
     g_autofree gchar *stamp = (ts > 0) ? clawt_chat_time_label(when) : NULL;
     JsonObject *agent = clawt_lrg_find_agent(app, sender);
     const gchar *name = clawt_ipc_payload_string(agent, "name");
+    /* another fleet's agent reads as atlas@lab, not its sender id */
+    g_autofree gchar *sender_label = clawt_fed_sender_label(sender);
     LrgWidget *row = clawt_lrg_vbox(px(app, 4.0f));
     LrgInsets margin = { px(app, CHAT_ROW_MARGIN), 0.0f,
                          px(app, CHAT_ROW_MARGIN), 0.0f };
@@ -1990,7 +1992,7 @@ append_message(ClawtLrgApp *app, const gchar *sender, const gchar *body,
     gboolean run_start;
 
     if (name == NULL)
-        name = sender;
+        name = sender_label;
 
     run_start = clawt_lrg_run_advance(&chat.run, sender, when, &new_day);
 

@@ -316,7 +316,11 @@ message_element(JsonObject *message, const gchar *agent_id,
             clawt_web_add(who, face);
         }
 
-        htmx_node_set_text_content(HTMX_NODE(name), sender);
+        {
+            /* another fleet's agent reads as atlas@lab, not its sender id */
+            g_autofree gchar *label = clawt_fed_sender_label(sender);
+            htmx_node_set_text_content(HTMX_NODE(name), label);
+        }
         htmx_node_add_child(HTMX_NODE(who), HTMX_NODE(name));
     }
 

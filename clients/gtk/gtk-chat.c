@@ -2912,7 +2912,9 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
 
         if (run_start) {
             GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-            GtkWidget *who = gtk_label_new(sender);
+            /* another fleet's agent reads as atlas@lab, not its sender id */
+            g_autofree gchar *who_text = clawt_fed_sender_label(sender);
+            GtkWidget *who = gtk_label_new(who_text);
             GtkWidget *at = gtk_label_new(stamp);
             /*
              * The sender's own face.  The view's agent is whose

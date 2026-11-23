@@ -195,7 +195,7 @@ clawtilla-lrg --host 100.72.0.41 --token "$(ssh box clawtilla daemon token)"
 :CUSTOM_ID: lrg-screenshots
 :END:
 
-~CLAWT_LRG_SCREENSHOT=out.png~ draws for ~CLAWT_LRG_SCREENSHOT_FRAMES~ frames (default 150), saves the window and exits.  ~CLAWT_LRG_SCREENSHOT_PAGE=PAGE[:TARGET]~ selects an agent or room and a page first, with the spelling ~--self-test~ takes.  The images in ~docs/images/lrg/~ are made this way, under Xvfb, then shrunk with ~magick -resize 75% -colors 256~.
+~CLAWT_LRG_SCREENSHOT=out.png~ draws for ~CLAWT_LRG_SCREENSHOT_FRAMES~ frames (default 150), saves the window and exits.  ~CLAWT_LRG_SCREENSHOT_PAGE=PAGE[:TARGET]~ selects an agent or room and a page first, with the spelling ~--self-test~ takes; ~settings:PAGE~ (e.g. ~settings:federation~) opens Settings on that page instead.  The images in ~docs/images/lrg/~ are made this way, under Xvfb, then shrunk with ~magick -resize 75% -colors 256~.
 
 GLFW prefers Wayland whenever it can reach a compositor, and unsetting ~WAYLAND_DISPLAY~ is not enough: libwayland then tries ~wayland-0~ in ~XDG_RUNTIME_DIR~ and finds the desktop's.  Point it at a socket that does not exist, so GLFW falls back to X11 and the Xvfb display:
 

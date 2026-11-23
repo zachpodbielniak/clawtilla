@@ -418,6 +418,42 @@ test_disconnected_says_so_once(Fixture *fixture, gconstpointer data)
     g_assert_null(app->last_toast);
 }
 
+/*
+ * A linked fleet's row is laid out with its buttons.  It once released the
+ * action box it had handed to the row, so adding the row measured a freed
+ * widget: a critical here, and in the client a row with no buttons and a
+ * segfault for anything walking the tree.  The fixture has no daemon, so
+ * the page never builds a row itself -- hence the rows are made directly.
+ */
+static void
+test_federation_peer_rows(Fixture *fixture, gconstpointer data)
+{
+    static const gchar *const peers[] = {
+        "{\"alias\":\"lab\",\"label\":\"Lab\",\"tier\":\"trusted\","
+        "\"tier_tone\":\"accent\",\"status\":\"active\",\"health\":\"live\","
+        "\"health_tone\":\"success\"}",
+        "{\"alias\":\"old\",\"label\":\"Old\",\"tier\":\"owned\","
+        "\"tier_tone\":\"success\",\"status\":\"revoked\",\"health\":\"revoked\","
+        "\"health_tone\":\"error\"}",
+    };
+    LrgWidget *list = clawt_lrg_vbox(6.0f);
+    guint i;
+
+    (void)data;
+    for (i = 0; i < G_N_ELEMENTS(peers); i++) {
+        g_autoptr(JsonNode) node = json_from_string(peers[i], NULL);
+        LrgWidget *row = clawt_lrg_settings_federation_peer_row(fixture->app,
+                                                                json_node_get_object(node));
+
+        g_assert_true(LRG_IS_WIDGET(row));
+        clawt_lrg_take(list, row);
+    }
+    lrg_widget_set_size(list, 900.0f, 400.0f);
+    lrg_widget_layout(list);
+    g_assert_cmpuint(g_list_length(lrg_container_get_children(LRG_CONTAINER(list))), ==, 2);
+    g_object_unref(list);
+}
+
 static void
 test_every_settings_page_builds(Fixture *fixture, gconstpointer data)
 {
@@ -1048,6 +1084,8 @@ main(int argc, char *argv[])
                test_section_tabs_walk_the_library, fixture_tear_down);
     g_test_add("/lrgui/widgets/disconnected", Fixture, NULL, fixture_set_up,
                test_disconnected_says_so_once, fixture_tear_down);
+    g_test_add("/lrgui/widgets/federation-peer-rows", Fixture, NULL, fixture_set_up,
+               test_federation_peer_rows, fixture_tear_down);
     g_test_add("/lrgui/widgets/settings-pages", Fixture, NULL, fixture_set_up,
                test_every_settings_page_builds, fixture_tear_down);
     g_test_add("/lrgui/widgets/dialogs", Fixture, NULL, fixture_set_up,

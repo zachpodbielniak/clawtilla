@@ -674,6 +674,16 @@ select_spec(ClawtLrgApp *app, const gchar *spec)
     guint n = clawt_page_count();
     guint i;
 
+    /*
+     * settings:PAGE opens Settings on that page, as the GTK client's
+     * --settings does; "federation" was otherwise taken for a room and
+     * drew an empty chat with "no such room or agent".
+     */
+    if (g_strcmp0(parts[0], "settings") == 0) {
+        clawt_lrg_open_settings(app, target);
+        return TRUE;
+    }
+
     if (target != NULL && *target != '\0') {
         if (clawt_lrg_find_agent(app, target) != NULL)
             clawt_lrg_select_agent(app, target);

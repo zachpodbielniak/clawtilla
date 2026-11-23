@@ -1222,6 +1222,20 @@ name_of(
 	if (g_str_has_prefix(who, "grok:"))
 		return g_strdup_printf("the Grok bot %s", who + strlen("grok:"));
 
+	/*
+	 * Another fleet: its agent as atlas@lab, its operator by the fleet.
+	 * A summary used to print the sender id, fleet:lab:user.
+	 */
+	{
+		g_autofree gchar *alias = NULL;
+		g_autofree gchar *agent = NULL;
+
+		if (clawt_fed_sender_parse(who, &alias, &agent))
+			return g_strcmp0(agent, "user") == 0
+				? g_strdup_printf("the operator of %s", alias)
+				: g_strdup_printf("%s@%s", agent, alias);
+	}
+
 	return g_strdup(who);
 }
 
@@ -1432,8 +1446,9 @@ append_body(
 	for (i = 0; i < agents->len; i++) {
 		const gchar *who = g_ptr_array_index(agents, i);
 		g_autofree gchar *did = did_line(exchange, who);
+		g_autofree gchar *named = name_of(who);
 
-		g_string_append_printf(out, "- **What %s did:** %s\n", who, did);
+		g_string_append_printf(out, "- **What %s did:** %s\n", named, did);
 	}
 
 	g_string_append_printf(out, "- **Outcome:** %s \xc2\xb7 %u message%s "

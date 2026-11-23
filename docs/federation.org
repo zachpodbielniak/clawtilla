@@ -379,7 +379,7 @@ In this order, every step against the grant it gave *you*:
 2. Reach: an agent it may reach (=reach=, =agents=, the agent's own =federation_reach=), or the inbox agent when none is named.  "No such agent" and "not for you" are one answer, so a grant is never a directory.  A conversation already under way is not re-judged.
 3. Hops: within =max_hops_in= (each hop between fleets counts one; a person's message starts at nought).
 4. Rate: within =messages_per_hour=.
-5. The grant's =message= mode: =allow= delivers it; =deny= declines it; =ask=, =review= and =hand_back= *hold* it as a decision in that fleet's operator's inbox -- *Deliver* or *Decline* -- kept in ~federation.db~ so a restart does not orphan it.
+5. The grant's =message= mode: =allow= delivers it; =deny= declines it; =ask=, =review= and =hand_back= *hold* it as a decision in that fleet's operator's inbox -- *Deliver* or *Decline* -- kept in ~federation.db~ so a restart does not orphan it.  From the CLI: ~clawtilla decision list~ prints each one's options, and ~clawtilla decision answer fed-hold-ID deliver~ (or ~decline~) settles it; any other text is a decline.
 
 The sender always hears what happened.  Every message sent carries a tick under it in every client (0.73.0) -- /waiting to go/, /sent/ (pushed to a fleet that dials us), /delivered/, /held for their operator/, /declined/, /not delivered/, /gave up/ -- kept in ~federation.db~ and given on ~room.history~ as =delivery= (and =delivery_detail=), redrawn when ~federation.delivery~ arrives.  Anything but delivered is also a line in the conversation from clawtilla: "Bravo Lab is holding this message for its operator's approval", "Bravo Lab declined this message: ...", "Not delivered to Bravo Lab: ...".  Each change is also the event ~federation.delivery~ (=id=, =state=: sent, delivered, held, declined, refused, expired; =detail=).
 
@@ -694,7 +694,7 @@ Every key is in [[file:configuration-options.org][configuration-options.org]]; t
 | =federation.enabled= | false | on at the next daemon start |
 | =federation.name=, =federation.owner= | host name, empty | what other fleets show |
 | =federation.public_url= | empty | the address invites name |
-| =federation.listen= | =unix:<state_dir>/federation.sock= | the HTTP listener |
+| =federation.listen= | =unix:<state_dir>/federation.sock= | the HTTP listener; its =HOST:PORT= entries are skipped under ~clawtillad --bind~ or ~--no-bind~ |
 | =federation.ipc= | true | the simple daemon connection |
 | =federation.allow_lan_plaintext= | false | plain text on a LAN |
 | =federation.seal= | auto | sealing |
@@ -717,6 +717,8 @@ Every key is in [[file:configuration-options.org][configuration-options.org]]; t
 - "the fleet that answered is not the one that made the invite" :: the address in the invite reached a different fleet.  Nothing was linked.  Check the address, and the safety words with the inviter.
 - "that invite was used, revoked or has expired" :: ask for a new one; an invite is single-use.
 - a peer stays offline :: ~clawtilla federation show ALIAS~ prints the last error.  For a tunnel: is cloudflared running, and does =curl https://HOST/fed/v1/hello= answer?  For a tailnet: does the ACL allow the port?  For =clawtilla://=: is =daemon.tcp_address= or the tailnet listener bound on the other side?
+- the other side says "this link was revoked" but this side still lists it as offline :: before 0.73.2 a revoke sent to a fleet that dials in (no endpoint on the revoking side) was logged and not applied.  Upgrade both; the revoked side then shows it as revoked and stops calling.
+- a quick tunnel answers 502 :: a ~trycloudflare.com~ tunnel cannot reach a unix socket; see [[#recipe-cloudflare][the quick tunnel recipe]].
 - cloudflared answers 502 :: it cannot reach the socket: the =service: unix:...= path must be the daemon's =<state_dir>/federation.sock=, and the daemon must be running with federation on.
 - "Not delivered to X: there is no agent here you may reach by that name" :: their grant's =reach=/=agents=, or the agent's own =federation_reach=, does not include it; ~clawtilla federation show ALIAS~ prints what they allow you.  Write to their inbox agent instead (=user@ALIAS= is reachable only in a conversation their operator started).
 - "X is holding this message" :: their grant asks first; their operator answers it in the Decisions inbox.  Nothing to do here.

@@ -6713,6 +6713,29 @@ cmd_decision(int argc, char *argv[])
                     json_object_get_boolean_member(decision, "urgent")
                         ? "  closing soon" : "");
             g_print("  %s\n", member_or(decision, "question", ""));
+
+            /*
+             * The answers it takes.  A federation hold is settled only by
+             * the word "deliver"; without this line nothing in the CLI said
+             * so, while both graphical clients drew it as a button.
+             */
+            if (json_object_has_member(decision, "options")
+                && JSON_NODE_HOLDS_ARRAY(json_object_get_member(decision, "options"))) {
+                JsonArray *opts = json_object_get_array_member(decision, "options");
+                g_autoptr(GString) line = g_string_new(NULL);
+                guint k;
+
+                for (k = 0; k < json_array_get_length(opts); k++) {
+                    const gchar *opt = json_array_get_string_element(opts, k);
+
+                    if (opt == NULL || *opt == '\0')
+                        continue;
+                    g_string_append_printf(line, "%s%s", line->len > 0 ? " | " : "", opt);
+                }
+                if (line->len > 0)
+                    g_print("  options: %s  (clawtilla decision answer %s OPTION)\n",
+                            line->str, member_or(decision, "id", "ID"));
+            }
             g_print("  going ahead with: %s%s%s\n",
                     member_or(decision, "default", "(none stated)"),
                     (*reason != '\0') ? " -- " : "", reason);
@@ -6761,10 +6784,22 @@ cmd_decision(int argc, char *argv[])
         if (reply == NULL)
             return EXIT_FAILURE;
 
-        g_print("Answered. %s has been told.\n",
-                member_or(json_object_get_object_member(
-                              json_node_get_object(reply), "decision"),
-                          "agent", "the agent"));
+        /*
+         * A held federation message or a tier request is the operator's
+         * own question: the agent it names is never told, so "chief has
+         * been told" about a message chief never saw was wrong.
+         */
+        if (g_str_has_prefix(argv[3], "fed-hold-"))
+            g_print("Answered. The other fleet is told whether its message "
+                    "or task went through.\n");
+        else if (g_str_has_prefix(argv[3], "fed-tier-"))
+            g_print("Answered. The tier changes only if you approved it "
+                    "(clawtilla federation list).\n");
+        else
+            g_print("Answered. %s has been told.\n",
+                    member_or(json_object_get_object_member(
+                                  json_node_get_object(reply), "decision"),
+                              "agent", "the agent"));
         return EXIT_SUCCESS;
     }
 

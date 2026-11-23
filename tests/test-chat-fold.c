@@ -413,6 +413,7 @@ fixture_rooms(void)
 	add_room(rooms, "dm:chief:lead", "chief", "lead");
 	add_room(rooms, "dm:lead:user", "lead", "user");
 	add_room(rooms, "routine:nightly", "chief", NULL);
+	add_room(rooms, "fed:lab:user:atlas", "user", "fleet:lab:atlas");
 
 	return rooms;
 }
@@ -442,6 +443,17 @@ test_open_target_resolve(void)
 	g_assert_cmpstr(agent, ==, "lead");
 	g_assert_null(peer);
 	g_clear_pointer(&agent, g_free);
+
+	/*
+	 * A conversation with another fleet's agent is that room, never
+	 * `fleet:lab:atlas` opened as though it were an agent here.
+	 */
+	g_assert_true(clawt_open_target_resolve("fed:lab:user:atlas", agents,
+						rooms, &agent, &peer, &room,
+						&error));
+	g_assert_null(agent);
+	g_assert_cmpstr(room, ==, "fed:lab:user:atlas");
+	g_clear_pointer(&room, g_free);
 
 	/* a declared group room: the room */
 	g_assert_true(clawt_open_target_resolve("standup", agents, rooms,

@@ -172,6 +172,18 @@ gboolean clawt_fed_sender_parse(const gchar  *sender,
                                 gchar       **out_agent);
 
 /**
+ * clawt_fed_sender_label:
+ * @sender: (nullable): a message's sender id
+ *
+ * What a chat calls a sender: another fleet's agent `fleet:lab:atlas` is
+ * `atlas@lab`, the way it is written everywhere else; anything else is
+ * itself.  One function so the three clients cannot drift.
+ *
+ * Returns: (transfer full) (nullable): the label, or %NULL for %NULL
+ */
+gchar *clawt_fed_sender_label(const gchar *sender);
+
+/**
  * clawt_fed_room_id:
  * @alias: the linked fleet
  * @local: our side: an agent id or `user`

@@ -442,7 +442,9 @@ clawtillad --bind 10.0.0.5:9000 --bind '[fd7a:115c:a1e0::1]:9000'
 
 ~--bind~ *replaces* the network addresses rather than adding to them, so
 a daemon told where to listen is not also listening somewhere it was not
-asked to. It is repeatable, and each address carries its own port; the
+asked to. That includes the federation listener: under either flag a
+=HOST:PORT= in =federation.listen= is skipped and logged, and only its
+=unix:= entries are opened (0.73.2; before that it bound them anyway). It is repeatable, and each address carries its own port; the
 port defaults to ~daemon.tcp_port~ when one is not given.
 
 An address you name must bind. That is the difference between it and the

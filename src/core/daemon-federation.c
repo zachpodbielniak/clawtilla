@@ -1573,6 +1573,49 @@ receive_hello(
  * Everything that arrives, through any door.  @binding is what the
  * stamp must have been signed for on this door.
  */
+/*
+ * The other fleet revoked its link to us: one place for both doors.  A
+ * revoke pushed down the link we dial was audited and dropped until
+ * 0.73.2, so a fleet without an endpoint never learned it was revoked and
+ * went on saying hello every few seconds into a 403.
+ */
+static void
+apply_revoke(
+    ClawtDaemon  *self,
+    ClawtFedPeer *peer
+){
+    g_free(peer->status);
+    peer->status = g_strdup("revoked");
+    save_registry(self);
+    forget_rooms(self, peer->alias);
+    clawt_daemon_federation_refresh_links(self);
+    publish_peer(self, peer->alias, "revoked");
+}
+
+/*
+ * Why a fleet cannot be written to.  A revoked link answered "no linked
+ * fleet called X" while `federation list` showed X, which sends the reader
+ * looking for a typo.
+ */
+static void
+peer_unusable(
+    ClawtFedPeer  *peer,
+    const gchar   *alias,
+    GError       **error
+){
+    if (peer == NULL)
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "no linked fleet called \"%s\" (clawtilla federation list)", alias);
+    else if (g_strcmp0(peer->status, "revoked") == 0)
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                    "the link with \"%s\" is revoked; a new invite links the fleets again",
+                    alias);
+    else
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                    "the link with \"%s\" is %s, not active yet", alias,
+                    peer->status != NULL ? peer->status : "unknown");
+}
+
 static void
 receive(
     ClawtDaemon   *self,
@@ -1671,12 +1714,7 @@ receive(
         json_object_set_string_member(pong, "status", peer->status);
         answer_set(answer, 200, object_text(pong));
     } else if (g_strcmp0(stamp->kind, "revoke") == 0) {
-        g_free(peer->status);
-        peer->status = g_strdup("revoked");
-        save_registry(self);
-        forget_rooms(self, peer->alias);
-        clawt_daemon_federation_refresh_links(self);
-        publish_peer(self, peer->alias, "revoked");
+        apply_revoke(self, peer);
         answer_set(answer, 200, g_strdup("{\"ok\":true}"));
     } else if (g_strcmp0(stamp->kind, "rotate") == 0) {
         receive_rotate(self, peer, o, answer);
@@ -1963,6 +2001,36 @@ on_link_push(
             receive_room(ps->daemon, peer, kind, o, NULL);
         else
             receive_message(ps->daemon, peer, ps, o, NULL);
+        return;
+    }
+    /*
+     * The link's own life: a fleet that cannot dial us says it revoked
+     * us, or rotated its key, the same way.  These used to fall through
+     * to the audit line below and change nothing.
+     */
+    if (g_strcmp0(kind, "revoke") == 0 || g_strcmp0(kind, "rotate") == 0) {
+        ClawtDaemon *daemon = ps->daemon;
+        ClawtFedPeer *peer = clawt_fed_registry_get(daemon->fed_registry, ps->alias);
+        g_autofree gchar *alias = g_strdup(ps->alias);
+
+        audit(daemon, "in", alias, kind, "ok", "push");
+        if (peer == NULL || g_strcmp0(peer->status, "revoked") == 0)
+            return;
+        if (g_strcmp0(kind, "revoke") == 0) {
+            /* refresh_links() drops this link, and ps with it: nothing after */
+            apply_revoke(daemon, peer);
+        } else {
+            g_autoptr(JsonObject) o = parse_object(body);
+            Answer ignored = { 0 };
+
+            if (o != NULL)
+                receive_rotate(daemon, peer, o, &ignored);
+            if (ignored.status != 200)
+                g_warning("federation: %s pushed a key rotation that was refused: %s",
+                          alias, ignored.body != NULL ? ignored.body : "(no reason)");
+            g_free(ignored.body);
+            g_free(ignored.peer_alias);
+        }
         return;
     }
     audit(ps->daemon, "in", ps->alias, kind, "ok", "push");
@@ -2435,6 +2503,16 @@ clawt_daemon_federation_setup(
     for (i = 0; listen != NULL && listen[i] != NULL; i++) {
         g_autofree gchar *endpoint = NULL;
 
+        if (!g_str_has_prefix(listen[i], "unix:") && self->bind_override) {
+            /*
+             * --no-bind promises "the unix socket only" and --bind names
+             * every address; both replace what the config says.  This
+             * listener once bound a LAN address under --no-bind anyway.
+             */
+            g_message("federation: not listening on %s: --bind/--no-bind "
+                      "replaced the configured network listeners", listen[i]);
+            continue;
+        }
         if (!g_str_has_prefix(listen[i], "unix:")) {
             /* The listener speaks plain HTTP: the same rule as a link. */
             endpoint = g_strdup_printf("http://%s", listen[i]);
@@ -3353,8 +3431,7 @@ clawt_daemon_federation_open(
     }
     peer = clawt_fed_registry_get(self->fed_registry, alias);
     if (peer == NULL || g_strcmp0(peer->status, "revoked") == 0) {
-        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
-                    "no linked fleet called \"%s\" (clawtilla federation list)", alias);
+        peer_unusable(peer, alias, error);
         return NULL;
     }
     room = clawt_room_manager_get_fed(self->rooms, alias, local, agent);
@@ -4013,8 +4090,7 @@ clawt_daemon_federation_delegate(
     }
     peer = clawt_fed_registry_get(self->fed_registry, alias);
     if (peer == NULL || g_strcmp0(peer->status, "active") != 0) {
-        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
-                    "no linked fleet called \"%s\" (clawtilla federation list)", alias);
+        peer_unusable(peer, alias, error);
         return NULL;
     }
     if (g_strcmp0(from, "user") != 0) {
@@ -6468,20 +6544,12 @@ notify_peer(
     Notify *n;
 
     if (peer->endpoint == NULL) {
-        /* It dials us: say it down its own connection, if it has one up. */
-        if (self->ipc_server != NULL) {
-            g_autoptr(ClawtFedStamp) stamp = clawt_fed_stamp_sign(
-                self->fed_key, self->fed_key_index, kind, self->fed_fleet_id, peer->fleet_id,
-                body, "IPC fed.push", NULL);
-            if (stamp != NULL) {
-                g_autoptr(JsonNode) frame = NULL;
-                JsonNode *payload = json_node_new(JSON_NODE_OBJECT);
-                json_node_take_object(payload, clawt_fed_envelope_build(stamp, body));
-                frame = clawt_ipc_request_new("fed.push", NULL);
-                clawt_ipc_frame_set_payload(frame, payload);
-                clawt_ipc_server_push_to_fleet(self->ipc_server, peer->fleet_id, frame);
-            }
-        }
+        /*
+         * It dials us: say it down its own connection, whichever door it
+         * came in by.  This pushed over IPC only, so a fleet linked over
+         * HTTP -- its WebSocket -- was never told it had been revoked.
+         */
+        push_envelope(self, peer, state_of(self, peer->alias), kind, body);
         return;
     }
     link = make_link(self, peer, &error);

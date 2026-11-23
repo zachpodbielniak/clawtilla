@@ -380,6 +380,34 @@ test_a_bot_ask_is_what_the_bot_wrote(void)
 	g_assert_null(strstr(note, "What grok:scout did"));
 }
 
+/*
+ * Another fleet is named the way people write it: its agent atlas@lab,
+ * its operator by the fleet -- never the sender id fleet:lab:user.
+ */
+static void
+test_another_fleet_is_named(void)
+{
+	static const gchar *const fed[] = { "chief", "fleet:lab:user", NULL };
+	static const gchar *const peer[] = { "chief", "fleet:lab:atlas", NULL };
+	g_autoptr(ClawtCrosstalk) tracker = clawt_crosstalk_new();
+	g_autoptr(GPtrArray) ended = NULL;
+	g_autofree gchar *note = NULL;
+	gint64 t = 1000 * SECOND;
+
+	clawt_crosstalk_note_message(tracker, "fed:lab:chief:user", fed, "f1",
+	                             "fleet:lab:user", "How is the build?", NULL, 0, t);
+	clawt_crosstalk_note_message(tracker, "fed:lab:chief:atlas", peer, "f2",
+	                             "fleet:lab:atlas", "Can you review this?", NULL, 0,
+	                             t + SECOND);
+
+	ended = clawt_crosstalk_collect(tracker, t + 60 * SECOND, NULL, NULL);
+	note = clawt_crosstalk_compose(ended, "chief");
+
+	g_assert_nonnull(strstr(note, "the operator of lab"));
+	g_assert_nonnull(strstr(note, "atlas@lab"));
+	g_assert_null(strstr(note, "fleet:lab:"));
+}
+
 /* Several exchanges are numbered sections, in their targets' order. */
 static void
 test_several_are_sections(void)
@@ -1415,6 +1443,8 @@ main(int argc, char **argv)
 	                test_a_round_is_one_exchange);
 	g_test_add_func("/crosstalk/note-says-what-happened",
 	                test_the_note_says_what_happened);
+	g_test_add_func("/crosstalk/another-fleet-is-named",
+	                test_another_fleet_is_named);
 	g_test_add_func("/crosstalk/bot-ask", test_a_bot_ask_is_what_the_bot_wrote);
 	g_test_add_func("/crosstalk/sections", test_several_are_sections);
 	g_test_add_func("/crosstalk/rewrite/accept", test_rewrite_accept);

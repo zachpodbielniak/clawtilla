@@ -154,6 +154,6 @@ See [teams-and-ephemeral.md](teams-and-ephemeral.md), [tasks-and-projects.md](ta
 | `clawtilla task cancel <task>` | cancel it and what it spawned |
 | `clawtilla task retry <task\|inc-id> [reason]` | send a failed run round again |
 | `clawtilla task incidents` | broken runs, and who was told |
-| `clawtilla decision [list [--all]]` | what agents asked you |
+| `clawtilla decision [list [--all]]` | what agents asked you, with each one's `options:` when it has a fixed set |
 | `clawtilla decision answer <id> "<free text>"` / `dismiss <id>` / `delete <id>` | answer; dismiss = agent uses its default; delete = remove for good |
 | `clawtilla wait list [agent]` / `wait cancel <id>` | what agents are waiting for |

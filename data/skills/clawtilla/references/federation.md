@@ -30,6 +30,8 @@ Then `clawtilla federation status` shows the fleet id, safety words and the addr
 | `http://HOST:PORT` | plain HTTP to the listener (`federation.listen`) | tailnet; LAN only with `allow_lan_plaintext` |
 | `unix:/path` / `unix:/path#ipc` | listener socket / a daemon's own socket | same machine |
 
+`clawtillad --bind` or `--no-bind` skips every `HOST:PORT` in `federation.listen` (logged; `unix:` entries still open), the same as the IPC listeners.
+
 Plain-text rules, enforced at link and listen time:
 
 - Loopback, a unix socket, the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48, `*.ts.net`): allowed.
@@ -195,7 +197,8 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 | "Not delivered ... no agent here you may reach" | their grant or the agent's `federation_reach` excludes it; write to their inbox agent |
 | "agents.tools.federation is off" | `clawtilla agent set AGENT tools.federation true`, if it should write to other fleets |
 | a message never arrives, no note | the fleet is unreachable; it is in the outbox until it answers or `federation.outbox_hours` passes |
-| "holding this message" | their operator must Deliver it in their Decisions inbox |
+| other side says "this link was revoked", ours shows offline | pre-0.73.2 a revoke pushed to a dialling fleet was dropped; upgrade, it then reads revoked |
+| "holding this message" | their operator must Deliver it in their Decisions inbox (CLI: `clawtilla decision answer fed-hold-ID deliver`; any other answer declines) |
 | proxy task failed "X did not take it: ..." | their `delegate`, `max_concurrent_tasks`, `budget_cents_per_day` or reach; `federation show ALIAS` |
 | `room share` refused "does not let it join rooms" | `clawtilla federation set ALIAS join_rooms=true`; they must allow it too |
 | `federation transcript` refused | their `transcripts` is none, or own_tasks and you asked by agent |

@@ -405,8 +405,8 @@ on_tier_changed(LrgComboBox *combo, gpointer user_data)
                       CLAWT_LRG_REQUEST_NONE, on_done, (gpointer)"Tier changed.", NULL);
 }
 
-static LrgWidget *
-peer_row(ClawtLrgApp *app, JsonObject *peer)
+LrgWidget *
+clawt_lrg_settings_federation_peer_row(ClawtLrgApp *app, JsonObject *peer)
 {
     const gchar *alias = clawt_ipc_payload_string(peer, "alias");
     const gchar *status = clawt_ipc_payload_string(peer, "status");
@@ -453,8 +453,12 @@ peer_row(ClawtLrgApp *app, JsonObject *peer)
     lrg_widget_add_class(details, "clawt-fed-grant-editor");
     g_object_set_data_full(G_OBJECT(details), "clawt-alias", g_strdup(alias), g_free);
     clawt_lrg_take(actions, details);
+    /*
+     * add_suffix() takes the reference (it is clawt_lrg_take()); this
+     * also unreffed it, so the row held a freed box: no buttons, a
+     * collapsed row, criticals, and a segfault walking the tree.
+     */
     clawt_lrg_row_add_suffix(row, actions);
-    g_object_unref(actions);
     return row;
 }
 
@@ -500,7 +504,7 @@ on_peers(ClawtLrgApp *app, JsonNode *reply, const GError *error, gpointer user_d
             "Invite another fleet, or accept an invite someone sent you. Two "
             "daemons you own: clawtilla federation link."));
     for (i = 0; peers != NULL && i < json_array_get_length(peers); i++) {
-        LrgWidget *row = peer_row(app, json_array_get_object_element(peers, i));
+        LrgWidget *row = clawt_lrg_settings_federation_peer_row(app, json_array_get_object_element(peers, i));
         clawt_lrg_appear(app, row, i);
         clawt_lrg_take(fed.list, row);
     }
