@@ -8741,7 +8741,7 @@ print_broker_usage(gboolean asked_for)
 "  key <agent|team:<id>>   store the key for that gateway server (stdin)\n"
 "\n"
 "Examples:\n"
-"  clawtilla config set broker.enabled true\n"
+"  clawtilla config edit     # set broker.enabled: true; saving reloads\n"
 "  clawtilla broker status\n"
 "\n"
 "  # In the dashboard: make an MCP server for scout, assign connectors to\n"
@@ -8776,8 +8776,8 @@ print_broker_status(JsonObject *root)
 
     if (!json_object_get_boolean_member_with_default(root, "enabled",
                                                      FALSE)) {
-        g_print("broker.enabled is off. `clawtilla config set "
-                "broker.enabled true` turns it on and starts it.\n");
+        g_print("broker.enabled is off. Set `broker.enabled: true` with "
+                "`clawtilla config edit`; the reload it ends with starts it.\n");
         return;
     }
 
@@ -12354,6 +12354,33 @@ cmd_daemon(int argc, char *argv[])
 
     if (argc > 2 && g_strcmp0(argv[2], "token") == 0)
         return cmd_daemon_token();
+
+    /*
+     * Anything else after `daemon` is not a request to run one.  Every
+     * other command answers --help with its usage, so `clawtilla daemon
+     * --help` was run expecting the same -- and instead started a daemon
+     * against the default config, rewriting its state directory and
+     * binding the tailnet listener, for a reader who only wanted to know
+     * what the verb takes.
+     */
+    if (argc > 2) {
+        gboolean asked = g_strcmp0(argv[2], "--help") == 0 ||
+                         g_strcmp0(argv[2], "-h") == 0 ||
+                         g_strcmp0(argv[2], "help") == 0;
+
+        static const gchar usage[] =
+            "Usage: clawtilla daemon [token]\n"
+            "\n"
+            "  (none)   run the daemon in the foreground, as clawtillad does\n"
+            "  token    print the token a remote client must present\n";
+
+        if (asked) {
+            g_print("%s", usage);
+            return EXIT_SUCCESS;
+        }
+        g_printerr("clawtilla: unknown daemon verb '%s'\n%s", argv[2], usage);
+        return EXIT_FAILURE;
+    }
 
     /*
      * The same daemon clawtillad runs, in the foreground.  Handy for a

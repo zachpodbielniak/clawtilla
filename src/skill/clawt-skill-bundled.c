@@ -109,6 +109,16 @@ clawt_skill_install_bundled(const gchar *skills_dir, GError **error)
                 continue;
             if (g_strcmp0(g_strstrip(written), digest) == 0)
                 continue;
+            /*
+             * Ours, and out of date: start from nothing.  Writing over it
+             * left behind every file a newer clawtilla no longer ships --
+             * a reference for a config section that has gone, still read
+             * as current by the agent the skill was meant to keep right.
+             */
+            if (!clawt_remove_tree(directory, skills_dir, error)) {
+                g_prefix_error(error, "bundled skill '%s': ", skill);
+                return FALSE;
+            }
         }
 
         if (!install_one(skills_dir, skill, digest, error)) {
@@ -156,6 +166,19 @@ clawt_skill_bundled_for_agent(ClawtConfig *config, ClawtAgentConfig *agent)
             break;
         }
     }
+
+    /*
+     * The clawtilla skill goes to whoever runs the fleet: the chief of
+     * staff, and anyone allowed to manage the fleet or the office (the
+     * custodial team's template turns tools.office on).  Read through the
+     * agent getters, so tools.office's role default -- TRUE for the chief
+     * -- is the same answer the tool list gets.  An agent that cannot
+     * change the fleet has no use for a manual on changing it.
+     */
+    if (clawt_agent_config_get_boolean(agent, "chief_of_staff") ||
+        clawt_agent_config_get_boolean(agent, "tools.manage_fleet") ||
+        clawt_agent_config_get_boolean(agent, "tools.office"))
+        g_strv_builder_add(names, CLAWT_SKILL_BUNDLED_CLAWTILLA);
 
     return g_strv_builder_end(names);
 }

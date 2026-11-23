@@ -664,10 +664,11 @@ $(DEFAULT_CONFIG_H): $(DEFAULT_CONFIG_SRC) | $(OUTDIR)
 
 # The bundled skills (data/skills/<name>/...), embedded so the daemon can
 # install them into skills.dir without knowing where data was installed.
-# Adding a skill means listing its files here.
-BUNDLED_SKILL_FILES = \
-	$(DATADIR_SRC)/skills/web-research/SKILL.md \
-	$(DATADIR_SRC)/skills/web-research/references/lql.md
+# Every file under data/skills is one: the /clawtilla skill's reference
+# is partly generated (`make config-files`), so a hand list here would
+# miss a section the schema gained.
+BUNDLED_SKILL_FILES = $(sort $(shell find $(DATADIR_SRC)/skills -type f \
+	\( -name '*.md' -o -name '*.sh' \) 2>/dev/null))
 BUNDLED_SKILLS_H = $(OUTDIR)/clawt-bundled-skills.h
 
 $(BUNDLED_SKILLS_H): $(BUNDLED_SKILL_FILES) tools/clawt-embed-files.sh | $(OUTDIR)
@@ -1010,9 +1011,12 @@ config-files: $(GENCONFIG_BIN)
 	@$(GENCONFIG_BIN) --example > $(DATADIR_SRC)/example-config.yaml
 	@$(GENCONFIG_BIN) --default > $(DATADIR_SRC)/default-config.yaml
 	@$(GENCONFIG_BIN) --org     > $(DOCSDIR)/configuration-options.org
+	@rm -rf $(DATADIR_SRC)/skills/clawtilla/references/config
+	@$(GENCONFIG_BIN) --skill $(DATADIR_SRC)/skills/clawtilla/references
 	@echo "  $(DATADIR_SRC)/example-config.yaml"
 	@echo "  $(DATADIR_SRC)/default-config.yaml"
 	@echo "  $(DOCSDIR)/configuration-options.org"
+	@echo "  $(DATADIR_SRC)/skills/clawtilla/references/config-keys.md (+ config/*.md)"
 
 .PHONY: docs-check  ## Fail on undocumented public API or stale doc references
 .PHONY: adw-row-cast  ## Fail on a libadwaita row cast that does nothing
@@ -1349,6 +1353,58 @@ uninstall:
 	rm -rf $(DESTDIR)$(DATADIR)/$(PROJECT_NAME)
 	rm -f $(DESTDIR)$(DATADIR)/gir-1.0/$(GIR_NAMESPACE)-$(GIR_VERSION).gir
 	rm -f $(DESTDIR)$(LIBDIR)/girepository-1.0/$(GIR_NAMESPACE)-$(GIR_VERSION).typelib
+
+# The /clawtilla agent skill, for the agents on *this* machine: the
+# bundle in data/skills/clawtilla is symlinked into $(AGENTS_HOME)/skills
+# (the directory ai-glib's harnesses, Claude Code, codex and the fleet's
+# own skills.extra_dirs share), and each agent CLI's skills directory
+# links to that.  Symlinks, so an edit or a `make config-files` here is
+# what every agent reads next, with nothing to reinstall.  SKILLS_COPY=1
+# copies instead, for a machine that will not keep this checkout.  A
+# path that exists and is not this skill is left alone and reported.
+# The fleet's own agents need none of this: the daemon carries the skill
+# as a bundled one (docs/skills.org).
+AGENTS_HOME ?= $(HOME)/.agents
+CLAUDE_DIR  ?= $(HOME)/.claude
+GROK_DIR    ?= $(HOME)/.grok
+SKILLS_COPY ?= 0
+SKILL_NAME  := clawtilla
+SKILL_SRC   := $(CURDIR)/$(DATADIR_SRC)/skills/$(SKILL_NAME)
+SKILL_DST   := $(AGENTS_HOME)/skills/$(SKILL_NAME)
+SKILL_LINKS := $(CLAUDE_DIR)/skills/$(SKILL_NAME) $(GROK_DIR)/skills/$(SKILL_NAME)
+
+.PHONY: install-skill install-skills  ## Symlink the /clawtilla skill into ~/.agents, ~/.claude and ~/.grok skills
+install-skills: install-skill
+install-skill:
+	@test -f "$(SKILL_SRC)/SKILL.md" || { echo "missing $(SKILL_SRC)/SKILL.md"; exit 1; }
+	@mkdir -p "$(AGENTS_HOME)/skills"
+	@dst="$(SKILL_DST)"; \
+	if [ -L "$$dst" ]; then rm -f "$$dst" || exit 1; \
+	elif [ -e "$$dst" ]; then \
+		grep -qx "name: $(SKILL_NAME)" "$$dst/SKILL.md" 2>/dev/null || \
+			{ echo "$$dst exists and is not the $(SKILL_NAME) skill; leaving it"; exit 1; }; \
+		rm -r "$$dst" || exit 1; \
+	fi; \
+	if [ "$(SKILLS_COPY)" = "1" ]; then cp -R "$(SKILL_SRC)" "$$dst" && chmod -R u+rwX,go+rX "$$dst" || exit 1; \
+	else ln -s "$(SKILL_SRC)" "$$dst" || exit 1; fi; \
+	echo "  INSTALL $$dst"
+	@for link in $(SKILL_LINKS); do \
+		mkdir -p "$$(dirname "$$link")"; \
+		if [ -L "$$link" ]; then rm -f "$$link"; \
+		elif [ -e "$$link" ]; then \
+			echo "$$link exists and is not a link to the $(SKILL_NAME) skill; leaving it"; exit 1; \
+		fi; \
+		ln -s "$(SKILL_DST)" "$$link" && echo "  LINK    $$link -> $(SKILL_DST)" || exit 1; \
+	done
+
+.PHONY: uninstall-skill uninstall-skills  ## Remove what install-skill put down
+uninstall-skills: uninstall-skill
+uninstall-skill:
+	@for p in $(SKILL_LINKS) $(SKILL_DST); do \
+		if [ -L "$$p" ]; then rm -f "$$p" && echo "  REMOVE  $$p"; \
+		elif [ -e "$$p" ] && grep -qx "name: $(SKILL_NAME)" "$$p/SKILL.md" 2>/dev/null; then \
+			rm -r "$$p" && echo "  REMOVE  $$p"; fi; \
+	done
 
 .PHONY: version  ## Print the version and the git SHA this tree is at
 version:

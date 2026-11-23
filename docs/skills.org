@@ -424,13 +424,13 @@ clawtilla's library is the agentskills layout, read by the agent's
 
 ** Bundled skills
 
-clawtilla ships some skills itself. Today there is one, =web-research=, which teaches the =clawtilla_web_*= tools and LQL ([[file:research.org][research.org]]).
+clawtilla ships some skills itself. =web-research= teaches the =clawtilla_web_*= tools and LQL ([[file:research.org][research.org]]). =clawtilla= is the manual for clawtilla itself -- architecture, every configuration key (generated from the schema by =make config-files=), the CLI, every =clawtilla_*= tool, and how to run each subsystem -- for the agents that run and change the fleet. The same bundle is what =make install-skill= symlinks into =~/.agents/skills=, =~/.claude/skills= and =~/.grok/skills= for the coding agents on the machine with the checkout.
 
 - They are embedded in the build (=data/skills/=) and written into =<state_dir>/bundled-skills= when the daemon loads the library, in the same layout as any other skill, so every harness reads them the same way. The library reads that directory as a second root, after =skills.dir=.
 - *Never into =skills.dir=.* That is your library and defaults to your home, so writing there meant every daemon left on the default -- every test fixture included -- put a =web-research= into the real =~/.clawtilla/skills=. Versions 0.2.0 to 0.6.0 did; such a copy carries the marker below and can be deleted.
 - A skill of the same name in =skills.dir= wins, because writing one is a deliberate replacement -- unless it carries the =.clawtilla-bundled= marker, which means an older clawtilla put it there, and then the bundled root's newer copy is used instead.
-- Each carries a =.clawtilla-bundled= file holding a digest of what was written. A newer clawtilla replaces its own copy when the digest differs.
-- A bundled skill can come with something an agent has. =web-research= is assigned, with origin =integration=, to every agent with a =libresearch= integration -- by =clawt_skill_resolve_for_agent()=, the one resolver, after the agent, team and fleet lists. Naming it in one of those lists attributes it there instead.
+- Each carries a =.clawtilla-bundled= file holding a digest of what was written. A newer clawtilla replaces its own copy when the digest differs -- removing it first, so a file the newer version no longer ships does not linger (before 0.65.0 it was written over, and a removed file stayed).
+- A bundled skill can come with something an agent has. =clawtilla= is assigned to the chief of staff and to any agent with ~tools.manage_fleet~ or ~tools.office~ (so the custodial team, whose template turns ~tools.office~ on), with the same origin. =web-research= is assigned, with origin =integration=, to every agent with a =libresearch= integration -- by =clawt_skill_resolve_for_agent()=, the one resolver, after the agent, team and fleet lists. Naming it in one of those lists attributes it there instead.
 - With =skills.enabled: false= nothing is installed; whatever the skill would have taught has to reach the agent another way, and for =web-research= the tool descriptions and =TOOLS.org= carry a short primer for exactly that case.
 
 ** Skills other harnesses already have

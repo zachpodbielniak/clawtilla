@@ -28,6 +28,15 @@ G_BEGIN_DECLS
 #define CLAWT_SKILL_BUNDLED_WEB_RESEARCH "web-research"
 
 /**
+ * CLAWT_SKILL_BUNDLED_CLAWTILLA:
+ *
+ * The bundled skill that documents clawtilla itself -- architecture,
+ * every configuration key, the CLI, the agent tools -- for the agents
+ * that run and change the fleet.
+ */
+#define CLAWT_SKILL_BUNDLED_CLAWTILLA "clawtilla"
+
+/**
  * CLAWT_SKILL_BUNDLED_MARKER:
  *
  * The file in a skill directory that says clawtilla installed it.  It holds
@@ -70,7 +79,8 @@ const gchar *clawt_skill_bundled_file(const gchar *path);
  *
  * The bundled skills this agent gets without asking, because of what it
  * has rather than what it was assigned: `web-research` for an agent with a
- * `libresearch` integration.
+ * `libresearch` integration, `clawtilla` for the chief of staff and any
+ * agent with `tools.manage_fleet` or `tools.office`.
  *
  * Returns: (transfer full) (nullable): a %NULL-terminated list of names
  */

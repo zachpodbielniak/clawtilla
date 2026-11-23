@@ -283,6 +283,41 @@ gchar *
 clawt_config_schema_render_org(void);
 
 /**
+ * clawt_config_schema_skill_sections:
+ *
+ * The top-level sections of the schema, in table order: one
+ * `config/<section>.md` file of the /clawtilla skill each.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the section names
+ */
+GStrv
+clawt_config_schema_skill_sections(void);
+
+/**
+ * clawt_config_schema_render_skill_index:
+ *
+ * Renders the /clawtilla skill's references/config-keys.md: every option
+ * with its type, default, agent-relative name and first sentence.
+ *
+ * Returns: (transfer full): the markdown text
+ */
+gchar *
+clawt_config_schema_render_skill_index(void);
+
+/**
+ * clawt_config_schema_render_skill_section:
+ * @section: a top-level section, such as "orchestration"
+ *
+ * Renders the /clawtilla skill's references/config/@section.md: every
+ * option in @section with its whole documentation.
+ *
+ * Returns: (transfer full) (nullable): the markdown text, or %NULL when
+ *   no key is in @section
+ */
+gchar *
+clawt_config_schema_render_skill_section(const gchar *section);
+
+/**
  * clawt_config_schema_comment_for:
  * @key: a dotted key path
  *

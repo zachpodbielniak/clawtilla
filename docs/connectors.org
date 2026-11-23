@@ -564,7 +564,7 @@ write, answering as if all was well -- so a bridge that only read the
 queue would show an empty inbox while the books changed underneath it.
 When the answer lacks =staged_writes: true= the daemon warns once, and
 the connector's health check (the row in every client, and ~clawtilla
-integration check~) turns red with "this VENTURE server does not stage
+integration health AGENT~) turns red with "this VENTURE server does not stage
 writes".  A probe that could not reach the server is asked again on the
 next poll rather than remembered as "does not stage".
 

@@ -229,8 +229,8 @@ clawt_daemon_handle_broker(
 		if (!clawt_config_get_boolean(self->config, "broker.enabled"))
 			return clawt_ipc_error_new(
 				request, CLAWT_ERROR_NOT_SUPPORTED,
-				"broker.enabled is off; turn it on first (`clawtilla "
-				"config set broker.enabled true`), which also starts it");
+				"broker.enabled is off; set `broker.enabled: true` "
+				"(`clawtilla config edit`, which reloads and so starts it)");
 
 		/* Refused here as well as at start, so the reason is the reply. */
 		if (!clawt_broker_check_confinement(self->config, &error))

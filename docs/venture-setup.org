@@ -58,13 +58,13 @@ clawtilla connector add books --provider venture \
     --instance http://127.0.0.1:8747 \
     --scope selected --agents bookkeeper
 clawtilla connector key books        # paste the vk_... token; echo is off
-clawtilla integration check
+clawtilla integration health bookkeeper
 #+end_src
 
 - =--scope= *defaults to* =none=, so without =--scope= / =--agents= the connector exists and no agent has its tools.
 - =--instance= can be left out when VENTURE is on the same machine at the default =http://localhost:8747=.
 - =connector key= reads the token from standard input, never an argument, so it is not in your shell history or the process table.  You can pipe the mint straight into it: =venturectl token mint name=clawtilla-bookkeeper user=books-bot | clawtilla connector key books=.
-- =integration check= turns red with "this VENTURE server does not stage writes" against a server too old to hold writes back (see step 2).
+- =integration health bookkeeper= turns red with "this VENTURE server does not stage writes" against a server too old to hold writes back (see step 2).
 
 The agent now has the nineteen =venture_*= tools ([[file:connectors.org::*The tools are generated from VENTURE's own schema][the list]]), and VENTURE answers every call as =books-bot=: records in other organizations are simply not there (lists omit them, a direct read is a 404).
 
@@ -194,7 +194,7 @@ venturectl token mint name=clawtilla-bookkeeper user=books-bot \
 venturectl token mint name=clawtilla-sales user=sales-bot \
     | clawtilla connector key books-sales
 
-clawtilla integration check
+clawtilla integration health bookkeeper
 #+end_src
 
 - =--account= is the label for a second account on the same service; it is required, and must be unique, once there is more than one =venture= connector.

@@ -47,6 +47,11 @@ make OFFICE=1 test
 # Full rebuild
 make clean all
 make DEBUG=1 ASAN=1 clean all
+
+# The /clawtilla agent skill (data/skills/clawtilla): symlink it into
+# ~/.agents/skills, ~/.claude/skills and ~/.grok/skills (SKILLS_COPY=1 copies)
+make install-skill
+make uninstall-skill
 ```
 
 ## Build Environment
@@ -270,6 +275,45 @@ exists.
 
 Docs are org-mode. Never markdown -- this file is the exception, because
 the tooling that reads it expects markdown.
+
+### The /clawtilla skill ships with the code
+
+`data/skills/clawtilla/` is the manual an agent reads before changing a
+fleet -- the operator's own coding agent through `make install-skill`,
+and the fleet's chief of staff and anyone with `tools.manage_fleet` or
+`tools.office` (the custodial team) because the daemon embeds it as a
+bundled skill and assigns it to them (`clawt_skill_bundled_for_agent()`).
+Those agents run with no `docs/` beside them, so the skill is their only
+copy of the truth, and a stale one is followed. **It is docs, and it is
+updated in the same change as the code**, like `docs/*.org`:
+
+- **A config key** is handled for you: `make config-files` regenerates
+  `references/config-keys.md` and `references/config/<section>.md` from
+  the schema, and `tests/test-config-schema.c` fails on drift. Never edit
+  those by hand. A key whose *behaviour* needs explaining (a relation, a
+  restart it needs, a trap) also gets a sentence in the topic reference.
+- **A `clawtilla_*` tool** goes in `references/mcp-tools.md` or
+  `mcp-tools-2.md` with its arguments, gate and action class.
+- **A CLI command or verb** goes in `references/cli.md` / `cli-2.md`, and
+  in `references/recipes.md` when it is how a common change is made.
+- **A new feature or subsystem, or a new `docs/*.org`** gets its concepts,
+  commands and gotchas in the matching topic reference (or a new one,
+  linked from SKILL.md's table) -- written for an agent that has to *do*
+  something with it.
+- **A changed rule** (what needs a restart vs a reset, a permission's
+  default, what is refused and why) is corrected wherever the skill states
+  it; grep the skill for the old wording.
+- **A new agent-facing role or permission** that should carry the skill
+  is added to `clawt_skill_bundled_for_agent()`.
+
+`tests/test-skill.sh` fails `make test` when a registered tool, a
+top-level CLI command or a `docs/*.org` is missing from the skill, a link
+is broken, a reference is unreachable, or the install round trip breaks.
+It cannot see a *wrong* sentence, so verify what you write against the
+source the way the rest of this file asks. Every file under
+`data/skills/` is embedded in the daemon (`BUNDLED_SKILL_FILES` is a
+`find`), and a daemon replaces its older bundled copy whole, so a file
+removed here is removed from the fleet too.
 
 ### Tests stay hermetic
 

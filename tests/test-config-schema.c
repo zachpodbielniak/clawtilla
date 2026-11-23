@@ -66,6 +66,53 @@ test_generated_docs_match_schema(void)
 }
 
 /*
+ * The /clawtilla skill carries the option list too, for the agents that
+ * run with no docs/ beside them -- and a skill describing yesterday's
+ * keys tells a chief of staff to set something that no longer exists.
+ * Every section file must match, and no file may name a section the
+ * schema no longer has.
+ */
+static void
+test_generated_skill_matches_schema(void)
+{
+    g_autofree gchar *on_disk = NULL;
+    g_autofree gchar *rendered = NULL;
+    g_autofree gchar *dir_path = NULL;
+    g_auto(GStrv) sections = clawt_config_schema_skill_sections();
+    g_autoptr(GDir) dir = NULL;
+    const gchar *name;
+    guint i;
+
+    on_disk = read_repo_file("data/skills/clawtilla/references/config-keys.md");
+    g_assert_nonnull(on_disk);
+    rendered = clawt_config_schema_render_skill_index();
+    g_assert_cmpstr(on_disk, ==, rendered);
+
+    for (i = 0; sections[i] != NULL; i++) {
+        g_autofree gchar *rel = g_strdup_printf(
+            "data/skills/clawtilla/references/config/%s.md", sections[i]);
+
+        g_free(on_disk);
+        g_free(rendered);
+        on_disk = read_repo_file(rel);
+        g_assert_nonnull(on_disk);
+        rendered = clawt_config_schema_render_skill_section(sections[i]);
+        g_assert_cmpstr(on_disk, ==, rendered);
+    }
+
+    dir_path = g_build_filename(CLAWT_TEST_SRCDIR,
+                                "data/skills/clawtilla/references/config", NULL);
+    dir = g_dir_open(dir_path, 0, NULL);
+    g_assert_nonnull(dir);
+    while ((name = g_dir_read_name(dir)) != NULL) {
+        g_autofree gchar *section = g_strndup(name, strlen(name) - 3);
+
+        g_assert_true(g_str_has_suffix(name, ".md"));
+        g_assert_true(g_strv_contains((const gchar *const *)sections, section));
+    }
+}
+
+/*
  * The renderers walk the flat table in order and track depth, which only
  * works if a key's parent appears before it.  A child whose parent is
  * missing would indent under nothing and produce a file that is not YAML.
@@ -784,6 +831,8 @@ main(int argc, char *argv[])
 
     g_test_add_func("/schema/generated-files-match",
                     test_generated_files_match_schema);
+    g_test_add_func("/schema/generated-skill-matches",
+                    test_generated_skill_matches_schema);
     g_test_add_func("/schema/generated-docs-match",
                     test_generated_docs_match_schema);
     g_test_add_func("/schema/every-key-has-a-parent",

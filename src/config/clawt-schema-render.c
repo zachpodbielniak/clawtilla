@@ -547,3 +547,247 @@ clawt_config_schema_render_org(void)
 
     return g_string_free(out, FALSE);
 }
+
+/*
+ * The /clawtilla skill's configuration reference.
+ *
+ * An agent asked to change a setting needs the whole option list, and the
+ * agents that need it most -- a chief of staff, the office's custodians --
+ * run on the daemon's machine with no source tree and no docs/ beside
+ * them.  So the skill carries the list itself, and it is generated here
+ * rather than written: a hand copy of 474 keys is the drift this file
+ * exists to prevent.  Markdown, because that is what skills are.
+ */
+
+/* A table cell cannot hold a pipe or a newline. */
+static void
+append_cell(GString *out, const gchar *text)
+{
+    const gchar *p;
+
+    for (p = text; p != NULL && *p != '\0'; p++)
+    {
+        if (*p == '|')
+            g_string_append(out, "\\|");
+        else if (*p == '\n')
+            g_string_append_c(out, ' ');
+        else
+            g_string_append_c(out, *p);
+    }
+}
+
+/*
+ * The first sentence of a doc, for the index.  A sentence ends at ". "
+ * or at the paragraph break; a doc with neither is short enough whole.
+ */
+static gchar *
+first_sentence(const gchar *doc)
+{
+    const gchar *stop;
+    const gchar *para;
+
+    if (doc == NULL)
+        return g_strdup("");
+
+    stop = strstr(doc, ". ");
+    para = strstr(doc, "\n\n");
+    if (stop == NULL || (para != NULL && para < stop))
+        stop = para;
+    if (stop == NULL)
+        return g_strdup(doc);
+    if (*stop == '.')
+        stop++;
+
+    return g_strndup(doc, stop - doc);
+}
+
+/* "orchestration.mailbox.max_depth" -> "orchestration" */
+static gchar *
+top_section_of(const gchar *key)
+{
+    const gchar *dot = strchr(key, '.');
+
+    return (dot != NULL) ? g_strndup(key, dot - key) : g_strdup(key);
+}
+
+GStrv
+clawt_config_schema_skill_sections(void)
+{
+    const ClawtSchemaEntry *entries;
+    gsize n_entries;
+    gsize i;
+    g_autoptr(GStrvBuilder) names = g_strv_builder_new();
+    g_autoptr(GHashTable) seen = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                       g_free, NULL);
+
+    entries = clawt_config_schema_get(&n_entries);
+
+    for (i = 0; i < n_entries; i++)
+    {
+        gchar *top = top_section_of(entries[i].key);
+
+        if (g_hash_table_contains(seen, top)) {
+            g_free(top);
+            continue;
+        }
+        g_strv_builder_add(names, top);
+        g_hash_table_add(seen, top);
+    }
+
+    return g_strv_builder_end(names);
+}
+
+static void
+append_skill_header(GString *out, const gchar *title, const gchar *what)
+{
+    g_string_append_printf(out,
+        "# %s\n"
+        "\n"
+        "GENERATED FILE -- do not edit.  Produced from\n"
+        "`src/config/clawt-config-schema.c` by `make config-files`.\n"
+        "\n"
+        "%s\n", title, what);
+}
+
+gchar *
+clawt_config_schema_render_skill_index(void)
+{
+    const ClawtSchemaEntry *entries;
+    gsize n_entries;
+    gsize i;
+    GString *out = g_string_new(NULL);
+    g_autofree gchar *current = NULL;
+
+    entries = clawt_config_schema_get(&n_entries);
+
+    append_skill_header(out, "Configuration keys",
+        "Every option in `clawtilla.yaml`: its type, default and the first\n"
+        "sentence of its documentation.  The whole text of each is in\n"
+        "`config/<section>.md` beside this file.  A key under `agents.` is\n"
+        "written inside an agent's block without that prefix; the agent\n"
+        "column names a fleet key's spelling inside an agent, where it has\n"
+        "one.  **D** marks a dangerous key (it hands over real authority;\n"
+        "see security.md).");
+
+    for (i = 0; i < n_entries; i++)
+    {
+        const ClawtSchemaEntry *entry = &entries[i];
+        g_autofree gchar *top = top_section_of(entry->key);
+        g_autofree gchar *summary = NULL;
+        const gchar *agent_name;
+
+        /* A new top-level section starts a new table. */
+        if (g_strcmp0(top, current) != 0)
+        {
+            g_free(current);
+            current = g_strdup(top);
+            g_string_append_printf(out,
+                "\n## `%s` ([config/%s.md](config/%s.md))\n\n"
+                "| Key | Type | Default | Agent | Summary |\n"
+                "|---|---|---|---|---|\n", top, top, top);
+        }
+
+        summary = first_sentence(entry->doc);
+        agent_name = (g_str_has_prefix(entry->key, "agents."))
+            ? NULL : clawt_config_schema_agent_key_for(entry->key);
+
+        g_string_append(out, "| `");
+        append_cell(out, entry->key);
+        g_string_append(out, "` | ");
+        g_string_append(out, clawt_config_schema_type_name(entry->type));
+        g_string_append(out, " | ");
+        if (entry->default_value != NULL) {
+            g_string_append_c(out, '`');
+            append_cell(out, entry->default_value);
+            g_string_append_c(out, '`');
+        }
+        g_string_append(out, " | ");
+        if (agent_name != NULL) {
+            g_string_append_c(out, '`');
+            append_cell(out, agent_name);
+            g_string_append_c(out, '`');
+        }
+        g_string_append(out, " | ");
+        if ((entry->flags & CLAWT_SCHEMA_FLAG_DANGEROUS) != 0)
+            g_string_append(out, "**D** ");
+        append_cell(out, summary);
+        g_string_append(out, " |\n");
+    }
+
+    return g_string_free(out, FALSE);
+}
+
+gchar *
+clawt_config_schema_render_skill_section(const gchar *section)
+{
+    const ClawtSchemaEntry *entries;
+    gsize n_entries;
+    gsize i;
+    GString *out;
+    g_autofree gchar *title = NULL;
+    gboolean any = FALSE;
+
+    g_return_val_if_fail(section != NULL, NULL);
+
+    entries = clawt_config_schema_get(&n_entries);
+    title = g_strdup_printf("Configuration: `%s`", section);
+    out = g_string_new(NULL);
+    append_skill_header(out, title,
+        "The full documentation of every key in this section.  The index of\n"
+        "all of them is ../config-keys.md.");
+
+    for (i = 0; i < n_entries; i++)
+    {
+        const ClawtSchemaEntry *entry = &entries[i];
+        g_autofree gchar *top = top_section_of(entry->key);
+        g_autofree gchar *enum_values = NULL;
+        const gchar *agent_name;
+        gboolean structure;
+
+        if (g_strcmp0(top, section) != 0)
+            continue;
+        any = TRUE;
+
+        structure = entry->type == CLAWT_SCHEMA_SECTION ||
+                    entry->type == CLAWT_SCHEMA_LIST_OF;
+        g_string_append_printf(out, "\n%s `%s`\n\n",
+                               structure ? "##" : "###", entry->key);
+
+        if (!structure)
+        {
+            g_string_append_printf(out, "- Type: %s\n",
+                                   clawt_config_schema_type_name(entry->type));
+            enum_values = enum_values_text(entry);
+            if (enum_values != NULL)
+                g_string_append_printf(out, "- Values: %s\n", enum_values);
+            if (entry->default_value != NULL)
+                g_string_append_printf(out, "- Default: `%s`\n",
+                                       entry->default_value);
+            else
+                g_string_append(out, "- Default: unset\n");
+            agent_name = (g_str_has_prefix(entry->key, "agents."))
+                ? NULL : clawt_config_schema_agent_key_for(entry->key);
+            if (agent_name != NULL)
+                g_string_append_printf(out, "- Inside an agent: `%s`\n",
+                                       agent_name);
+            if ((entry->flags & CLAWT_SCHEMA_FLAG_REQUIRED) != 0)
+                g_string_append(out, "- Required: yes\n");
+            if ((entry->flags & CLAWT_SCHEMA_FLAG_DANGEROUS) != 0)
+                g_string_append(out,
+                    "- Warning: hands over real authority; read security.md first\n");
+            if (entry->since != NULL)
+                g_string_append_printf(out, "- Since: %s\n", entry->since);
+            g_string_append_c(out, '\n');
+        }
+
+        if (entry->doc != NULL)
+            g_string_append_printf(out, "%s\n", entry->doc);
+    }
+
+    if (!any) {
+        g_string_free(out, TRUE);
+        return NULL;
+    }
+
+    return g_string_free(out, FALSE);
+}

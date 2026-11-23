@@ -472,7 +472,8 @@ test_library_root_precedence(void)
     {
         g_autoptr(GPtrArray) listed = clawt_skill_library_list(library);
 
-        g_assert_cmpuint(listed->len, ==, 1);
+        /* web-research, and the clawtilla skill bundled beside it. */
+        g_assert_cmpuint(listed->len, ==, 2);
     }
 
     clawt_test_remove_tree(dir);

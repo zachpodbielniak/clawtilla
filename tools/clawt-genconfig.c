@@ -16,13 +16,59 @@
 
 #include <stdlib.h>
 
+/*
+ * --skill DIR: the /clawtilla skill's configuration reference, which is
+ * a directory rather than one file -- an index and a file per top-level
+ * section -- so it is written here rather than through stdout.
+ */
+static int
+write_skill(const gchar *dir)
+{
+    g_autofree gchar *index_text = NULL;
+    g_autofree gchar *index_path = NULL;
+    g_autofree gchar *section_dir = NULL;
+    g_auto(GStrv) sections = NULL;
+    g_autoptr(GError) error = NULL;
+    guint i;
+
+    section_dir = g_build_filename(dir, "config", NULL);
+    if (g_mkdir_with_parents(section_dir, 0755) != 0) {
+        g_printerr("clawt-genconfig: cannot create %s\n", section_dir);
+        return EXIT_FAILURE;
+    }
+
+    index_text = clawt_config_schema_render_skill_index();
+    index_path = g_build_filename(dir, "config-keys.md", NULL);
+    if (!g_file_set_contents(index_path, index_text, -1, &error)) {
+        g_printerr("clawt-genconfig: %s\n", error->message);
+        return EXIT_FAILURE;
+    }
+
+    sections = clawt_config_schema_skill_sections();
+    for (i = 0; sections[i] != NULL; i++) {
+        g_autofree gchar *text = clawt_config_schema_render_skill_section(sections[i]);
+        g_autofree gchar *name = g_strconcat(sections[i], ".md", NULL);
+        g_autofree gchar *path = g_build_filename(section_dir, name, NULL);
+
+        if (!g_file_set_contents(path, text, -1, &error)) {
+            g_printerr("clawt-genconfig: %s\n", error->message);
+            return EXIT_FAILURE;
+        }
+    }
+
+    return EXIT_SUCCESS;
+}
+
 int
 main(int argc, char *argv[])
 {
     g_autofree gchar *text = NULL;
 
+    if (argc == 3 && g_strcmp0(argv[1], "--skill") == 0)
+        return write_skill(argv[2]);
+
     if (argc != 2) {
-        g_printerr("usage: clawt-genconfig --example|--default|--org\n");
+        g_printerr("usage: clawt-genconfig --example|--default|--org|--skill DIR\n");
         return EXIT_FAILURE;
     }
 
