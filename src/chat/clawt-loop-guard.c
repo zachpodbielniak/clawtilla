@@ -694,23 +694,50 @@ check_stall(ClawtLoopGuard *self, ClawtMessage *message, GError **error)
     return FALSE;
 }
 
+/*
+ * The task budget covers a task and everything under it.  The daemon
+ * books each turn's spend on its task and on every ancestor
+ * (clawt_daemon_tree_charge()), so a task's figure is its subtree's --
+ * and the root's is the whole tree's, a superset of every figure under
+ * it.  Checking the task and its root is therefore checking every
+ * ancestor between them.  Before 0.65.2 only the task's own figure was
+ * read, so a lead that handed out ten subtasks had ten budgets.
+ */
 static gboolean
 check_budget(ClawtLoopGuard *self, ClawtMessage *message, GError **error)
 {
     const gchar *task_id = clawt_message_get_task_id(message);
+    g_autofree gchar *root = NULL;
     gdouble *spent;
+    gdouble *tree_spent;
 
     if (self->task_budget_usd <= 0.0 || task_id == NULL)
         return TRUE;
 
     spent = g_hash_table_lookup(self->task_spend, task_id);
-    if (spent == NULL || *spent < self->task_budget_usd)
+    if (spent != NULL && *spent >= self->task_budget_usd) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT,
+                    "this task has spent $%.2f, which is its budget of $%.2f. "
+                    "Stop and report what you have.",
+                    *spent, self->task_budget_usd);
+        return FALSE;
+    }
+
+    root = clawt_loop_guard_resolve_tree(self,
+        clawt_message_get_sender_id(message),
+        clawt_message_get_room_id(message), task_id);
+    if (root == NULL || g_strcmp0(root, task_id) == 0)
+        return TRUE;
+
+    tree_spent = g_hash_table_lookup(self->task_spend, root);
+    if (tree_spent == NULL || *tree_spent < self->task_budget_usd)
         return TRUE;
 
     g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT,
-                "this task has spent $%.2f, which is its budget of $%.2f. "
+                "the work this task is part of (task %s and everything under "
+                "it) has spent $%.2f, which is its budget of $%.2f. "
                 "Stop and report what you have.",
-                *spent, self->task_budget_usd);
+                root, *tree_spent, self->task_budget_usd);
 
     return FALSE;
 }

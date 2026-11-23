@@ -1351,6 +1351,106 @@ test_the_settings_frames(void)
 	daemon_teardown(&fixture);
 }
 
+/* daemon_request(), with a body of its own: the cycle check refuses a repeat. */
+static gint
+budget_request(DaemonFixture *fixture, const gchar *from, const gchar *to,
+               const gchar *task, const gchar *body, GError **error)
+{
+	g_autoptr(ClawtMessage) message = clawt_message_new(to, from, body);
+
+	clawt_message_set_task_id(message, task);
+
+	return clawt_mailbox_router_send(fixture->daemon->router, message,
+	                                 error);
+}
+
+/*
+ * orchestration.task_budget_usd covers a task and everything under it
+ * (0.65.2).  Before, spend was booked flat on the task id, so a lead that
+ * handed out subtasks gave each a fresh budget and a fan-out was bounded
+ * in messages only.  A three-level tree and a separate root: the leaf's
+ * spend reaches its parent and root, a sibling with nothing spent of its
+ * own is refused once the tree is over, and the other tree is untouched.
+ */
+static void
+test_the_task_budget_covers_the_whole_tree(void)
+{
+	DaemonFixture fixture = { 0 };
+	ClawtTaskManager *tasks;
+	ClawtTask *task;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *root = NULL;
+	g_autofree gchar *child = NULL;
+	g_autofree gchar *leaf = NULL;
+	g_autofree gchar *sibling = NULL;
+	g_autofree gchar *other = NULL;
+
+	daemon_setup(&fixture, "orchestration:\n  task_budget_usd: 1.0\n");
+	tasks = clawt_daemon_get_tasks(fixture.daemon);
+
+	task = clawt_task_manager_create(tasks, "chief", "w1", "Ship the release",
+		NULL, &error);
+	g_assert_no_error(error);
+	root = g_strdup(clawt_task_get_id(task));
+	task = clawt_task_manager_create(tasks, "w1", "w2", "Write the notes",
+		root, &error);
+	g_assert_no_error(error);
+	child = g_strdup(clawt_task_get_id(task));
+	task = clawt_task_manager_create(tasks, "w2", "w3", "Collect the commits",
+		child, &error);
+	g_assert_no_error(error);
+	leaf = g_strdup(clawt_task_get_id(task));
+	task = clawt_task_manager_create(tasks, "w1", "w3", "Tag it", root, &error);
+	g_assert_no_error(error);
+	sibling = g_strdup(clawt_task_get_id(task));
+	task = clawt_task_manager_create(tasks, "chief", "w2", "Tidy the wiki",
+		NULL, &error);
+	g_assert_no_error(error);
+	other = g_strdup(clawt_task_get_id(task));
+
+	/* Charged at the leaf: every ancestor carries it, nothing else does. */
+	clawt_daemon_tree_charge(fixture.daemon, leaf, 0.60);
+	g_assert_cmpfloat_with_epsilon(clawt_loop_guard_get_task_spend(
+		fixture.daemon->guard, leaf), 0.60, 1e-9);
+	g_assert_cmpfloat_with_epsilon(clawt_loop_guard_get_task_spend(
+		fixture.daemon->guard, child), 0.60, 1e-9);
+	g_assert_cmpfloat_with_epsilon(clawt_loop_guard_get_task_spend(
+		fixture.daemon->guard, root), 0.60, 1e-9);
+	g_assert_cmpfloat(clawt_loop_guard_get_task_spend(
+		fixture.daemon->guard, sibling), ==, 0.0);
+	g_assert_cmpfloat(clawt_loop_guard_get_task_spend(
+		fixture.daemon->guard, other), ==, 0.0);
+
+	/* Under the budget, the sibling may still ask. */
+	g_assert_cmpint(budget_request(&fixture, "w3", "w1", sibling, "budget check 1", &error), ==, 1);
+	g_assert_no_error(error);
+
+	/* The child's own turns take the tree over the dollar. */
+	clawt_daemon_tree_charge(fixture.daemon, child, 0.50);
+	g_assert_cmpfloat_with_epsilon(clawt_loop_guard_get_task_spend(
+		fixture.daemon->guard, root), 1.10, 1e-9);
+	g_assert_cmpfloat_with_epsilon(clawt_loop_guard_get_task_spend(
+		fixture.daemon->guard, leaf), 0.60, 1e-9);
+
+	/* So the sibling -- which spent nothing itself -- is refused, naming the root. */
+	g_assert_cmpint(budget_request(&fixture, "w3", "w1", sibling, "budget check 2", &error), <=, 0);
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT);
+	g_assert_nonnull(strstr(error->message, root));
+	g_assert_nonnull(strstr(error->message, "everything under it"));
+	g_clear_error(&error);
+
+	/* The leaf too, though its own figure is under the cap. */
+	g_assert_cmpint(budget_request(&fixture, "w3", "w2", leaf, "budget check 3", &error), <=, 0);
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT);
+	g_clear_error(&error);
+
+	/* And another tree has a budget of its own. */
+	g_assert_cmpint(budget_request(&fixture, "w2", "chief", other, "budget check 4", &error), ==, 1);
+	g_assert_no_error(error);
+
+	daemon_teardown(&fixture);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1377,6 +1477,8 @@ main(int argc, char **argv)
 	g_test_add_func("/tree-budget/renews-before-the-notice",
 	                test_the_tree_renews_before_the_settle_notice);
 	g_test_add_func("/tree-budget/settings-frames", test_the_settings_frames);
+	g_test_add_func("/tree-budget/task-budget-covers-the-tree",
+	                test_the_task_budget_covers_the_whole_tree);
 
 	return g_test_run();
 }

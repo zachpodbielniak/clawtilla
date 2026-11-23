@@ -85,7 +85,7 @@ An AI CLI cannot end a turn without writing text, so routing decides whether tha
 |---|---|---|---|---|
 | `max_hops` | 8 | depth per turn (a turn is one depth; drops at a turn no delivery preceded) | new chain | hop tools (`message_agent`, `ask_agent`, `delegate`, `handoff`) NOT OFFERED; room/post/history tools stay; also caps task depth |
 | `rate_limit_per_minute` | 30 | messages per sender, sliding 60 s | time | send refused |
-| `task_budget_usd` | 5.0 | provider-reported spend booked flat on the task id | never | messages on that task refused: "Stop and report what you have" |
+| `task_budget_usd` | 5.0 | provider-reported spend booked on the task and every ancestor, so one budget covers a fan-out | never | messages on that task, or on any task in its tree once the root is over, refused: "Stop and report what you have" |
 | `tree_message_budget` | 60 | deliberate requests per root task tree (one per call) | any task in the tree settling (before the settle notice) | hop tools withheld from that tree; alert `task.tree_budget` |
 | `pair_message_budget` | 12 | rounds of requests between two agents (one per sender turn); groups not counted | a person/routine/trigger writing to either, or `pair_quiet_minutes` (30) of silence | request refused (not withheld; may ask others); alert `crosstalk.pair_budget`; in memory, restart resets |
 | `cycle_window` / `cycle_seconds` | 10 / 300 | byte-identical (sender, room, body); also the 6th near-identical (numbers stripped) | window expiry | refused; an agent's exact repeat STALLS the room until a person speaks in it |

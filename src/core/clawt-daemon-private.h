@@ -2377,6 +2377,14 @@ void   clawt_daemon_tree_teardown(ClawtDaemon *self);
 void   clawt_daemon_tree_settled(ClawtDaemon *self, ClawtTask *task);
 gchar *clawt_daemon_tree_label(ClawtDaemon *self, const gchar *root_id);
 
+/*
+ * Books @amount_usd of a turn's spend on @task_id and on every ancestor
+ * the task manager still knows, so the loop guard's figure for a task is
+ * what its whole subtree cost (orchestration.task_budget_usd).
+ */
+void clawt_daemon_tree_charge(ClawtDaemon *self, const gchar *task_id,
+                              gdouble amount_usd);
+
 /* orchestration.get / orchestration.set */
 JsonNode *
 clawt_daemon_handle_orchestration(

@@ -1233,7 +1233,7 @@ AGENT                   TURNS           IN          OUT         COST
 chief                       7           28         2834        $0.04
 tester                     45          182        15296        $0.23
 fleet                      52          210        18130        $0.27
-Each delegated task may spend $5.00 (orchestration.task_budget_usd).
+Each delegated task, with everything it hands on, may spend $5.00 (orchestration.task_budget_usd).
 
 Cost is the figure the provider reported for each turn.
 IN counts new input tokens only -- cached context is billed

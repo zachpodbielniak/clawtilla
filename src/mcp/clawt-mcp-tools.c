@@ -4341,9 +4341,10 @@ tool_fleet_cost(ClawtMcpTools *self, const gchar *agent_id)
     if (budget > 0.0)
         g_string_append_printf(
             out,
-            "Each delegated task may spend $%.2f before its messages are "
-            "refused, so a task near that figure needs splitting rather "
-            "than retrying.\n", budget);
+            "Each delegated task, with everything it hands on, may spend "
+            "$%.2f before its messages are refused. Subtasks share that "
+            "budget rather than adding to it, so a task near the figure "
+            "needs reporting back, not splitting or retrying.\n", budget);
 
     /*
      * Said here as well as in the clients, because an agent asked to

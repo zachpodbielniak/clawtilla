@@ -35,14 +35,14 @@ clawtilla cost --by day --csv > spending.csv
 
 | Guard | Key | Default | Unit | Scope | At the limit |
 |---|---|---|---|---|---|
-| task budget | `orchestration.task_budget_usd` | 5.0 | USD (double) | one task id | messages carrying that task id refused (`CLAWT_ERROR_LOOP_LIMIT`): "this task has spent $X, which is its budget of $Y. Stop and report what you have." |
+| task budget | `orchestration.task_budget_usd` | 5.0 | USD (double) | a task and everything under it | messages on that task, or on any task in its tree once the root is over, refused (`CLAWT_ERROR_LOOP_LIMIT`): "this task has spent $X ..." or "the work this task is part of (task ROOT and everything under it) has spent $X ...", both ending "Stop and report what you have." |
 | daily fleet cap | `orchestration.daily_fleet_budget_micros` | 0 (off) | integer micro-USD (1000000 = $1) | configured fleet, since local midnight | router refuses to queue/lease new deliveries until midnight or a raised cap |
 | daily agent cap | `orchestration.daily_agent_budget_micros`; per agent `daily_agent_budget_micros` (0 disables that agent's cap) | 0 (off) | integer micro-USD | one agent | same, for that agent; the fleet cap still applies |
 | project budget | `projects[].monthly_budget_usd` + `budget_warn_percent` (80) + `budget_hard_stop` (false) | 0 (no budget) | USD | tasks made this calendar month in the project | warn once a month (`budget` notification); with hard stop, NEW work in the project refused `LOOP_LIMIT` ([tasks-and-projects.md](tasks-and-projects.md)) |
 
 Task budget facts:
 - Test is spend >= budget (fires AT the figure). 0 disables it. `config show` prints the file as written: no `task_budget_usd` line means the $5 default applies.
-- Charged flat on the task id when the agent answers (each reply drains what that agent spent since its previous turn). No walk to the parent: a chief's ten subtasks each have their own full budget, so it bounds one agent's work on one assignment, not a fan-out in dollars. `orchestration.tree_message_budget` bounds fan-out in messages ([orchestration.md](orchestration.md)).
+- Charged when the agent answers (each reply drains what that agent spent since its previous turn), on the task and on every task above it (since 0.65.2). One budget covers a whole fan-out: a chief's assignment that grows into ten subtasks has $5 between all of them, so a fleet doing large delegated work should raise it. A restart reseeds every figure the same way, finished subtasks included. `orchestration.tree_message_budget` bounds the same tree in messages ([orchestration.md](orchestration.md)).
 - Ordinary chat has no task id and is outside the task budget; the daily caps cover it.
 - First drain on an agent after daemon start sets a watermark and charges nothing; restored tasks' spend is reseeded from the ledgers, so the budget keeps counting across restarts. Row ids prevent double charging.
 

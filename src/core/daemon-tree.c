@@ -76,6 +76,45 @@ root_of(
 	return g_strdup(clawt_task_get_id(task));
 }
 
+void
+clawt_daemon_tree_charge(
+	ClawtDaemon *self,
+	const gchar *task_id,
+	gdouble      amount_usd
+){
+	ClawtTask *task;
+	guint steps;
+
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (self->guard == NULL || task_id == NULL || amount_usd <= 0.0)
+		return;
+
+	clawt_loop_guard_record_spend(self->guard, task_id, amount_usd);
+
+	/*
+	 * Then every ancestor the manager still knows, by the same walk as
+	 * root_of(), so a task's figure is what its whole subtree cost and
+	 * orchestration.task_budget_usd bounds a fan-out in money, not only
+	 * one assignee's turns.
+	 */
+	task = self->tasks != NULL ? clawt_task_manager_get(self->tasks, task_id) : NULL;
+
+	for (steps = 0; task != NULL && steps < TREE_WALK_LIMIT; steps++) {
+		const gchar *parent_id = clawt_task_get_parent_id(task);
+
+		if (parent_id == NULL)
+			break;
+
+		task = clawt_task_manager_get(self->tasks, parent_id);
+		if (task == NULL)
+			break;
+
+		clawt_loop_guard_record_spend(self->guard,
+		                              clawt_task_get_id(task), amount_usd);
+	}
+}
+
 /*
  * The guard's resolver (ClawtLoopGuardTreeFunc).
  *

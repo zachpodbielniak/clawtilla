@@ -187,13 +187,14 @@ unless you asked for everything.
 
 ** The task budget
 
-=orchestration.task_budget_usd= caps what one delegated task may
-spend: what its assignee's turns on it cost.  It is per task, not per
-tree -- a subtask has a budget of its own and its spend is not added to
-its parent's -- so a fan-out is bounded in messages by
-=orchestration.tree_message_budget= and a project's work in money by
-its =monthly_budget_usd= ([[file:tasks.org][tasks.org]]).  It defaults to =$5.00=; =0= disables
-it.
+=orchestration.task_budget_usd= caps what one delegated task -- and
+everything it spawns -- may spend.  A turn's cost is booked on its task
+and on every task above it, so one budget covers a whole fan-out: a
+chief's assignment that grows into ten subtasks has $5.00 between all
+of them, not $5.00 each (that was the behaviour until 0.65.2).  The same
+tree is bounded in messages by =orchestration.tree_message_budget=, and
+a project's work by its =monthly_budget_usd= per month
+([[file:tasks.org][tasks.org]]).  It defaults to =$5.00=; =0= disables it.
 
 When a task reaches its cap -- the test is spend *>=* budget, so it fires
 *at* the figure and not past it -- further messages belonging to it are

@@ -2446,13 +2446,22 @@ turn that absorbs it.
 
 *** task_budget_usd
 
-Charged against the *task* by its id.  Past the cap -- at it, in fact:
-the test is spend >= budget -- every further message carrying that task
-id is refused:
+Charged against the *task* by its id, and against every task above it.
+Past the cap -- at it, in fact: the test is spend >= budget -- every
+further message carrying that task id is refused:
 
 #+begin_example
 this task has spent $5.40, which is its budget of $5.00. Stop and report
 what you have.
+#+end_example
+
+and once the *tree* is over the cap, a message on any task in it is
+refused, even one whose own turns cost nothing:
+
+#+begin_example
+the work this task is part of (task task-01m0k5 and everything under it)
+has spent $5.40, which is its budget of $5.00. Stop and report what you
+have.
 #+end_example
 
 The second sentence is the half that matters.  A refusal that only says
@@ -2467,20 +2476,24 @@ not bill it for everything the agent has ever done.  See [[file:spending.org][Sp
 Ordinary conversation is deliberately uncapped: spend is booked against a
 task id, and a chat has none.
 
-**** It is per task, not per tree of tasks
+**** It covers the whole tree (0.65.2)
 
-Spend is a flat table keyed on task id with no walk to a parent.  A
-delegated task does record its parent (from the delegating agent's
-turn), but the budget does not follow that link: a chief that delegates
-ten subtasks creates ten tasks each with its own full $5.00, and the
-$5.00 it was itself given bounds only its own turns.  (Before 0.65.1 the
-schema described this as a cap on "one delegated task and everything it
-spawns", which it never was.)
+Each reply's cost goes to its task and up the parent chain
+(=clawt_daemon_tree_charge()=, the same walk the tree message budget
+uses), so a task's figure is its subtree's and the root's is the whole
+tree's.  The check reads the message's task and its root; the root is a
+superset of every figure between them, so that is every ancestor.  A
+restart reseeds the figures the same way, from every task on record,
+finished subtasks included -- a subtask that ended before the restart
+still spent against the live parent above it.
 
-The practical reading: ~task_budget_usd~ bounds *one agent's work on one
-assignment*, which is still the runaway case it was built for.  It does
-not bound a fan-out in dollars.  =orchestration.tree_message_budget=,
-below, bounds one in messages.
+Until 0.65.2 spend was a flat table keyed on task id with no walk to a
+parent: a chief that delegated ten subtasks created ten tasks each with
+its own full $5.00, and the budget bounded one agent's work on one
+assignment and not a fan-out.  The consequence of the change worth
+knowing: the default $5.00 now bounds *everything* one assignment grows
+into, so a fleet that hands its chief large pieces of work may want it
+raised.
 
 *** tree_message_budget
 

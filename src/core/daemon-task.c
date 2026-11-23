@@ -1131,7 +1131,8 @@ task_is_carried(
 
 /*
  * Seeds the loop guard with what each restored task has already cost,
- * so orchestration.task_budget_usd keeps counting where it left off:
+ * charged up its tree as a live turn is, so
+ * orchestration.task_budget_usd keeps counting where it left off:
  * a budget that reset on every restart would be a budget a crash loop
  * never meets.
  */
@@ -1184,9 +1185,13 @@ seed_task_spend(
 	while (g_hash_table_iter_next(&iter, &key, &value)) {
 		gint64 micros = (gint64)GPOINTER_TO_SIZE(value);
 
+		/*
+		 * Up the tree, as a live charge is, so a restart leaves every
+		 * figure covering its subtree.
+		 */
 		if (micros > 0)
-			clawt_loop_guard_record_spend(self->guard, key,
-			                              (gdouble)micros / 1000000.0);
+			clawt_daemon_tree_charge(self, key,
+			                         (gdouble)micros / 1000000.0);
 	}
 }
 
@@ -1204,7 +1209,16 @@ clawt_daemon_tasks_reconcile(
 		return 0;
 
 	live = clawt_task_manager_list(self->tasks, NULL, FALSE);
-	seed_task_spend(self, live);
+
+	/*
+	 * Every task, finished ones too: a subtask that ended before the
+	 * restart still spent against the live parent above it.
+	 */
+	{
+		g_autoptr(GPtrArray) every = clawt_task_manager_list(self->tasks, NULL, TRUE);
+
+		seed_task_spend(self, every);
+	}
 
 	/*
 	 * A held task whose blockers all completed while nobody was

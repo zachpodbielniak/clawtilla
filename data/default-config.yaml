@@ -546,13 +546,17 @@ orchestration:
   # Uses local midnight and persisted usage; in-flight work can overshoot.
   daily_agent_budget_micros: 0
 
-  # Spend cap for one delegated task: what its assignee's turns on it cost.
+  # Spend cap for one delegated task and everything it spawns.
   #
-  # Per task, not per tree.  Spend is booked on the task the reply is
-  # about and never rolled up to its parent, so each subtask a lead hands
-  # out has a budget of its own.  A fan-out is bounded in messages by
-  # orchestration.tree_message_budget, and a project's work in money by
-  # its monthly_budget_usd.  0 disables the cap.
+  # A turn's cost is booked on the task it was about and on every task
+  # above it, so a task's figure is what its whole subtree cost.  A
+  # message on any task is refused once that task, or the root of its
+  # tree, has spent the cap -- one budget for a whole fan-out, not one
+  # per subtask (per subtask until 0.65.2).  So the default bounds
+  # everything a chief's assignment grows into; raise it for fleets that
+  # do large delegated work.  orchestration.tree_message_budget bounds the
+  # same tree in messages, a project's monthly_budget_usd its month.
+  # 0 disables the cap.
   task_budget_usd: 5.0
 
   # How long without a turn before the Fleet page calls an agent idle.

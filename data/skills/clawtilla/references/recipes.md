@@ -127,7 +127,7 @@ See [connectors.md](connectors.md), [integrations.md](integrations.md).
 
 1. `clawtilla cost --today`, `clawtilla cost --days 7 --by origin`, `clawtilla cost --by model --csv > spend.csv`.
 2. `clawtilla limits` (live, up to 60 s) or `clawtilla limits --cached`.
-3. Caps: `orchestration.daily_fleet_budget_micros` (fleet per day), `orchestration.task_budget_usd` (per task, not per tree),
+3. Caps: `orchestration.daily_fleet_budget_micros` (fleet per day), `orchestration.task_budget_usd` (per task and everything under it),
    a project's `monthly_budget_usd` (`clawtilla project set <id> monthly_budget_usd 40`). See [spending-and-usage.md](spending-and-usage.md).
 
 ## Recover a stuck task

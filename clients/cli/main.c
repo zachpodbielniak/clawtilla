@@ -5598,8 +5598,8 @@ cmd_cost(int argc, char *argv[])
     }
 
     if (budget > 0.0)
-        g_print("Each delegated task may spend $%.2f "
-                "(orchestration.task_budget_usd).\n", budget);
+        g_print("Each delegated task, with everything it hands on, may "
+                "spend $%.2f (orchestration.task_budget_usd).\n", budget);
 
     /*
      * Said plainly, because the alternative is somebody reconciling this

@@ -2556,8 +2556,7 @@ charge_turn_to_task(ClawtDaemon *self, const gchar *agent_id,
     if (task_id == NULL || cost_micros <= 0)
         return;
 
-    clawt_loop_guard_record_spend(self->guard, task_id,
-                                  (gdouble)cost_micros / 1000000.0);
+    clawt_daemon_tree_charge(self, task_id, (gdouble)cost_micros / 1000000.0);
 }
 
 /* ── One answer, in the conversation that asked ──────────────────── */
