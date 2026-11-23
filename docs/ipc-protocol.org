@@ -1345,7 +1345,10 @@ frame a client sends).  Since 0.71.0 ~federation.discover~ (~candidates~; deferr
 and ~room.list~ carries ~mention_names~ for a room that crosses fleets.  Since 0.73.0
 ~room.history~ gives each message sent to another fleet its ~delivery~
 tick, and the events ~federation.presence~ (~ref~, ~state~) and
-~federation.typing~ (~ref~, ~typing~) say which remote agent changed.  Every payload and
+~federation.typing~ (~ref~, ~typing~) say which remote agent changed.
+Since 0.73.7 ~federation.task~ (subject the task; ~alias~, ~side~
+~delegated~ or ~doing~, ~state~, ~title~) fires once per change of state
+of a task that crossed fleets.  Every payload and
 answer is tabled in [[file:federation.org::#requests][federation.org]].  With =federation.enabled=
 off, ~federation.status~ answers ~enabled: false~ and a hint, and the rest
 refuse with =not_supported=.

@@ -401,6 +401,43 @@ publish_peer(
     clawt_event_bus_publish(self->bus, event);
 }
 
+/*
+ * federation.task: a task delegated to another fleet (side "delegated",
+ * the proxy here) or taken from one (side "doing") changed state.  Only
+ * on a change of state -- task-changed also fires for a note or a field,
+ * and an edge derived from a repeated signal is not an edge.  The proxy
+ * is an ordinary task too, so task.changed still carries every field;
+ * this is the one event that says which fleet the work crossed with.
+ */
+static void
+publish_task(
+    ClawtDaemon *self,
+    ClawtTask   *task,
+    const gchar *alias,
+    gboolean     doing,
+    gint         state
+){
+    g_autoptr(ClawtEvent) event = NULL;
+    const gchar *id = clawt_task_get_id(task);
+    gpointer seen;
+
+    if (self->bus == NULL || self->fed_task_seen == NULL || id == NULL)
+        return;
+    seen = g_hash_table_lookup(self->fed_task_seen, id);
+    if (seen != NULL && GPOINTER_TO_INT(seen) == state + 1)
+        return;
+    g_hash_table_replace(self->fed_task_seen, g_strdup(id), GINT_TO_POINTER(state + 1));
+    event = clawt_event_new("federation.task", id);
+    clawt_event_set_detail(event, "alias", alias);
+    clawt_event_set_detail(event, "side", doing ? "doing" : "delegated");
+    clawt_event_set_detail(event, "state", clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE, state));
+    if (clawt_task_get_title(task) != NULL)
+        clawt_event_set_detail(event, "title", clawt_task_get_title(task));
+    clawt_event_bus_publish(self->bus, event);
+    if (clawt_task_state_is_finished((ClawtTaskState)state))
+        g_hash_table_remove(self->fed_task_seen, id);
+}
+
 static void
 save_registry(
     ClawtDaemon *self
@@ -2491,6 +2528,7 @@ clawt_daemon_federation_setup(
     load_outbox(self);
     load_holds(self);
     self->fed_room_seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    self->fed_task_seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     self->fed_post_authors = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                                    (GDestroyNotify)json_object_unref);
     load_shares(self);
@@ -2589,6 +2627,7 @@ clawt_daemon_federation_teardown(
     g_clear_pointer(&self->fed_sent, g_hash_table_unref);
     g_clear_pointer(&self->fed_room_depth, g_hash_table_unref);
     g_clear_pointer(&self->fed_room_seen, g_hash_table_unref);
+    g_clear_pointer(&self->fed_task_seen, g_hash_table_unref);
     g_clear_pointer(&self->fed_post_authors, g_hash_table_unref);
     g_clear_object(&self->fed_store);
     g_clear_pointer(&self->fed_shares, json_object_unref);
@@ -4028,6 +4067,8 @@ on_fed_task_changed(
 
     if (peer == NULL || g_strcmp0(peer->status, "active") != 0)
         return;
+    publish_task(self, task, alias,
+                 clawt_sender_kind_of(clawt_task_get_origin(task)) == CLAWT_SENDER_REMOTE, state);
     if (clawt_sender_kind_of(clawt_task_get_origin(task)) == CLAWT_SENDER_REMOTE) {
         g_autoptr(JsonObject) o = json_object_new();
         g_autofree gchar *body = NULL;

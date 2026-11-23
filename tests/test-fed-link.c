@@ -429,6 +429,35 @@ wait_for_visitors(
 static void set_agent(ClawtClient *client, const gchar *agent, const gchar *key,
                       const gchar *value);
 
+/* federation.task events as "side state task", in order. */
+static void
+collect_fed_task(
+    ClawtEventBus *bus,
+    ClawtEvent    *event,
+    gpointer       user_data
+){
+    (void)bus;
+    if (g_strcmp0(clawt_event_get_kind(event), "federation.task") == 0)
+        g_ptr_array_add(user_data, g_strdup_printf("%s %s %s",
+            clawt_event_get_detail(event, "side"), clawt_event_get_detail(event, "state"),
+            clawt_event_get_subject(event)));
+}
+
+/* How many entries of @seen are exactly @line. */
+static guint
+count_line(
+    GPtrArray   *seen,
+    const gchar *line
+){
+    guint n = 0;
+    guint i;
+
+    for (i = 0; i < seen->len; i++)
+        if (g_strcmp0(g_ptr_array_index(seen, i), line) == 0)
+            n++;
+    return n;
+}
+
 static void
 count_presence(
     ClawtEventBus *bus,
@@ -886,10 +915,17 @@ test_delegation(
     g_autofree gchar *second = NULL;
     ClawtTask *real;
 
+    g_autoptr(GPtrArray) a_fed_events = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) b_fed_events = g_ptr_array_new_with_free_func(g_free);
+    gulong a_handler;
+    gulong b_handler;
+
     memset(&p, 0, sizeof(p));
     pair_up(&p);
     alias = link_them(&p, t);
     wait_for_refs(&p, p.ca, "b-chief@bravo-lab");
+    a_handler = g_signal_connect(p.a->bus, "event", G_CALLBACK(collect_fed_task), a_fed_events);
+    b_handler = g_signal_connect(p.b->bus, "event", G_CALLBACK(collect_fed_task), b_fed_events);
 
     /* limited: delegate=ask, so it is held for B's operator */
     {
@@ -934,13 +970,37 @@ test_delegation(
         g_assert_cmpstr(clawt_task_get_assignee(proxy), ==, "b-chief@bravo-lab");
         g_assert_true(clawt_task_manager_start(clawt_daemon_get_tasks(p.b), real_id));
         wait_for_state(&p, p.a, first, CLAWT_TASK_RUNNING);
+        /* progress re-fires task-changed while it stays running: not a new edge */
+        g_assert_true(clawt_task_manager_note_progress(clawt_daemon_get_tasks(p.b), real_id,
+                                                       "halfway"));
+        g_assert_true(clawt_task_manager_note_progress(clawt_daemon_get_tasks(p.b), real_id,
+                                                       "nearly there"));
         g_assert_true(clawt_task_manager_complete(clawt_daemon_get_tasks(p.b), real_id,
                                                   "three findings, all minor"));
         wait_for_state(&p, p.a, first, CLAWT_TASK_COMPLETED);
         g_assert_cmpstr(clawt_task_get_result(clawt_task_manager_get(clawt_daemon_get_tasks(p.a),
                                                                      first)),
                         ==, "three findings, all minor");
+
+        /*
+         * federation.task (0.73.7): each side says which way the work
+         * crossed, once per state -- task-changed fires for more than
+         * state, and a repeat is not an edge.
+         */
+        {
+            g_autofree gchar *a_run = g_strdup_printf("delegated running %s", first);
+            g_autofree gchar *a_done = g_strdup_printf("delegated completed %s", first);
+            g_autofree gchar *b_run = g_strdup_printf("doing running %s", real_id);
+            g_autofree gchar *b_done = g_strdup_printf("doing completed %s", real_id);
+
+            g_assert_cmpuint(count_line(a_fed_events, a_run), ==, 1);
+            g_assert_cmpuint(count_line(a_fed_events, a_done), ==, 1);
+            g_assert_cmpuint(count_line(b_fed_events, b_run), ==, 1);
+            g_assert_cmpuint(count_line(b_fed_events, b_done), ==, 1);
+        }
     }
+    g_signal_handler_disconnect(p.a->bus, a_handler);
+    g_signal_handler_disconnect(p.b->bus, b_handler);
 
     /* Opened: taken at once; cancelling the proxy cancels the work there. */
     {

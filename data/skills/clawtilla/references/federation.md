@@ -151,7 +151,7 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 - **Caps**: a turn works for a fleet when it is in a `fed:` room with it or carries (or descends from) a task that came from it. Every call then takes the stricter of the agent's action rule and that fleet's `cap.CLASS` -- clawtilla tools and, via the permission hook, the CLI's own Bash/edits. `cap.fleet_admin` is always deny; `subdelegate=false` denies `clawtilla_delegate` in such turns. With `federation.enabled`, every agent gets the permission hook.
 - Tighten a fleet: `clawtilla federation set ALIAS cap.exec=deny cap.write=ask max_concurrent_tasks=1 budget_cents_per_day=300 delegate=ask`.
 
-- Watching delegated work: a proxy is an ordinary task, so `task.changed` (with `remote_peer`) reports it; there is no `federation.task` event.
+- Watching delegated work: `federation.task` (subject the task; `alias`, `side` delegated|doing, `state`, `title`; 0.73.7) once per change of state; `task.changed` (with `remote_peer`) still carries every field. `clawtilla federation log -f` prints both the audit and these.
 
 ## Transcripts, shared rooms, the handshake (0.70.0)
 

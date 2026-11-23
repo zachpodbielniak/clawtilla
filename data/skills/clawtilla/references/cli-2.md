@@ -122,7 +122,7 @@ See [routines-and-triggers.md](routines-and-triggers.md), [grok-and-venture.md](
 | `clawtilla federation list [--filter SEL]` / `show ALIAS` / `explain ALIAS` / `log [ALIAS]` | linked fleets; one fleet's grant and sources; the audit |
 | `clawtilla federation set ALIAS [--tier T] [--label L] [--owner O] [--endpoint URL] [FIELD=VALUE]...` / `tag ALIAS +X -Y` | change tier, details, grant overrides, tags |
 | `clawtilla federation hide\|unhide\|mute\|unmute\|approve\|ping\|revoke\|forget ALIAS` | per-fleet actions |
-| `clawtilla federation log [ALIAS] [--limit N] [-f]` | the audit, newest first; `-f` follows it |
+| `clawtilla federation log [ALIAS] [--limit N] [-f]` | the audit, newest first; `-f` follows it, with a task line each time delegated work changes state (`federation.task`) |
 | `clawtilla federation discover [--candidate ENDPOINT]...` | clawtilla fleets on the tailnet (or at the endpoints given); links nothing |
 | `clawtilla federation migrate-office [NAME]` | `office.peers` entries and whether linked; with NAME, link it as owned with its pairing token |
 | `clawtilla federation transcript ALIAS (--task PROXY-ID \| --agent AGENT) [--limit N]` | read back work you gave that fleet, or its conversations with an agent, per its `transcripts` grant to you |

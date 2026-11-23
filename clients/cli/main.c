@@ -4951,7 +4951,7 @@ fed_print_show(JsonObject *o)
         g_print("  ! %s\n", json_array_get_string_element(problems, i));
 }
 
-/* One line of the federation audit, as it happens (`federation log -f`). */
+/* One line of the federation audit, or of work crossing fleets, as it happens (`federation log -f`). */
 static void
 on_fed_audit_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
 {
@@ -4960,6 +4960,26 @@ on_fed_audit_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
     g_autofree gchar *stamp = g_date_time_format(now, "%F %T");
 
     (void)client;
+    /*
+     * Work crossing fleets (federation.task, 0.73.7) is followed here too:
+     * the audit says an envelope moved, this says what became of the task.
+     */
+    if (g_strcmp0(clawt_event_get_kind(event), "federation.task") == 0) {
+        const gchar *from = clawt_event_get_detail(event, "alias");
+        const gchar *title = clawt_event_get_detail(event, "title");
+
+        if (alias != NULL && g_strcmp0(from, alias) != 0)
+            return;
+        g_print("%s  task  %-16s %-14s %-8s %s%s%s\n", stamp,
+                from != NULL ? from : "",
+                g_strcmp0(clawt_event_get_detail(event, "side"), "doing") == 0
+                    ? "doing for them" : "delegated",
+                clawt_event_get_detail(event, "state") != NULL
+                    ? clawt_event_get_detail(event, "state") : "",
+                clawt_event_get_subject(event) != NULL ? clawt_event_get_subject(event) : "",
+                title != NULL ? " -- " : "", title != NULL ? title : "");
+        return;
+    }
     if (g_strcmp0(clawt_event_get_kind(event), "federation.audit") != 0
         || (alias != NULL && g_strcmp0(clawt_event_get_subject(event), alias) != 0))
         return;
@@ -5025,7 +5045,8 @@ cmd_federation(int argc, char *argv[])
                 "  invites | uninvite ID      outstanding invites; withdraw one\n"
                 "  log [ALIAS] [--limit N] [-f]\n"
                 "                             every request between fleets, newest first;\n"
-                "                             -f keeps printing new ones\n"
+                "                             -f keeps printing new ones, and a task line\n"
+                "                             as delegated work changes state\n"
                 "  discover [--candidate ENDPOINT]...\n"
                 "                             clawtilla fleets within reach: every online\n"
                 "                             tailnet machine's daemon port, or the\n"
