@@ -220,3 +220,237 @@ clawt_http_send_and_read(
 
 	return (GBytes *)g_steal_pointer(&body);
 }
+
+/* ── Bounded request bodies, for any SoupServer here ─────────────── */
+
+/*
+ * RefusalClose:
+ *
+ * A rejected HTTP connection may already have more upload bytes queued
+ * in TCP. Closing it with unread bytes sends RST and can hide the 413
+ * from ordinary clients. Drain into a fixed buffer after replying, but
+ * only for one second; an idle or endless sender cannot retain the
+ * connection indefinitely. The same deadline also bounds the write.
+ */
+typedef struct {
+	GIOStream *stream;
+	GCancellable *cancellable;
+	GSource *deadline;
+	guchar buffer[8192];
+} RefusalClose;
+
+/**
+ * on_refusal_closed:
+ * @source: stolen connection
+ * @result: completion of closing the connection
+ * @user_data: owned rejection state
+ *
+ * Release every resource once the asynchronous close has finished.
+ */
+static void
+on_refusal_closed(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+	RefusalClose *state = user_data;
+
+	g_io_stream_close_finish(G_IO_STREAM(source), result, NULL);
+	g_object_unref(state->stream);
+	g_object_unref(state->cancellable);
+	g_free(state);
+}
+
+/**
+ * close_refusal:
+ * @state: owned rejection state
+ *
+ * Stop the deadline before closing. Do not pass its cancelled token to
+ * close: the descriptor must actually close even after a timeout.
+ */
+static void
+close_refusal(RefusalClose *state)
+{
+	g_source_destroy(state->deadline);
+	g_source_unref(state->deadline);
+	g_io_stream_close_async(state->stream, G_PRIORITY_DEFAULT, NULL,
+		on_refusal_closed, state);
+}
+
+/**
+ * on_refusal_drained:
+ * @source: rejected connection's input stream
+ * @result: completion of discarding one bounded buffer
+ * @user_data: owned rejection state
+ *
+ * Discard only while the grace period remains. The peer normally closes
+ * after reading 413; otherwise cancellation ends the read at the deadline.
+ */
+static void
+on_refusal_drained(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+	RefusalClose *state = user_data;
+	gssize count;
+
+	count = g_input_stream_read_finish(G_INPUT_STREAM(source), result, NULL);
+	if (count <= 0 || g_cancellable_is_cancelled(state->cancellable)) {
+		close_refusal(state);
+		return;
+	}
+	g_input_stream_read_async(G_INPUT_STREAM(source), state->buffer,
+		sizeof(state->buffer), G_PRIORITY_DEFAULT, state->cancellable,
+		on_refusal_drained, state);
+}
+
+/**
+ * on_refusal_written:
+ * @source: output stream of the rejected connection
+ * @result: completion of writing the fixed HTTP response
+ * @user_data: owned rejection state
+ *
+ * Let in-flight upload bytes drain after writing the response so that
+ * closing the socket does not replace a usable HTTP error with TCP RST.
+ */
+static void
+on_refusal_written(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+	RefusalClose *state = user_data;
+
+	if (!g_output_stream_write_all_finish(G_OUTPUT_STREAM(source), result,
+		NULL, NULL)) {
+		close_refusal(state);
+		return;
+	}
+	g_input_stream_read_async(g_io_stream_get_input_stream(state->stream),
+		state->buffer, sizeof(state->buffer), G_PRIORITY_DEFAULT,
+		state->cancellable, on_refusal_drained, state);
+}
+
+/**
+ * on_refusal_deadline:
+ * @user_data: rejection state with an outstanding write or read
+ *
+ * Bound cleanup even if the sender neither finishes uploading nor closes.
+ *
+ * Returns: %G_SOURCE_REMOVE after cancelling the outstanding operation
+ */
+static gboolean
+on_refusal_deadline(gpointer user_data)
+{
+	RefusalClose *state = user_data;
+
+	g_cancellable_cancel(state->cancellable);
+	return G_SOURCE_REMOVE;
+}
+
+/**
+ * refuse_oversized_body:
+ * @message: request that exceeded the configured cap
+ *
+ * Setting a status while libsoup is reading a body does not interrupt
+ * that read. Steal the HTTP/1 connection to stop accumulation immediately,
+ * then reply and close with a bounded drain period. Stealing can release
+ * the last reference to @message, so do not access it afterward.
+ */
+static void
+refuse_oversized_body(SoupServerMessage *message)
+{
+	static const gchar response[] =
+		"HTTP/1.1 413 Content Too Large\r\n"
+		"Connection: close\r\n"
+		"Content-Length: 0\r\n\r\n";
+	GIOStream *stream;
+	RefusalClose *state;
+
+	stream = soup_server_message_steal_connection(message);
+	if (stream == NULL)
+		return;
+	state = g_new0(RefusalClose, 1);
+	state->stream = stream;
+	state->cancellable = g_cancellable_new();
+	state->deadline = g_timeout_source_new(1000);
+	g_source_set_callback(state->deadline, on_refusal_deadline, state, NULL);
+	g_source_attach(state->deadline, g_main_context_get_thread_default());
+	g_output_stream_write_all_async(g_io_stream_get_output_stream(stream),
+		response, sizeof(response) - 1, G_PRIORITY_DEFAULT, state->cancellable,
+		on_refusal_written, state);
+}
+
+/*
+ * on_got_chunk:
+ * @message: request owning the bounded body buffer
+ * @chunk: newly received decoded body bytes
+ * @user_data: ingress defining the byte limit
+ *
+ * libsoup's automatic accumulation is disabled before any body arrives.
+ * Only retain a chunk if the total fits, using subtraction to avoid
+ * overflowing the byte count on hostile input.
+ */
+static void
+on_got_chunk(SoupServerMessage *message, GBytes *chunk, gpointer user_data)
+{
+	gsize max_body_bytes = GPOINTER_TO_SIZE(user_data);
+	SoupMessageBody *body = g_object_get_data(G_OBJECT(message),
+		"clawt-bounded-body");
+	gsize length = g_bytes_get_size(chunk);
+
+	if (length > max_body_bytes - (gsize)body->length) {
+		refuse_oversized_body(message);
+		return;
+	}
+	soup_message_body_append_bytes(body, chunk);
+}
+
+/*
+ * on_got_headers:
+ * @message: request whose headers have just arrived
+ * @user_data: ingress defining the byte limit
+ *
+ * Refuse a declared oversized body before reading it. Other requests
+ * use a separately owned, bounded buffer populated by on_got_chunk().
+ */
+static void
+on_got_headers(SoupServerMessage *message, gpointer user_data)
+{
+	gsize max_body_bytes = GPOINTER_TO_SIZE(user_data);
+	SoupMessageHeaders *headers =
+		soup_server_message_get_request_headers(message);
+	goffset declared = soup_message_headers_get_content_length(headers);
+
+	soup_message_body_set_accumulate(
+		soup_server_message_get_request_body(message), FALSE);
+	if (declared > 0 && (guint64)declared > max_body_bytes) {
+		refuse_oversized_body(message);
+		return;
+	}
+	g_object_set_data_full(G_OBJECT(message), "clawt-bounded-body",
+		soup_message_body_new(), (GDestroyNotify)soup_message_body_unref);
+	g_signal_connect(message, "got-chunk", G_CALLBACK(on_got_chunk), user_data);
+}
+
+static void
+on_request_started(SoupServer        *server,
+                   SoupServerMessage *message,
+                   gpointer           user_data)
+{
+    (void)server;
+
+    g_signal_connect(message, "got-headers", G_CALLBACK(on_got_headers),
+                     user_data);
+}
+
+
+void
+clawt_http_server_limit_bodies(
+	SoupServer *server,
+	gsize       max_body_bytes
+){
+	g_return_if_fail(SOUP_IS_SERVER(server));
+
+	g_signal_connect(server, "request-started", G_CALLBACK(on_request_started),
+		GSIZE_TO_POINTER(max_body_bytes));
+}
+
+SoupMessageBody *
+clawt_http_server_message_body(
+	SoupServerMessage *message
+){
+	return g_object_get_data(G_OBJECT(message), "clawt-bounded-body");
+}

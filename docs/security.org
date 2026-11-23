@@ -1532,6 +1532,44 @@ Off by default.  When enabled:
 - a client may accept an unvalidated certificate only by asking
   explicitly, and it warns each time; that disables the check that would
   notice somebody else answering on that address
+- with =daemon.tls_cert= and =daemon.tls_key= the TCP listeners speak TLS.
+  Before 0.66.0 the two paths were stored and never used -- the listener
+  stayed plain text while its header said it wrapped it -- so a
+  certificate protected nothing.  A certificate that cannot be read now
+  refuses the start rather than falling back to plain text, and a client
+  profile without =tls= no longer reaches such a daemon
+- a client may instead *pin* the certificate (~clawt_client_set_tls_pin()~,
+  the SHA-256 of its DER): exactly that certificate is accepted, whoever
+  signed it, which is what a self-signed daemon needs and is stricter
+  than validation.  A federation link to a TLS IPC port pins the
+  certificate its invite named
+
+** Federation
+:PROPERTIES:
+:CUSTOM_ID: federation
+:END:
+
+Linked fleets reach this daemon through the federation listener
+(=federation.listen=, a unix socket by default) and, with =federation.ipc=,
+through the IPC port.  Everything is in [[file:federation.org::#security][federation.org]]; the parts
+that change what is true elsewhere in this document:
+
+- every request and every answer between fleets is a signed envelope,
+  checked before its body is read as JSON: known fleet, unretired key,
+  clock window, addressed to us, signed for this route, body digest,
+  signature, nonce never seen (the nonce table survives a restart)
+- a connection that says ~fed.hello~ is a *fleet*: it may send ~fed.*~
+  frames and nothing else, on whatever socket it came in on -- the owner's
+  unix socket included -- and never receives the event stream.  The gate
+  is in ~dispatch_line()~, not in handlers
+- only the operator, clawtilla itself and an integration relaying for the
+  operator (=grok:=, =venture:=) may write into a room they are not a
+  member of (~clawt_sender_may_post_anywhere()~).  Until 0.66.0 any sender
+  that was not a local agent was waved through, which is exactly what
+  another fleet's agent (=fleet:ALIAS:AGENT=) would have been
+- plain text to a public address is refused; to a LAN only with
+  =federation.allow_lan_plaintext=, and then sealed
+- the fleet key is in =<secrets.dir>/federation/=, which no agent box binds
 
 ** The web client
 

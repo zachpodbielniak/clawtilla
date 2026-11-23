@@ -10,8 +10,8 @@
 # Project information
 PROJECT_NAME = clawtilla
 VERSION_MAJOR = 0
-VERSION_MINOR = 65
-VERSION_MICRO = 2
+VERSION_MINOR = 66
+VERSION_MICRO = 0
 VERSION = $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_MICRO)
 
 # Installation paths
@@ -50,7 +50,7 @@ CFLAGS_BASE = $(CSTD) $(WARNINGS) -fPIC
 # symbols.  Fedora package: gstreamer1-devel and gstreamer1-plugins-base-devel.
 PKG_DEPS = glib-2.0 gobject-2.0 gio-2.0 gio-unix-2.0 gmodule-2.0 libsoup-3.0 \
            json-glib-1.0 libcmark sqlite3 libetpan libpq libdex-1 libxml-2.0 \
-           gstreamer-1.0 gstreamer-app-1.0
+           gstreamer-1.0 gstreamer-app-1.0 nettle hogweed
 
 PKG_CFLAGS := $(shell pkg-config --cflags $(PKG_DEPS))
 PKG_LIBS := $(shell pkg-config --libs $(PKG_DEPS))

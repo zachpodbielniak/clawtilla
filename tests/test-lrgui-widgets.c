@@ -441,12 +441,12 @@ test_every_settings_page_builds(Fixture *fixture, gconstpointer data)
 
     /*
      * Images, Teams, Projects, History, Pack, Spending, Orchestration,
-     * Integrations, Connectors, Folders, Appearance, Devices -- GTK's
-     * pages -- and Connections last.  A page added to the table without
-     * a line here fails this count, which is the point: it means the new
-     * page was never opened by this test's loop on purpose.
+     * Integrations, Connectors, Folders, Appearance, Devices, Federation
+     * -- GTK's pages -- and Connections last.  A page added to the table
+     * without a line here fails this count, which is the point: it means
+     * the new page was never opened by this test's loop on purpose.
      */
-    g_assert_cmpuint(n, ==, 13);
+    g_assert_cmpuint(n, ==, 14);
     g_assert_cmpstr(pages[n - 1]->id, ==, "connections");
 
     /* every id distinct, or clawt_lrg_open_settings() opens the wrong one */

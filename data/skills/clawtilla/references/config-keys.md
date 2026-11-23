@@ -412,6 +412,28 @@ see security.md).
 | `office.peers` | list of strings |  |  | Other fleets whose people visit this office, each `NAME=WHERE`: WHERE is the other daemon's socket on this machine (`work=/run/user/1000/work/d.sock`) or its tailnet address (`studio=100.64.0.7:8792`), paired once with `clawtilla office peer-pair NAME CODE` using a code `clawtilla device pair` printed on that machine. |
 | `office.peer_poll_seconds` | integer | `5` |  | How often, in seconds, each office.peers fleet is asked who is where. A fleet that has not answered for three of these is drawn empty, not frozen. |
 
+## `federation` ([config/federation.md](config/federation.md))
+
+| Key | Type | Default | Agent | Summary |
+|---|---|---|---|---|
+| `federation` | section |  |  | Federation: this fleet linked with other clawtilla fleets -- yours on another machine, or other people's. |
+| `federation.enabled` | boolean | `false` |  | Whether this daemon links with other clawtilla fleets -- yours on another machine, or a colleague's. |
+| `federation.name` | string |  |  | What other fleets call this one: shown on their sidebar section and in invites. |
+| `federation.owner` | string |  |  | Who runs this fleet, as other fleets see it: a name, not an account. Their `owner:` filters and rules match it. |
+| `federation.public_url` | string |  |  | The endpoint invites tell other fleets to reach this one at: `https://fleet.example.com` behind a Cloudflare tunnel or a TLS proxy, `http://100.64.0.7:7711` for the federation listener on a tailnet, or `clawtilla://100.64.0.7:8792` for this daemon's own IPC port. |
+| `federation.listen` | list of strings |  |  | Where the HTTPS/WebSocket federation listener answers, each `unix:PATH` or `HOST:PORT`. |
+| `federation.ipc` | boolean | `true` |  | Whether other fleets may also speak to this daemon over its own IPC port (daemon.tcp_address and the tailnet address) -- the simple daemon connection: `clawtilla://HOST:PORT`, no extra port, no HTTP. |
+| `federation.allow_lan_plaintext` | boolean | `false` |  | Whether a link may use a local-network address (RFC 1918, link-local, a name that is not localhost or *.ts.net) without TLS. |
+| `federation.seal` | enum | `auto` |  | Whether bodies between fleets are encrypted with a key the two agree (X25519 + ChaCha20-Poly1305) on top of whatever carries them: `auto` on plain-text LAN links only, `always` on every link (so a tunnel's edge sees only ciphertext), `never`. |
+| `federation.inbox_agent` | string |  |  | The agent a peer reaches when its grant allows only the inbox (untrusted fleets, by default). |
+| `federation.invite_ttl_hours` | integer | `72` |  | How long an invite can be used, in hours, unless the invite says otherwise. |
+| `federation.clock_skew_seconds` | integer | `300` |  | How far another fleet's clock may be from this one's before its signed requests are refused as stale. |
+| `federation.max_body_bytes` | integer | `1048576` |  | The largest request another fleet may send, in bytes. |
+| `federation.ping_seconds` | integer | `30` |  | How often each linked fleet is pinged to keep its link health current. |
+| `federation.reconnect_max_seconds` | integer | `300` |  | The longest wait between attempts to reach a fleet that is not answering; the wait doubles from one second up to this. |
+| `federation.audit_retention_days` | integer | `90` |  | How long the record of every request between fleets (<state_dir>/federation/audit.ndjson) is kept. |
+| `federation.rules` | list of strings |  |  | Grant overrides for every linked fleet a selector matches, applied in order after the fleet's tier and before its own overrides, each `SELECTOR: field=value; field=value`. |
+
 ## `routines` ([config/routines.md](config/routines.md))
 
 | Key | Type | Default | Agent | Summary |

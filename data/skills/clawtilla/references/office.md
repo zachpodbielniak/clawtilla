@@ -148,6 +148,8 @@ IPC (see mcp-tools.md / architecture.md for the wire): `office.snapshot`, `offic
 
 ## Federation (read-only visiting)
 
+Linking fleets for real -- keys, invites, tiers, grants -- is [federation.md](federation.md); what follows is the 0.64.0 office visiting, which 0.67.0 moves onto it.
+
 ```yaml
 office:
   peers:                              # NAME=WHERE

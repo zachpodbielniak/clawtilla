@@ -1313,6 +1313,26 @@ from a scan that found nothing (an empty ~issues~).  See
 ~office.snapshot~ and ~office.layout~ answer ~enabled: false~ and ~why~
 rather than an error, so a client can say how to turn it on.
 
+*** federation.*
+
+Since 0.66.0: ~federation.status~, ~federation.tiers~,
+~federation.invite.create~, ~federation.invite.inspect~,
+~federation.invite.accept~ (deferred: answered when the other fleet does),
+~federation.invite.revoke~, ~federation.link~ (deferred) and
+~federation.link.offer~, ~federation.peer.list~, ~federation.peer.show~ and
+~federation.peer.explain~, ~federation.peer.set~, ~federation.peer.tag~,
+~federation.peer.hide~, ~federation.peer.mute~, ~federation.peer.approve~,
+~federation.peer.revoke~, ~federation.peer.forget~, ~federation.peer.ping~
+(deferred), ~federation.audit~, ~federation.rotate_key~ and
+~federation.expose~; the events ~federation.peer~ (~alias~, ~change~) and
+~federation.audit~ (~direction~, ~kind~, ~outcome~).  Every payload and
+answer is tabled in [[file:federation.org::#requests][federation.org]].  With =federation.enabled=
+off, ~federation.status~ answers ~enabled: false~ and a hint, and the rest
+refuse with =not_supported=.
+
+Between fleets, on this same port: ~fed.hello~, ~fed.envelope~,
+~fed.invite~ and ~fed.push~ (see Authentication below).
+
 *** usage.*
 
 ~usage.summary~ (~since~, unix seconds, 0 for everything) → ~agents~, one
@@ -2649,6 +2669,13 @@ proves you are the owner.
 
 Over TCP: ~control.hello~ with a token, before anything else.  The daemon
 refuses to open a TCP listener without a token configured.
+
+A third hello is another fleet's: ~fed.hello~ with a signed stamp (see
+[[file:federation.org::#ipc][federation.org]]).  A connection that says it becomes a fleet connection:
+~fed.envelope~ and ~fed.invite~ frames only, answered with a signed
+envelope, and pushed ~fed.push~ frames from this daemon; every other kind
+is refused with =auth=, and it never receives events.  ~fed.*~ frames are
+accepted before the token check because each carries its own signature.
 
 The token is either the daemon's own -- the owner credential, from
 ~daemon.token_file~ or ~<state_dir>/tcp-token~ -- or a paired device's,

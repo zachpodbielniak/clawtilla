@@ -117,6 +117,7 @@ typedef enum {
     CLAWT_REFRESH_FLEET,
     CLAWT_REFRESH_GROK,
     CLAWT_REFRESH_DEVICES,
+    CLAWT_REFRESH_FEDERATION,
     CLAWT_REFRESH_OFFICE,
     CLAWT_N_REFRESH
 } ClawtRefreshKind;
@@ -380,6 +381,11 @@ struct _ClawtWindow {
     gboolean           settings_directory_syncing;
     GtkWidget         *settings_devices;
     GtkWidget         *settings_devices_pair;
+    GtkWidget         *settings_federation;           /* linked fleets */
+    GtkWidget         *settings_federation_self;      /* this fleet */
+    GtkWidget         *settings_federation_activity;  /* the audit */
+    GtkWidget         *settings_federation_invite;
+    GtkWidget         *settings_federation_accept;
     GtkListBox        *routine_list;
     GtkListBox        *trigger_list;
     GtkListBox        *delivery_list;
@@ -1744,6 +1750,17 @@ clawt_gtk_refresh_settings_devices(ClawtWindow *self);
 void
 clawt_gtk_devices_on_event(ClawtWindow *self, ClawtEvent *event);
 
+/* ── Defined in gtk-prefs-federation.c: linked fleets ─────────────── */
+
+GtkWidget *
+clawt_gtk_build_federation_page(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_settings_federation(ClawtWindow *self);
+
+void
+clawt_gtk_federation_on_event(ClawtWindow *self, ClawtEvent *event);
+
 /* ── Defined in gtk-prefs-folders.c: the shared folders page ─────── */
 
 void
@@ -1954,6 +1971,17 @@ clawt_gtk_apply_room_read(ClawtWindow *self, const gchar *room_id,
  */
 void
 clawt_gtk_show_page(ClawtWindow *self, ClawtPage page);
+
+/**
+ * clawt_gtk_open_settings:
+ * @self: a #ClawtWindow
+ * @page: (nullable): a Settings page's name (`federation`, `devices`);
+ *   %NULL or unknown leaves the dialog on its first page
+ *
+ * Opens Settings, on @page -- what `clawtilla-gtk --settings PAGE` does.
+ */
+void
+clawt_gtk_open_settings(ClawtWindow *self, const gchar *page);
 
 /**
  * clawt_gtk_current_page:

@@ -73,6 +73,7 @@ typedef struct {
     gint              ref_count;
     ClawtIpcServer   *server;      /* unowned */
     GSocketConnection *connection;
+    GIOStream        *tls;         /* the TLS layer over a TCP connection, or NULL */
     GInputStream     *input;
     GOutputStream    *output;
     gboolean          subscribed;
@@ -85,6 +86,13 @@ typedef struct {
      * owner token.  Kept so revoking a device can find its sockets.
      */
     gchar            *device_id;
+
+    /*
+     * The fleet this connection proved it is with `fed.hello`, or NULL.
+     * A peer connection may send fed.* frames and nothing else, and is
+     * never sent the event stream: it is another fleet, not a client.
+     */
+    gchar            *peer_fleet;
     GString          *pending;     /* queued outbound bytes, not yet sent */
     GBytes           *writing_bytes; /* the immutable buffer being written */
     gboolean          writing;
@@ -129,6 +137,7 @@ struct _ClawtIpcServer {
     GPtrArray *listeners;      /* Listener*, owned */
     gchar     *tcp_token;
     gchar     *tls_certificate;
+    GTlsCertificate *tls_loaded;  /* read at start from the two paths */
 
     ClawtDeviceStore *devices;    /* owned, nullable */
     gchar     *tls_key;
@@ -138,6 +147,9 @@ struct _ClawtIpcServer {
 
     ClawtIpcHandler handler;
     gpointer        handler_data;
+
+    ClawtIpcFederationHandler fed_handler;
+    gpointer                  fed_handler_data;
     GDestroyNotify  handler_destroy;
 
     /*
@@ -478,8 +490,10 @@ client_free(gpointer data)
 
     g_clear_pointer(&client->writing_bytes, g_bytes_unref);
     g_free(client->device_id);
+    g_free(client->peer_fleet);
 
     g_clear_object(&client->input);
+    g_clear_object(&client->tls);
     g_clear_object(&client->connection);
     g_free(client);
 }
@@ -511,6 +525,8 @@ client_close(Client *client)
 
     client->closing = TRUE;
 
+    if (client->tls != NULL)
+        g_io_stream_close(client->tls, NULL, NULL);
     if (client->connection != NULL)
         g_io_stream_close(G_IO_STREAM(client->connection), NULL, NULL);
 
@@ -865,6 +881,48 @@ dispatch_line(Client *client, const gchar *line, gsize length)
     }
 
     /*
+     * Federation frames go to their own handler, before the token gate:
+     * they authenticate themselves (every one is a signed envelope), and
+     * a fleet dialling in has no owner token and must never be given one.
+     * Anything else from a connection that said `fed.hello` is refused
+     * here, at the one door, rather than in each handler.
+     */
+    if (g_str_has_prefix(clawt_ipc_frame_get_kind(request) != NULL
+                         ? clawt_ipc_frame_get_kind(request) : "", "fed.")) {
+        g_autofree gchar *became = NULL;
+
+        if (self->fed_handler == NULL) {
+            reply = clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                        "this daemon does not federate "
+                                        "(federation.enabled is off)");
+        } else {
+            self->current = client;
+            reply = self->fed_handler(self, request, client->peer_fleet,
+                                      &became, self->fed_handler_data);
+            self->current = NULL;
+            if (became != NULL) {
+                g_free(client->peer_fleet);
+                client->peer_fleet = g_steal_pointer(&became);
+                /* A fleet, not a client: no event stream, ever. */
+                client->subscribed = FALSE;
+            }
+        }
+        if (reply != NULL) {
+            client_send(client, reply);
+            json_node_unref(reply);
+        }
+        return !client->closing;
+    }
+
+    if (client->peer_fleet != NULL) {
+        reply = clawt_ipc_error_new(request, CLAWT_ERROR_AUTH,
+                                    "a fleet connection may send fed.* frames only");
+        client_send(client, reply);
+        json_node_unref(reply);
+        return TRUE;
+    }
+
+    /*
      * The token is checked before anything is dispatched, including the
      * built-ins.  It used to be checked only in the fall-through path,
      * and control.subscribe is answered inside handle_builtin() -- so an
@@ -1013,11 +1071,39 @@ on_incoming(GSocketService *service, GSocketConnection *connection,
     client->ref_count = 1;
     client->server = self;
     client->connection = g_object_ref(connection);
-    client->input = g_object_ref(
-        g_io_stream_get_input_stream(G_IO_STREAM(connection)));
-    client->output = g_io_stream_get_output_stream(G_IO_STREAM(connection));
     client->pending = g_string_new(NULL);
     client->inbound = g_string_new(NULL);
+
+    /*
+     * A TCP connection speaks TLS when the daemon has a certificate.  The
+     * handshake happens on the first read and write; nothing else here
+     * changes.  It used to store the two paths and use neither, while
+     * this file's header said it wrapped the listener -- so a configured
+     * certificate protected nothing and the token crossed in the clear.
+     */
+    {
+        g_autoptr(GSocketAddress) local_address =
+            g_socket_connection_get_local_address(connection, NULL);
+
+        if (self->tls_loaded != NULL && !G_IS_UNIX_SOCKET_ADDRESS(local_address)) {
+            g_autoptr(GError) tls_error = NULL;
+
+            client->tls = g_tls_server_connection_new(G_IO_STREAM(connection),
+                                                      self->tls_loaded, &tls_error);
+            if (client->tls == NULL) {
+                g_warning("ipc: TLS refused a connection: %s", tls_error->message);
+                g_io_stream_close(G_IO_STREAM(connection), NULL, NULL);
+                client_free(client);
+                return TRUE;
+            }
+        }
+    }
+    {
+        GIOStream *stream = client->tls != NULL ? client->tls : G_IO_STREAM(connection);
+
+        client->input = g_object_ref(g_io_stream_get_input_stream(stream));
+        client->output = g_io_stream_get_output_stream(stream);
+    }
 
     /*
      * A unix client is already authenticated by the socket's permissions:
@@ -1104,6 +1190,65 @@ clawt_ipc_server_attach_bus(ClawtIpcServer *self, ClawtEventBus *bus)
     self->bus = g_object_ref(bus);
     self->bus_handler = g_signal_connect(bus, "event",
                                          G_CALLBACK(on_bus_event), self);
+}
+
+void
+clawt_ipc_server_set_federation_handler(ClawtIpcServer            *self,
+                                        ClawtIpcFederationHandler  handler,
+                                        gpointer                   user_data)
+{
+    g_return_if_fail(CLAWT_IS_IPC_SERVER(self));
+
+    self->fed_handler = handler;
+    self->fed_handler_data = user_data;
+}
+
+guint
+clawt_ipc_server_push_to_fleet(ClawtIpcServer *self, const gchar *fleet,
+                               JsonNode *frame)
+{
+    guint sent = 0;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), 0);
+
+    /* Backwards: client_send() can close, which removes from the array. */
+    for (i = self->clients->len; i > 0; i--) {
+        Client *client = g_ptr_array_index(self->clients, i - 1);
+
+        if (client->peer_fleet != NULL && g_strcmp0(client->peer_fleet, fleet) == 0) {
+            client_send(client, frame);
+            sent++;
+        }
+    }
+    return sent;
+}
+
+guint
+clawt_ipc_server_close_fleet(ClawtIpcServer *self, const gchar *fleet)
+{
+    guint closed = 0;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), 0);
+
+    for (i = self->clients->len; i > 0; i--) {
+        Client *client = g_ptr_array_index(self->clients, i - 1);
+
+        if (client->peer_fleet != NULL && g_strcmp0(client->peer_fleet, fleet) == 0) {
+            client_close(client);
+            closed++;
+        }
+    }
+    return closed;
+}
+
+const gchar *
+clawt_ipc_server_get_current_fleet(ClawtIpcServer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), NULL);
+
+    return self->current != NULL ? self->current->peer_fleet : NULL;
 }
 
 /* ── Lifecycle ───────────────────────────────────────────────────── */
@@ -1403,6 +1548,23 @@ clawt_ipc_server_start(ClawtIpcServer *self, GError **error)
         if (bound > 0 && self->tls_certificate == NULL)
             g_warning("ipc: the TCP listener has no TLS certificate, so "
                       "the token crosses the network in the clear");
+        if (bound > 0 && self->tls_certificate != NULL) {
+            g_autoptr(GError) tls_error = NULL;
+
+            g_clear_object(&self->tls_loaded);
+            self->tls_loaded = g_tls_certificate_new_from_files(
+                self->tls_certificate, self->tls_key, &tls_error);
+            /* Named and refused: a listener that says TLS must be TLS. */
+            if (self->tls_loaded == NULL) {
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "the TLS certificate %s and key %s could not be "
+                            "read: %s", self->tls_certificate,
+                            self->tls_key != NULL ? self->tls_key : "(none)",
+                            tls_error->message);
+                return FALSE;
+            }
+            g_info("ipc: the TCP listener speaks TLS (%s)", self->tls_certificate);
+        }
     }
 
     g_signal_connect(self->service, "incoming", G_CALLBACK(on_incoming),
@@ -1466,6 +1628,7 @@ clawt_ipc_server_finalize(GObject *object)
     g_free(self->socket_path);
     g_clear_pointer(&self->listeners, g_ptr_array_unref);
     g_free(self->tcp_token);
+    g_clear_object(&self->tls_loaded);
     g_free(self->tls_certificate);
     g_free(self->tls_key);
     g_clear_object(&self->devices);

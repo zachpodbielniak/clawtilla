@@ -62,6 +62,8 @@ libetpan,build,libetpan-devel,libetpan-dev,libetpan
 libpq,build,libpq-devel,libpq-dev,postgresql-libs
 libdex-1,build,libdex-devel,libdex-dev,libdex
 libxml-2.0,build,libxml2-devel,libxml2-dev,libxml2
+nettle,build,nettle-devel,nettle-dev,nettle
+hogweed,build,nettle-devel,nettle-dev,nettle
 gstreamer-1.0,build,gstreamer1-devel,libgstreamer1.0-dev,gstreamer
 gstreamer-app-1.0,build,gstreamer1-plugins-base-devel,libgstreamer-plugins-base1.0-dev,gst-plugins-base-libs
 yaml-0.1,build,libyaml-devel,libyaml-dev,libyaml

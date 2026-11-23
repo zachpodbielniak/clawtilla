@@ -323,7 +323,12 @@ The invariants laid down before this was built still hold:
 - ~office.file~ serves pack files by pack and path, never by a path on this machine.
 - Team tags and ephemeral names are unique within a fleet only; anything that crosses fleets namespaces them, as visitor ids do.
 
-Not built: anything that acts across fleets -- messages, delegation, handing a task to another fleet's agent.  Visiting is looking.
+Superseded: 0.66.0 adds real federation -- fleet keys, invites, tiers
+and grants ([[file:federation.org][federation.org]]) -- and 0.67.0 moves visiting onto it, so a
+visitor's fleet is a linked fleet rather than a device token on the
+other daemon.  Until then this section describes what runs.
+
+Not built here: anything that acts across fleets -- messages, delegation, handing a task to another fleet's agent.  Visiting is looking.
 
 ** Troubleshooting
 :PROPERTIES:

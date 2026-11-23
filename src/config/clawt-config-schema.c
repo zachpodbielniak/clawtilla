@@ -2784,6 +2784,115 @@ static const ClawtSchemaEntry schema[] = {
   "A fleet that has not answered for three of these is drawn empty, not\n"
   "frozen.", "0.64.0" },
 
+{ "federation", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Federation: this fleet linked with other clawtilla fleets -- yours on\n"
+  "another machine, or other people's.\n"
+  "\n"
+  "Each fleet has a key; every request between fleets is signed by it and\n"
+  "answered signed, whatever carries it: a Cloudflare tunnel (https://),\n"
+  "a tailnet or LAN address (http://, or clawtilla:// for the daemon's\n"
+  "own IPC port), or a socket on this machine. A linked fleet has a tier\n"
+  "-- owned, trusted, limited, untrusted -- that presets what it may do\n"
+  "here, with tags and rules to adjust it. Peers themselves are kept in\n"
+  "<state_dir>/federation/peers.yaml and managed with `clawtilla\n"
+  "federation`, not edited here. See docs/federation.org.", "0.66.0" },
+
+{ "federation.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE, "false", NULL,
+  "Whether this daemon links with other clawtilla fleets -- yours on\n"
+  "another machine, or a colleague's. On, it keeps a fleet key\n"
+  "(<secrets.dir>/federation/fleet.ed25519, whose fingerprint becomes the\n"
+  "fleet id), answers on federation.listen and, with federation.ipc, on its\n"
+  "own IPC port, and dials every linked fleet that has an endpoint. Every\n"
+  "request between fleets is signed, whatever carries it. Off, none of\n"
+  "that exists. Takes effect at the next daemon start. See\n"
+  "docs/federation.org.", "0.66.0" },
+
+{ "federation.name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "What other fleets call this one: shown on their sidebar section and in\n"
+  "invites. Empty is the machine's host name.", "0.66.0" },
+
+{ "federation.owner", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Who runs this fleet, as other fleets see it: a name, not an account.\n"
+  "Their `owner:` filters and rules match it.", "0.66.0" },
+
+{ "federation.public_url", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "The endpoint invites tell other fleets to reach this one at:\n"
+  "`https://fleet.example.com` behind a Cloudflare tunnel or a TLS proxy,\n"
+  "`http://100.64.0.7:7711` for the federation listener on a tailnet, or\n"
+  "`clawtilla://100.64.0.7:8792` for this daemon's own IPC port. Empty,\n"
+  "an invite names the tailnet IPC address when federation.ipc is on and\n"
+  "the daemon is on a tailnet, and otherwise asks for this to be set.\n"
+  "`clawtilla federation expose --cloudflare` prints a tunnel config and\n"
+  "the value to put here.", "0.66.0" },
+
+{ "federation.listen", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Where the HTTPS/WebSocket federation listener answers, each `unix:PATH`\n"
+  "or `HOST:PORT`. Empty is `unix:<state_dir>/federation.sock`, which\n"
+  "cloudflared reaches directly (`service: unix:...`) and nothing else on\n"
+  "the network can. A HOST:PORT must be loopback, a tailnet address, or\n"
+  "-- with federation.allow_lan_plaintext -- a LAN address: the listener\n"
+  "speaks plain HTTP and leaves TLS to whatever stands in front of it. A\n"
+  "listener that cannot bind is a warning, not a failed start.", "0.66.0" },
+
+{ "federation.ipc", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE, "true", NULL,
+  "Whether other fleets may also speak to this daemon over its own IPC\n"
+  "port (daemon.tcp_address and the tailnet address) -- the simple\n"
+  "daemon connection: `clawtilla://HOST:PORT`, no extra port, no HTTP. A\n"
+  "connection that says `fed.hello` is a peer and may only send\n"
+  "federation frames; it never sees the event stream or any other\n"
+  "request.", "0.66.0" },
+
+{ "federation.allow_lan_plaintext", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE, "false", NULL,
+  "Whether a link may use a local-network address (RFC 1918, link-local,\n"
+  "a name that is not localhost or *.ts.net) without TLS. Signed\n"
+  "envelopes keep it authentic either way; federation.seal keeps it\n"
+  "private. Plain text to a public address is refused whatever this says.",
+  "0.66.0" },
+
+{ "federation.seal", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE, "auto", clawt_fed_seal_get_type,
+  "Whether bodies between fleets are encrypted with a key the two agree\n"
+  "(X25519 + ChaCha20-Poly1305) on top of whatever carries them: `auto`\n"
+  "on plain-text LAN links only, `always` on every link (so a tunnel's edge\n"
+  "sees only ciphertext), `never`.", "0.66.0" },
+
+{ "federation.inbox_agent", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The agent a peer reaches when its grant allows only the inbox\n"
+  "(untrusted fleets, by default). Empty is the chief of staff.", "0.66.0" },
+
+{ "federation.invite_ttl_hours", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "72", NULL,
+  "How long an invite can be used, in hours, unless the invite says\n"
+  "otherwise. An invite is single-use.", "0.66.0" },
+
+{ "federation.clock_skew_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "300", NULL,
+  "How far another fleet's clock may be from this one's before its\n"
+  "signed requests are refused as stale. Each nonce is remembered for\n"
+  "this long, across restarts.", "0.66.0" },
+
+{ "federation.max_body_bytes", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "1048576", NULL,
+  "The largest request another fleet may send, in bytes. Refused before\n"
+  "it is read whole.", "0.66.0" },
+
+{ "federation.ping_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "30", NULL,
+  "How often each linked fleet is pinged to keep its link health\n"
+  "current. Three missed answers mark it offline.", "0.66.0" },
+
+{ "federation.reconnect_max_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "300", NULL,
+  "The longest wait between attempts to reach a fleet that is not\n"
+  "answering; the wait doubles from one second up to this.", "0.66.0" },
+
+{ "federation.audit_retention_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "90", NULL,
+  "How long the record of every request between fleets\n"
+  "(<state_dir>/federation/audit.ndjson) is kept.", "0.66.0" },
+
+{ "federation.rules", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Grant overrides for every linked fleet a selector matches, applied in\n"
+  "order after the fleet's tier and before its own overrides, each\n"
+  "`SELECTOR: field=value; field=value`. A selector names fleets by\n"
+  "`tier:`, `tag:`, `owner:`, `name:`, `online`, with `!`, `+` (and) and\n"
+  "`,` (or): `tag:client-acme: reach=listed; agents=team:frontend;\n"
+  "cap.exec=deny`. `clawtilla federation explain ALIAS` shows which rule\n"
+  "set what. See docs/federation.org#rules.", "0.66.0" },
+
 { "routines", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing work: a prompt, an agent, and when to run it.\n"
   "\n"

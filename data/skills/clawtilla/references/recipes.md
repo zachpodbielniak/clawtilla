@@ -123,6 +123,15 @@ See [connectors.md](connectors.md), [integrations.md](integrations.md).
 3. `clawtilla --profile workstation agent list` (global flags go before the command).
    One-off: `clawtilla -H 100.72.0.41 --token T status`. See [clients.md](clients.md).
 
+## Link this fleet with another
+
+1. Both fleets: `federation: {enabled: true, name: ..., owner: ...}`, restart the daemon; `clawtilla federation status`.
+2. Your own other daemon: `clawtilla federation link 100.64.0.7:8792 --alias homelab` (tailnet; asks for its owner token) or a socket path.
+3. Anyone else: `clawtilla federation invite --tier limited` here, send the `clawt-fed1-...` string;
+   there: `clawtilla federation inspect ...` then `clawtilla federation accept ... --tier trusted --alias you`; read the safety words to each other.
+4. Narrow it: `clawtilla federation set ALIAS reach=listed agents=atlas cap.exec=deny`; tag it: `clawtilla federation tag ALIAS +client-acme`.
+5. Through a tunnel: `clawtilla federation expose --cloudflare --hostname H`, then `federation.public_url`. See [federation.md](federation.md).
+
 ## Check spend and plan limits
 
 1. `clawtilla cost --today`, `clawtilla cost --days 7 --by origin`, `clawtilla cost --by model --csv > spend.csv`.

@@ -996,6 +996,49 @@ test_the_reply_argument(void)
 	fixture_teardown(&fixture);
 }
 
+/*
+ * Naming the operator's room is not reaching it.  Only the operator,
+ * clawtilla and an integration relaying for the operator may write into
+ * a room they are not in: another fleet's agent and an id that is no
+ * agent here are held to membership.  Before 0.66.0 anything that was
+ * not a local agent was waved through.
+ */
+static void
+test_only_the_operator_writes_anywhere(void)
+{
+	Fixture fixture = { 0 };
+	g_autoptr(ClawtMessage) opener = NULL;
+	g_autofree gchar *room = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *refused[] = { "fleet:lab:atlas", "ghost", "alpha", NULL };
+	const gchar *allowed[] = { "user", "clawtilla", "grok:scout", "venture:ann", NULL };
+	guint i;
+
+	fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+	opener = clawt_message_new("beta", "user", "hello");
+	g_assert_cmpint(clawt_mailbox_router_send(fixture.router, opener, &error), >=, 0);
+	g_assert_no_error(error);
+	room = clawt_room_manager_direct_id("beta", "user");
+
+	for (i = 0; refused[i] != NULL; i++) {
+		g_autoptr(ClawtMessage) m = clawt_message_new(room, refused[i], "let me in");
+		g_autoptr(GError) e = NULL;
+		g_assert_cmpint(clawt_mailbox_router_send(fixture.router, m, &e), <, 0);
+		g_assert_error(e, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED);
+	}
+	for (i = 0; allowed[i] != NULL; i++) {
+		g_autoptr(ClawtMessage) m = clawt_message_new(room, allowed[i], "a notice");
+		g_autoptr(GError) e = NULL;
+		clawt_message_set_invites_reply(m, FALSE);
+		g_assert_cmpint(clawt_mailbox_router_send(fixture.router, m, &e), >=, 0);
+		g_assert_no_error(e);
+	}
+	g_assert_cmpint(clawt_sender_kind_of("fleet:lab:atlas"), ==, CLAWT_SENDER_REMOTE);
+	g_assert_cmpint(clawt_sender_kind_of("grok:scout"), ==, CLAWT_SENDER_INTEGRATION);
+	g_assert_cmpint(clawt_sender_kind_of(NULL), ==, CLAWT_SENDER_OPERATOR);
+	fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1027,6 +1070,8 @@ main(int argc, char **argv)
 	                test_merge_sections_round_trip_and_escape);
 	g_test_add_func("/cross-talk/the-reply-argument",
 	                test_the_reply_argument);
+	g_test_add_func("/cross-talk/only-the-operator-writes-anywhere",
+	                test_only_the_operator_writes_anywhere);
 
 	return g_test_run();
 }

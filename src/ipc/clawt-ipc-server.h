@@ -40,6 +40,27 @@ G_DECLARE_FINAL_TYPE(ClawtIpcServer, clawt_ipc_server, CLAWT, IPC_SERVER,
 typedef JsonNode *(*ClawtIpcHandler)(JsonNode *request, gpointer user_data);
 
 /**
+ * ClawtIpcFederationHandler:
+ * @server: the server
+ * @request: a `fed.*` frame
+ * @peer_fleet: (nullable): the fleet this connection proved it is with
+ *   `fed.hello`, or %NULL
+ * @out_peer_fleet: (out) (transfer full) (optional): set by a successful
+ *   `fed.hello` to the fleet the connection now is
+ * @user_data: data passed to clawt_ipc_server_set_federation_handler()
+ *
+ * Answers a frame from another fleet.  Called before the owner-token
+ * check, since every such frame carries its own signature.
+ *
+ * Returns: (transfer full) (nullable): the reply
+ */
+typedef JsonNode *(*ClawtIpcFederationHandler)(ClawtIpcServer *server,
+                                               JsonNode       *request,
+                                               const gchar    *peer_fleet,
+                                               gchar         **out_peer_fleet,
+                                               gpointer        user_data);
+
+/**
  * ClawtIpcPending:
  *
  * A reply a handler could not give straight away.
@@ -111,6 +132,61 @@ ClawtIpcServer *clawt_ipc_server_new(const gchar *socket_path);
  * @user_data: data for @handler
  * @destroy: (nullable): called when the handler is replaced
  */
+/**
+ * clawt_ipc_server_set_federation_handler:
+ * @self: a #ClawtIpcServer
+ * @handler: (nullable) (scope forever): answers fed.* frames; %NULL
+ *   refuses them
+ * @user_data: data for @handler
+ *
+ * The simple daemon connection: another fleet dialling this daemon's own
+ * IPC port.  A connection that says `fed.hello` successfully becomes a
+ * peer connection: it may send fed.* frames only and receives no events.
+ */
+void clawt_ipc_server_set_federation_handler(ClawtIpcServer            *self,
+                                             ClawtIpcFederationHandler  handler,
+                                             gpointer                   user_data);
+
+/**
+ * clawt_ipc_server_push_to_fleet:
+ * @self: a #ClawtIpcServer
+ * @fleet: a fleet id
+ * @frame: what to send, unchanged
+ *
+ * Sends @frame on every connection that proved it is @fleet -- how this
+ * daemon reaches a fleet with no endpoint of its own, over the
+ * connection that fleet keeps open to it.
+ *
+ * Returns: how many connections it went to
+ */
+guint clawt_ipc_server_push_to_fleet(ClawtIpcServer *self,
+                                     const gchar    *fleet,
+                                     JsonNode       *frame);
+
+/**
+ * clawt_ipc_server_close_fleet:
+ * @self: a #ClawtIpcServer
+ * @fleet: a fleet id
+ *
+ * Closes every connection from @fleet: a revoked link stops talking at
+ * once, not at its next request.
+ *
+ * Returns: how many were closed
+ */
+guint clawt_ipc_server_close_fleet(ClawtIpcServer *self,
+                                   const gchar    *fleet);
+
+/**
+ * clawt_ipc_server_get_current_fleet:
+ * @self: a #ClawtIpcServer
+ *
+ * Only meaningful from inside a handler.
+ *
+ * Returns: (transfer none) (nullable): the fleet the requesting
+ *   connection proved it is, or %NULL for a client
+ */
+const gchar *clawt_ipc_server_get_current_fleet(ClawtIpcServer *self);
+
 void clawt_ipc_server_set_handler(ClawtIpcServer  *self,
                                   ClawtIpcHandler  handler,
                                   gpointer         user_data,

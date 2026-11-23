@@ -54,7 +54,9 @@ static const SettingsPage settings_pages[] = {
     { "connections",  "Connections",
       "Which daemon this server talks to." },
     { "devices",      "Devices",
-      "Laptops and phones holding a token of their own for this daemon." }
+      "Laptops and phones holding a token of their own for this daemon." },
+    { "federation",   "Federation",
+      "Other fleets linked with this one: invites, tiers, tags." }
 };
 
 /* ── The frame ───────────────────────────────────────────────────── */
@@ -2562,6 +2564,516 @@ connections_content(ClawtWebApp *app)
     return HTMX_ELEMENT(g_steal_pointer(&box));
 }
 
+/* ── Federation ──────────────────────────────────────────────────── */
+
+/*
+ * This fleet, the fleets it is linked with, an invite and an accept, and
+ * the audit.  Mirrors the GTK and lrg Federation pages: the line under a
+ * peer, its dot and an audit row come from libclawt (clawt-fed-view.h).
+ * See docs/federation.org.
+ */
+
+/* The tier and health tones are the library's words; these are the page's. */
+static const gchar *
+fed_badge_tone(const gchar *tone)
+{
+    if (g_strcmp0(tone, "success") == 0)
+        return "good";
+    if (g_strcmp0(tone, "accent") == 0)
+        return "info";
+    if (g_strcmp0(tone, "warning") == 0)
+        return "warn";
+    if (g_strcmp0(tone, "error") == 0)
+        return "bad";
+    return "neutral";
+}
+
+static HtmxDiv *
+fed_tier_select(const gchar *label, const gchar *current)
+{
+    g_autoptr(GPtrArray) values = g_ptr_array_new();
+    g_autoptr(GPtrArray) labels = g_ptr_array_new_with_free_func(g_free);
+    guint i;
+
+    for (i = 0; i < clawt_fed_tier_count(); i++) {
+        ClawtFedTier tier = clawt_fed_tier_nth(i);
+        g_ptr_array_add(values, (gpointer)clawt_fed_tier_nick(tier));
+        g_ptr_array_add(labels, g_strdup_printf("%s -- %s", clawt_fed_tier_label(tier),
+                                                clawt_fed_tier_summary(tier)));
+    }
+    g_ptr_array_add(values, NULL);
+    g_ptr_array_add(labels, NULL);
+    return clawt_web_select_field(label, "tier", (const gchar *const *)values->pdata,
+                                  (const gchar *const *)labels->pdata, current);
+}
+
+static HtmxElement *
+fed_invite_card(JsonObject *invite)
+{
+    g_autoptr(HtmxDiv) card = clawt_web_card(
+        "Your invite",
+        "Send it to the other fleet's owner. It is a one-use secret, and "
+        "anyone holding it can link at the tier it names until it expires.");
+    HtmxElement *body = clawt_web_card_body(card);
+    const gchar *uri = clawt_web_member(invite, "uri", NULL);
+    g_autofree gchar *svg = uri != NULL ? clawt_qr_render_svg(uri, NULL) : NULL;
+    g_autofree gchar *words = g_strdup_printf(
+        "They will see this fleet's safety words: %s. Tier %s, reached at %s.",
+        clawt_web_member(invite, "safety_words", "?"), clawt_web_member(invite, "tier", "?"),
+        clawt_web_member(invite, "endpoint", "?"));
+
+    /* The SVG holds numbers and fixed text only (clawt_qr_render_svg()). */
+    if (svg != NULL) {
+        g_autoptr(HtmxDiv) qr = htmx_div_new();
+        htmx_element_add_class(HTMX_ELEMENT(qr), "pair-qr");
+        htmx_element_add_class(HTMX_ELEMENT(qr), "fed-invite-qr");
+        htmx_node_set_html_content(HTMX_NODE(qr), svg);
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(qr));
+    }
+    clawt_web_add(body, clawt_web_text(clawt_web_member(invite, "paste", ""), "mono fed-paste"));
+    clawt_web_add(body, clawt_web_text(words, "small muted"));
+    return HTMX_ELEMENT(g_steal_pointer(&card));
+}
+
+static HtmxElement *
+fed_preview_card(JsonObject *preview, const gchar *invite_text)
+{
+    g_autoptr(HtmxDiv) card = clawt_web_card(
+        "Accept this invite",
+        "Read it first. Nothing is linked until you accept, and the other "
+        "fleet's identity is checked against the invite.");
+    HtmxElement *body = clawt_web_card_body(card);
+    g_autoptr(HtmxForm) form = clawt_web_form("/settings/federation/accept");
+    g_autofree gchar *who = g_strdup_printf("%s%s%s", clawt_web_member(preview, "name", "?"),
+                                            *clawt_web_member(preview, "owner", "") != '\0'
+                                                ? " \302\267 " : "",
+                                            clawt_web_member(preview, "owner", ""));
+
+    clawt_web_add(body, clawt_web_row("Fleet", who));
+    clawt_web_add(body, clawt_web_row("Fleet id", clawt_web_member(preview, "fleet_id", "?")));
+    clawt_web_add(body, clawt_web_row("Safety words", clawt_web_member(preview, "safety_words", "?")));
+    clawt_web_add(body, clawt_web_row("Reached at", clawt_web_member(preview, "endpoint", "?")));
+    clawt_web_add(body, clawt_web_row("Path", clawt_web_member(preview, "path",
+                                      clawt_web_member(preview, "problem", "?"))));
+    clawt_web_add(body, clawt_web_row("They give you", clawt_web_member(preview, "tier_summary", "")));
+    if (clawt_web_member_bool(preview, "expired", FALSE))
+        clawt_web_add(body, clawt_web_notice("This invite has expired; ask for a new one.", "bad"));
+    if (clawt_web_member(preview, "already_linked_as", NULL) != NULL)
+        clawt_web_add(body, clawt_web_notice("That fleet is already linked here.", "info"));
+
+    clawt_web_add(form, clawt_web_hidden("invite", invite_text));
+    clawt_web_add(form, fed_tier_select("What that fleet gets here", "limited"));
+    clawt_web_add(form, clawt_web_field("Alias", "alias",
+                                        clawt_web_member(preview, "suggested_alias", ""),
+                                        "what to call it here"));
+    clawt_web_add(form, clawt_web_field("Tags", "tags", NULL, "comma-separated"));
+    {
+        g_autoptr(HtmxButton) go = clawt_web_button("Link", "primary");
+        htmx_element_set_attribute(HTMX_ELEMENT(go), "type", "submit");
+        clawt_web_add(form, go);
+    }
+    htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+    return HTMX_ELEMENT(g_steal_pointer(&card));
+}
+
+static HtmxElement *
+fed_peer_item(ClawtWebApp *app, JsonObject *peer)
+{
+    const gchar *alias = clawt_web_member(peer, "alias", "?");
+    const gchar *status = clawt_web_member(peer, "status", "active");
+    g_autofree gchar *escaped = g_uri_escape_string(alias, NULL, FALSE);
+    g_autofree gchar *title = clawt_fed_peer_title(peer);
+    g_autofree gchar *summary = clawt_fed_peer_summary(peer);
+    g_autoptr(HtmxDiv) row = htmx_div_new();
+    g_autoptr(HtmxDiv) head = htmx_div_new();
+    g_autoptr(HtmxDiv) actions = htmx_div_new();
+    g_autoptr(HtmxElement) details = HTMX_ELEMENT(htmx_details_new());
+    g_autoptr(JsonNode) shown = NULL;
+    JsonArray *grant;
+    guint i;
+
+    htmx_element_add_class(HTMX_ELEMENT(row), "list-item");
+    htmx_element_add_class(HTMX_ELEMENT(row), "fed-peer");
+    htmx_element_add_class(HTMX_ELEMENT(head), "list-item-head");
+    {
+        g_autoptr(HtmxSpan) dot = htmx_span_new();
+        g_autoptr(HtmxSpan) label = htmx_span_new();
+        g_autofree gchar *dot_class = g_strdup_printf(
+            "fed-health tone-%s", fed_badge_tone(clawt_web_member(peer, "health_tone", "")));
+        htmx_element_add_class(HTMX_ELEMENT(dot), dot_class);
+        htmx_element_set_attribute(HTMX_ELEMENT(dot), "title",
+                                   clawt_web_member(peer, "health", ""));
+        htmx_node_set_text_content(HTMX_NODE(dot),
+                                   clawt_fed_health_glyph(clawt_web_member(peer, "health", NULL)));
+        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(dot));
+        htmx_element_add_class(HTMX_ELEMENT(label), "list-item-title");
+        htmx_node_set_text_content(HTMX_NODE(label), title);
+        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(label));
+    }
+    {
+        g_autoptr(HtmxSpan) badge = clawt_web_badge(
+            clawt_web_member(peer, "tier", "?"),
+            fed_badge_tone(clawt_web_member(peer, "tier_tone", "")));
+        htmx_element_add_class(HTMX_ELEMENT(badge), "fed-tier");
+        clawt_web_add(head, g_steal_pointer(&badge));
+    }
+    if (clawt_web_member_bool(peer, "hidden", FALSE))
+        clawt_web_add(head, clawt_web_badge("hidden", "neutral"));
+    if (clawt_web_member_bool(peer, "muted", FALSE))
+        clawt_web_add(head, clawt_web_badge("muted", "neutral"));
+    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(head));
+    clawt_web_add(row, clawt_web_text(summary, "small muted"));
+
+    htmx_element_add_class(HTMX_ELEMENT(actions), "btn-row");
+#define ACTION(label, verb, variant, confirm) do { \
+        g_autofree gchar *url_ = g_strdup_printf("/settings/federation/%s/%s", escaped, verb); \
+        clawt_web_add(actions, clawt_web_post_button(label, url_, variant, confirm)); \
+    } while (0)
+    if (g_strcmp0(status, "revoked") != 0) {
+        ACTION("Ping", "ping", NULL, NULL);
+        ACTION(clawt_web_member_bool(peer, "hidden", FALSE) ? "Show" : "Hide",
+               clawt_web_member_bool(peer, "hidden", FALSE) ? "show" : "hide", NULL, NULL);
+        ACTION(clawt_web_member_bool(peer, "muted", FALSE) ? "Unmute" : "Mute",
+               clawt_web_member_bool(peer, "muted", FALSE) ? "unmute" : "mute", NULL, NULL);
+        if (g_strcmp0(status, "pending") == 0)
+            ACTION("Approve", "approve", "primary", NULL);
+        ACTION("Revoke", "revoke", "danger",
+               "Revoke this link? The other fleet is told, and its connections are closed.");
+    } else {
+        ACTION("Forget", "forget", "danger", NULL);
+    }
+#undef ACTION
+    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(actions));
+
+    /* Everything about it, folded: words, tier, the grant with sources. */
+    {
+        g_autoptr(HtmxElement) summary_el = HTMX_ELEMENT(htmx_summary_new());
+        g_autofree gchar *tier_url = g_strdup_printf("/settings/federation/%s/tier", escaped);
+        g_autofree gchar *grant_url = g_strdup_printf("/settings/federation/%s/grant", escaped);
+        g_autoptr(HtmxForm) tier_form = clawt_web_form(tier_url);
+        g_autoptr(HtmxForm) grant_form = clawt_web_form(grant_url);
+        g_autoptr(HtmxDiv) table = htmx_div_new();
+
+        htmx_node_set_text_content(HTMX_NODE(summary_el), "Details and grant");
+        htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(summary_el));
+        clawt_web_add(details, clawt_web_row("Safety words", clawt_web_member(peer, "safety_words", "?")));
+        clawt_web_add(details, clawt_web_row("Fleet id", clawt_web_member(peer, "fleet_id", "?")));
+        clawt_web_add(details, clawt_web_row("Endpoint", clawt_web_member(peer, "endpoint",
+                                                                          "it dials this fleet")));
+        if (clawt_web_member(peer, "error", NULL) != NULL)
+            clawt_web_add(details, clawt_web_row("Last error", clawt_web_member(peer, "error", "")));
+
+        clawt_web_add(tier_form, fed_tier_select("Tier", clawt_web_member(peer, "tier", "limited")));
+        {
+            g_autoptr(HtmxButton) save = clawt_web_button("Set tier", NULL);
+            htmx_element_set_attribute(HTMX_ELEMENT(save), "type", "submit");
+            clawt_web_add(tier_form, save);
+        }
+        htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(tier_form));
+
+        {
+            g_autoptr(ClawtWebPayload) ask = clawt_web_payload_new();
+            clawt_web_payload_set(ask, "alias", alias);
+            shown = clawt_web_app_call(app, "federation.peer.show",
+                                       clawt_web_payload_take(g_steal_pointer(&ask)));
+        }
+        grant = clawt_web_member_array(clawt_web_root(shown), "grant");
+        htmx_element_add_class(HTMX_ELEMENT(table), "fed-grant");
+        for (i = 0; grant != NULL && i < json_array_get_length(grant); i++) {
+            JsonObject *f = json_array_get_object_element(grant, i);
+            g_autofree gchar *value = g_strdup_printf(
+                "%s  \302\267  %s", clawt_web_member(f, "value", ""),
+                clawt_web_member_bool(f, "overridden", FALSE) ? "set for this fleet"
+                                                              : clawt_web_member(f, "source", ""));
+            g_autoptr(HtmxDiv) line = clawt_web_row(clawt_web_member(f, "name", "?"), value);
+            htmx_element_set_attribute(HTMX_ELEMENT(line), "title", clawt_web_member(f, "doc", ""));
+            clawt_web_add(table, g_steal_pointer(&line));
+        }
+        htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(table));
+
+        htmx_element_add_class(HTMX_ELEMENT(grant_form), "fed-grant-editor");
+        clawt_web_add(grant_form, clawt_web_field("Change the grant", "change", NULL,
+                                                  "field=value, e.g. cap.exec=deny (field= undoes)"));
+        {
+            g_autoptr(HtmxButton) save = clawt_web_button("Apply", NULL);
+            htmx_element_set_attribute(HTMX_ELEMENT(save), "type", "submit");
+            clawt_web_add(grant_form, save);
+        }
+        htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(grant_form));
+    }
+    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(details));
+    return HTMX_ELEMENT(g_steal_pointer(&row));
+}
+
+static HtmxElement *
+federation_content(ClawtWebApp *app, JsonObject *invite, JsonObject *preview,
+                   const gchar *invite_text)
+{
+    g_autoptr(HtmxDiv) box = htmx_div_new();
+    g_autoptr(JsonNode) status = clawt_web_app_call(app, "federation.status", NULL);
+    JsonObject *s = clawt_web_root(status);
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+    guint i;
+
+    if (status == NULL) {
+        g_autofree gchar *failure = g_strdup(clawt_web_app_last_error(app));
+        clawt_web_add(box, clawt_web_notice(failure, "bad"));
+        return HTMX_ELEMENT(g_steal_pointer(&box));
+    }
+    if (!clawt_web_member_bool(s, "enabled", FALSE)) {
+        g_autoptr(HtmxDiv) card = clawt_web_card("Federation is off",
+            "Link this fleet with others -- your own on other machines, or "
+            "other people's -- over a Cloudflare tunnel, a tailnet, a LAN or a "
+            "socket. Every request between fleets is signed.");
+        clawt_web_add(clawt_web_card_body(card), clawt_web_text(
+            clawt_web_member(s, "hint", ""), "muted"));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+        return HTMX_ELEMENT(g_steal_pointer(&box));
+    }
+
+    if (invite != NULL)
+        clawt_web_add(box, fed_invite_card(invite));
+    if (preview != NULL)
+        clawt_web_add(box, fed_preview_card(preview, invite_text));
+
+    {
+        g_autoptr(HtmxDiv) card = clawt_web_card("This fleet",
+            "Read the safety words to whoever accepts your invite.");
+        HtmxElement *body = clawt_web_card_body(card);
+        clawt_web_add(body, clawt_web_row("Name", clawt_web_member(s, "name", "?")));
+        clawt_web_add(body, clawt_web_row("Fleet id", clawt_web_member(s, "fleet_id", "?")));
+        clawt_web_add(body, clawt_web_row("Safety words", clawt_web_member(s, "safety_words", "?")));
+        clawt_web_add(body, clawt_web_row("Reachable at", clawt_web_member(s, "endpoint",
+            "nowhere yet -- set federation.public_url, or join a tailnet")));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    {
+        g_autoptr(HtmxDiv) card = clawt_web_card("Invite or accept",
+            "An invite is one string to send; accepting one links you after "
+            "checking the other fleet is the one that made it.");
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxForm) make = clawt_web_form("/settings/federation/invite");
+        g_autoptr(HtmxForm) read = clawt_web_form("/settings/federation/inspect");
+
+        htmx_element_add_class(HTMX_ELEMENT(make), "fed-invite");
+        clawt_web_add(make, fed_tier_select("What the fleet that accepts gets here", "limited"));
+        clawt_web_add(make, clawt_web_switch_field("Ask me first", "confirm",
+                                                   "Their accept waits for your approval", FALSE));
+        clawt_web_add(make, clawt_web_field("Where they reach this fleet", "endpoint",
+                                            clawt_web_member(s, "endpoint", NULL),
+                                            "https://... or clawtilla://HOST:PORT"));
+        clawt_web_add(make, clawt_web_field("Note", "note", NULL, "who it is for (only you see it)"));
+        {
+            g_autoptr(HtmxButton) go = clawt_web_button("Make invite", "primary");
+            htmx_element_set_attribute(HTMX_ELEMENT(go), "type", "submit");
+            clawt_web_add(make, go);
+        }
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(make));
+
+        clawt_web_add(read, clawt_web_textarea_field("Paste an invite", "invite", NULL, 2));
+        {
+            g_autoptr(HtmxButton) go = clawt_web_button("Read it", NULL);
+            htmx_element_set_attribute(HTMX_ELEMENT(go), "type", "submit");
+            clawt_web_add(read, go);
+        }
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(read));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    {
+        g_autoptr(JsonNode) list = clawt_web_app_call(app, "federation.peer.list", NULL);
+        JsonArray *peers = clawt_web_member_array(clawt_web_root(list), "peers");
+        g_autoptr(HtmxDiv) card = clawt_web_card("Linked fleets",
+            "Each has a tier that presets what it may do here; open one for "
+            "its grant and where each value came from.");
+        HtmxElement *body = clawt_web_card_body(card);
+
+        if (peers == NULL || json_array_get_length(peers) == 0)
+            clawt_web_add(body, clawt_web_empty("No linked fleets",
+                "Make an invite above, or accept one. Two daemons you own: "
+                "clawtilla federation link."));
+        for (i = 0; peers != NULL && i < json_array_get_length(peers); i++)
+            clawt_web_add(body, fed_peer_item(app, json_array_get_object_element(peers, i)));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    {
+        g_autoptr(JsonNode) audit = clawt_web_app_call(app, "federation.audit",
+                                                       json_from_string("{\"limit\":25}", NULL));
+        JsonArray *entries = clawt_web_member_array(clawt_web_root(audit), "entries");
+        g_autoptr(HtmxDiv) card = clawt_web_card("Activity",
+                                                 "Every request between fleets, newest first.");
+        HtmxElement *body = clawt_web_card_body(card);
+
+        if (entries == NULL || json_array_get_length(entries) == 0)
+            clawt_web_add(body, clawt_web_text("Nothing yet.", "muted"));
+        for (i = 0; entries != NULL && i < json_array_get_length(entries); i++) {
+            g_autofree gchar *line = clawt_fed_audit_line(json_array_get_object_element(entries, i), now);
+            clawt_web_add(body, clawt_web_text(line, "mono small fed-activity"));
+        }
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+    return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+static HtmxResponse *
+on_federation_invite(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+    g_autofree gchar *failure = NULL;
+    const gchar *note = clawt_web_form_value(request, "note");
+
+    (void)params;
+    clawt_web_payload_set(payload, "tier", clawt_web_form_value(request, "tier"));
+    clawt_web_payload_set_bool(payload, "confirm", clawt_web_form_value(request, "confirm") != NULL);
+    if (note != NULL && *note != '\0')
+        clawt_web_payload_set(payload, "note", note);
+    if (clawt_web_form_value(request, "endpoint") != NULL
+        && *clawt_web_form_value(request, "endpoint") != '\0')
+        clawt_web_payload_set(payload, "endpoint", clawt_web_form_value(request, "endpoint"));
+    reply = clawt_web_app_call(app, "federation.invite.create",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+    content = federation_content(app, clawt_web_root(reply), NULL, NULL);
+    return settings_response(app, request, "federation", content, failure, failure != NULL);
+}
+
+static HtmxResponse *
+on_federation_inspect(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+    g_autofree gchar *failure = NULL;
+    g_autofree gchar *text = g_strstrip(g_strdup(clawt_web_form_value(request, "invite") != NULL
+                                                 ? clawt_web_form_value(request, "invite") : ""));
+
+    (void)params;
+    clawt_web_payload_set(payload, "invite", text);
+    reply = clawt_web_app_call(app, "federation.invite.inspect",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+    content = federation_content(app, NULL, clawt_web_root(reply), text);
+    return settings_response(app, request, "federation", content, failure, failure != NULL);
+}
+
+static HtmxResponse *
+on_federation_accept(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *done = NULL;
+    g_auto(GStrv) tags = NULL;
+    g_autoptr(GPtrArray) clean = g_ptr_array_new();
+    const gchar *tag_text = clawt_web_form_value(request, "tags");
+    guint i;
+
+    (void)params;
+    clawt_web_payload_set(payload, "invite", clawt_web_form_value(request, "invite"));
+    clawt_web_payload_set(payload, "tier", clawt_web_form_value(request, "tier"));
+    clawt_web_payload_set(payload, "alias", clawt_web_form_value(request, "alias"));
+    tags = g_strsplit_set(tag_text != NULL ? tag_text : "", ", ", -1);
+    for (i = 0; tags[i] != NULL; i++)
+        if (*tags[i] != '\0')
+            g_ptr_array_add(clean, tags[i]);
+    g_ptr_array_add(clean, NULL);
+    clawt_web_payload_set_list(payload, "tags", (const gchar *const *)clean->pdata);
+    /* The other fleet may be a tunnel away: a minute, not the default. */
+    reply = clawt_web_app_request_timeout(app, "federation.invite.accept",
+                                          clawt_web_payload_take(g_steal_pointer(&payload)),
+                                          60, &error);
+    if (reply != NULL) {
+        JsonObject *o = clawt_web_root(reply);
+        done = g_strdup_printf("Linked with %s. Check its safety words with its owner: %s.",
+                               clawt_web_member(o, "label", clawt_web_member(o, "alias", "?")),
+                               clawt_web_member(o, "safety_words", "?"));
+    }
+    content = federation_content(app, NULL, NULL, NULL);
+    return settings_response(app, request, "federation", content,
+                             reply != NULL ? done : error->message, reply == NULL);
+}
+
+/* Every one-press action on a peer, by the last path segment. */
+static HtmxResponse *
+on_federation_peer(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *alias = clawt_web_param(params, "peer");
+    g_autofree gchar *verb = clawt_web_param(params, "verb");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+    g_autofree gchar *said = NULL;
+    const gchar *kind = NULL;
+
+    clawt_web_payload_set(payload, "alias", alias);
+    if (g_strcmp0(verb, "ping") == 0) {
+        kind = "federation.peer.ping";
+    } else if (g_strcmp0(verb, "hide") == 0 || g_strcmp0(verb, "show") == 0) {
+        kind = "federation.peer.hide";
+        clawt_web_payload_set_bool(payload, "value", g_strcmp0(verb, "hide") == 0);
+    } else if (g_strcmp0(verb, "mute") == 0 || g_strcmp0(verb, "unmute") == 0) {
+        kind = "federation.peer.mute";
+        clawt_web_payload_set_bool(payload, "value", g_strcmp0(verb, "mute") == 0);
+    } else if (g_strcmp0(verb, "approve") == 0) {
+        kind = "federation.peer.approve";
+    } else if (g_strcmp0(verb, "revoke") == 0) {
+        kind = "federation.peer.revoke";
+    } else if (g_strcmp0(verb, "forget") == 0) {
+        kind = "federation.peer.forget";
+    } else if (g_strcmp0(verb, "tier") == 0) {
+        kind = "federation.peer.set";
+        clawt_web_payload_set(payload, "tier", clawt_web_form_value(request, "tier"));
+    }
+    if (g_strcmp0(verb, "grant") == 0) {
+        const gchar *change = clawt_web_form_value(request, "change");
+        const gchar *eq = change != NULL ? strchr(change, '=') : NULL;
+        g_autofree gchar *field = eq != NULL ? g_strstrip(g_strndup(change, eq - change)) : NULL;
+        g_autoptr(JsonBuilder) b = json_builder_new();
+
+        clawt_web_payload_free(g_steal_pointer(&payload));
+        if (field == NULL) {
+            content = federation_content(app, NULL, NULL, NULL);
+            return settings_response(app, request, "federation", content,
+                                     "Write it as field=value, e.g. cap.exec=deny.", TRUE);
+        }
+        json_builder_begin_object(b);
+        json_builder_set_member_name(b, "alias");
+        json_builder_add_string_value(b, alias);
+        json_builder_set_member_name(b, "grant");
+        json_builder_begin_object(b);
+        json_builder_set_member_name(b, field);
+        json_builder_add_string_value(b, eq + 1);
+        json_builder_end_object(b);
+        json_builder_end_object(b);
+        reply = clawt_web_app_call(app, "federation.peer.set", json_builder_get_root(b));
+    } else if (kind == NULL) {
+        clawt_web_payload_free(g_steal_pointer(&payload));
+        return clawt_web_redirect(request, "/settings/federation");
+    } else {
+        reply = clawt_web_app_call(app, kind, clawt_web_payload_take(g_steal_pointer(&payload)));
+    }
+    if (reply == NULL)
+        said = g_strdup(clawt_web_app_last_error(app));
+    else if (g_strcmp0(verb, "ping") == 0)
+        said = g_strdup_printf("%s answered in %" G_GINT64_FORMAT " ms.", alias,
+                               clawt_web_member_int(clawt_web_root(reply), "ms", 0));
+    else
+        said = g_strdup("Done.");
+    content = federation_content(app, NULL, NULL, NULL);
+    return settings_response(app, request, "federation", content, said, reply == NULL);
+}
+
 /* ── Devices ─────────────────────────────────────────────────────── */
 
 /*
@@ -3671,6 +4183,8 @@ on_settings_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
         content = connections_content(app);
     else if (g_strcmp0(slug, "devices") == 0)
         content = devices_content(app, NULL);
+    else if (g_strcmp0(slug, "federation") == 0)
+        content = federation_content(app, NULL, NULL, NULL);
     else
         return clawt_web_redirect(request, "/settings/fleet");
 
@@ -4725,6 +5239,10 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
                      on_device_pair_cancel, app);
     htmx_router_post(router, "/settings/devices/:device/revoke",
                      on_device_revoke, app);
+    htmx_router_post(router, "/settings/federation/invite", on_federation_invite, app);
+    htmx_router_post(router, "/settings/federation/inspect", on_federation_inspect, app);
+    htmx_router_post(router, "/settings/federation/accept", on_federation_accept, app);
+    htmx_router_post(router, "/settings/federation/:peer/:verb", on_federation_peer, app);
     htmx_router_post(router, "/settings/connections/:connection/use",
                      on_connection_use, app);
     htmx_router_post(router, "/settings/connections/:connection/check",

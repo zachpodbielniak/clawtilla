@@ -72,6 +72,7 @@ a dependency means adding a row there and a row here.
 | ~libpq-devel~ | ~libpq-dev~ | ~postgresql-libs~ | libreclaw's postgres memory |
 | ~libdex-devel~ | ~libdex-dev~ | ~libdex~ | futures |
 | ~libxml2-devel~ | ~libxml2-dev~ | ~libxml2~ | ai-glib's HTML-parsing search providers |
+| ~nettle-devel~ | ~nettle-dev~ | ~nettle~ | federation: Ed25519 fleet keys, X25519 sealing (nettle, hogweed) |
 | ~gstreamer1-devel~ | ~libgstreamer1.0-dev~ | ~gstreamer~ | ai-glib's voice sessions |
 | ~gstreamer1-plugins-base-devel~ | ~libgstreamer-plugins-base1.0-dev~ | ~gst-plugins-base-libs~ | ai-glib's voice sessions (~gstreamer-app-1.0~) |
 | ~libyaml-devel~ | ~libyaml-dev~ | ~libyaml~ | yaml-glib |

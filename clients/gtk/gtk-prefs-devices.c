@@ -461,6 +461,7 @@ clawt_gtk_build_devices_page(ClawtWindow *self)
     GtkWidget *pair;
 
     adw_preferences_page_set_title(ADW_PREFERENCES_PAGE(page), "Devices");
+    adw_preferences_page_set_name(ADW_PREFERENCES_PAGE(page), "devices");
     adw_preferences_page_set_icon_name(ADW_PREFERENCES_PAGE(page),
                                        "phone-symbolic");
 

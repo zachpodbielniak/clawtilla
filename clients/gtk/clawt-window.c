@@ -2357,6 +2357,13 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         return;
     }
 
+    /* A linked fleet added, changed or heard from: the Federation page. */
+    if (g_str_has_prefix(kind != NULL ? kind : "", "federation.")) {
+        if (self->settings != NULL)
+            clawt_gtk_federation_on_event(self, event);
+        return;
+    }
+
     /*
      * A download's progress moves the bar it belongs to and nothing else.
      * Rebuilding the list on every one of a hundred events would fight
@@ -4764,6 +4771,15 @@ reload_after_connect(gpointer user_data)
     clawt_gtk_refresh_skills(self);
     clawt_gtk_load_history(self);
 
+    /*
+     * Settings opened before there was a daemon (`--settings PAGE` at
+     * start) drew its lists from requests that could not be answered.
+     */
+    if (self->settings != NULL) {
+        clawt_gtk_refresh_settings_devices(self);
+        clawt_gtk_refresh_settings_federation(self);
+    }
+
     /* and a --open that came before there was a fleet to check it in */
     clawt_gtk_open_pending(self);
 
@@ -6280,6 +6296,11 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
     self->settings_directory_min_chars = NULL;
     self->settings_devices = NULL;
     self->settings_devices_pair = NULL;
+    self->settings_federation = NULL;
+    self->settings_federation_self = NULL;
+    self->settings_federation_activity = NULL;
+    self->settings_federation_invite = NULL;
+    self->settings_federation_accept = NULL;
     self->settings_catalog_row = NULL;
     self->settings_url_row = NULL;
     g_clear_pointer(&self->settings_catalog, json_node_unref);
@@ -6325,6 +6346,15 @@ on_page_shown(ClawtWindow *self)
     clawt_gtk_refresh_recall(self);
 }
 
+void
+clawt_gtk_open_settings(ClawtWindow *self, const gchar *page)
+{
+    g_action_group_activate_action(G_ACTION_GROUP(self), "settings", NULL);
+    if (page != NULL && self->settings != NULL)
+        adw_preferences_dialog_set_visible_page_name(ADW_PREFERENCES_DIALOG(self->settings),
+                                                     page);
+}
+
 static void
 on_settings_activate(GSimpleAction *action, GVariant *parameter,
                      gpointer user_data)
@@ -6350,8 +6380,15 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
 
     dialog = adw_preferences_dialog_new();
     adw_dialog_set_title(dialog, "Settings");
-    adw_dialog_set_content_width(dialog, 720);
-    adw_dialog_set_content_height(dialog, 600);
+    /*
+     * Wide enough for the switcher's sixteen tabs.  At 720 the switcher
+     * was wider than the dialog, and a switcher does not shrink: it set
+     * every page's width and clipped the right of each one -- the
+     * Federation page's Invite button among them.  A dialog is clamped to
+     * its window, so this is a ceiling, not a demand.
+     */
+    adw_dialog_set_content_width(dialog, 1000);
+    adw_dialog_set_content_height(dialog, 760);
 
     page = adw_preferences_page_new();
     adw_preferences_page_set_title(ADW_PREFERENCES_PAGE(page),
@@ -6472,6 +6509,9 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
     adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
                                ADW_PREFERENCES_PAGE(
                                    clawt_gtk_build_devices_page(self)));
+    adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
+                               ADW_PREFERENCES_PAGE(
+                                   clawt_gtk_build_federation_page(self)));
 
     self->settings = dialog;
     g_signal_connect(dialog, "closed", G_CALLBACK(on_settings_closed), self);
@@ -6486,6 +6526,7 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
     clawt_gtk_refresh_settings_integrations(self);
     clawt_gtk_refresh_settings_connectors(self);
     clawt_gtk_refresh_settings_devices(self);
+    clawt_gtk_refresh_settings_federation(self);
     adw_dialog_present(dialog, GTK_WIDGET(self));
 }
 

@@ -4783,6 +4783,671 @@ cmd_room(int argc, char *argv[])
  */
 static gchar *read_secret(const gchar *prompt);
 
+/*
+ * clawtilla federation -- this fleet, linked with others.
+ *
+ * Every verb is one `federation.*` request; the daemon owns the keys,
+ * the peer list and every connection.  The waits that reach another
+ * fleet (accept, link, ping) use a longer timeout than a local request,
+ * because the far side may be a tunnel away.
+ */
+#define FED_WAIT_SECONDS (60)
+
+static JsonNode *
+fed_call(ClawtClient *client, const gchar *kind, JsonNode *payload, gint wait)
+{
+    g_autoptr(GError) error = NULL;
+    JsonNode *reply = clawt_client_request_full(client, kind, payload, wait, &error);
+
+    if (reply == NULL)
+        g_printerr("clawtilla: %s\n", error->message);
+    return reply;
+}
+
+static void
+fed_print_json(JsonNode *reply)
+{
+    g_autofree gchar *text = json_to_string(reply, TRUE);
+
+    g_print("%s\n", text);
+}
+
+static gboolean
+fed_has_flag(int argc, char *argv[], const gchar *flag)
+{
+    gint i;
+
+    for (i = 3; i < argc; i++)
+        if (g_strcmp0(argv[i], flag) == 0)
+            return TRUE;
+    return FALSE;
+}
+
+static const gchar *
+fed_option(int argc, char *argv[], const gchar *flag)
+{
+    gint i;
+
+    for (i = 3; i + 1 < argc; i++)
+        if (g_strcmp0(argv[i], flag) == 0)
+            return argv[i + 1];
+    return NULL;
+}
+
+/* The first argument after the verb that is not an option or its value. */
+static const gchar *
+fed_positional(int argc, char *argv[], guint nth)
+{
+    static const gchar *takes_value[] = {
+        "--tier", "--expires", "--note", "--endpoint", "--access-id", "--alias",
+        "--tag", "--filter", "--label", "--owner", "--on-revoke", "--limit",
+        "--hostname", "--token-file", NULL
+    };
+    guint seen = 0;
+    gint i;
+
+    for (i = 3; i < argc; i++) {
+        if (g_str_has_prefix(argv[i], "--")) {
+            if (g_strv_contains(takes_value, argv[i]))
+                i++;
+            continue;
+        }
+        if (seen++ == nth)
+            return argv[i];
+    }
+    return NULL;
+}
+
+/* One line per peer: dot, alias, tier, health, owner, tags. */
+static void
+fed_print_peer_line(JsonObject *p)
+{
+    JsonArray *tags = json_object_get_array_member(p, "tags");
+    g_autoptr(GString) tag_text = g_string_new(NULL);
+    const gchar *health = member_or(p, "health", "?");
+    const gchar *dot = g_strcmp0(health, "live") == 0 ? "●"
+                     : g_strcmp0(health, "offline") == 0 ? "○"
+                     : g_strcmp0(health, "revoked") == 0 ? "✕" : "◌";
+    guint i;
+
+    for (i = 0; tags != NULL && i < json_array_get_length(tags); i++)
+        g_string_append_printf(tag_text, "%s#%s", i > 0 ? " " : "",
+                               json_array_get_string_element(tags, i));
+    g_print("%s %-16s %-10s %-11s %-18s %s%s%s\n", dot, member_or(p, "alias", "?"),
+            member_or(p, "tier", "?"), health, member_or(p, "owner", ""),
+            tag_text->str,
+            json_object_get_boolean_member_with_default(p, "hidden", FALSE) ? "  (hidden)" : "",
+            json_object_get_boolean_member_with_default(p, "muted", FALSE) ? "  (muted)" : "");
+}
+
+static void
+fed_print_show(JsonObject *o)
+{
+    JsonArray *grant = json_object_get_array_member(o, "grant");
+    JsonArray *problems = json_object_get_array_member(o, "problems");
+    guint i;
+
+    fed_print_peer_line(o);
+    g_print("  fleet        %s\n", member_or(o, "fleet_id", "?"));
+    g_print("  words        %s\n", member_or(o, "safety_words", "?"));
+    g_print("  label        %s\n", member_or(o, "label", ""));
+    g_print("  endpoint     %s (%s%s%s)\n", member_or(o, "endpoint", "(it dials this fleet)"),
+            member_or(o, "transport", "?"),
+            json_object_has_member(o, "path") ? ", " : "", member_or(o, "path", ""));
+    g_print("  status       %s\n", member_or(o, "status", "?"));
+    if (json_object_has_member(o, "latency_ms"))
+        g_print("  latency      %" G_GINT64_FORMAT " ms\n",
+                json_object_get_int_member(o, "latency_ms"));
+    if (json_object_has_member(o, "error"))
+        g_print("  last error   %s\n", member_or(o, "error", ""));
+    if (json_object_has_member(o, "version"))
+        g_print("  version      %s\n", member_or(o, "version", ""));
+    if (grant != NULL) {
+        g_print("\n  What it may do here:\n");
+        for (i = 0; i < json_array_get_length(grant); i++) {
+            JsonObject *f = json_array_get_object_element(grant, i);
+            g_print("    %-22s %-12s %s%s\n", member_or(f, "name", "?"), member_or(f, "value", ""),
+                    json_object_get_boolean_member_with_default(f, "overridden", FALSE) ? "* " : "",
+                    member_or(f, "source", ""));
+        }
+    }
+    if (json_object_has_member(o, "their_grant")) {
+        JsonObject *theirs = json_object_get_object_member(o, "their_grant");
+        g_print("\n  What it lets this fleet do there: reach %s, message %s, delegate %s\n",
+                member_or(theirs, "reach", "?"), member_or(theirs, "message", "?"),
+                member_or(theirs, "delegate", "?"));
+    }
+    for (i = 0; problems != NULL && i < json_array_get_length(problems); i++)
+        g_print("  ! %s\n", json_array_get_string_element(problems, i));
+}
+
+static gint
+cmd_federation(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = argc > 2 ? argv[2] : NULL;
+    gboolean json = fed_has_flag(argc, argv, "--json");
+    const gchar *alias = fed_positional(argc, argv, 0);
+    JsonObject *o;
+    guint i;
+
+    if (verb == NULL || g_strcmp0(verb, "-h") == 0 || g_strcmp0(verb, "--help") == 0) {
+        g_print("Usage: clawtilla federation <verb> [...]\n"
+                "\n"
+                "Link this fleet with other clawtilla fleets -- yours on another machine,\n"
+                "or a colleague's -- over a Cloudflare tunnel (https://), a tailnet or LAN\n"
+                "(http:// or clawtilla://, the daemon's own IPC port), or a socket on this\n"
+                "machine.  Every request between fleets is signed by the fleet's key.\n"
+                "Each linked fleet has a tier: owned, trusted, limited or untrusted.\n"
+                "\n"
+                "  status                     this fleet's id, safety words and address\n"
+                "  tiers                      what each tier allows, by default\n"
+                "  invite [--tier T] [--expires HOURS] [--confirm] [--note TEXT]\n"
+                "         [--endpoint URL] [--access-id ID] [--qr]\n"
+                "                             make a one-use invite (T is what the\n"
+                "                             accepting fleet gets here; default limited)\n"
+                "  inspect INVITE             what an invite says, without using it\n"
+                "  accept INVITE --tier T [--alias A] [--tag TAG]...\n"
+                "                             link with the fleet that made INVITE; T is\n"
+                "                             what it gets here\n"
+                "  link TARGET [--alias A] [--tag TAG]...\n"
+                "                             link with another daemon you own: TARGET is\n"
+                "                             its socket path, or HOST:PORT (asks for its\n"
+                "                             owner token); both sides get tier owned\n"
+                "  list [--filter SELECTOR]   linked fleets: health, tier, owner, tags\n"
+                "  show ALIAS                 one fleet: address, grant and where each\n"
+                "                             value came from (explain is the same)\n"
+                "  set ALIAS [--tier T] [--label L] [--owner O] [--endpoint URL]\n"
+                "            [--on-revoke cancel|finish] [FIELD=VALUE]...\n"
+                "                             change a fleet; FIELD=VALUE overrides its\n"
+                "                             grant (FIELD= removes the override)\n"
+                "  tag ALIAS [+TAG|-TAG]...   add or remove tags\n"
+                "  hide|unhide ALIAS          keep it out of every sidebar\n"
+                "  mute|unmute ALIAS          quiet its alerts\n"
+                "  approve ALIAS              let in a fleet that accepted a --confirm invite\n"
+                "  ping ALIAS                 check the link, now\n"
+                "  revoke ALIAS               end the link (and tell the other fleet)\n"
+                "  forget ALIAS               remove a revoked fleet's record\n"
+                "  invites | uninvite ID      outstanding invites; withdraw one\n"
+                "  log [ALIAS] [--limit N]    every request between fleets, newest first\n"
+                "  rotate-key                 a new fleet key; linked fleets are told\n"
+                "  expose --cloudflare --hostname HOST\n"
+                "                             print a cloudflared config for this fleet\n"
+                "\n"
+                "Selectors (list --filter, federation.rules): tier:T, tag:T, owner:GLOB,\n"
+                "name:GLOB, health:H, online; !x negates, a+b is and, a,b is or.\n"
+                "\n"
+                "Examples:\n"
+                "  clawtilla federation link /run/user/1000/clawtilla/other.sock\n"
+                "  clawtilla federation link 100.64.0.7:8792 --alias homelab\n"
+                "  clawtilla federation invite --tier trusted --qr\n"
+                "  clawtilla federation accept clawt-fed1-... --tier limited --tag client-acme\n"
+                "  clawtilla federation list --filter 'tier:trusted+online'\n"
+                "  clawtilla federation set acme cap.exec=deny reach=listed agents=atlas,team:web\n"
+                "  clawtilla federation tag acme +billing -trial\n"
+                "  clawtilla federation expose --cloudflare --hostname fleet.example.com\n");
+        return verb == NULL ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "status") == 0) {
+        reply = fed_call(client, "federation.status", NULL, 0);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        if (json) {
+            fed_print_json(reply);
+            return EXIT_SUCCESS;
+        }
+        o = json_node_get_object(reply);
+        if (!json_object_get_boolean_member_with_default(o, "enabled", FALSE)) {
+            g_print("Federation is off.  %s\n", member_or(o, "hint", ""));
+            return EXIT_SUCCESS;
+        }
+        g_print("This fleet  %s (%s)\n", member_or(o, "name", "?"), member_or(o, "owner", ""));
+        g_print("Fleet id    %s\n", member_or(o, "fleet_id", "?"));
+        g_print("Words       %s   (read these to whoever accepts your invite)\n",
+                member_or(o, "safety_words", "?"));
+        g_print("Reachable   %s\n", member_or(o, "endpoint",
+                "nowhere yet -- set federation.public_url, or join a tailnet"));
+        g_print("Linked      %" G_GINT64_FORMAT " fleet(s), %" G_GINT64_FORMAT " open invite(s)\n",
+                json_object_get_int_member_with_default(o, "peers", 0),
+                json_object_get_int_member_with_default(o, "invites", 0));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "tiers") == 0) {
+        JsonArray *tiers;
+        reply = fed_call(client, "federation.tiers", NULL, 0);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        if (json) {
+            fed_print_json(reply);
+            return EXIT_SUCCESS;
+        }
+        tiers = json_object_get_array_member(json_node_get_object(reply), "tiers");
+        for (i = 0; tiers != NULL && i < json_array_get_length(tiers); i++) {
+            JsonObject *t = json_array_get_object_element(tiers, i);
+            g_print("%-10s %s\n", member_or(t, "tier", "?"), member_or(t, "summary", ""));
+        }
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "invite") == 0) {
+        g_autoptr(JsonBuilder) b = json_builder_new();
+        const gchar *expires = fed_option(argc, argv, "--expires");
+        const gchar *access_id = fed_option(argc, argv, "--access-id");
+        g_autofree gchar *access_secret = NULL;
+
+        json_builder_begin_object(b);
+#define OPT(flag, key) do { const gchar *v_ = fed_option(argc, argv, flag); \
+            if (v_ != NULL) { json_builder_set_member_name(b, key); \
+                              json_builder_add_string_value(b, v_); } } while (0)
+        OPT("--tier", "tier");
+        OPT("--note", "note");
+        OPT("--endpoint", "endpoint");
+#undef OPT
+        if (expires != NULL) {
+            json_builder_set_member_name(b, "expires_hours");
+            json_builder_add_int_value(b, g_ascii_strtoll(expires, NULL, 10));
+        }
+        if (fed_has_flag(argc, argv, "--confirm")) {
+            json_builder_set_member_name(b, "confirm");
+            json_builder_add_boolean_value(b, TRUE);
+        }
+        if (access_id != NULL) {
+            /* The secret is typed, never an argument: argv is world-readable. */
+            access_secret = read_secret("Cloudflare Access client secret: ");
+            if (access_secret == NULL || *access_secret == '\0') {
+                g_printerr("clawtilla: no secret was given\n");
+                return EXIT_FAILURE;
+            }
+            json_builder_set_member_name(b, "access_id");
+            json_builder_add_string_value(b, access_id);
+            json_builder_set_member_name(b, "access_secret");
+            json_builder_add_string_value(b, access_secret);
+        }
+        json_builder_end_object(b);
+        reply = fed_call(client, "federation.invite.create", json_builder_get_root(b), 0);
+        if (access_secret != NULL)
+            memset(access_secret, 0, strlen(access_secret));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        if (json) {
+            fed_print_json(reply);
+            return EXIT_SUCCESS;
+        }
+        o = json_node_get_object(reply);
+        if (fed_has_flag(argc, argv, "--qr")) {
+            g_autofree gchar *qr = clawt_qr_render_terminal(member_or(o, "uri", ""), FALSE, NULL);
+            if (qr != NULL)
+                g_print("%s\n", qr);
+        }
+        g_print("Send this to the other fleet's owner (it is a one-use secret):\n\n  %s\n\n",
+                member_or(o, "paste", "?"));
+        g_print("They will see this fleet as %s, words %s.\n",
+                member_or(o, "fleet_id", "?"), member_or(o, "safety_words", "?"));
+        g_print("It reaches this fleet at %s, gives them tier %s here, and expires in %s hours.\n",
+                member_or(o, "endpoint", "?"), member_or(o, "tier", "?"),
+                expires != NULL ? expires : "72");
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "inspect") == 0 || g_strcmp0(verb, "accept") == 0) {
+        g_autoptr(JsonBuilder) b = json_builder_new();
+        const gchar *invite = alias;
+        gint k;
+
+        if (invite == NULL) {
+            g_printerr("Usage: clawtilla federation %s INVITE%s\n", verb,
+                       g_strcmp0(verb, "accept") == 0 ? " --tier T" : "");
+            return EXIT_FAILURE;
+        }
+        json_builder_begin_object(b);
+        json_builder_set_member_name(b, "invite");
+        json_builder_add_string_value(b, invite);
+        if (g_strcmp0(verb, "accept") == 0) {
+            const gchar *tier = fed_option(argc, argv, "--tier");
+            const gchar *a = fed_option(argc, argv, "--alias");
+            if (tier == NULL) {
+                g_printerr("clawtilla: choose the tier that fleet gets here: --tier owned|"
+                           "trusted|limited|untrusted\n");
+                return EXIT_FAILURE;
+            }
+            json_builder_set_member_name(b, "tier");
+            json_builder_add_string_value(b, tier);
+            if (a != NULL) {
+                json_builder_set_member_name(b, "alias");
+                json_builder_add_string_value(b, a);
+            }
+            json_builder_set_member_name(b, "tags");
+            json_builder_begin_array(b);
+            for (k = 3; k + 1 < argc; k++)
+                if (g_strcmp0(argv[k], "--tag") == 0)
+                    json_builder_add_string_value(b, argv[k + 1]);
+            json_builder_end_array(b);
+        }
+        json_builder_end_object(b);
+        reply = fed_call(client, g_strcmp0(verb, "accept") == 0 ? "federation.invite.accept"
+                                                                : "federation.invite.inspect",
+                         json_builder_get_root(b), FED_WAIT_SECONDS);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        if (json) {
+            fed_print_json(reply);
+            return EXIT_SUCCESS;
+        }
+        o = json_node_get_object(reply);
+        if (g_strcmp0(verb, "inspect") == 0) {
+            g_print("Fleet       %s (%s)\n", member_or(o, "name", "?"), member_or(o, "owner", ""));
+            g_print("Fleet id    %s\n", member_or(o, "fleet_id", "?"));
+            g_print("Words       %s   (check them with its owner)\n",
+                    member_or(o, "safety_words", "?"));
+            g_print("Reached at  %s (%s)\n", member_or(o, "endpoint", "?"),
+                    member_or(o, "path", member_or(o, "problem", "?")));
+            g_print("Gives you   %s: %s\n", member_or(o, "tier", "?"),
+                    member_or(o, "tier_summary", ""));
+            g_print("Expires     %s\n",
+                    json_object_get_boolean_member_with_default(o, "expired", FALSE)
+                        ? "already expired" : "not yet");
+            if (json_object_has_member(o, "already_linked_as"))
+                g_print("Already linked here as %s.\n", member_or(o, "already_linked_as", ""));
+            return EXIT_SUCCESS;
+        }
+        g_print("Linked with %s as '%s' (tier %s here; %s).\n", member_or(o, "label", "?"),
+                member_or(o, "alias", "?"), member_or(o, "tier", "?"),
+                g_strcmp0(member_or(o, "their_status", ""), "pending") == 0
+                    ? "waiting for them to approve"
+                    : "active");
+        g_print("Its safety words are %s -- check them with its owner.\n",
+                member_or(o, "safety_words", "?"));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "link") == 0) {
+        g_autoptr(JsonBuilder) b = json_builder_new();
+        g_autofree gchar *token = NULL;
+        const gchar *target = alias;
+        const gchar *a = fed_option(argc, argv, "--alias");
+        gint k;
+
+        if (target == NULL) {
+            g_printerr("Usage: clawtilla federation link SOCKET|HOST:PORT [--alias A]\n");
+            return EXIT_FAILURE;
+        }
+        if (target[0] != '/') {
+            token = read_secret("That daemon's owner token (clawtilla daemon token, there): ");
+            if (token == NULL || *token == '\0') {
+                g_printerr("clawtilla: no token was given\n");
+                return EXIT_FAILURE;
+            }
+        }
+        json_builder_begin_object(b);
+        json_builder_set_member_name(b, "target");
+        json_builder_add_string_value(b, target);
+        if (token != NULL) {
+            json_builder_set_member_name(b, "token");
+            json_builder_add_string_value(b, token);
+        }
+        if (a != NULL) {
+            json_builder_set_member_name(b, "alias");
+            json_builder_add_string_value(b, a);
+        }
+        json_builder_set_member_name(b, "tags");
+        json_builder_begin_array(b);
+        for (k = 3; k + 1 < argc; k++)
+            if (g_strcmp0(argv[k], "--tag") == 0)
+                json_builder_add_string_value(b, argv[k + 1]);
+        json_builder_end_array(b);
+        json_builder_end_object(b);
+        reply = fed_call(client, "federation.link", json_builder_get_root(b), FED_WAIT_SECONDS);
+        if (token != NULL)
+            memset(token, 0, strlen(token));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        o = json_node_get_object(reply);
+        g_print("Linked with %s as '%s', tier owned on both sides.\n",
+                member_or(o, "label", "?"), member_or(o, "alias", "?"));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "list") == 0 || g_strcmp0(verb, "invites") == 0) {
+        JsonArray *list;
+        reply = fed_call(client, "federation.peer.list",
+                         build_payload("filter", fed_option(argc, argv, "--filter"), NULL), 0);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        if (json) {
+            fed_print_json(reply);
+            return EXIT_SUCCESS;
+        }
+        o = json_node_get_object(reply);
+        if (g_strcmp0(verb, "invites") == 0) {
+            list = json_object_get_array_member(o, "invites");
+            if (list == NULL || json_array_get_length(list) == 0)
+                g_print("No open invites.\n");
+            for (i = 0; list != NULL && i < json_array_get_length(list); i++) {
+                JsonObject *inv = json_array_get_object_element(list, i);
+                g_print("%-14s %-10s %s\n", member_or(inv, "id", "?"),
+                        member_or(inv, "tier", "?"), member_or(inv, "note", ""));
+            }
+            return EXIT_SUCCESS;
+        }
+        list = json_object_get_array_member(o, "peers");
+        if (list == NULL || json_array_get_length(list) == 0) {
+            g_print("No linked fleets.  `clawtilla federation invite` makes an invite;\n"
+                    "`clawtilla federation link` links a daemon you own.\n");
+            return EXIT_SUCCESS;
+        }
+        for (i = 0; i < json_array_get_length(list); i++)
+            fed_print_peer_line(json_array_get_object_element(list, i));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "uninvite") == 0) {
+        if (alias == NULL) {
+            g_printerr("Usage: clawtilla federation uninvite ID\n");
+            return EXIT_FAILURE;
+        }
+        reply = fed_call(client, "federation.invite.revoke", build_payload("id", alias, NULL), 0);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        g_print("Invite %s withdrawn.\n", alias);
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "log") == 0) {
+        JsonArray *rows;
+        g_autoptr(JsonBuilder) b = json_builder_new();
+        const gchar *limit = fed_option(argc, argv, "--limit");
+
+        json_builder_begin_object(b);
+        if (alias != NULL) {
+            json_builder_set_member_name(b, "alias");
+            json_builder_add_string_value(b, alias);
+        }
+        json_builder_set_member_name(b, "limit");
+        json_builder_add_int_value(b, limit != NULL ? g_ascii_strtoll(limit, NULL, 10) : 50);
+        json_builder_end_object(b);
+        reply = fed_call(client, "federation.audit", json_builder_get_root(b), 0);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        if (json) {
+            fed_print_json(reply);
+            return EXIT_SUCCESS;
+        }
+        rows = json_object_get_array_member(json_node_get_object(reply), "entries");
+        for (i = 0; rows != NULL && i < json_array_get_length(rows); i++) {
+            JsonObject *e = json_array_get_object_element(rows, i);
+            g_autoptr(GDateTime) when = g_date_time_new_from_unix_local(
+                json_object_get_int_member_with_default(e, "time", 0));
+            g_autofree gchar *stamp = when != NULL ? g_date_time_format(when, "%F %T") : NULL;
+            g_print("%s  %-5s %-16s %-14s %-8s %s\n", stamp != NULL ? stamp : "?",
+                    member_or(e, "direction", "?"), member_or(e, "peer", ""),
+                    member_or(e, "kind", ""), member_or(e, "outcome", ""),
+                    member_or(e, "detail", ""));
+        }
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "rotate-key") == 0) {
+        reply = fed_call(client, "federation.rotate_key", NULL, 0);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        o = json_node_get_object(reply);
+        g_print("New key in use (version %" G_GINT64_FORMAT "); %" G_GINT64_FORMAT
+                " linked fleet(s) told.  The fleet id stays %s.\n",
+                json_object_get_int_member_with_default(o, "key_index", 0),
+                json_object_get_int_member_with_default(o, "told", 0),
+                member_or(o, "fleet_id", "?"));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "expose") == 0) {
+        reply = fed_call(client, "federation.expose",
+                         build_payload("hostname", fed_option(argc, argv, "--hostname"), NULL), 0);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        o = json_node_get_object(reply);
+        g_print("%s\n", member_or(o, "cloudflared_config", ""));
+        g_print("# then: clawtilla config set federation.public_url %s\n",
+                member_or(o, "public_url", ""));
+        g_print("# steps: %s\n", member_or(o, "next", ""));
+        return EXIT_SUCCESS;
+    }
+
+    /* Everything below names one linked fleet. */
+    if (alias == NULL) {
+        g_printerr("Usage: clawtilla federation %s ALIAS  (clawtilla federation list)\n", verb);
+        return EXIT_FAILURE;
+    }
+
+    if (g_strcmp0(verb, "show") == 0 || g_strcmp0(verb, "explain") == 0) {
+        reply = fed_call(client, "federation.peer.show", build_payload("alias", alias, NULL), 0);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        if (json)
+            fed_print_json(reply);
+        else
+            fed_print_show(json_node_get_object(reply));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "set") == 0) {
+        g_autoptr(JsonBuilder) b = json_builder_new();
+        gint k;
+
+        json_builder_begin_object(b);
+        json_builder_set_member_name(b, "alias");
+        json_builder_add_string_value(b, alias);
+#define OPT(flag, key) do { const gchar *v_ = fed_option(argc, argv, flag); \
+            if (v_ != NULL) { json_builder_set_member_name(b, key); \
+                              json_builder_add_string_value(b, v_); } } while (0)
+        OPT("--tier", "tier");
+        OPT("--label", "label");
+        OPT("--owner", "owner");
+        OPT("--endpoint", "endpoint");
+        OPT("--on-revoke", "on_revoke");
+#undef OPT
+        json_builder_set_member_name(b, "grant");
+        json_builder_begin_object(b);
+        for (k = 4; k < argc; k++) {
+            const gchar *eq = strchr(argv[k], '=');
+            g_autofree gchar *field = NULL;
+            if (g_str_has_prefix(argv[k], "--") || eq == NULL)
+                continue;
+            field = g_strndup(argv[k], eq - argv[k]);
+            json_builder_set_member_name(b, field);
+            json_builder_add_string_value(b, eq + 1);
+        }
+        json_builder_end_object(b);
+        json_builder_end_object(b);
+        reply = fed_call(client, "federation.peer.set", json_builder_get_root(b), 0);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        fed_print_show(json_node_get_object(reply));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "tag") == 0) {
+        g_autoptr(JsonBuilder) b = json_builder_new();
+        gint k;
+
+        json_builder_begin_object(b);
+        json_builder_set_member_name(b, "alias");
+        json_builder_add_string_value(b, alias);
+        json_builder_set_member_name(b, "add");
+        json_builder_begin_array(b);
+        for (k = 4; k < argc; k++)
+            if (argv[k][0] == '+' || (argv[k][0] != '-' && argv[k][0] != '\0'))
+                json_builder_add_string_value(b, argv[k][0] == '+' ? argv[k] + 1 : argv[k]);
+        json_builder_end_array(b);
+        json_builder_set_member_name(b, "remove");
+        json_builder_begin_array(b);
+        for (k = 4; k < argc; k++)
+            if (argv[k][0] == '-' && argv[k][1] != '-')
+                json_builder_add_string_value(b, argv[k] + 1);
+        json_builder_end_array(b);
+        json_builder_end_object(b);
+        reply = fed_call(client, "federation.peer.tag", json_builder_get_root(b), 0);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        fed_print_peer_line(json_node_get_object(reply));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "hide") == 0 || g_strcmp0(verb, "unhide") == 0 ||
+        g_strcmp0(verb, "mute") == 0 || g_strcmp0(verb, "unmute") == 0) {
+        g_autoptr(JsonBuilder) b = json_builder_new();
+        gboolean on = g_strcmp0(verb, "hide") == 0 || g_strcmp0(verb, "mute") == 0;
+
+        json_builder_begin_object(b);
+        json_builder_set_member_name(b, "alias");
+        json_builder_add_string_value(b, alias);
+        json_builder_set_member_name(b, "value");
+        json_builder_add_boolean_value(b, on);
+        json_builder_end_object(b);
+        reply = fed_call(client, g_str_has_suffix(verb, "hide") ? "federation.peer.hide"
+                                                                : "federation.peer.mute",
+                         json_builder_get_root(b), 0);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        fed_print_peer_line(json_node_get_object(reply));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "approve") == 0 || g_strcmp0(verb, "revoke") == 0 ||
+        g_strcmp0(verb, "forget") == 0) {
+        const gchar *kind = g_strcmp0(verb, "approve") == 0 ? "federation.peer.approve"
+                          : g_strcmp0(verb, "revoke") == 0 ? "federation.peer.revoke"
+                                                           : "federation.peer.forget";
+        reply = fed_call(client, kind, build_payload("alias", alias, NULL), 0);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        g_print("%s: %s.\n", alias, g_strcmp0(verb, "approve") == 0 ? "approved"
+                                   : g_strcmp0(verb, "revoke") == 0 ? "revoked"
+                                                                    : "forgotten");
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "ping") == 0) {
+        reply = fed_call(client, "federation.peer.ping", build_payload("alias", alias, NULL),
+                         FED_WAIT_SECONDS);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        g_print("%s answered in %" G_GINT64_FORMAT " ms.\n", alias,
+                json_object_get_int_member_with_default(json_node_get_object(reply), "ms", 0));
+        return EXIT_SUCCESS;
+    }
+
+    g_printerr("clawtilla: unknown federation verb '%s' (clawtilla federation --help)\n", verb);
+    return EXIT_FAILURE;
+}
+
+
 static gint
 cmd_office(int argc, char *argv[])
 {
@@ -13147,6 +13812,8 @@ static const ClawtVerb verbs[] = {
     { "limits",  "[--cached] [--json]",
       "What each provider login has left of its plan",
       cmd_limits },
+    { "federation", "<verb>", "Link this fleet with other fleets: invites, tiers, tags",
+      cmd_federation },
     { "office",  "<verb>",   "Who is where in the office, and its worlds",
       cmd_office },
     { "memory",  "<verb>",   "What an agent has written down",

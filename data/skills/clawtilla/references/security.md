@@ -23,8 +23,12 @@ Single-user. The daemon runs as you; sockets are 0600 in 0700 directories; anyth
 |---|---|---|
 | unix socket `daemon.socket` | on | the kernel (0600) |
 | tailnet address (`daemon.tailscale`) | **on** | bearer token; never `0.0.0.0`, only the 100.64/10 address; bind failure is a warning |
-| TCP (`daemon.tcp_enabled`, `tcp_address` 127.0.0.1, `tcp_port` 8792) | off | bearer token; add `daemon.tls_cert` / `tls_key` or tokens travel in clear |
+| TCP (`daemon.tcp_enabled`, `tcp_address` 127.0.0.1, `tcp_port` 8792) | off | bearer token; add `daemon.tls_cert` / `tls_key` or tokens travel in clear (since 0.66.0 the certificate is really used: a plain-text profile then stops working) |
 | `clawtillad --no-bind` / `--bind IP[:PORT]` | | drop / replace network listeners for one run |
+| another fleet, `fed.hello` on the IPC port (`federation.ipc`) | with federation | a signed stamp from a linked fleet's key; that connection may send `fed.*` frames only and gets no events |
+| the federation listener (`federation.listen`, `unix:<state_dir>/federation.sock`) | with federation | every request a signed envelope; see [federation.md](federation.md) |
+
+Only the operator, clawtilla itself and integrations (`grok:`, `venture:`) may write into a room they are not members of; every agent -- this fleet's or another's (`fleet:ALIAS:AGENT`) -- is held to membership (0.66.0; before, any sender that was not a local agent had the operator's reach).
 
 Owner token: `daemon.token_file`, else generated into `<state_dir>/tcp-token` (0600) the first time a listener needs one; `clawtilla daemon token` prints it. It never expires and is checked first, independently of devices.
 

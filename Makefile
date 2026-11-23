@@ -168,6 +168,17 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/computer/clawt-exec-result.h \
 	$(SRCDIR)/computer/clawt-sandbox.h \
 	$(SRCDIR)/net/clawt-net-policy.h \
+	$(SRCDIR)/federation/clawt-fleet-key.h \
+	$(SRCDIR)/federation/clawt-fed-envelope.h \
+	$(SRCDIR)/federation/clawt-fed-seal.h \
+	$(SRCDIR)/federation/clawt-fed-grant.h \
+	$(SRCDIR)/federation/clawt-fed-selector.h \
+	$(SRCDIR)/federation/clawt-fed-invite.h \
+	$(SRCDIR)/federation/clawt-fed-registry.h \
+	$(SRCDIR)/federation/clawt-fed-transport.h \
+	$(SRCDIR)/federation/clawt-fed-server.h \
+	$(SRCDIR)/federation/clawt-fed-link.h \
+	$(SRCDIR)/federation/clawt-fed-view.h \
 	$(SRCDIR)/net/clawt-egress-gate.h \
 	$(SRCDIR)/net/clawt-egress-broker.h \
 	$(SRCDIR)/computer/clawt-computer.h \
@@ -331,6 +342,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-office-custodial.c \
 	$(SRCDIR)/core/daemon-office-generate.c \
 	$(SRCDIR)/core/daemon-office-peers.c \
+	$(SRCDIR)/core/daemon-federation.c \
 	$(SRCDIR)/core/daemon-config.c \
 	$(SRCDIR)/core/daemon-skill.c \
 	$(SRCDIR)/core/daemon-skill-proposal.c \
@@ -416,6 +428,17 @@ LIB_SOURCES = \
 	$(SRCDIR)/net/clawt-net-policy.c \
 	$(SRCDIR)/net/clawt-egress-gate.c \
 	$(SRCDIR)/net/clawt-egress-broker.c \
+	$(SRCDIR)/federation/clawt-fleet-key.c \
+	$(SRCDIR)/federation/clawt-fed-envelope.c \
+	$(SRCDIR)/federation/clawt-fed-seal.c \
+	$(SRCDIR)/federation/clawt-fed-grant.c \
+	$(SRCDIR)/federation/clawt-fed-selector.c \
+	$(SRCDIR)/federation/clawt-fed-invite.c \
+	$(SRCDIR)/federation/clawt-fed-registry.c \
+	$(SRCDIR)/federation/clawt-fed-transport.c \
+	$(SRCDIR)/federation/clawt-fed-server.c \
+	$(SRCDIR)/federation/clawt-fed-link.c \
+	$(SRCDIR)/federation/clawt-fed-view.c \
 	$(SRCDIR)/computer/clawt-observable.c \
 	$(SRCDIR)/computer/clawt-screen.c \
 	$(SRCDIR)/computer/clawt-saved-steps.c \

@@ -83,6 +83,7 @@ the second is what clawtilla adds:
 | `libxml-2.0` | `libxml2-devel` | ai-glib's HTML-parsing search tools |
 | `gstreamer-1.0`, `gstreamer-app-1.0` | `gstreamer1-devel`, `gstreamer1-plugins-base-devel` | ai-glib's voice sessions |
 | `gudev-1.0` | `libgudev-devel` | podomation |
+| `nettle`, `hogweed` | `nettle-devel` | federation: Ed25519 fleet keys, X25519 sealing |
 | `gtk4` | `gtk4-devel` | GTK client |
 | `libadwaita-1` | `libadwaita-devel` | GTK client |
 | `libqrencode` | `qrencode-devel` (`qrencode-libs` at runtime) | pairing QR codes (optional; detected, `QRENCODE=0` to skip) |
@@ -411,6 +412,18 @@ reads is added to the table in docs/venture.org and to
 tests/test-venture-contract.c, and VENTURE's recorded
 shapes copied into tests/fixtures/venture/ (`make check-venture-contract`
 diffs them). See docs/venture.org.
+
+## Federation: the envelope is the security, not the pipe
+
+Fleets link over a Cloudflare tunnel, a tailnet, a LAN or a socket (docs/federation.org), and every request *and every answer* between them is a signed envelope (`src/federation/clawt-fed-envelope.c`). Rules that keep it true:
+
+- **One verification path.** Everything another fleet sends -- the HTTP listener, the IPC port's `fed.*` frames -- goes through `receive()` in `src/core/daemon-federation.c`: known fleet, unretired key, clock window, addressed to us, signed for this route, digest, signature, then the replay guard, then the body is read. A new door calls it; it never checks a stamp itself.
+- **A fleet connection is not a client.** `dispatch_line()` lets a `fed.hello` connection send `fed.*` frames only and never gives it the event stream. Do not add a federation handler that reads the connection's device or owner state.
+- **Another fleet is never the operator.** `clawt_sender_may_post_anywhere()` is the allowlist (operator, system, integrations); a remote sender is `fleet:ALIAS:AGENT` and held to room membership.
+- **Grant fields are a table** (`clawt_fed_grant_field_count()/_nth()`); a new one is a row there, and the CLI, the three editors and `explain` pick it up. Limits are integers.
+- **Plain text is decided by `clawt_fed_transport_check()`**, never by a caller: loopback and tailnet yes, LAN with `federation.allow_lan_plaintext`, public never.
+- **Keep-alives are not activity.** Successful hellos and pings are not audited, or every client's Federation page redraws every few seconds.
+- Tests: `tests/test-fed-*.c`; the two-daemon test runs every scenario over HTTP and IPC through one table, on unix sockets (loopback TCP is integration-only, `tests/test-ipc-tls.c`).
 
 ## Shapes That Keep Recurring
 

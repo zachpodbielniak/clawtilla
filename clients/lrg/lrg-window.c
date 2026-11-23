@@ -950,6 +950,8 @@ clawt_lrg_window_event(ClawtLrgApp *app, ClawtEvent *event)
     /* a settings page has no event hook of its own; Devices needs one */
     if (g_str_has_prefix(kind, "device."))
         clawt_lrg_settings_devices_event(app, event);
+    if (g_str_has_prefix(kind, "federation."))
+        clawt_lrg_settings_federation_event(app, event);
 
     if (g_strcmp0(kind, "broker.changed") == 0)
         clawt_lrg_settings_connectors_event(app, event);

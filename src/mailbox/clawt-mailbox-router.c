@@ -305,12 +305,17 @@ resolve_room(ClawtMailboxRouter  *self,
          * same resolver with a room id out of the agent's own frame, so
          * the check belongs here rather than at either caller.
          *
-         * Only a sender that is an agent is held to it.  The operator
-         * and CLAWT_SYSTEM_SENDER are not in the manager, and a daemon
-         * that cannot write into a room it is telling somebody about is
-         * a daemon that cannot deliver a task notice.
+         * Every agent is held to it, this fleet's or another's.  The
+         * operator, CLAWT_SYSTEM_SENDER and an integration relaying for
+         * the operator are not -- a daemon that cannot write into a room
+         * it is telling somebody about cannot deliver a task notice.  It
+         * used to be "only a sender that is a local agent", which handed
+         * the operator's reach to every sender that was *not* one -- and
+         * another fleet's agent, whose `fleet:` id is in no agent list by
+         * construction, would have been the first.  The allowlist is
+         * clawt_sender_may_post_anywhere().
          */
-        if (clawt_agent_manager_get(self->agents, sender) != NULL &&
+        if (!clawt_sender_may_post_anywhere(sender) &&
             !clawt_room_has_member(room, sender)) {
             g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
                         "'%s' is not in room '%s'", sender, destination);

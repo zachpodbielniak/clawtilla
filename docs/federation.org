@@ -1,0 +1,511 @@
+#+title: Federation
+#+description: Linking clawtilla fleets -- yours and other people's -- over a tunnel, a tailnet, a LAN or a socket
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-11-22 Sun]
+#+updated: [2026-11-22 Sun]
+#+version: 0.1.0
+
+* Federation
+:PROPERTIES:
+:CUSTOM_ID: federation
+:END:
+
+Federation links one clawtilla fleet with others: your own daemons on other machines, a trusted colleague's fleet, a client's fleet you work with now and then, or somebody you have never met.  Each link has a *tier* that presets what the other fleet may do here, *tags* you choose, and per-link *overrides*, and every request between fleets is signed by the sending fleet's key and answered signed by the receiving one -- whatever carries it.
+
+The daemon does all of it.  Clients ask the daemon (~federation.*~ requests); the daemon holds the keys, the peer list, the connections and the audit.
+
+** What arrives when
+:PROPERTIES:
+:CUSTOM_ID: roadmap
+:END:
+
+Federation is built in five releases.  This document describes all of it and says, in each section, which release it arrives in.
+
+| Release | What it adds |
+|---------+--------------|
+| 0.66.0 | fleet keys, signed envelopes, sealing; every transport; invites, accepts, linking your own fleets; tiers, grants, rules, tags; revoke and key rotation; the audit; ~clawtilla federation~; the Federation page in every client |
+| 0.67.0 | the live event stream between fleets; remote agents in every client's sidebar, one section per fleet, with filter chips; hide and mute in the sidebar; the office's visitors move onto federation |
+| 0.68.0 | messages to and from remote agents (~atlas@lab~), held messages, rate limits, prompt-injection fencing |
+| 0.69.0 | delegating tasks to remote agents, budgets, the policy cap on work done for another fleet |
+| 0.70.0 | the transcripts grant and rooms shared between fleets |
+
+** Concepts
+:PROPERTIES:
+:CUSTOM_ID: concepts
+:END:
+
+- Fleet key :: an Ed25519 key the daemon makes the first time federation is on, kept in =<secrets.dir>/federation/fleet.ed25519= (mode 0600).  It never leaves the daemon.
+- Fleet id :: the fingerprint of the *first* fleet key: 26 characters of lowercase base32 over SHA-256 of the public key.  It does not change when the key is rotated.  With federation on, the office's participants carry it too.
+- Safety words :: four words derived from the fingerprint (=amber-otter-quill-harbor=), for two people to read to each other when one accepts the other's invite.  Every client shows them on the invite and on the peer.
+- Peer :: a linked fleet, known here by an *alias* you choose (=lab=, =acme=) that never changes, since room ids are made from it.  Peers live in =<state_dir>/federation/peers.yaml=, which the daemon writes; you change them with ~clawtilla federation~ or a client, not by hand.
+- Endpoint :: where a peer is reached (see [[#transports][transports]]).  A peer with no endpoint is one that dials *you*; only one side of a link needs to be reachable.
+- Tier :: =owned=, =trusted=, =limited= or =untrusted=: the starting point for what a peer may do here ([[#tiers][tiers]]).
+- Grant :: what a peer may actually do here: its tier's preset, then any [[#rules][rules]] that match it, then its own overrides.  ~clawtilla federation show ALIAS~ prints every field and where its value came from.
+- Envelope :: what crosses between fleets: a body (JSON) and a signed stamp ([[#security][security]]).
+
+** Quick start
+:PROPERTIES:
+:CUSTOM_ID: quick-start
+:END:
+
+On both fleets, turn federation on and restart the daemon:
+
+#+begin_src yaml
+federation:
+  enabled: true
+  name: "Lab"          # what other fleets call this one
+  owner: "Alice"       # who runs it
+#+end_src
+
+Then one of the four recipes below.  The shortest:
+
+#+begin_src bash
+# two daemons you own on one tailnet: nothing to paste
+clawtilla federation link 100.64.0.7:8792 --alias homelab
+#+end_src
+
+#+begin_src bash
+# anybody else: invite on one side ...
+clawtilla federation invite --tier limited --qr
+# ... accept on the other, choosing what *they* get there
+clawtilla federation accept clawt-fed1-... --tier trusted --tag client-acme
+#+end_src
+
+** Transports
+:PROPERTIES:
+:CUSTOM_ID: transports
+:END:
+
+Security lives in the envelope, not the pipe, so one peer can be reached through a Cloudflare tunnel and another over a LAN with the same guarantees of authenticity and replay protection.  The endpoint picks the pipe:
+
+| Endpoint | Carried by | Use it for |
+|----------+------------+------------|
+| =https://fleet.example.com= | HTTPS, to the federation listener behind a tunnel or proxy | Cloudflare Tunnel, a TLS reverse proxy |
+| =http://100.64.0.7:7711= | plain HTTP, to the federation listener | a tailnet, or a LAN with =federation.allow_lan_plaintext= |
+| =clawtilla://100.64.0.7:8792= | the other daemon's *own IPC port* (the simple daemon connection) | a tailnet or LAN with no extra port and no HTTP |
+| =unix:/path/federation.sock= | the federation listener's socket | this machine; what cloudflared points at |
+| =unix:/path/daemon.sock#ipc= | another daemon's own socket, spoken as IPC | two daemons on one machine |
+
+*** The simple daemon connection
+:PROPERTIES:
+:CUSTOM_ID: ipc
+:END:
+
+With =federation.ipc= on (the default when federation is on), another fleet can reach this daemon on the port it already listens on for clients: =daemon.tcp_address=, the tailnet address, or its socket.  The dialling daemon says ~fed.hello~ -- a signed stamp, never the owner token -- and from then on that connection is a *fleet*, not a client:
+
+- it may send ~fed.hello~, ~fed.envelope~ and ~fed.invite~ frames and nothing else; every other request is refused at the door, whatever socket it came in on;
+- it never receives the event stream;
+- every frame is checked on its own, exactly as an HTTP request is.
+
+A fleet that is not linked yet may still say hello (it is about to redeem an invite) but stays nobody.
+
+*** What may go in plain text
+:PROPERTIES:
+:CUSTOM_ID: plaintext
+:END:
+
+The envelope keeps every link authentic; privacy depends on the pipe, so plain text (=http://=, or =clawtilla://= without a certificate on the IPC listener) is allowed only where something else already protects it:
+
+| Address | Plain text |
+|---------+------------|
+| =127.0.0.0/8=, =::1=, =localhost=, a unix socket | allowed: this machine |
+| =100.64.0.0/10=, =fd7a:115c:a1e0::/48=, =*.ts.net= | allowed: a tailnet, encrypted by WireGuard |
+| RFC 1918, link-local, unique-local, any other name | only with =federation.allow_lan_plaintext: true=; bodies are then sealed under =federation.seal: auto= |
+| anything else | refused: use =https://=, a tailnet, or a certificate |
+
+A refusal names the setting and the alternatives.  A name is never resolved to decide this (a request must not wait on DNS); a name that is not =localhost= or =*.ts.net= is treated as a LAN name.
+
+*** Sealing
+:PROPERTIES:
+:CUSTOM_ID: sealing
+:END:
+
+=federation.seal= encrypts bodies with ChaCha20-Poly1305 under a key the two fleets agree with X25519 (both derived from the fleet keys), on top of whatever carries them.  The stamp is signed over the ciphertext, so a tampered sealed body is refused before it is opened.
+
+- =auto= (default) :: seal on plain-text LAN links only.
+- =always= :: seal everything, including through a tunnel -- so the Cloudflare edge that ends the TLS sees only ciphertext.
+- =never= :: never seal.
+
+** Recipes
+:PROPERTIES:
+:CUSTOM_ID: recipes
+:END:
+
+*** Two fleets you own, on one tailnet
+:PROPERTIES:
+:CUSTOM_ID: recipe-own-tailnet
+:END:
+
+Both daemons on the tailnet (=daemon.tailscale: true=, the default), federation on in both.  From the first:
+
+#+begin_src bash
+clawtilla federation link 100.64.0.7:8792 --alias homelab
+# asks for the other daemon's owner token (`clawtilla daemon token` there)
+#+end_src
+
+The daemon connects to the other one *as its owner*, asks it for an invite giving tier =owned=, and accepts it with tier =owned=.  The token is used for that one connection and not kept.  The link itself runs over the simple daemon connection (=clawtilla://=), signed; nothing else to configure.  Both on one machine: pass the other daemon's socket path instead (~clawtilla federation link /run/user/1000/other/daemon.sock~).
+
+Check it:
+
+#+begin_src bash
+clawtilla federation list          # ● homelab  owned  live ...
+clawtilla federation ping homelab  # homelab answered in 3 ms.
+#+end_src
+
+*** A colleague on your tailnet
+:PROPERTIES:
+:CUSTOM_ID: recipe-colleague-tailnet
+:END:
+
+Share your machine with them in Tailscale (or put both on one tailnet with an ACL allowing your daemon's port), then:
+
+#+begin_src bash
+clawtilla federation invite --tier trusted
+#+end_src
+
+The invite names your tailnet IPC address when the daemon has one.  Send them the =clawt-fed1-...= string (it is a one-use secret; it expires after =federation.invite_ttl_hours=).  They run
+
+#+begin_src bash
+clawtilla federation inspect clawt-fed1-...      # read it first: who, where, which words
+clawtilla federation accept clawt-fed1-... --tier trusted --alias you
+#+end_src
+
+and read the safety words to you; yours come from ~clawtilla federation status~.  Their daemon checks the fingerprint itself -- if anybody else answered at that address, the accept fails and nothing is linked -- but the words are how two *people* know the invite was not swapped on the way.
+
+To decide before they are in, add =--confirm= to the invite: their accept then waits as =pending= until you run ~clawtilla federation approve ALIAS~.
+
+*** A LAN, no tailnet
+:PROPERTIES:
+:CUSTOM_ID: recipe-lan
+:END:
+
+#+begin_src yaml
+federation:
+  enabled: true
+  allow_lan_plaintext: true      # opt in to plain text on the LAN
+  public_url: "clawtilla://192.168.1.20:8792"
+daemon:
+  tcp_address: "192.168.1.20"    # the IPC port on the LAN address
+#+end_src
+
+Then invite and accept as above.  Bodies are sealed (=federation.seal: auto=), so the LAN sees stamps and ciphertext.  Or listen with the HTTP listener instead (=federation.listen: ["192.168.1.20:7711"]=, endpoint =http://192.168.1.20:7711=).
+
+*** Through a Cloudflare tunnel
+:PROPERTIES:
+:CUSTOM_ID: recipe-cloudflare
+:END:
+
+The federation listener answers on =<state_dir>/federation.sock= by default, which nothing on the network can reach and cloudflared reaches directly.
+
+#+begin_src bash
+clawtilla federation expose --cloudflare --hostname fleet.example.com
+#+end_src
+
+prints a =~/.cloudflared/config.yml= routing =https://fleet.example.com/fed/v1/= to that socket, and the steps:
+
+#+begin_src bash
+cloudflared tunnel create clawtilla
+cloudflared tunnel route dns clawtilla fleet.example.com
+# put the printed config in place, then
+clawtilla config set federation.public_url https://fleet.example.com
+cloudflared tunnel run clawtilla
+#+end_src
+
+clawtilla never runs cloudflared itself.  Invites now name =https://fleet.example.com=.
+
+*Cloudflare Access.*  To keep the hostname behind Access, create a service token in Cloudflare Zero Trust and add a Service Auth policy for it on the application.  Put the token in the invite -- ~clawtilla federation invite --access-id ID~ asks for the secret with echo off -- and the accepting fleet sends =CF-Access-Client-Id= / =CF-Access-Client-Secret= on every request to you.  The secret is kept in the accepter's =<secrets.dir>/federation/<alias>.cf-access= and never shown again.
+
+*** Direct TLS
+:PROPERTIES:
+:CUSTOM_ID: recipe-tls
+:END:
+
+With =daemon.tls_cert= and =daemon.tls_key= set, the IPC listener speaks TLS and a =clawtilla://= endpoint on any address is allowed.  For a self-signed certificate, the accepting side pins it.
+
+** Tiers
+:PROPERTIES:
+:CUSTOM_ID: tiers
+:END:
+
+A tier is a preset.  Every field below can be changed for one peer (~clawtilla federation set~), for every peer a rule matches ([[#rules][rules]]), or narrowed by an agent ([[#agent-reach][agent reach]]).
+
+| Field | owned | trusted | limited | untrusted |
+|-------+-------+---------+---------+-----------|
+| =reach= | all | all | listed (+ inbox) | inbox |
+| =message= | allow | allow | allow | review (held for you) |
+| =delegate= | allow | allow | ask | deny |
+| =see_roster=, =see_presence= | yes | yes | yes | yes (the inbox agent only) |
+| =see_typing=, =see_tasks= | yes | yes | yes | no |
+| =transcripts= | reachable | own_tasks | none | none |
+| ~cap.read~ | allow | allow | allow | ask |
+| ~cap.message~ | allow | allow | ask | deny |
+| ~cap.write~, ~cap.delete~ | allow | ask | ask | deny |
+| ~cap.exec~, ~cap.external~ | allow | ask | deny | deny |
+| ~cap.desktop_input~ | ask | deny | deny | deny |
+| ~cap.fleet_admin~ | deny (fixed) | deny | deny | deny |
+| =budget_cents_per_day= | 0 (no limit) | 2000 | 500 | 100 |
+| =messages_per_hour= | 0 (no limit) | 120 | 30 | 10 |
+| =max_concurrent_tasks= | 0 (no limit) | 4 | 1 | 1 |
+| =max_hops_in= | 0 (local max_hops) | 4 | 2 | 1 |
+| =subdelegate= | yes | yes | no | no |
+| =join_rooms= | yes | yes | no | no |
+
+- =reach= :: which of your agents the peer may address: =all=, =listed= (the =agents= field's selectors), =inbox= (=federation.inbox_agent=, the chief of staff by default) or =none=.  The inbox agent is reachable whenever anything is.
+- =message=, =delegate= :: what happens to an incoming message or task: =allow=, =review=/=ask= (held as a decision for you), =deny=.
+- =cap.CLASS= :: the most that work done *for* the peer may do in each action class, combined with the agent's own rules: the stricter wins.  ~cap.fleet_admin~ is always =deny=; no grant can open it.
+- Limits are whole numbers.  0 means no limit.
+
+~clawtilla federation tiers~ prints the summaries; every client shows them as cards in the invite wizard.
+
+The grant is the *giving* fleet's.  Each side enforces its own; what a peer says it allows you is shown ("what they allow you") and never trusted here.
+
+** Tags
+:PROPERTIES:
+:CUSTOM_ID: tags
+:END:
+
+Tags are yours: words you attach to a peer (=client-acme=, =gpu=, =billing=) to filter on and to write rules against.
+
+#+begin_src bash
+clawtilla federation tag acme +client-acme +billing -trial
+clawtilla federation list --filter tag:client-acme
+#+end_src
+
+A tag is 1 to 64 characters with no spaces and none of =, + ! := (the selector grammar uses them).  Tags are not shared with the peer.
+
+** Selectors
+:PROPERTIES:
+:CUSTOM_ID: selectors
+:END:
+
+One grammar names peers everywhere: ~federation list --filter~, =federation.rules=, an agent's reach, and the sidebar's filter chips (0.67.0).
+
+| Term | Matches |
+|------+---------|
+| =*= | every peer |
+| =name:GLOB= | the alias or the label |
+| =tier:TIER= | owned, trusted, limited, untrusted |
+| =owner:GLOB= | the owner's name |
+| =tag:TAG= | peers carrying the tag |
+| =health:H= | live, degraded, offline, ... |
+| =online= | live or degraded |
+| =!TERM= | not TERM |
+| =A+B= | both |
+| =A,B= | either |
+
+Globs are =*= and =?=; everything is case-insensitive.  A malformed selector (an unknown key, a tier that does not exist) is refused with the term named, never treated as matching nothing.
+
+*Agent* selectors (the =agents= grant field) name your own agents: an id glob, =team:NAME=, =tag:TAG= (a tag on the agent's team), with =!= and =+=.
+
+** Rules
+:PROPERTIES:
+:CUSTOM_ID: rules
+:END:
+
+=federation.rules= adjusts the grant of every peer a selector matches, in file order, after the tier and before the peer's own overrides:
+
+#+begin_src yaml
+federation:
+  rules:
+    - "tag:client-acme: reach=listed; agents=team:frontend,atlas; cap.exec=deny"
+    - "tier:trusted+tag:gpu: cap.exec=allow"
+    - "!tag:billing: budget_cents_per_day=0"
+#+end_src
+
+Each is =SELECTOR: field=value; field=value=.  A rule that does not parse, or a value its field cannot hold, is skipped whole and reported on the peer's page and in ~federation show~ -- never half-applied.
+
+~clawtilla federation explain ALIAS~ prints every grant field with its value and its source: =tier trusted=, =rule 2: tier:trusted+tag:gpu=, =override=, or =fixed=.
+
+** Overrides
+:PROPERTIES:
+:CUSTOM_ID: overrides
+:END:
+
+#+begin_src bash
+clawtilla federation set acme cap.exec=deny reach=listed agents=atlas,team:web
+clawtilla federation set acme cap.exec=        # remove the override
+clawtilla federation set acme --tier limited
+#+end_src
+
+Each override is checked against the field's kind before anything is stored; one bad value refuses the whole change.
+
+** Agent reach
+:PROPERTIES:
+:CUSTOM_ID: agent-reach
+:END:
+
+An agent may narrow which fleets reach it, never widen: arrives with messaging (0.68.0) as ~agents.federation_reach~, a list of peer selectors the peer must also match.
+
+** Managing links
+:PROPERTIES:
+:CUSTOM_ID: managing
+:END:
+
+| Command | What it does |
+|---------+--------------|
+| ~clawtilla federation status~ | this fleet: id, safety words, the address invites name |
+| ~clawtilla federation list~ | linked fleets: health, tier, owner, tags |
+| ~clawtilla federation show ALIAS~ | one fleet: address, transport, latency, grant with sources, what it allows you |
+| ~clawtilla federation ping ALIAS~ | check the link now |
+| ~clawtilla federation hide/unhide ALIAS~ | keep it out of every sidebar (daemon-side, so every client agrees) |
+| ~clawtilla federation mute/unmute ALIAS~ | quiet its alerts |
+| ~clawtilla federation approve ALIAS~ | let in a fleet that accepted a =--confirm= invite |
+| ~clawtilla federation invites~ / ~uninvite ID~ | open invites; withdraw one |
+| ~clawtilla federation revoke ALIAS~ | end the link; the other fleet is told, and its connections are closed |
+| ~clawtilla federation forget ALIAS~ | remove a revoked fleet's record |
+| ~clawtilla federation rotate-key~ | a new fleet key ([[#rotation][rotation]]) |
+| ~clawtilla federation log [ALIAS]~ | the audit, newest first |
+
+*** Health
+:PROPERTIES:
+:CUSTOM_ID: health
+:END:
+
+The daemon says hello to every peer with an endpoint each =federation.ping_seconds=; the hello carries this fleet's name and address, so a peer's view stays current, and the answer carries what the peer allows you.  A peer that does not answer is retried with a wait that doubles up to =federation.reconnect_max_seconds=.
+
+| Health | Meaning |
+|--------+---------|
+| live | answering |
+| connecting | dialling |
+| degraded | answering requests, no live event stream (0.67.0) |
+| offline | not answering, or its answers did not check out |
+| pending | waiting for approval, or for a first contact |
+| revoked | the link was ended, by either side |
+| incompatible | it speaks a protocol this one does not |
+
+A peer with no endpoint (it dials you) is live while its own requests keep arriving.
+
+*** Rotation
+:PROPERTIES:
+:CUSTOM_ID: rotation
+:END:
+
+~clawtilla federation rotate-key~ makes a new key and tells every linked fleet with an envelope signed by the *old* key, carrying the new one and a signature by the new one over this fleet's id.  The fleet id stays the same.  Peers accept the old key for 24 hours after.  The old seed is kept beside the new one, numbered.  A peer that was unreachable at the rotation and stays so past the 24 hours has to be linked again.
+
+** Security
+:PROPERTIES:
+:CUSTOM_ID: security
+:END:
+
+*** The envelope
+:PROPERTIES:
+:CUSTOM_ID: envelope
+:END:
+
+Every request and every answer carries a stamp: the kind, the sending fleet and key version, the receiving fleet, the time, a random nonce, the SHA-256 of the body, and an Ed25519 signature over all of them plus what it was sent to (=POST /fed/v1/envelope=, =IPC fed.envelope=; an answer is bound to =re:NONCE= of the request).  On HTTP it travels as =X-Clawt-Fed-*= headers; on IPC and WebSocket as =\{"stamp": ..., "body": "..."\}=.
+
+What is refused, in order, before the body is read as JSON:
+
+- a stamp with a member missing, too long, or holding a control character;
+- a sender that is not a linked fleet, or a key version it no longer holds;
+- a time more than =federation.clock_skew_seconds= from this machine's;
+- a stamp addressed to another fleet (a request for one fleet replayed at another);
+- a stamp signed for another route or request;
+- a body whose digest is not the signed one;
+- a bad signature;
+- a nonce already seen from that fleet inside the window (the guard is saved to =<state_dir>/federation/nonces=, so a restart does not reopen the window).
+
+Answers are checked the same way by the asker: signed by the peer it asked, to it, bound to its request's nonce.  Cloudflare ends TLS at its edge; this is how a fleet knows the answer came from the fleet and not from whoever sits in between.
+
+Bodies are bounded (=federation.max_body_bytes=) before they are read, unsigned requests are rate limited per address, and =CF-Connecting-IP= is believed only from a local socket.
+
+*** Invites
+:PROPERTIES:
+:CUSTOM_ID: invite-security
+:END:
+
+An invite holds a one-use secret and, optionally, a Cloudflare Access token: treat it like a password.  The accepting fleet never sends the secret; it sends an HMAC of it over its own key, the inviter's fleet id and the time, inside a signed accept.  The inviter checks the proof, the signature, and that the accepter's key is the one its fleet id is the fingerprint of; the accepter checks the answer is signed by the key the invite's fingerprint names.  Either mismatch links nothing.  The secret is spent by one accept.
+
+Outstanding invites (with their secrets) live in =<secrets.dir>/federation/invites.yaml=; peers (public keys only) in =<state_dir>/federation/peers.yaml=.
+
+*** Another fleet is never the operator
+:PROPERTIES:
+:CUSTOM_ID: not-operator
+:END:
+
+Inside this fleet a remote agent is a sender of its own kind (=fleet:ALIAS:AGENT=).  Only the operator and clawtilla itself may write into a room they are not members of; every other sender -- agents, integrations, other fleets -- is held to membership.  (Before 0.66.0 any sender that was not a local agent had the operator's reach.)  From 0.68.0 a remote message is fenced in its preamble as coming from another fleet, with that fleet's name, owner and tier.
+
+*** The audit
+:PROPERTIES:
+:CUSTOM_ID: audit
+:END:
+
+Every request in either direction, refusals included -- except a link's successful keep-alive hellos and pings, which would bury everything else -- is one line in =<state_dir>/federation/audit.ndjson= (kept =federation.audit_retention_days=) and a ~federation.audit~ event; ~clawtilla federation log~ and every client's Activity tab read it.
+
+** Clients
+:PROPERTIES:
+:CUSTOM_ID: clients
+:END:
+
+The GTK, web and libregnum clients each have a Federation page in the Fleet section:
+
+- Peers :: every linked fleet with its health dot, tier badge, owner, tags and safety words; open one for its address, transport, latency, grant (each field with its source, changeable in place), what it allows you, and Ping, Hide, Mute, Approve, Revoke.
+- Invite :: tier cards; the invite as a link, a paste string and a QR code; and an Accept pane that previews a pasted invite -- name, owner, address, words -- before anything is linked.
+- Activity :: the audit, live.
+
+From 0.67.0 linked fleets also appear in the sidebar, one section per fleet after your own, with filter chips for tier, owner, tag and online.
+
+** Requests
+:PROPERTIES:
+:CUSTOM_ID: requests
+:END:
+
+| Request | Payload | Answer |
+|---------+---------+--------|
+| ~federation.status~ | | ={enabled, fleet_id, name, owner, safety_words, endpoint, listening, peers, invites}= |
+| ~federation.tiers~ | | ={tiers: [{tier, label, summary, tone, grant}]}= |
+| ~federation.invite.create~ | ={tier, expires_hours?, confirm?, note?, endpoint?, access_id?, access_secret?}= | ={uri, paste, qr_svg?, id, fleet_id, safety_words, endpoint, tier, expires}= |
+| ~federation.invite.inspect~ | ={invite}= | ={name, owner, endpoint, fleet_id, tier, tier_summary, expires, expired, reachable, path?, problem?, already_linked_as?}= |
+| ~federation.invite.accept~ | ={invite, tier, alias?, tags?}= | the new peer (deferred: answered when the other fleet does) |
+| ~federation.invite.revoke~ | ={id}= | ={}= |
+| ~federation.link~ | ={target, token?, alias?, tags?}= | the new peer (deferred) |
+| ~federation.link.offer~ | as ~invite.create~ | as ~invite.create~ (what ~link~ asks the other daemon) |
+| ~federation.peer.list~ | ={filter?, include_hidden?}= | ={peers: [...], invites: [...]}= |
+| ~federation.peer.show~, ~.explain~ | ={alias}= | the peer, its =grant= rows ={name, value, source, doc, overridden}=, =problems=, =their_grant= |
+| ~federation.peer.set~ | ={alias, tier?, label?, owner?, endpoint?, on_revoke?, grant?: {field: value}}= | as ~show~ |
+| ~federation.peer.tag~ | ={alias, add?, remove?}= | the peer |
+| ~federation.peer.hide~, ~.mute~ | ={alias, value}= | the peer |
+| ~federation.peer.approve~, ~.revoke~, ~.forget~ | ={alias}= | the peer |
+| ~federation.peer.ping~ | ={alias}= | ={alias, ms}= (deferred) |
+| ~federation.audit~ | ={alias?, limit?}= | ={entries: [{time, direction, peer, kind, outcome, detail}]}= |
+| ~federation.rotate_key~ | | ={key_index, fleet_id, told}= |
+| ~federation.expose~ | ={hostname?}= | ={cloudflared_config, public_url, socket, next}= |
+
+Events: ~federation.peer~ (=alias=, =change=: added, changed, health, revoked, removed) and ~federation.audit~ (=direction=, =kind=, =outcome=).
+
+Between fleets: =GET /fed/v1/hello= (public, signed: who this fleet is), =POST /fed/v1/invite/accept=, =POST /fed/v1/envelope=, =GET /fed/v1/events= (WebSocket, 0.67.0); on the IPC port the frames ~fed.hello~, ~fed.invite~, ~fed.envelope~ and, from the far side, ~fed.push~.  Envelope kinds in 0.66.0: =hello=, =ping=, =revoke=, =rotate=; anything else is answered "not understood yet", naming the version.
+
+** Configuration
+:PROPERTIES:
+:CUSTOM_ID: configuration
+:END:
+
+Every key is in [[file:configuration-options.org][configuration-options.org]]; the ones that matter most:
+
+| Key | Default | |
+|-----+---------+-|
+| =federation.enabled= | false | on at the next daemon start |
+| =federation.name=, =federation.owner= | host name, empty | what other fleets show |
+| =federation.public_url= | empty | the address invites name |
+| =federation.listen= | =unix:<state_dir>/federation.sock= | the HTTP listener |
+| =federation.ipc= | true | the simple daemon connection |
+| =federation.allow_lan_plaintext= | false | plain text on a LAN |
+| =federation.seal= | auto | sealing |
+| =federation.inbox_agent= | the chief | who an inbox-only peer reaches |
+| =federation.rules= | | grant rules |
+
+** Troubleshooting
+:PROPERTIES:
+:CUSTOM_ID: troubleshooting
+:END:
+
+- "this fleet has no address another fleet can reach" :: set =federation.public_url=, or put the daemon on a tailnet with =federation.ipc= on.
+- "is a local-network address in plain text" :: set =federation.allow_lan_plaintext: true=, or use the tailnet address, TLS, or a tunnel.
+- "would cross the internet in plain text" :: use =https://= (a tunnel or proxy) or a tailnet address; this is never allowed.
+- "stamp time is N s from ours" :: one machine's clock is wrong; run NTP on both.  The window is =federation.clock_skew_seconds=.
+- "the fleet that answered is not the one that made the invite" :: the address in the invite reached a different fleet.  Nothing was linked.  Check the address, and the safety words with the inviter.
+- "that invite was used, revoked or has expired" :: ask for a new one; an invite is single-use.
+- a peer stays offline :: ~clawtilla federation show ALIAS~ prints the last error.  For a tunnel: is cloudflared running, and does =curl https://HOST/fed/v1/hello= answer?  For a tailnet: does the ACL allow the port?  For =clawtilla://=: is =daemon.tcp_address= or the tailnet listener bound on the other side?
+- cloudflared answers 502 :: it cannot reach the socket: the =service: unix:...= path must be the daemon's =<state_dir>/federation.sock=, and the daemon must be running with federation on.
+- "unknown fleet or key" from a peer :: it revoked or forgot you, or you rotated while it was unreachable for more than a day; link again.

@@ -1,0 +1,12 @@
+#+title: TLS test fixtures
+
+A self-signed certificate and its key, for tests only (=tests/test-ipc-tls.c=).
+The key is public by being in this repository: never use it for anything else.
+
+Made with:
+
+#+begin_src bash
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -keyout test-key.pem -out test-cert.pem -days 36500 -subj "/CN=localhost" \
+  -addext "subjectAltName=IP:127.0.0.1,DNS:localhost"
+#+end_src

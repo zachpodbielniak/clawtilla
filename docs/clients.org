@@ -382,6 +382,27 @@ row and no button on the others, from =clawt_device_row_action()=), and
 *Pair a new device*, which shows the code large with a countdown and
 says when it has been used.
 
+*** Linking other fleets
+:PROPERTIES:
+:CUSTOM_ID: federation
+:END:
+
+Settings, *Federation* (GTK, web and libregnum alike) is this fleet's id,
+safety words and address, the fleets it is linked with, and the audit.
+Each linked fleet shows a health dot, its tier badge, owner and tags (the
+line is ~clawt_fed_peer_summary()~, so the three clients agree), with
+Ping, Hide, Mute, Approve (for a fleet waiting after a =--confirm=
+invite), Revoke and Forget, its tier as a dropdown, and its grant --
+every field with where its value came from, and a ~field=value~ editor
+for overrides.  *Invite...* makes a one-use invite (the tier the other
+fleet gets, ask-first, the address it reaches this fleet at, prefilled
+when the daemon knows one) and shows it as a paste string with a Copy
+button, and a QR code when the build has libqrencode.  *Accept...* reads
+a pasted invite without using it -- name, owner, address, path, safety
+words, what they give you -- before *Link*.  ~clawtilla-gtk --settings
+federation~ opens straight on it.  The CLI is ~clawtilla federation~; see
+[[file:federation.org][federation.org]].
+
 *** Choosing where the daemon listens
 
 ~clawtillad~ takes ~--bind~ and ~--no-bind~, and its ~--help~ prints what

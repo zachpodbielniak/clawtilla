@@ -57,7 +57,8 @@ clawtilla is a C/GLib daemon (`clawtillad`) that owns a fleet of AI agents -- ea
 | Automation pods (podomation) | [routines-and-triggers-2.md](references/routines-and-triggers-2.md) |
 | The skill library, bundled skills, proposals, teach mode | [skills-and-teach.md](references/skills-and-teach.md) |
 | Plugins | [plugins.md](references/plugins.md) |
-| The office: build, worlds, packs, choreography, federation | [office.md](references/office.md) |
+| The office: build, worlds, packs, choreography, visitors | [office.md](references/office.md) |
+| Federation: linking fleets, tiers, grants, tags, rules, invites, transports | [federation.md](references/federation.md) |
 | The custodial team, office tools, character generation | [office-custodial.md](references/office-custodial.md) |
 | Step-by-step recipes for common changes | [recipes.md](references/recipes.md) |
 | **Every configuration key** (type, default, agent spelling, summary) | [config-keys.md](references/config-keys.md), full text per section in `references/config/SECTION.md` |

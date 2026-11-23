@@ -447,6 +447,51 @@ gchar *clawt_utf8_truncate(const gchar *text,
 gboolean clawt_is_valid_id(const gchar *id);
 
 /**
+ * ClawtSenderKind:
+ * @CLAWT_SENDER_OPERATOR: the operator (`user`), or work the operator set
+ *   running (`routine`, `trigger`)
+ * @CLAWT_SENDER_SYSTEM: clawtilla itself (`clawtilla`)
+ * @CLAWT_SENDER_AGENT: an id that could be one of this fleet's agents
+ * @CLAWT_SENDER_INTEGRATION: another system relaying for somebody
+ *   (`grok:BOT`, `venture:WHO`)
+ * @CLAWT_SENDER_REMOTE: an agent in another fleet (`fleet:ALIAS:AGENT`)
+ *
+ * Who a sender id says it is.  The operator, the system and an
+ * integration relaying for the operator may write into a room they are
+ * not members of; an agent -- of this fleet or another -- is held to
+ * membership, so a sender cannot inherit the operator's reach by being
+ * absent from the agent list.
+ */
+typedef enum {
+    CLAWT_SENDER_OPERATOR = 0,
+    CLAWT_SENDER_SYSTEM,
+    CLAWT_SENDER_AGENT,
+    CLAWT_SENDER_INTEGRATION,
+    CLAWT_SENDER_REMOTE
+} ClawtSenderKind;
+
+/**
+ * clawt_sender_kind_of:
+ * @sender: (nullable): a sender id
+ *
+ * Classifies by spelling alone; whether an %CLAWT_SENDER_AGENT id is an
+ * agent that exists is the caller's question.  %NULL is the operator,
+ * which is what a message with no sender has always meant.
+ *
+ * Returns: the kind
+ */
+ClawtSenderKind clawt_sender_kind_of(const gchar *sender);
+
+/**
+ * clawt_sender_may_post_anywhere:
+ * @sender: (nullable): a sender id
+ *
+ * Returns: %TRUE for the operator, the system and an integration -- the
+ *   senders a room need not list
+ */
+gboolean clawt_sender_may_post_anywhere(const gchar *sender);
+
+/**
  * clawt_agent_id_is_reserved:
  * @id: (nullable): a candidate agent id
  *

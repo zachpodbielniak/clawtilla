@@ -322,6 +322,21 @@ struct _ClawtDaemon {
     gchar                   *fleet_id;
 
     /*
+     * Federation (0.66.0, daemon-federation.c): all NULL unless
+     * federation.enabled.  The id is the fingerprint of the fleet key's
+     * first version and outlives a rotation.
+     */
+    ClawtFleetKey           *fed_key;
+    guint                    fed_key_index;
+    gchar                   *fed_fleet_id;
+    ClawtFedRegistry        *fed_registry;
+    ClawtFedReplayGuard     *fed_guard;
+    ClawtFedServer          *fed_server;
+    GHashTable              *fed_links;       /* alias -> PeerState */
+    GSource                 *fed_tick;
+    GQueue                  *fed_audit;       /* JsonObject*, newest last */
+
+    /*
      * Who to tell when something is worth interrupting somebody for.
      *
      * Rebuilt on every reload, because that is when its credentials are
@@ -2676,5 +2691,14 @@ void clawt_daemon_note_task_source(ClawtDaemon          *self,
                                    const gchar          *task_id,
                                    ClawtUsageOriginKind  kind,
                                    const gchar          *id);
+
+/* daemon-federation.c */
+JsonNode *clawt_daemon_handle_federation(ClawtDaemon *self, const gchar *kind,
+                                         JsonNode *request, JsonObject *payload,
+                                         gboolean *handled);
+void clawt_daemon_federation_setup(ClawtDaemon *self);
+void clawt_daemon_federation_teardown(ClawtDaemon *self);
+void clawt_daemon_federation_refresh_links(ClawtDaemon *self);
+const gchar *clawt_daemon_federation_fleet_id(ClawtDaemon *self);
 
 G_END_DECLS

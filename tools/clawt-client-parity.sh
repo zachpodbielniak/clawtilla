@@ -347,6 +347,14 @@ declare -A AFFORDANCES=(
     ["helper badge"]="clawt_ephemeral_badge_for|clawt_ephemeral_badge_for|clawt_ephemeral_badge_for"
     ["reap a helper"]="on_reap_agent|/a/%s/reap|on_reap_confirmed"
     ["team tags field"]="clawt_team_tags_label|clawt_team_tags_label|clawt_team_tags_label"
+    # federation (0.66.0): the Federation settings page
+    ["federation peer line"]="clawt_fed_peer_summary|clawt_fed_peer_summary|clawt_fed_peer_summary"
+    ["federation health dot"]="clawt-fed-health|fed-health|clawt-fed-health"
+    ["federation tier badge"]="clawt-fed-tier|fed-tier|clawt-fed-tier"
+    ["federation invite"]="clawt-fed-invite|fed-invite|clawt-fed-invite"
+    ["federation accept preview"]="federation.invite.inspect|federation.invite.inspect|federation.invite.accept"
+    ["federation grant editor"]="clawt-fed-grant-editor|fed-grant-editor|clawt-fed-grant-editor"
+    ["federation activity"]="clawt_fed_audit_line|clawt_fed_audit_line|clawt_fed_audit_line"
     #
     # The Office page (0.56.0): the roster line from the library, and the
     # slot the drawn office goes in -- a note in a build without OFFICE=1.

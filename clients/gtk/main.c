@@ -26,6 +26,7 @@ static gboolean opt_version = FALSE;
 static gboolean opt_license = FALSE;
 static gchar *opt_open = NULL;
 static gboolean opt_office = FALSE;
+static gchar *opt_settings = NULL;
 
 static GOptionEntry entries[] = {
     {
@@ -56,6 +57,10 @@ static GOptionEntry entries[] = {
     {
         "office", 0, 0, G_OPTION_ARG_NONE, &opt_office,
         "Open on the Office page: who is where, and the office drawn", NULL
+    },
+    {
+        "settings", 0, 0, G_OPTION_ARG_STRING, &opt_settings,
+        "Open Settings on a page (federation, devices, ...)", "PAGE"
     },
     {
         "version", 'V', 0, G_OPTION_ARG_NONE, &opt_version,
@@ -91,6 +96,9 @@ static const gchar *description_text =
     "  clawtilla-gtk --open standup\n"
     "  clawtilla-gtk --office\n"
     "  clawtilla-gtk --open clawtilla:dm:chief:lead\n"
+    "\n"
+    "  # Settings, open on the linked fleets\n"
+    "  clawtilla-gtk --settings federation\n"
     "\n"
     "--open goes to the window that is already running when there is\n"
     "one (the app is single-instance), and a name the daemon does not\n"
@@ -143,6 +151,13 @@ on_activate(AdwApplication *app, gpointer user_data)
     if (opt_office) {
         opt_office = FALSE;
         clawt_gtk_show_page(window, CLAWT_PAGE_OFFICE);
+    }
+
+    /* --settings PAGE: Settings, open on that page, once */
+    if (opt_settings != NULL) {
+        g_autofree gchar *page = g_steal_pointer(&opt_settings);
+
+        clawt_gtk_open_settings(window, page);
     }
 }
 

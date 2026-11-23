@@ -844,6 +844,42 @@ clawt_is_valid_id(const gchar *id)
     return TRUE;
 }
 
+ClawtSenderKind
+clawt_sender_kind_of(const gchar *sender)
+{
+    if (sender == NULL || g_strcmp0(sender, "user") == 0
+        || g_strcmp0(sender, "routine") == 0 || g_strcmp0(sender, "trigger") == 0)
+        return CLAWT_SENDER_OPERATOR;
+    if (g_strcmp0(sender, "clawtilla") == 0)
+        return CLAWT_SENDER_SYSTEM;
+    if (g_str_has_prefix(sender, "fleet:"))
+        return CLAWT_SENDER_REMOTE;
+    if (strchr(sender, ':') != NULL)
+        return CLAWT_SENDER_INTEGRATION;
+    return CLAWT_SENDER_AGENT;
+}
+
+gboolean
+clawt_sender_may_post_anywhere(const gchar *sender)
+{
+    /*
+     * An integration (`grok:`, `venture:`) relays for the operator -- a
+     * Grok job the operator asked for settles into the operator's own
+     * room -- so it keeps the reach it has always had.  Another fleet
+     * relays for nobody here.
+     */
+    switch (clawt_sender_kind_of(sender)) {
+    case CLAWT_SENDER_OPERATOR:
+    case CLAWT_SENDER_SYSTEM:
+    case CLAWT_SENDER_INTEGRATION:
+        return TRUE;
+    case CLAWT_SENDER_AGENT:
+    case CLAWT_SENDER_REMOTE:
+        return FALSE;
+    }
+    return FALSE;
+}
+
 gboolean
 clawt_agent_id_is_reserved(const gchar *id)
 {

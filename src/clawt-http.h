@@ -156,4 +156,32 @@ clawt_http_send_and_read(
 	GError       **error
 );
 
+/**
+ * clawt_http_server_limit_bodies:
+ * @server: a #SoupServer
+ * @max_body_bytes: the largest request body it accepts
+ *
+ * Bounds every request body @server reads, *before* it is read: a
+ * declared Content-Length over the limit is refused at the headers, and
+ * a chunked body is refused at the chunk that crosses it, with a 413 and
+ * a bounded drain so the sender sees the status rather than a reset.
+ * libsoup's own accumulation is switched off; read what was accepted with
+ * clawt_http_server_message_body().
+ *
+ * One copy, used by the webhook ingress and the federation listener --
+ * two copies of a limit is how one of them stops being one.
+ */
+void clawt_http_server_limit_bodies(SoupServer *server,
+                                    gsize       max_body_bytes);
+
+/**
+ * clawt_http_server_message_body:
+ * @message: a request on a server set up with
+ *   clawt_http_server_limit_bodies()
+ *
+ * Returns: (transfer none) (nullable): the accepted body, or %NULL when
+ *   the request had none
+ */
+SoupMessageBody *clawt_http_server_message_body(SoupServerMessage *message);
+
 G_END_DECLS

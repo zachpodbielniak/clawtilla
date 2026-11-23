@@ -5907,6 +5907,7 @@ release_components(ClawtDaemon *self)
     clawt_daemon_provider_usage_stop(self);
     clawt_daemon_ephemeral_teardown(self);
     clawt_daemon_office_teardown(self);
+    clawt_daemon_federation_teardown(self);
 
     /*
      * The routine tick and the pods for the same reason -- both start
@@ -8346,6 +8347,12 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     /* the ephemeral tools' hooks and the reap-reminder sweep */
     clawt_daemon_ephemeral_setup(self);
     clawt_daemon_office_custodial_setup(self);
+    /*
+     * Federation before the office, whose people carry the fleet id
+     * federation decides.  Its links are dialled from a timer, never from
+     * here: daemon start does not wait on the network.
+     */
+    clawt_daemon_federation_setup(self);
     /* the office, when office.enabled: after the agents and the bus exist */
     clawt_daemon_office_setup(self);
 
@@ -11292,6 +11299,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_provider_usage,
     clawt_daemon_handle_ephemeral,
     clawt_daemon_handle_office,
+    clawt_daemon_handle_federation,
     clawt_daemon_handle_config,
     clawt_daemon_handle_skill_tests,
     clawt_daemon_handle_skill,

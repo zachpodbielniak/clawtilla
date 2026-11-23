@@ -64,6 +64,59 @@ void clawt_client_set_tls(ClawtClient *self,
                           gboolean     accept_unknown_certificate);
 
 /**
+ * clawt_client_set_tls_pin:
+ * @self: a #ClawtClient
+ * @pin: (nullable): the SHA-256 of the daemon's certificate (DER), hex,
+ *   as clawt_tls_certificate_pin() spells it; %NULL clears it
+ *
+ * Speaks TLS and accepts exactly that certificate, whoever signed it --
+ * for a daemon with a self-signed certificate.  Any other certificate is
+ * refused, even one a CA vouches for.
+ */
+void clawt_client_set_tls_pin(ClawtClient *self,
+                              const gchar *pin);
+
+/**
+ * clawt_tls_certificate_pin:
+ * @certificate: a #GTlsCertificate
+ *
+ * Returns: (transfer full) (nullable): SHA-256 of its DER encoding,
+ *   lowercase hex -- what `clawtilla federation status` prints and
+ *   clawt_client_set_tls_pin() takes
+ */
+gchar *clawt_tls_certificate_pin(GTlsCertificate *certificate);
+
+/**
+ * ClawtClientHelloFunc:
+ * @self: the client
+ * @out_payload: (out) (transfer full) (nullable): the hello's payload
+ * @user_data: closure
+ *
+ * Makes the handshake frame, freshly, at every (re)connect.
+ *
+ * Returns: (transfer none): the frame's kind, a static string
+ */
+typedef const gchar *(*ClawtClientHelloFunc)(ClawtClient  *self,
+                                             JsonNode    **out_payload,
+                                             gpointer      user_data);
+
+/**
+ * clawt_client_set_hello_func:
+ * @self: a #ClawtClient
+ * @func: (nullable) (scope notified): makes the handshake; %NULL is the
+ *   ordinary `control.hello`
+ * @user_data: data for @func
+ * @destroy: (nullable): frees @user_data
+ *
+ * What a daemon dialling another fleet's IPC port says instead of
+ * `control.hello`: a `fed.hello` with a stamp signed at that moment.
+ */
+void clawt_client_set_hello_func(ClawtClient          *self,
+                                 ClawtClientHelloFunc  func,
+                                 gpointer              user_data,
+                                 GDestroyNotify        destroy);
+
+/**
  * clawt_client_set_pairing_code:
  * @self: a #ClawtClient
  * @code: (nullable): a pairing code from `clawtilla device pair`

@@ -46,6 +46,9 @@ clawt_daemon_fleet_id(ClawtDaemon *self)
     g_autofree gchar *text = NULL;
     g_autoptr(GError) error = NULL;
 
+    /* With federation on, the id is the fleet key's, which can be proved. */
+    if (self->fed_fleet_id != NULL)
+        return self->fed_fleet_id;
     if (self->fleet_id != NULL)
         return self->fleet_id;
     if (self->state_dir == NULL)

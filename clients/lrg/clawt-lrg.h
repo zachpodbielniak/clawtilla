@@ -434,6 +434,7 @@ const ClawtLrgSettingsPage *clawt_lrg_settings_connectors_page(void);   /* lrg-s
 const ClawtLrgSettingsPage *clawt_lrg_settings_folders_page(void);      /* lrg-settings-folders.c */
 const ClawtLrgSettingsPage *clawt_lrg_settings_appearance_page(void);   /* lrg-settings-appearance.c */
 const ClawtLrgSettingsPage *clawt_lrg_settings_devices_page(void);      /* lrg-settings-devices.c */
+const ClawtLrgSettingsPage *clawt_lrg_settings_federation_page(void);   /* lrg-settings-federation.c */
 const ClawtLrgSettingsPage *clawt_lrg_settings_connections_page(void);  /* lrg-settings-connections.c */
 
 /* The banner's Use Local: Settings → Connections' own switch, to Local. */
@@ -441,6 +442,7 @@ void clawt_lrg_settings_connections_use_local(ClawtLrgApp *app);
 
 /* device.* events: the Devices list redraws, a code on screen learns it was used. */
 void clawt_lrg_settings_devices_event(ClawtLrgApp *app, ClawtEvent *event);
+void clawt_lrg_settings_federation_event(ClawtLrgApp *app, ClawtEvent *event);
 
 /* broker.changed: the integration broker's row on Connectors redraws. */
 void clawt_lrg_settings_connectors_event(ClawtLrgApp *app, ClawtEvent *event);

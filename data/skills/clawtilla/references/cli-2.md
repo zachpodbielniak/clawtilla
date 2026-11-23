@@ -114,9 +114,17 @@ See [routines-and-triggers.md](routines-and-triggers.md), [grok-and-venture.md](
 | `clawtilla office who` / `worlds` / `layout` / `choreography` | who is where; world packs; seats; built-in rules |
 | `clawtilla office on` / `off` / `use WORLD` / `renderer auto\|2d\|3d` / `open` | switch it, pick a world, renderer, start clawtilla-office |
 | `clawtilla office custodians [install [--team NAME]]` / `character AGENT [--direct]` / `api-key higgsfield\|comfyui` | custodial team; regenerate a character; store the asset key (stdin) |
-| `clawtilla office peers` / `peer-pair NAME CODE` | federated fleets visiting |
+| `clawtilla office peers` / `peer-pair NAME CODE` | office visitors from another daemon (superseded by federation) |
+| `clawtilla federation status` / `tiers` | this fleet's id, safety words, address; the tier presets |
+| `clawtilla federation invite [--tier T] [--confirm] [--endpoint URL] [--note N] [--access-id ID] [--qr]` / `invites` / `uninvite ID` | make, list, withdraw one-use invites |
+| `clawtilla federation inspect INVITE` / `accept INVITE --tier T [--alias A] [--tag X]...` | read an invite; link with its fleet |
+| `clawtilla federation link SOCKET\|HOST:PORT [--alias A] [--tag X]` | link another daemon you own (tier owned both sides) |
+| `clawtilla federation list [--filter SEL]` / `show ALIAS` / `explain ALIAS` / `log [ALIAS]` | linked fleets; one fleet's grant and sources; the audit |
+| `clawtilla federation set ALIAS [--tier T] [--label L] [--owner O] [--endpoint URL] [FIELD=VALUE]...` / `tag ALIAS +X -Y` | change tier, details, grant overrides, tags |
+| `clawtilla federation hide\|unhide\|mute\|unmute\|approve\|ping\|revoke\|forget ALIAS` | per-fleet actions |
+| `clawtilla federation rotate-key` / `expose --cloudflare --hostname H` | new fleet key; print a cloudflared config |
 
-See [skills-and-teach.md](skills-and-teach.md), [plugins.md](plugins.md), [office.md](office.md), [office-custodial.md](office-custodial.md).
+See [skills-and-teach.md](skills-and-teach.md), [plugins.md](plugins.md), [office.md](office.md), [office-custodial.md](office-custodial.md), [federation.md](federation.md).
 
 ## Backups (offline; stop the daemon first)
 

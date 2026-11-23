@@ -35,6 +35,7 @@ struct _ClawtClient {
     gchar   *token;
     gboolean tls;
     gboolean accept_unknown_certificate;
+    gchar   *tls_pin;      /* SHA-256 of the certificate's DER, hex; or NULL */
 
     /*
      * A pairing code to redeem instead of saying hello, and what the
@@ -45,6 +46,15 @@ struct _ClawtClient {
     gchar   *pair_code;
     gchar   *pair_name;
     gchar   *device_id;
+
+    /*
+     * Another fleet's daemon dialling this one says `fed.hello` with a
+     * freshly signed stamp, not `control.hello` with a token: the stamp
+     * has to be made at the moment of each (re)connect.
+     */
+    ClawtClientHelloFunc hello_func;
+    gpointer             hello_data;
+    GDestroyNotify       hello_destroy;
 
     GIOStream        *stream;
     GSocketConnection *connection;
@@ -89,6 +99,7 @@ enum {
     SIGNAL_DISCONNECTED,
     SIGNAL_RESYNC,
     SIGNAL_EVENT,
+    SIGNAL_PUSH,
     N_SIGNALS
 };
 
@@ -163,6 +174,32 @@ clawt_client_set_tls(ClawtClient *self, gboolean enabled,
 
     self->tls = enabled;
     self->accept_unknown_certificate = accept_unknown_certificate;
+}
+
+void
+clawt_client_set_tls_pin(ClawtClient *self, const gchar *pin)
+{
+    g_return_if_fail(CLAWT_IS_CLIENT(self));
+
+    g_free(self->tls_pin);
+    self->tls_pin = g_strdup(pin != NULL && *pin != '\0' ? pin : NULL);
+    if (self->tls_pin != NULL)
+        self->tls = TRUE;
+}
+
+void
+clawt_client_set_hello_func(ClawtClient          *self,
+                            ClawtClientHelloFunc  func,
+                            gpointer              user_data,
+                            GDestroyNotify        destroy)
+{
+    g_return_if_fail(CLAWT_IS_CLIENT(self));
+
+    if (self->hello_destroy != NULL && self->hello_data != NULL)
+        self->hello_destroy(self->hello_data);
+    self->hello_func = func;
+    self->hello_data = user_data;
+    self->hello_destroy = destroy;
 }
 
 void
@@ -671,6 +708,9 @@ on_line_read(GObject *source, GAsyncResult *result, gpointer user_data)
     if (frame != NULL) {
         if (g_strcmp0(clawt_ipc_frame_get_kind(frame), "event") == 0)
             dispatch_event(self, frame);
+        else if (g_strcmp0(clawt_ipc_frame_get_kind(frame), "fed.push") == 0)
+            g_signal_emit(self, signals[SIGNAL_PUSH], 0,
+                          clawt_ipc_frame_get_payload(frame));
         else
             complete_pending(self, frame);
     }
@@ -715,15 +755,44 @@ read_next(ClawtClient *self)
 
 /* ── Connecting ──────────────────────────────────────────────────── */
 
+/* SHA-256 of a certificate's DER encoding, lowercase hex. */
+gchar *
+clawt_tls_certificate_pin(GTlsCertificate *certificate)
+{
+    g_autoptr(GByteArray) der = NULL;
+
+    g_return_val_if_fail(G_IS_TLS_CERTIFICATE(certificate), NULL);
+
+    g_object_get(certificate, "certificate", &der, NULL);
+    if (der == NULL)
+        return NULL;
+    return g_compute_checksum_for_data(G_CHECKSUM_SHA256, der->data, der->len);
+}
+
 static gboolean
 on_accept_certificate(GTlsConnection       *connection,
                       GTlsCertificate      *peer_certificate,
                       GTlsCertificateFlags  errors,
                       gpointer              user_data)
 {
+    ClawtClient *self = user_data;
+
     (void)connection;
-    (void)peer_certificate;
-    (void)user_data;
+
+    /*
+     * A pinned certificate is accepted when -- and only when -- it is the
+     * one pinned, whatever a CA would say: that is what a self-signed
+     * daemon needs, and it is stricter than validation, not looser.
+     */
+    if (self->tls_pin != NULL) {
+        g_autofree gchar *pin = clawt_tls_certificate_pin(peer_certificate);
+
+        if (pin != NULL && g_ascii_strcasecmp(pin, self->tls_pin) == 0)
+            return TRUE;
+        g_warning("ipc: the daemon's certificate (%s) is not the pinned one; "
+                  "refusing it", pin != NULL ? pin : "unreadable");
+        return FALSE;
+    }
 
     g_warning("ipc: accepting the daemon's certificate without validating "
               "it (0x%x); anything answering on that address is trusted",
@@ -760,6 +829,13 @@ static JsonNode *
 hello_payload(ClawtClient *self, const gchar **kind)
 {
     g_autoptr(JsonBuilder) builder = NULL;
+
+    if (self->hello_func != NULL) {
+        JsonNode *payload = NULL;
+
+        *kind = self->hello_func(self, &payload, self->hello_data);
+        return payload;
+    }
 
     if (self->pair_code != NULL) {
         *kind = "device.redeem";
@@ -880,7 +956,7 @@ make_socket_client(ClawtClient *self)
          * accepted everything for ever.  Here the decision is made per
          * connection and only when explicitly asked for.
          */
-        if (self->accept_unknown_certificate)
+        if (self->accept_unknown_certificate || self->tls_pin != NULL)
             g_signal_connect(socket_client, "event",
                              G_CALLBACK(on_socket_client_event), self);
     }
@@ -1643,6 +1719,9 @@ clawt_client_finalize(GObject *object)
     g_free(self->pair_code);
     g_free(self->pair_name);
     g_free(self->device_id);
+    g_free(self->tls_pin);
+    if (self->hello_destroy != NULL && self->hello_data != NULL)
+        self->hello_destroy(self->hello_data);
 
     G_OBJECT_CLASS(clawt_client_parent_class)->finalize(object);
 }
@@ -1695,6 +1774,19 @@ clawt_client_class_init(ClawtClientClass *klass)
     signals[SIGNAL_EVENT] =
         g_signal_new("event", CLAWT_TYPE_CLIENT, G_SIGNAL_RUN_LAST, 0, NULL,
                      NULL, NULL, G_TYPE_NONE, 1, CLAWT_TYPE_EVENT);
+
+    /**
+     * ClawtClient::push:
+     * @self: the client
+     * @payload: (nullable): the frame's payload
+     *
+     * Emitted for a `fed.push` frame: another fleet sending this daemon
+     * something unasked, over a connection this daemon dialled.  Only a
+     * daemon dialling a fleet sees one.
+     */
+    signals[SIGNAL_PUSH] =
+        g_signal_new("push", CLAWT_TYPE_CLIENT, G_SIGNAL_RUN_LAST, 0, NULL,
+                     NULL, NULL, G_TYPE_NONE, 1, JSON_TYPE_OBJECT);
 }
 
 static void

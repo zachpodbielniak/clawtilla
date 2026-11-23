@@ -1345,6 +1345,7 @@ A colour this client reads but the palette leaves out falls back to libadwaita's
 | ~lrg-settings-folders.c~ | Shared folders | ~gtk-prefs-folders.c~ |
 | ~lrg-settings-appearance.c~ | Appearance, with this client's own settings | ~gtk-prefs-appearance.c~ |
 | ~lrg-settings-devices.c~ | Devices: paired devices, revoking, pairing a new one | ~gtk-prefs-devices.c~ |
+| ~lrg-settings-federation.c~ | Federation: this fleet, linked fleets with tier, health, grant and actions, invite, accept with a preview, the audit | ~gtk-prefs-federation.c~ |
 | ~lrg-settings-connections.c~ | saved daemons, switching between them | ~clawt-window.c~ (connections dialog) |
 | ~lrg-dialogs.c~ | New agent (and its proposal), Import an agent, New room | ~clawt-window.c~, ~gtk-sidebar.c~ |
 | ~lrg-settings-model.c~, ~clawt-lrg-settings-model.h~ | the settings pages' and dialogs' decisions | -- |
