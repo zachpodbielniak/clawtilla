@@ -678,6 +678,201 @@ test_agent_tools(void)
     pair_down(&p);
 }
 
+/* The task B runs for A's proxy @proxy_id, waiting for it to exist. */
+static ClawtTask *
+wait_for_doer_task(
+    Pair        *p,
+    const gchar *proxy_id
+){
+    gint64 deadline = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+
+    for (;;) {
+        g_autoptr(GPtrArray) all = clawt_task_manager_list(clawt_daemon_get_tasks(p->b), NULL, TRUE);
+        guint i;
+
+        for (i = 0; all != NULL && i < all->len; i++) {
+            ClawtTask *task = g_ptr_array_index(all, i);
+            if (g_strcmp0(clawt_task_get_remote_task(task), proxy_id) == 0
+                && g_strcmp0(clawt_task_get_origin(task), "fleet:alpha:a-chief") == 0)
+                return task;
+        }
+        if (g_get_monotonic_time() > deadline)
+            g_error("B never made a task for %s", proxy_id);
+        g_main_context_iteration(p->context, FALSE);
+        g_usleep(20000);
+    }
+}
+
+static void
+wait_for_state(
+    Pair        *p,
+    ClawtDaemon *daemon,
+    const gchar *task_id,
+    ClawtTaskState want
+){
+    gint64 deadline = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+
+    for (;;) {
+        ClawtTask *task = clawt_task_manager_get(clawt_daemon_get_tasks(daemon), task_id);
+        if (task != NULL && clawt_task_get_state(task) == want)
+            return;
+        if (g_get_monotonic_time() > deadline)
+            g_error("task %s is %s, not %s", task_id,
+                    task != NULL ? clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE, clawt_task_get_state(task))
+                                 : "gone",
+                    clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE, want));
+        g_main_context_iteration(p->context, FALSE);
+        g_usleep(20000);
+    }
+}
+
+/* "Delegated to X ... as task T." -> T */
+static gchar *
+task_id_in(
+    const gchar *said
+){
+    const gchar *at = strstr(said, "as task ");
+    const gchar *end;
+
+    g_assert_nonnull(at);
+    at += strlen("as task ");
+    end = strchr(at, '.');
+    g_assert_nonnull(end);
+    return g_strndup(at, (gsize)(end - at));
+}
+
+/*
+ * Delegation between fleets (0.69.0).  B's grant to A asks first, so the
+ * first piece of work is held and B's operator lets it through; B's
+ * task finishing completes A's proxy with B's result.  With the grant
+ * opened, a second piece is taken at once, and A cancelling its proxy
+ * cancels the real task.  And B's grant caps what B's agents may do in
+ * work for A.
+ */
+static void
+test_delegation(
+    gconstpointer data
+){
+    const Transport *t = data;
+    Pair p;
+    g_autofree gchar *alias = NULL;
+    g_autoptr(GError) error = NULL;
+    gboolean is_error = FALSE;
+    g_autofree gchar *first = NULL;
+    g_autofree gchar *second = NULL;
+    ClawtTask *real;
+
+    memset(&p, 0, sizeof(p));
+    pair_up(&p);
+    alias = link_them(&p, t);
+    wait_for_refs(&p, p.ca, "b-chief@bravo-lab");
+
+    /* limited: delegate=ask, so it is held for B's operator */
+    {
+        g_autofree gchar *said = call_tool(p.a, "a-chief", "clawtilla_delegate",
+            "{\"agent_id\":\"b-chief@bravo-lab\",\"task\":\"summarise the lab notes\"}",
+            &is_error);
+        g_assert_false(is_error);
+        first = task_id_in(said);
+    }
+    {
+        gint64 deadline = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+        g_autofree gchar *held = NULL;
+
+        while (held == NULL) {
+            g_autoptr(GPtrArray) open = clawt_decision_store_list(p.b->decisions, TRUE);
+            guint i;
+
+            for (i = 0; open != NULL && i < open->len && held == NULL; i++)
+                if (g_str_has_prefix(clawt_decision_get_id(g_ptr_array_index(open, i)), "fed-hold-"))
+                    held = g_strdup(clawt_decision_get_id(g_ptr_array_index(open, i)));
+            if (held != NULL)
+                break;
+            if (g_get_monotonic_time() > deadline)
+                g_error("B never held the task");
+            g_main_context_iteration(p.context, FALSE);
+            g_usleep(20000);
+        }
+        {
+            g_autofree gchar *req = g_strdup_printf("{\"decision\":\"%s\",\"answer\":\"deliver\"}",
+                                                    held);
+            g_autoptr(JsonObject) answered = ask(p.cb, "decision.answer", payload_of(req), &error);
+            g_assert_no_error(error);
+        }
+    }
+    real = wait_for_doer_task(&p, first);
+    g_assert_cmpstr(clawt_task_get_assignee(real), ==, "b-chief");
+    g_assert_cmpstr(clawt_task_get_remote_peer(real), ==, "alpha");
+    {
+        g_autofree gchar *real_id = g_strdup(clawt_task_get_id(real));
+        ClawtTask *proxy = clawt_task_manager_get(clawt_daemon_get_tasks(p.a), first);
+
+        g_assert_cmpstr(clawt_task_get_assignee(proxy), ==, "b-chief@bravo-lab");
+        g_assert_true(clawt_task_manager_start(clawt_daemon_get_tasks(p.b), real_id));
+        wait_for_state(&p, p.a, first, CLAWT_TASK_RUNNING);
+        g_assert_true(clawt_task_manager_complete(clawt_daemon_get_tasks(p.b), real_id,
+                                                  "three findings, all minor"));
+        wait_for_state(&p, p.a, first, CLAWT_TASK_COMPLETED);
+        g_assert_cmpstr(clawt_task_get_result(clawt_task_manager_get(clawt_daemon_get_tasks(p.a),
+                                                                     first)),
+                        ==, "three findings, all minor");
+    }
+
+    /* Opened: taken at once; cancelling the proxy cancels the work there. */
+    {
+        g_autoptr(JsonObject) set = ask(p.cb, "federation.peer.set",
+            payload_of("{\"alias\":\"alpha\",\"grant\":{\"delegate\":\"allow\","
+                       "\"cap.exec\":\"deny\",\"subdelegate\":\"false\"}}"), &error);
+        g_assert_no_error(error);
+    }
+    {
+        g_autofree gchar *said = call_tool(p.a, "a-chief", "clawtilla_delegate",
+            "{\"agent_id\":\"b-chief@bravo-lab\",\"task\":\"check the nightly build\"}",
+            &is_error);
+        g_assert_false(is_error);
+        second = task_id_in(said);
+    }
+    real = wait_for_doer_task(&p, second);
+    {
+        g_autofree gchar *real_id = g_strdup(clawt_task_get_id(real));
+        g_autofree gchar *req = g_strdup_printf("{\"task\":\"%s\"}", second);
+        g_autoptr(JsonObject) cancelled = ask(p.ca, "task.cancel", payload_of(req), &error);
+
+        g_assert_no_error(error);
+        wait_for_state(&p, p.b, real_id, CLAWT_TASK_CANCELLED);
+
+        /* The cap: exec is denied in work for A, reading is not. */
+        g_assert_cmpint(clawt_daemon_federation_cap(p.b, "b-chief", "fed:alpha:b-chief:a-chief",
+                                                    "Bash", CLAWT_ACTION_EXEC),
+                        ==, CLAWT_POLICY_DENY);
+        g_assert_cmpint(clawt_daemon_federation_cap(p.b, "b-chief", "fed:alpha:b-chief:a-chief",
+                                                    "Read", CLAWT_ACTION_READ),
+                        ==, CLAWT_POLICY_ALLOW);
+        g_assert_cmpint(clawt_daemon_federation_cap(p.b, "b-chief", "fed:alpha:b-chief:a-chief",
+                                                    "clawtilla_delegate", CLAWT_ACTION_MESSAGE),
+                        ==, CLAWT_POLICY_DENY);
+        g_assert_cmpint(clawt_daemon_federation_cap(p.b, "b-chief", "fed:alpha:b-chief:a-chief",
+                                                    "x", CLAWT_ACTION_FLEET_ADMIN),
+                        ==, CLAWT_POLICY_DENY);
+        /* ...and nothing is capped outside work for another fleet */
+        g_assert_cmpint(clawt_daemon_federation_cap(p.b, "b-chief", "dm:b-chief:user",
+                                                    "Bash", CLAWT_ACTION_EXEC),
+                        ==, CLAWT_POLICY_ALLOW);
+    }
+    /* A worker without tools.federation may not hand work to another fleet. */
+    {
+        g_autofree gchar *said = call_tool(p.a, "a-worker", "clawtilla_delegate",
+            "{\"agent_id\":\"b-chief@bravo-lab\",\"task\":\"x\"}", &is_error);
+        g_autoptr(GPtrArray) b_tasks = clawt_task_manager_list(clawt_daemon_get_tasks(p.b), NULL, TRUE);
+
+        g_assert_true(is_error);
+        g_assert_true(strstr(said, "tools.federation") != NULL
+                      || strstr(said, "not permitted") != NULL);
+        g_assert_cmpuint(b_tasks->len, ==, 2);
+    }
+    pair_down(&p);
+}
+
 /* What B's hello says when signed by A, for a hand-made connection. */
 static const gchar *
 hello_as_a(
@@ -828,6 +1023,11 @@ main(int argc, char *argv[])
             g_autofree gchar *mpath = g_strdup_printf("/fed-link/%s/messages-cross",
                                                       transports[i].name);
             g_test_add_data_func(mpath, &transports[i], test_messages_cross);
+        }
+        {
+            g_autofree gchar *dpath = g_strdup_printf("/fed-link/%s/delegation",
+                                                      transports[i].name);
+            g_test_add_data_func(dpath, &transports[i], test_delegation);
         }
     }
     g_test_add_func("/fed-link/fleet-connection-is-fenced", test_fleet_connection_is_fenced);

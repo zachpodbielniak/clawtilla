@@ -2725,6 +2725,18 @@ gchar    *clawt_daemon_federation_open(ClawtDaemon  *self,
                                        const gchar  *ref,
                                        GError      **error);
 JsonArray *clawt_daemon_federation_remote_agents(ClawtDaemon *self);
+gchar    *clawt_daemon_federation_delegate(ClawtDaemon  *self,
+                                           const gchar  *from,
+                                           const gchar  *ref,
+                                           const gchar  *work,
+                                           const gchar  *reason,
+                                           const gchar  *turn_room,
+                                           GError      **error);
+ClawtPolicyMode clawt_daemon_federation_cap(ClawtDaemon      *self,
+                                            const gchar      *agent_id,
+                                            const gchar      *room_id,
+                                            const gchar      *tool,
+                                            ClawtActionClass  action);
 gboolean  clawt_daemon_federation_hold_settle(ClawtDaemon   *self,
                                               ClawtDecision *decision,
                                               const gchar   *how);

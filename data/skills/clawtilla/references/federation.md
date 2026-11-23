@@ -8,7 +8,7 @@ Read this before linking this fleet with another clawtilla fleet, changing what 
 - **Safety words** (four words from the fleet id) are what two people read to each other while one accepts the other's invite.
 - A **peer** is a linked fleet, known here by an **alias** (a valid id, never renamed). Peers live in `<state_dir>/federation/peers.yaml`, written by the daemon. Do not edit it; use `clawtilla federation` or a client's Settings → Federation page.
 - **Every request and every answer between fleets is a signed envelope.** That holds over any transport. Kind, from, to, time, nonce, body digest, and what it was sent to are all signed. Answers are bound to the request's nonce.
-- What crosses: hello, ping, revoke, rotate (0.66.0); rosters, pushed live (0.67.0); messages and their delivery states (0.68.0). Not yet: delegation (0.69.0), shared rooms (0.70.0). A kind the other side does not know is answered 501 "not understood yet", naming its version.
+- What crosses: hello, ping, revoke, rotate (0.66.0); rosters, pushed live (0.67.0); messages and their delivery states (0.68.0); delegated tasks, their states and cancels (0.69.0). Not yet: shared rooms (0.70.0). A kind the other side does not know is answered 501 "not understood yet", naming its version.
 
 ## Turn it on
 
@@ -139,6 +139,16 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 - One request, one answer: an agent's closing text answers a message and goes back; the answer arrives inviting nothing, so it is not answered again. Write again with a new `clawtilla_message_agent`. Remote senders never renew the pair budget.
 - To keep an agent away from most fleets: `clawtilla agent set billing federation_reach tier:owned` (selectors; only narrows).
 
+## Delegation and caps (0.69.0)
+
+- Hand work over: `clawtilla_delegate agent_id=atlas@lab task=...` (agent with `tools.federation`), `clawtilla task create --agent atlas@lab "..."`, or IPC `task.create {agent: "atlas@lab"}`.
+- Here it is a **proxy** task: assignee `atlas@lab`, `remote_peer: lab`, parent = the delegator's current task. Never failed by a restart (the other fleet carries it). Its settle notice reaches the delegator like any task's.
+- There it is a **real** task, origin `fleet:ALIAS:AGENT`, assigned to the agent, delivered fenced into the `fed:` conversation with assignment guidance. Its state (running, completed + result, failed, stalled, cancelled) comes back as `task.state`; the proxy follows. Cancelling the proxy sends `task.cancel` (cascades there); cancelling there cancels the proxy. The wire id is always the proxy's id.
+- The doing fleet checks its grant to you: reach, `max_hops_in`, `max_concurrent_tasks` (running at once), `budget_cents_per_day` (spend on your tasks in 24 h, from its ledger; refuses new work only), then `delegate`: allow / deny / ask-review-hand_back = held as a `fed-hold-*` decision (Deliver starts it). A refusal fails the proxy with the reason ("Bravo Lab did not take it: ...").
+- Spend is charged only where the work runs.
+- **Caps**: a turn works for a fleet when it is in a `fed:` room with it or carries (or descends from) a task that came from it. Every call then takes the stricter of the agent's action rule and that fleet's `cap.CLASS` -- clawtilla tools and, via the permission hook, the CLI's own Bash/edits. `cap.fleet_admin` is always deny; `subdelegate=false` denies `clawtilla_delegate` in such turns. With `federation.enabled`, every agent gets the permission hook.
+- Tighten a fleet: `clawtilla federation set ALIAS cap.exec=deny cap.write=ask max_concurrent_tasks=1 budget_cents_per_day=300 delegate=ask`.
+
 ## Diagnose
 
 | Symptom | Cause, fix |
@@ -157,6 +167,8 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 | "agents.tools.federation is off" | `clawtilla agent set AGENT tools.federation true`, if it should write to other fleets |
 | a message never arrives, no note | the fleet is unreachable; it is in the outbox until it answers or `federation.outbox_hours` passes |
 | "holding this message" | their operator must Deliver it in their Decisions inbox |
+| proxy task failed "X did not take it: ..." | their `delegate`, `max_concurrent_tasks`, `budget_cents_per_day` or reach; `federation show ALIAS` |
+| a tool refused "its grant caps what may be done for it" | the turn works for a linked fleet whose `cap.CLASS` is stricter; widen with `federation set ALIAS cap.exec=ask` |
 | "unknown fleet or key" | the peer revoked/forgot you, or a rotation was missed; link again |
 
 `clawtilla federation log [ALIAS]` is the audit (`<state_dir>/federation/audit.ndjson`). It records every request between fleets, refusals included, except successful keep-alive hellos and pings.

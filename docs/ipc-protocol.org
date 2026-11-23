@@ -1329,7 +1329,11 @@ Since 0.66.0: ~federation.status~, ~federation.tiers~,
 ~federation.roster~ (~alias~), and ~agent.list~ carries ~fleets~, one
 entry per linked fleet with the agents it shows us; since 0.68.0
 ~federation.open~ (~ref~ → ~room~), ~msg.send~ to ~AGENT@ALIAS~ (answers
-~room~), and the event ~federation.delivery~ (~id~, ~state~, ~detail~).  Every payload and
+~room~), and the event ~federation.delivery~ (~id~, ~state~, ~detail~);
+since 0.69.0 ~task.create~ takes an ~agent~ of ~AGENT@ALIAS~ and every task
+object carries ~remote_peer~ when it crosses fleets.  Between fleets the
+envelope kinds ~task~, ~task.state~ and ~task.cancel~ carry delegated work
+(never frames a client sends).  Every payload and
 answer is tabled in [[file:federation.org::#requests][federation.org]].  With =federation.enabled=
 off, ~federation.status~ answers ~enabled: false~ and a hint, and the rest
 refuse with =not_supported=.

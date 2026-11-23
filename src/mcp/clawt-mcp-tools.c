@@ -2898,8 +2898,28 @@ policy_mode(ClawtMcpTools *self, const gchar *agent_id, const gchar *room_id,
         return CLAWT_POLICY_DENY;
     }
 
-    return clawt_policy_mode_for(agent != NULL ? clawt_agent_get_config(agent) : NULL,
-                                 tool, action, out_rule);
+    {
+        ClawtPolicyMode mode = clawt_policy_mode_for(
+            agent != NULL ? clawt_agent_get_config(agent) : NULL, tool, action, out_rule);
+
+        /*
+         * Work done for another fleet: the stricter of the agent's rule
+         * and the cap that fleet's grant sets (0.69.0).
+         */
+        if (self->federation.cap != NULL) {
+            ClawtPolicyMode cap = self->federation.cap(agent_id, room_id, tool, action,
+                                                       self->federation_data);
+            ClawtPolicyMode both = clawt_fed_policy_stricter(mode, cap);
+
+            if (both != mode && out_rule != NULL) {
+                g_free(*out_rule);
+                *out_rule = g_strdup("this turn works for a linked fleet, and its grant "
+                                     "caps what may be done for it");
+            }
+            mode = both;
+        }
+        return mode;
+    }
 }
 
 static gboolean
@@ -5921,6 +5941,24 @@ tool_delegate(ClawtMcpTools *self,
     if (self->tasks == NULL || !can_deliver(self)) {
         *is_error = TRUE;
         return g_strdup("Delegation is not available.");
+    }
+
+    /*
+     * `AGENT@ALIAS`: work for another fleet's agent (0.69.0).  The daemon
+     * makes a proxy task here and hands the work over; that fleet's grant
+     * decides whether it is taken.
+     */
+    if (strchr(assignee, '@') != NULL) {
+        if (!may_federate(self, clawt_agent_manager_get(self->agents, agent_id))
+            || self->federation.delegate == NULL) {
+            *is_error = TRUE;
+            return g_strdup_printf("'%s' is an agent in another fleet, and you may not "
+                                   "hand work to other fleets (agents.tools.federation "
+                                   "is off).", assignee);
+        }
+        return self->federation.delegate(agent_id, assignee, work,
+                                         argument_string(arguments, "reason"), turn_room,
+                                         is_error, self->federation_data);
     }
 
     if (clawt_agent_manager_get(self->agents, assignee) == NULL) {

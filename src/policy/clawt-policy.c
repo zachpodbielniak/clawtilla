@@ -156,6 +156,15 @@ clawt_policy_agent_needs_hook(ClawtAgentConfig *agent)
         return TRUE;
 
     fleet = agent != NULL ? clawt_agent_config_get_config(agent) : NULL;
+
+    /*
+     * A federated fleet's agents may work for another fleet, and a
+     * grant's cap must reach the agent's own tools too (0.69.0): which
+     * turns do is only known per call, so every agent asks.
+     */
+    if (fleet != NULL && clawt_config_get_boolean(fleet, "federation.enabled"))
+        return TRUE;
+
     routines = fleet != NULL ? clawt_config_get_routines(fleet) : NULL;
     for (i = 0; routines != NULL && i < routines->len; i++) {
         ClawtRoutine *routine = g_ptr_array_index(routines, i);

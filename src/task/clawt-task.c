@@ -67,6 +67,8 @@ struct _ClawtTask {
      * notice goes back to.
      */
     gchar *thread_room;
+    gchar *remote_peer;   /* the linked fleet on the other end, 0.69.0 */
+    gchar *remote_task;   /* the delegating side's proxy id, on both sides */
 
     /* `mode: consult`: the assignee's turn is offered no tool that acts. */
     gboolean consult;
@@ -191,6 +193,8 @@ clawt_task_copy(ClawtTask *self)
     copy->reason = g_strdup(self->reason);
     copy->model = g_strdup(self->model);
     copy->thread_room = g_strdup(self->thread_room);
+    copy->remote_peer = g_strdup(self->remote_peer);
+    copy->remote_task = g_strdup(self->remote_task);
     copy->consult = self->consult;
     copy->session_key = g_strdup(self->session_key);
     copy->title = g_strdup(self->title);
@@ -263,6 +267,8 @@ clawt_task_free(ClawtTask *self)
     g_free(self->project);
     g_free(self->project_brief);
     g_free(self->thread_room);
+    g_free(self->remote_peer);
+    g_free(self->remote_task);
     g_free(self->progress_note);
     g_free(self->cancelled_by);
     g_free(self->retried_by);
@@ -289,6 +295,8 @@ GETTER(reason, reason)
 GETTER(model, model)
 GETTER(session_key, session_key)
 GETTER(thread_room, thread_room)
+GETTER(remote_peer, remote_peer)
+GETTER(remote_task, remote_task)
 GETTER(progress_note, progress_note)
 GETTER(cancelled_by, cancelled_by)
 GETTER(retried_by, retried_by)
@@ -650,6 +658,17 @@ clawt_task_set_thread_room(ClawtTask *self, const gchar *room)
     self->thread_room = (room != NULL && *room != '\0') ? g_strdup(room) : NULL;
 }
 
+void
+clawt_task_set_remote(ClawtTask *self, const gchar *peer, const gchar *task_id)
+{
+    g_return_if_fail(self != NULL);
+
+    g_free(self->remote_peer);
+    self->remote_peer = (peer != NULL && *peer != '\0') ? g_strdup(peer) : NULL;
+    g_free(self->remote_task);
+    self->remote_task = (task_id != NULL && *task_id != '\0') ? g_strdup(task_id) : NULL;
+}
+
 gboolean
 clawt_task_get_consult(ClawtTask *self)
 {
@@ -842,6 +861,8 @@ clawt_task_to_json(ClawtTask *self)
                                       self->checkout_mode));
     }
     add_string(builder, "thread_room", self->thread_room);
+    add_string(builder, "remote_peer", self->remote_peer);
+    add_string(builder, "remote_task", self->remote_task);
     add_string(builder, "progress_note", self->progress_note);
     add_string(builder, "cancelled_by", self->cancelled_by);
     add_string(builder, "retried_by", self->retried_by);
@@ -972,6 +993,8 @@ clawt_task_new_from_json(JsonNode *node, GError **error)
     }
     self->review_round = (guint)MAX(int_member(object, "review_round"), 0);
     self->thread_room = dup_member(object, "thread_room");
+    self->remote_peer = dup_member(object, "remote_peer");
+    self->remote_task = dup_member(object, "remote_task");
     self->progress_note = dup_member(object, "progress_note");
     self->cancelled_by = dup_member(object, "cancelled_by");
     self->retried_by = dup_member(object, "retried_by");

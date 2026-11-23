@@ -253,7 +253,7 @@ A tier is a preset.  Every field below can be changed for one peer (~clawtilla f
 
 - =reach= :: which of your agents the peer may address: =all=, =listed= (the =agents= field's selectors), =inbox= (=federation.inbox_agent=, the chief of staff by default) or =none=.  The inbox agent is reachable whenever anything is.
 - =message=, =delegate= :: what happens to an incoming message or task: =allow=, =review=/=ask= (held as a decision for you), =deny=.
-- =cap.CLASS= :: the most that work done *for* the peer may do in each action class, combined with the agent's own rules: the stricter wins.  ~cap.fleet_admin~ is always =deny=; no grant can open it.
+- ~cap.CLASS~ :: the most that work done *for* the peer may do in each action class, combined with the agent's own rules: the stricter wins.  ~cap.fleet_admin~ is always =deny=; no grant can open it.
 - Limits are whole numbers.  0 means no limit.
 
 ~clawtilla federation tiers~ prints the summaries; every client shows them as cards in the invite wizard.
@@ -376,6 +376,37 @@ The transcript shows exactly what they wrote.  The agent receives it under a pre
 
 *** One request, one answer
 A message invites one answer, as between agents here.  The agent's closing text is that answer and goes back to them; the answer arrives on their side marked as an answer -- inviting nothing -- so their agent's closing text is not sent back, and two fleets' agents cannot sign off at each other for ever.  To write again, an agent sends a new message (~clawtilla_message_agent~); a person just writes in the conversation.  The pair budget is never renewed by another fleet's sender, and =max_hops_in= bounds a chain of deliberate messages.
+
+** Delegation
+:PROPERTIES:
+:CUSTOM_ID: delegation
+:END:
+
+Since 0.69.0 work can be handed to another fleet's agent as a task, exactly as to one of your own: ~clawtilla_delegate~ with =agent_id: atlas@lab= (an agent with =agents.tools.federation=), ~clawtilla task create --agent atlas@lab "..."~, or ~task.create~ with =agent: atlas@lab=.
+
+*** Two tasks, one piece of work
+- On the delegating side the task is a *proxy*: its assignee is =atlas@lab=, its parent is whatever task the delegator was working on, and its =remote_peer= names the fleet.  It looks like any task in every client's task list and in ~clawtilla task list~; it is never failed by a restart (the other fleet carries it), and its settle notice reaches the delegator the usual way.
+- On the doing side it is a *real* task, assigned to =atlas=, whose origin is the remote sender =fleet:ALIAS:AGENT=.  It is delivered into the conversation with that agent (=fed:...=) under the same preamble and fence a message gets, followed by the usual assignment guidance; it runs, completes on a turn's end, retries and is reviewed like any other.
+- The wire knows the work by the proxy's id on both sides.  The doing side reports every change of its task -- running, completed (with the result), failed, stalled, cancelled -- as a ~task.state~ envelope, and the proxy follows.  Cancelling the proxy sends ~task.cancel~, which cancels the real task and everything it spawned; a task cancelled on the doing side cancels the proxy.  Both ride the outbox, so a fleet that is away catches up when it answers.
+- What the agent's turn says at the end is the task's result, and travels as the result -- it is not also sent as a message.
+
+*** What the doing fleet checks
+Against its grant to you, like a message: well-formed, an agent it may reach, =max_hops_in=, then
+- =max_concurrent_tasks= :: how many of your tasks it runs at once (0: no limit);
+- =budget_cents_per_day= :: what your tasks have cost it in the last 24 hours, from the usage ledger -- a fleet over it refuses new work, and work under way finishes;
+- =delegate= :: =allow= starts it, =deny= declines, =ask=/=review=/=hand_back= hold it as a decision (*Deliver* starts it).
+
+The delegator's proxy says what happened in its notes ("Bravo Lab took it", "is holding it for its operator's approval") and fails with the reason on a refusal, so the delegator is told as for any failed task.
+
+*** Spend
+Spend is charged where the work runs: the doing fleet's usage ledger and task budgets count it, and its =budget_cents_per_day= caps it.  The proxy costs the delegating fleet nothing.
+
+** Caps
+:PROPERTIES:
+:CUSTOM_ID: caps
+:END:
+
+A grant's ~cap.CLASS~ fields (~cap.read~, ~cap.write~, ~cap.delete~, ~cap.message~, ~cap.exec~, ~cap.external~, ~cap.desktop_input~, ~cap.fleet_admin~) cap what this fleet's agents may do *for* that fleet (0.69.0).  A turn works for a fleet when it runs in a conversation with it (a =fed:= room) or carries a task that came from it, or one above it.  Every call such a turn makes -- clawtilla's own tools and the agent CLI's own (Bash, edits) through the permission hook -- takes the stricter of the agent's action rule and the cap (~clawt_fed_policy_stricter()~: deny, hand back, ask, review, allow), and a refusal names the cap.  ~cap.fleet_admin~ is always deny, and with =subdelegate= false the turn may not delegate further.  With =federation.enabled= on, every agent gets the permission hook, because which turns work for another fleet is only known per call.
 
 ** Managing links
 :PROPERTIES:
@@ -544,12 +575,13 @@ A linked fleet's running agents visit your office (kind /external/, id =ALIAS:AG
 | ~federation.expose~ | ={hostname?}= | ={cloudflared_config, public_url, socket, next}= |
 | ~federation.open~ | ={ref}= | ={room}=: the operator's conversation with =AGENT@ALIAS=, made if new (0.68.0) |
 | ~msg.send~ to =AGENT@ALIAS= | ={target, body, from?}= | ={queued: 0, steered: false, room}= (0.68.0) |
+| ~task.create~ with =agent: AGENT@ALIAS= | ={prompt, agent, title?}= | ={task}=, the proxy (0.69.0); every task object carries =remote_peer= when it crosses fleets |
 
 Events: ~federation.peer~ (=alias=, =change=: added, changed, health, revoked, removed), ~federation.roster~ (=alias=, since 0.67.0: that fleet's roster changed), ~federation.delivery~ (subject the conversation's room; =id=, =state=, =alias=, =detail=; since 0.68.0) and ~federation.audit~ (=direction=, =kind=, =outcome=).
 
 ~agent.list~ carries, since 0.67.0, =fleets=: one object per linked fleet that is not revoked, in the registry's order, with =alias=, =label=, =fleet_id=, =tier=, =tier_label=, =tier_tone=, =owner=, =tags=, =health=, =health_label=, =health_tone=, =hidden=, =muted=, =latency_ms= (when known), =teams= (=[{id, name}]=) and =agents= (=[{id, ref, fleet, name, team?, color?, inbox, state?, busy?}]=, =ref= being =AGENT@ALIAS=; =state= is =unknown= for a fleet that is not live).  The tones are the library's words (=success=, =accent=, =warning=, =error=, =neutral=); ~clawt_fed_badge_tone()~ turns them into the web and lrg badge names.
 
-Between fleets: =GET /fed/v1/hello= (public, signed: who this fleet is), =POST /fed/v1/invite/accept=, =POST /fed/v1/envelope=, =GET /fed/v1/events= (WebSocket, 0.67.0); on the IPC port the frames ~fed.hello~, ~fed.invite~, ~fed.envelope~ and, from the far side, ~fed.push~.  Envelope kinds: =hello=, =ping=, =revoke=, =rotate= (0.66.0), =roster= (0.67.0), =message= (={id, from, to, body, depth, invites}=, answered ={state, detail?}=) and =delivery= (={id, state, detail?}=, what became of a message that was pushed or held) (0.68.0); anything else is answered "not understood yet", naming the version.
+Between fleets: =GET /fed/v1/hello= (public, signed: who this fleet is), =POST /fed/v1/invite/accept=, =POST /fed/v1/envelope=, =GET /fed/v1/events= (WebSocket, 0.67.0); on the IPC port the frames ~fed.hello~, ~fed.invite~, ~fed.envelope~ and, from the far side, ~fed.push~.  Envelope kinds: =hello=, =ping=, =revoke=, =rotate= (0.66.0), =roster= (0.67.0), =message= (={id, from, to, body, depth, invites}=, answered ={state, detail?}=) and =delivery= (={id, state, detail?}=, what became of a message that was pushed or held) (0.68.0), =task= (={id, from, to, prompt, reason?, depth}=, answered ={task, state: accepted|held|refused|declined, detail?}=), ~task.state~ (={task, state, result?, detail?}=) and ~task.cancel~ (={task, reason?}=) (0.69.0); anything else is answered "not understood yet", naming the version.
 
 ** Configuration
 :PROPERTIES:
@@ -589,5 +621,7 @@ Every key is in [[file:configuration-options.org][configuration-options.org]]; t
 - "Not delivered to X: there is no agent here you may reach by that name" :: their grant's =reach=/=agents=, or the agent's own =federation_reach=, does not include it; ~clawtilla federation show ALIAS~ prints what they allow you.  Write to their inbox agent instead (=user@ALIAS= is reachable only in a conversation their operator started).
 - "X is holding this message" :: their grant asks first; their operator answers it in the Decisions inbox.  Nothing to do here.
 - an agent's message to another fleet is refused with "agents.tools.federation is off" :: turn it on for that agent (=clawtilla agent set AGENT tools.federation true=) if it should write to other fleets.
+- a delegated task fails with "Bravo Lab did not take it: ..." :: their grant: =delegate= is deny, or =max_concurrent_tasks= / =budget_cents_per_day= is reached, or the agent is out of reach.  ~clawtilla federation show ALIAS~ prints what they allow you.
+- an agent working for another fleet is refused a tool with "its grant caps what may be done for it" :: that fleet's ~cap.CLASS~ is stricter than the agent's own rule.  Widen it with ~clawtilla federation set ALIAS cap.exec=ask~ if the work needs it.
 - a message sits unsent :: the fleet is not reachable (=federation list= shows its health); it goes when it answers, or is given up after =federation.outbox_hours=.
 - "unknown fleet or key" from a peer :: it revoked or forgot you, or you rotated while it was unreachable for more than a day; link again.

@@ -140,6 +140,13 @@ See [connectors.md](connectors.md), [integrations.md](integrations.md).
 4. Make a fleet's messages wait for you: `clawtilla federation set ALIAS message=ask` -- each lands as a Deliver/Decline decision.
 5. Keep an agent out of reach of most fleets: `clawtilla agent set billing federation_reach tier:owned`. See [federation.md](federation.md), "Messages".
 
+## Hand work to an agent in another fleet
+
+1. `clawtilla task create --agent atlas@lab "summarise last week's incidents"` (or an agent with `tools.federation`: `clawtilla_delegate agent_id=atlas@lab`).
+2. Watch it: `clawtilla task list` (the proxy, assignee `atlas@lab`); their fleet may hold it for its operator.
+3. Call it off: `clawtilla task cancel <id>` -- it is cancelled there too.
+4. On the doing side, limit what work for that fleet may do: `clawtilla federation set ALIAS cap.exec=deny max_concurrent_tasks=2 budget_cents_per_day=500`. See [federation.md](federation.md), "Delegation and caps".
+
 ## Check spend and plan limits
 
 1. `clawtilla cost --today`, `clawtilla cost --days 7 --by origin`, `clawtilla cost --by model --csv > spend.csv`.

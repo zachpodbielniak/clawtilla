@@ -128,6 +128,10 @@ A *project* (~projects:~) is a piece of work the fleet is pointed at: what it is
 
 ~task.list~ carries ~kept~ (whether this daemon has a task store), ~retention_days~, and still ~since~, the daemon's start. Every client and the CLI put =clawt_task_list_caption()= over the Tasks and Problems lists: "Tasks still open, and those that finished in the last day. Every task is kept for 180 days with a record of what happened to it, across restarts; older ones are in the history (clawtilla task list --history)."  A daemon whose ~tasks.db~ would not open keeps working in memory, says so once in its log, and its lists carry the old caption instead (=clawt_held_since_caption()=): "Since the daemon started at 09:14. Tasks and problems are held in memory, so a daemon restart clears this list; ...".  Saying "kept" when they are not would be the lie that caption was written to stop.
 
+* Work for another fleet (since 0.69.0)
+
+A task can cross fleets: its assignee is =AGENT@ALIAS=, a linked fleet's agent.  Here it is a *proxy* that follows the real task there, reports to its delegator like any task, and is never failed by a restart; cancelling it cancels the work there.  Work another fleet hands this one is a real task whose origin is =fleet:ALIAS:AGENT=, capped by that fleet's grant.  Both carry =remote_peer=.  See [[file:federation.org::#delegation][federation.org, "Delegation"]].
+
 * Reference
 
 ** IPC frames

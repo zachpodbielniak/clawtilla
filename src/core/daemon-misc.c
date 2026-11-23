@@ -1275,6 +1275,24 @@ clawt_daemon_handle_misc(
                 rule = g_strdup(CLAWT_CONSULT_RULE);
                 mode = CLAWT_POLICY_DENY;
             }
+
+            /*
+             * Work done for another fleet is capped by that fleet's grant
+             * (0.69.0): the stricter of the two answers, named as the cap
+             * when it is the cap that decided.
+             */
+            {
+                ClawtPolicyMode cap = clawt_daemon_federation_cap(
+                    self, agent_id, clawt_ipc_payload_string(payload, "room"), tool, action);
+                ClawtPolicyMode both = clawt_fed_policy_stricter(mode, cap);
+
+                if (both != mode) {
+                    g_free(rule);
+                    rule = g_strdup("this turn works for a linked fleet, and its grant "
+                                    "caps what may be done for it (docs/federation.org#caps)");
+                    mode = both;
+                }
+            }
         }
 
         /*

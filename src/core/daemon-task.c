@@ -507,6 +507,28 @@ clawt_daemon_handle_task(
         if (agent != NULL && *agent == '\0')
             agent = NULL;
 
+        /*
+         * Work for another fleet's agent (0.69.0): a proxy task here, the
+         * real one there, and the two kept in step over the link.
+         */
+        if (agent != NULL && strchr(agent, '@') != NULL) {
+            g_autofree gchar *task_id = clawt_daemon_federation_delegate(
+                self, "user", agent, prompt, NULL, NULL, &error);
+
+            if (task_id == NULL)
+                return clawt_ipc_error_new(request, error->code, error->message);
+            task = clawt_task_manager_get(self->tasks, task_id);
+            if (title != NULL && *title != '\0') {
+                clawt_task_set_title(task, title);
+                clawt_task_manager_save(self->tasks, task, NULL);
+            }
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "task");
+            clawt_daemon_add_task_object(builder, task);
+            json_builder_end_object(builder);
+            return clawt_ipc_response_new(request, json_builder_get_root(builder));
+        }
+
         if (agent != NULL &&
             clawt_agent_manager_get(self->agents, agent) == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
@@ -1082,6 +1104,15 @@ task_is_carried(
 	ClawtMailbox *mailbox;
 
 	if (clawt_task_get_holds_completion(task))
+		return TRUE;
+
+	/*
+	 * A proxy for work another fleet is doing (0.69.0) is carried by
+	 * that fleet, whatever this one did: its state comes back over the
+	 * link when the fleet answers again.
+	 */
+	if (clawt_task_get_remote_peer(task) != NULL &&
+	    clawt_sender_kind_of(clawt_task_get_origin(task)) != CLAWT_SENDER_REMOTE)
 		return TRUE;
 
 	if (clawt_task_manager_count_unfinished_children(self->tasks,

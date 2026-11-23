@@ -9937,6 +9937,12 @@ clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
     json_builder_set_member_name(builder, "title");
     json_builder_add_string_value(builder, clawt_task_get_title(task));
 
+    /* Work that crosses fleets (0.69.0): the linked fleet at the other end. */
+    if (clawt_task_get_remote_peer(task) != NULL) {
+        json_builder_set_member_name(builder, "remote_peer");
+        json_builder_add_string_value(builder, clawt_task_get_remote_peer(task));
+    }
+
     /*
      * When, which a list that now outlives restarts needs: "failed" from
      * five minutes ago and from last month are different questions.

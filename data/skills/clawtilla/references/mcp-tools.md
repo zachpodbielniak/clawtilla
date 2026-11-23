@@ -146,7 +146,7 @@ See [mailboxes-and-rooms.md](mailboxes-and-rooms.md).
 
 | Tool | Does | Key args (* required) | Gate | Class |
 |---|---|---|---|---|
-| `clawtilla_delegate` *hop* | hand work to an agent, get a task id | agent_id*, task*, reason, model, thread (standing/new), mode (work/consult), after, review, repo, base, project, turn_room | assign | message |
+| `clawtilla_delegate` *hop* | hand work to an agent, get a task id; `agent_id` may be `AGENT@ALIAS` in a linked fleet (a proxy task here, with `tools.federation`; only agent_id, task, reason apply) | agent_id*, task*, reason, model, thread (standing/new), mode (work/consult), after, review, repo, base, project, turn_room | assign | message |
 | `clawtilla_handoff` *hop* | give a task you own to another agent, at turn end | task_id*, agent_id*, reason*, turn_room | handoff | message |
 | `clawtilla_task_retry` *hop* | re-queue a failed or stalled run (two retries per incident) | incident_id or task_id, reason, turn_room | retry | message |
 | `clawtilla_task_link` | change what a waiting task is held `after` | task_id*, after*, remove | assign | message |

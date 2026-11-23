@@ -648,6 +648,10 @@ void clawt_mcp_tools_set_ephemeral_hooks(ClawtMcpTools                *self,
  * @list: the other fleets' agents @agent_id can see, as text, or %NULL
  *   for none (transfer full)
  * @peers: the linked fleets, as text (transfer full)
+ * @delegate: hands @work to @ref as a task there, answering what to tell
+ *   the agent (transfer full), with @is_error set on a refusal (0.69.0)
+ * @cap: the most a linked fleet's grant lets an agent do when the turn
+ *   works for that fleet; %CLAWT_POLICY_ALLOW when it does not (0.69.0)
  *
  * What the daemon supplies for federation (since 0.68.0).  Unset, no
  * agent is offered another fleet; set, only an agent with
@@ -658,6 +662,11 @@ typedef struct {
                    gboolean *is_error, gpointer user_data);
     gchar *(*list)(const gchar *agent_id, gpointer user_data);
     gchar *(*peers)(const gchar *agent_id, gpointer user_data);
+    gchar *(*delegate)(const gchar *agent_id, const gchar *ref, const gchar *work,
+                       const gchar *reason, const gchar *turn_room, gboolean *is_error,
+                       gpointer user_data);
+    ClawtPolicyMode (*cap)(const gchar *agent_id, const gchar *room_id, const gchar *tool,
+                           ClawtActionClass action, gpointer user_data);
 } ClawtMcpFederationHooks;
 
 /**

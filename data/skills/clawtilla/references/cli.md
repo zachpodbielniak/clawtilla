@@ -142,7 +142,7 @@ See [teams-and-ephemeral.md](teams-and-ephemeral.md), [tasks-and-projects.md](ta
 |---|---|
 | `clawtilla task list [--history] [--state S] [--agent A] [--before UNIX] [--limit N]` | tasks (default verb) |
 | `clawtilla task show <task> [--journal]` | one task, and what happened to it |
-| `clawtilla task create [--agent A] [--title T] [--after T1,T2] [--review lead\|delegator\|operator\|AGENT\|none] [--repo DIR [--base REF]] [--project ID] "<what to do>"` | without `--agent` it goes on the backlog |
+| `clawtilla task create [--agent A] [--title T] [--after T1,T2] [--review lead\|delegator\|operator\|AGENT\|none] [--repo DIR [--base REF]] [--project ID] "<what to do>"` | without `--agent` it goes on the backlog; `--agent AGENT@FLEET` hands it to a linked fleet (a proxy task here) |
 | `clawtilla task assign <task> <agent>` | hand a backlog task out |
 | `clawtilla task comment <task> <text>` | add a note |
 | `clawtilla task link <task> <waits-for>` / `unlink <task> <waits-for>` | dependencies |

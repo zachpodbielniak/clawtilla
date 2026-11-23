@@ -128,6 +128,39 @@ const gchar   *clawt_task_get_thread_room(ClawtTask *self);
 void           clawt_task_set_thread_room(ClawtTask *self, const gchar *room);
 
 /**
+ * clawt_task_get_remote_peer:
+ * @self: a #ClawtTask
+ *
+ * The linked fleet at the other end of a task that crosses fleets
+ * (0.69.0).  On the delegating side the task is a *proxy*: its assignee
+ * is `AGENT@ALIAS` and its state follows the real task there.  On the
+ * doing side it is a real task whose origin is `fleet:ALIAS:AGENT`.
+ *
+ * Returns: (transfer none) (nullable): the alias, or %NULL
+ */
+const gchar   *clawt_task_get_remote_peer(ClawtTask *self);
+
+/**
+ * clawt_task_get_remote_task:
+ * @self: a #ClawtTask
+ *
+ * The id the wire knows the work by: always the delegating side's proxy
+ * id, on both sides, so a cancel or a state change needs no second
+ * mapping.
+ *
+ * Returns: (transfer none) (nullable): the id, or %NULL
+ */
+const gchar   *clawt_task_get_remote_task(ClawtTask *self);
+
+/**
+ * clawt_task_set_remote:
+ * @self: a #ClawtTask
+ * @peer: (nullable): the linked fleet
+ * @task_id: (nullable): the proxy id on the wire
+ */
+void           clawt_task_set_remote(ClawtTask *self, const gchar *peer, const gchar *task_id);
+
+/**
  * clawt_task_get_consult:
  * @self: a #ClawtTask
  *
