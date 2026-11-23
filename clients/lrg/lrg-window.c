@@ -1080,12 +1080,16 @@ build_app_menu(void)
     g_menu_append(fleet, "Resume the fleet", "win.resume-fleet");
     g_menu_append_section(menu, NULL, G_MENU_MODEL(fleet));
 
-    g_menu_append(app_section, "Go to…\tCtrl+K", "win.navigate");
-    g_menu_append(app_section, "Show or hide the sidebar\tCtrl+B",
-                  "win.toggle-sidebar");
+    /*
+     * No "\tCtrl+K" in the labels: libregnum's menu draws each item's
+     * shortcut in its own column from the accelerator bound on the canvas,
+     * so a label that carried one showed it twice.
+     */
+    g_menu_append(app_section, "Go to…", "win.navigate");
+    g_menu_append(app_section, "Show or hide the sidebar", "win.toggle-sidebar");
     g_menu_append(app_section, "Connections…", "win.connections");
-    g_menu_append(app_section, "Settings…\tCtrl+,", "win.settings");
-    g_menu_append(app_section, "Quit\tCtrl+Q", "win.quit");
+    g_menu_append(app_section, "Settings…", "win.settings");
+    g_menu_append(app_section, "Quit", "win.quit");
     g_menu_append_section(menu, NULL, G_MENU_MODEL(app_section));
 
     return G_MENU_MODEL(menu);
