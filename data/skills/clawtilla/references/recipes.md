@@ -145,7 +145,8 @@ See [connectors.md](connectors.md), [integrations.md](integrations.md).
 1. `clawtilla task create --agent atlas@lab "summarise last week's incidents"` (or an agent with `tools.federation`: `clawtilla_delegate agent_id=atlas@lab`).
 2. Watch it: `clawtilla task list` (the proxy, assignee `atlas@lab`); their fleet may hold it for its operator.
 3. Call it off: `clawtilla task cancel <id>` -- it is cancelled there too.
-4. On the doing side, limit what work for that fleet may do: `clawtilla federation set ALIAS cap.exec=deny max_concurrent_tasks=2 budget_cents_per_day=500`. See [federation.md](federation.md), "Delegation and caps".
+4. Read back how it went: `clawtilla federation transcript lab --task <id>` (their `transcripts` grant decides).
+5. On the doing side, limit what work for that fleet may do: `clawtilla federation set ALIAS cap.exec=deny max_concurrent_tasks=2 budget_cents_per_day=500`. See [federation.md](federation.md), "Delegation and caps".
 
 ## Check spend and plan limits
 
@@ -169,3 +170,9 @@ See [connectors.md](connectors.md), [integrations.md](integrations.md).
 2. Elsewhere: `clawtilla fleet import ~/fleet-pack --preview`.
 3. `clawtilla fleet import ~/fleet-pack --rename agent:scout=scout2` (also `--skip`, `--replace KIND:ID`; `--allow-dangerous` only on purpose).
 4. Agents arrive held (`runtime.autostart: false`) and skills disabled: fill credentials, `clawtilla skill enable ...`, then `clawtilla agent start <agent>`.
+
+## Share a room with another fleet
+
+1. Both sides: `clawtilla federation set ALIAS join_rooms=true`.
+2. Host: `clawtilla room share design lab`. Their sidebar shows "design @ <your fleet>".
+3. Stop: `clawtilla room unshare design lab` (revoking the link also ends it). See [federation.md](federation.md).

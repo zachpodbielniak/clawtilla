@@ -347,6 +347,8 @@ struct _ClawtDaemon {
     GHashTable              *fed_invites;     /* message id -> invites a reply */
     GHashTable              *fed_sent;        /* message id -> its room */
     GHashTable              *fed_room_depth;  /* fed: room -> last depth in */
+    JsonObject              *fed_shares;      /* our room -> [aliases]: rooms we share (0.70.0) */
+    GHashTable              *fed_room_seen;   /* fed: room -> unix seconds of its last word */
 
     /*
      * Who to tell when something is worth interrupting somebody for.
@@ -2732,6 +2734,11 @@ gchar    *clawt_daemon_federation_delegate(ClawtDaemon  *self,
                                            const gchar  *reason,
                                            const gchar  *turn_room,
                                            GError      **error);
+JsonNode *clawt_daemon_federation_handle_room(ClawtDaemon *self,
+                                               const gchar *kind,
+                                               JsonNode    *request,
+                                               JsonObject  *payload,
+                                               gboolean    *handled);
 ClawtPolicyMode clawt_daemon_federation_cap(ClawtDaemon      *self,
                                             const gchar      *agent_id,
                                             const gchar      *room_id,

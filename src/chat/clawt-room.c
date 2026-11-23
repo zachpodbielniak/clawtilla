@@ -292,7 +292,9 @@ clawt_room_is_declared(const gchar *room_id)
 gboolean
 clawt_room_is_listed(const gchar *room_id)
 {
-    return clawt_room_is_declared(room_id) || clawt_incident_room_is(room_id);
+    /* A room another fleet shares with this one is listed like one of ours. */
+    return clawt_room_is_declared(room_id) || clawt_incident_room_is(room_id) ||
+           clawt_fed_shared_room_parse(room_id, NULL, NULL);
 }
 
 gchar *

@@ -412,6 +412,11 @@ filter through ~clawt_fed_filter_matches()~, so all three clients agree;
 chips and folds are per window (GTK, lrg) or per browser (the web
 client's =clawt_fed_filter= cookie).  See [[file:federation.org::#sidebar][federation.org]].
 
+Click a remote agent to open the conversation with it (0.68.0): a chat
+titled for whom it is with (=atlas@lab=) under a banner that says it
+leaves this fleet.  A room another fleet shares with this one (0.70.0)
+is listed with your rooms as =design @ lab=, with the same banner.
+
 *** Choosing where the daemon listens
 
 ~clawtillad~ takes ~--bind~ and ~--no-bind~, and its ~--help~ prints what

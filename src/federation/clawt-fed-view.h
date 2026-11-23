@@ -223,8 +223,10 @@ gchar *clawt_fed_fence(const gchar *who,
  * for the operator's, `support ↔ atlas@lab` for an agent's.  The room
  * manager names the room with it, and a client titles the chat with it.
  *
+ * A room another fleet shares (`fedroom:`) is `ROOM @ HOST`.
+ *
  * Returns: (transfer full) (nullable): the title, or %NULL when @room_id
- *   is not a `fed:` room
+ *   is not a `fed:` or `fedroom:` room
  */
 gchar *clawt_fed_room_title(const gchar *room_id);
 
@@ -242,5 +244,29 @@ gchar *clawt_fed_room_title(const gchar *room_id);
  */
 gchar *clawt_fed_room_banner(const gchar *room_id,
                              JsonArray   *fleets);
+
+/**
+ * clawt_fed_shared_room_id:
+ * @host: the alias of the fleet that hosts the room
+ * @room: its id there
+ *
+ * The local mirror of a room another fleet shares with this one (0.70.0).
+ *
+ * Returns: (transfer full): `fedroom:HOST:ROOM`
+ */
+gchar *clawt_fed_shared_room_id(const gchar *host,
+                                const gchar *room);
+
+/**
+ * clawt_fed_shared_room_parse:
+ * @room_id: a room id
+ * @out_host: (out) (optional) (transfer full): the hosting fleet's alias
+ * @out_room: (out) (optional) (transfer full): the room's id there
+ *
+ * Returns: %TRUE if @room_id is a `fedroom:` mirror
+ */
+gboolean clawt_fed_shared_room_parse(const gchar  *room_id,
+                                     gchar       **out_host,
+                                     gchar       **out_room);
 
 G_END_DECLS

@@ -8,7 +8,7 @@ Read this before linking this fleet with another clawtilla fleet, changing what 
 - **Safety words** (four words from the fleet id) are what two people read to each other while one accepts the other's invite.
 - A **peer** is a linked fleet, known here by an **alias** (a valid id, never renamed). Peers live in `<state_dir>/federation/peers.yaml`, written by the daemon. Do not edit it; use `clawtilla federation` or a client's Settings → Federation page.
 - **Every request and every answer between fleets is a signed envelope.** That holds over any transport. Kind, from, to, time, nonce, body digest, and what it was sent to are all signed. Answers are bound to the request's nonce.
-- What crosses: hello, ping, revoke, rotate (0.66.0); rosters, pushed live (0.67.0); messages and their delivery states (0.68.0); delegated tasks, their states and cancels (0.69.0). Not yet: shared rooms (0.70.0). A kind the other side does not know is answered 501 "not understood yet", naming its version.
+- What crosses: hello, ping, revoke, rotate (0.66.0); rosters, pushed live (0.67.0); messages and their delivery states (0.68.0); delegated tasks, their states and cancels (0.69.0); transcripts and shared rooms (0.70.0). A kind the other side does not know is answered 501 "not understood yet", naming its version.
 
 ## Turn it on
 
@@ -149,6 +149,12 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 - **Caps**: a turn works for a fleet when it is in a `fed:` room with it or carries (or descends from) a task that came from it. Every call then takes the stricter of the agent's action rule and that fleet's `cap.CLASS` -- clawtilla tools and, via the permission hook, the CLI's own Bash/edits. `cap.fleet_admin` is always deny; `subdelegate=false` denies `clawtilla_delegate` in such turns. With `federation.enabled`, every agent gets the permission hook.
 - Tighten a fleet: `clawtilla federation set ALIAS cap.exec=deny cap.write=ask max_concurrent_tasks=1 budget_cents_per_day=300 delegate=ask`.
 
+## Transcripts, shared rooms, the handshake (0.70.0)
+
+- **Transcripts** (the grant's `transcripts`, theirs to you): `none`; `own_tasks` = work you gave them, by your proxy id -- state, progress, result, and that task's messages; `reachable` = also every conversation you have had with an agent you may reach. `clawtilla federation transcript ALIAS --task PROXY-ID` or `--agent AGENT` (IPC `federation.transcript`, deferred; needs a link to them). Max 200 messages, 8000 chars each.
+- **Shared rooms**: `clawtilla room share design lab` (IPC `room.share {room, alias}`; `room.unshare`). Only a declared room; your grant to them needs `join_rooms`, and theirs to you too or no mirror is made. The host fans every word out to the fleets sharing it except the speaker's; their words reach your agents by the room's rules, fenced, sender `fleet:ALIAS:AGENT`. They see `fedroom:HOST:ROOM` ("design @ lab") in their sidebar; what their operator writes there comes to you. Revoking a link removes its mirrors and its shares.
+- **Handshake**: a visitor that spoke with one of your agents in the last 2 minutes is drawn on a call with it in your office (`peer`, `room` on the visitor).
+
 ## Diagnose
 
 | Symptom | Cause, fix |
@@ -168,6 +174,8 @@ clawtilla federation hide acme / mute acme / unhide / unmute
 | a message never arrives, no note | the fleet is unreachable; it is in the outbox until it answers or `federation.outbox_hours` passes |
 | "holding this message" | their operator must Deliver it in their Decisions inbox |
 | proxy task failed "X did not take it: ..." | their `delegate`, `max_concurrent_tasks`, `budget_cents_per_day` or reach; `federation show ALIAS` |
+| `room share` refused "does not let it join rooms" | `clawtilla federation set ALIAS join_rooms=true`; they must allow it too |
+| `federation transcript` refused | their `transcripts` is none, or own_tasks and you asked by agent |
 | a tool refused "its grant caps what may be done for it" | the turn works for a linked fleet whose `cap.CLASS` is stricter; widen with `federation set ALIAS cap.exec=ask` |
 | "unknown fleet or key" | the peer revoked/forgot you, or a rotation was missed; link again |
 

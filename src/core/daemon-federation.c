@@ -73,6 +73,11 @@ typedef struct {
 } FedOut;
 
 static void fed_out_free(FedOut *out);
+static void load_shares(ClawtDaemon *self);
+static void forget_rooms(ClawtDaemon *self, const gchar *alias);
+static JsonNode *reply_object(JsonNode *request, JsonObject *o);
+static ClawtFedPeer *peer_from_payload(ClawtDaemon *self, JsonObject *payload, JsonNode *request,
+                                       JsonNode **error_reply);
 static void on_fed_task_changed(ClawtTaskManager *manager, const gchar *task_id, gint state,
                                 gpointer user_data);
 static gchar *hook_send(const gchar *agent_id, const gchar *ref, const gchar *body,
@@ -90,6 +95,11 @@ static void receive_task(ClawtDaemon *self, ClawtFedPeer *peer, PeerState *ps,
                          JsonObject *o, gpointer answer);
 static void receive_task_state(ClawtDaemon *self, ClawtFedPeer *peer, JsonObject *o);
 static void receive_task_cancel(ClawtDaemon *self, ClawtFedPeer *peer, JsonObject *o);
+static void receive_transcript(ClawtDaemon *self, ClawtFedPeer *peer, JsonObject *o,
+                               gpointer answer);
+static void receive_room(ClawtDaemon *self, ClawtFedPeer *peer, const gchar *kind,
+                         JsonObject *o, gpointer answer);
+static void fan_out_room(ClawtDaemon *self, ClawtEvent *event);
 static void apply_task_answer(ClawtDaemon *self, const gchar *alias, const gchar *proxy_id,
                               JsonObject *o, const gchar *refusal);
 static ClawtTask *start_remote_task(ClawtDaemon *self, ClawtFedPeer *peer, JsonObject *o,
@@ -931,6 +941,8 @@ on_local_event(
     if (g_strcmp0(kind, "message") == 0) {
         if (g_str_has_prefix(clawt_event_get_subject(event), "fed:"))
             forward_from_room(self, event);
+        else
+            fan_out_room(self, event);
         return;
     }
     if (self->fed_push_soon != NULL)
@@ -986,6 +998,8 @@ clawt_daemon_federation_office_visitors(
             const gchar *color = json_object_get_string_member_with_default(a, "color", NULL);
             const gchar *activity = "idle";
             g_autofree gchar *ours = NULL;
+            g_autofree gchar *call_peer = NULL;
+            g_autofree gchar *call_room = NULL;
             JsonObject *visitor;
 
             if (id == NULL)
@@ -994,6 +1008,33 @@ clawt_daemon_federation_office_visitors(
                 continue;
             if (state != NULL && json_object_get_boolean_member_with_default(a, "busy", FALSE))
                 activity = "working";
+            /*
+             * The handshake (0.70.0): a visitor in a conversation with one
+             * of ours in the last two minutes is drawn on a call with it,
+             * so the office shows who is talking across fleets.
+             */
+            {
+                GHashTableIter seen;
+                gpointer room_key;
+                gpointer when;
+
+                g_hash_table_iter_init(&seen, self->fed_room_seen);
+                while (g_hash_table_iter_next(&seen, &room_key, &when)) {
+                    g_autofree gchar *r_alias = NULL;
+                    g_autofree gchar *r_local = NULL;
+                    g_autofree gchar *r_remote = NULL;
+
+                    if (!clawt_fed_room_parse(room_key, &r_alias, &r_local, &r_remote)
+                        || g_strcmp0(r_alias, peer->alias) != 0 || g_strcmp0(r_remote, id) != 0
+                        || g_strcmp0(r_local, "user") == 0
+                        || (now_s() & 0x7fffffff) - GPOINTER_TO_INT(when) > 120)
+                        continue;
+                    activity = "on_call";
+                    call_peer = g_strdup(r_local);
+                    call_room = g_strdup(room_key);
+                    break;
+                }
+            }
             ours = g_strdup_printf("%s:%s", peer->alias, id);
             visitor = json_object_new();
             json_object_set_string_member(visitor, "fleet", peer->fleet_id);
@@ -1002,6 +1043,10 @@ clawt_daemon_federation_office_visitors(
             json_object_set_string_member(visitor, "name", name);
             json_object_set_string_member(visitor, "activity", activity);
             json_object_set_string_member(visitor, "visiting_from", peer->alias);
+            if (call_peer != NULL) {
+                json_object_set_string_member(visitor, "peer", call_peer);
+                json_object_set_string_member(visitor, "room", call_room);
+            }
             if (color != NULL && color[0] == '#'
                 && clawt_office_character_background_is_valid(color))
                 json_object_set_string_member(visitor, "color", color);
@@ -1273,6 +1318,46 @@ receive_rotate(
     answer_set(answer, 200, g_strdup("{\"ok\":true}"));
 }
 
+typedef struct {
+    ClawtDaemon *daemon;
+    gchar       *alias;
+} FlushSoon;
+
+static gboolean
+on_flush_soon(
+    gpointer user_data
+){
+    FlushSoon *f = user_data;
+
+    if (fed_on(f->daemon))
+        flush_outbox(f->daemon, f->alias);
+    g_object_unref(f->daemon);
+    g_free(f->alias);
+    g_free(f);
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * A fleet that dials us is reachable only while it is connected, so what
+ * waits for it goes the moment it says hello or opens its stream -- from
+ * an idle, after the answer it is waiting for.  Before this, its queue
+ * moved only when something new was queued behind it.
+ */
+static void
+flush_soon(
+    ClawtDaemon *self,
+    const gchar *alias
+){
+    FlushSoon *f = g_new0(FlushSoon, 1);
+    GSource *source = g_idle_source_new();
+
+    f->daemon = g_object_ref(self);
+    f->alias = g_strdup(alias);
+    g_source_set_callback(source, on_flush_soon, f, NULL);
+    g_source_attach(source, self->main_context);
+    g_source_unref(source);
+}
+
 static void
 receive_hello(
     ClawtDaemon  *self,
@@ -1329,8 +1414,10 @@ receive_hello(
     json_object_set_object_member(me, "grant", clawt_fed_grant_to_json(grant));
     json_object_set_string_member(me, "tier", clawt_fed_tier_nick(peer->tier));
     json_object_set_string_member(me, "status", peer->status);
-    if (g_strcmp0(peer->status, "active") == 0)
+    if (g_strcmp0(peer->status, "active") == 0) {
         json_object_set_object_member(me, "roster", roster_for(self, peer));
+        flush_soon(self, peer->alias);
+    }
     answer_set(answer, 200, object_text(me));
 }
 
@@ -1425,6 +1512,7 @@ receive(
         g_free(peer->status);
         peer->status = g_strdup("revoked");
         save_registry(self);
+        forget_rooms(self, peer->alias);
         clawt_daemon_federation_refresh_links(self);
         publish_peer(self, peer->alias, "revoked");
         answer_set(answer, 200, g_strdup("{\"ok\":true}"));
@@ -1443,6 +1531,10 @@ receive(
     } else if (g_strcmp0(stamp->kind, "task.cancel") == 0) {
         receive_task_cancel(self, peer, o);
         answer_set(answer, 200, g_strdup("{\"ok\":true}"));
+    } else if (g_strcmp0(stamp->kind, "transcript") == 0) {
+        receive_transcript(self, peer, o, answer);
+    } else if (g_str_has_prefix(stamp->kind, "room.")) {
+        receive_room(self, peer, stamp->kind, o, answer);
     } else {
         g_autofree gchar *message = g_strdup_printf(
             "this fleet (clawtilla %s) does not understand \"%s\" yet",
@@ -1554,8 +1646,9 @@ on_socket(
     g_signal_connect(connection, "closed", G_CALLBACK(on_peer_socket_closed), ps);
     soup_websocket_connection_set_keepalive_interval(connection, 30);
     ps->last_seen = now;
-    /* What it may see, at once, rather than at the next change. */
+    /* What it may see, at once, rather than at the next change; and what waited for it. */
     push_roster(self, peer, ps);
+    flush_soon(self, peer->alias);
     return TRUE;
 }
 
@@ -1689,7 +1782,7 @@ on_link_push(
      */
     if (g_strcmp0(kind, "message") == 0 || g_strcmp0(kind, "delivery") == 0
         || g_strcmp0(kind, "task") == 0 || g_strcmp0(kind, "task.state") == 0
-        || g_strcmp0(kind, "task.cancel") == 0) {
+        || g_strcmp0(kind, "task.cancel") == 0 || g_str_has_prefix(kind, "room.")) {
         g_autoptr(JsonObject) o = parse_object(body);
         ClawtFedPeer *peer = clawt_fed_registry_get(ps->daemon->fed_registry, ps->alias);
 
@@ -1704,6 +1797,8 @@ on_link_push(
             receive_task_state(ps->daemon, peer, o);
         else if (g_strcmp0(kind, "task.cancel") == 0)
             receive_task_cancel(ps->daemon, peer, o);
+        else if (g_str_has_prefix(kind, "room."))
+            receive_room(ps->daemon, peer, kind, o, NULL);
         else
             receive_message(ps->daemon, peer, ps, o, NULL);
         return;
@@ -2043,6 +2138,8 @@ clawt_daemon_federation_setup(
     self->fed_room_depth = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     load_outbox(self);
     load_holds(self);
+    self->fed_room_seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    load_shares(self);
 
     /* The HTTP door; a door that will not open is a warning. */
     self->fed_server = clawt_fed_server_new(
@@ -2130,6 +2227,8 @@ clawt_daemon_federation_teardown(
     g_clear_pointer(&self->fed_invites, g_hash_table_unref);
     g_clear_pointer(&self->fed_sent, g_hash_table_unref);
     g_clear_pointer(&self->fed_room_depth, g_hash_table_unref);
+    g_clear_pointer(&self->fed_room_seen, g_hash_table_unref);
+    g_clear_pointer(&self->fed_shares, json_object_unref);
     if (self->fed_server != NULL)
         clawt_fed_server_stop(self->fed_server);
     g_clear_object(&self->fed_server);
@@ -2573,6 +2672,8 @@ deliver_inbound(
     clawt_message_set_invites_reply(message, invites);
     g_hash_table_replace(self->fed_room_depth, g_strdup(clawt_room_get_id(room)),
                          GINT_TO_POINTER(depth + 1));
+    g_hash_table_replace(self->fed_room_seen, g_strdup(clawt_room_get_id(room)),
+                         GINT_TO_POINTER((gint)(now_s() & 0x7fffffff)));
     sent = clawt_mailbox_router_send(self->router, message, error);
     return sent >= 0;
 }
@@ -2902,6 +3003,8 @@ forward_from_room(
                                : GPOINTER_TO_INT(g_hash_table_lookup(self->fed_room_depth, room)));
     json_object_set_boolean_member(o, "invites", invites);
     body = object_text(o);
+    g_hash_table_replace(self->fed_room_seen, g_strdup(room),
+                         GINT_TO_POINTER((gint)(now_s() & 0x7fffffff)));
     enqueue(self, alias, "message", id, body, room);
 }
 
@@ -3603,6 +3706,539 @@ clawt_daemon_federation_cap(
     if (!grant->subdelegate && g_strcmp0(tool, "clawtilla_delegate") == 0)
         mode = CLAWT_POLICY_DENY;
     return mode;
+}
+
+/* ---- transcripts and shared rooms (0.70.0) ----------------------------- */
+
+#define TRANSCRIPT_MAX (200)
+
+/* @room's last @limit messages, bounded, as another fleet may read them. */
+static JsonObject *
+room_excerpt(
+    ClawtRoom *room,
+    guint      limit,
+    const gchar *only_task
+){
+    g_autoptr(GPtrArray) history = clawt_room_get_history(room, only_task != NULL ? 0 : limit);
+    JsonObject *o = json_object_new();
+    JsonArray *messages = json_array_new();
+    g_autofree gchar *title = clawt_fed_room_title(clawt_room_get_id(room));
+    guint i;
+
+    json_object_set_string_member(o, "room", clawt_room_get_id(room));
+    if (title != NULL)
+        json_object_set_string_member(o, "title", title);
+    for (i = 0; history != NULL && i < history->len; i++) {
+        ClawtMessage *m = g_ptr_array_index(history, i);
+        const gchar *body = clawt_message_get_body(m);
+        g_autofree gchar *cut = NULL;
+        JsonObject *e;
+
+        if (only_task != NULL && g_strcmp0(clawt_message_get_task_id(m), only_task) != 0)
+            continue;
+        cut = body != NULL ? g_utf8_substring(body, 0, MIN(g_utf8_strlen(body, -1), 8000))
+                           : g_strdup("");
+        e = json_object_new();
+        json_object_set_string_member(e, "sender", clawt_message_get_sender_id(m));
+        json_object_set_string_member(e, "body", cut);
+        json_object_set_int_member(e, "ts", clawt_message_get_timestamp(m));
+        json_array_add_object_element(messages, e);
+    }
+    while (json_array_get_length(messages) > limit)
+        json_array_remove_element(messages, 0);
+    json_object_set_array_member(o, "messages", messages);
+    return o;
+}
+
+/*
+ * Another fleet reading back, as far as our grant's `transcripts` lets
+ * it: `own_tasks` is the work it gave us -- the task's state, progress
+ * and result, and what was said in its conversation about that task;
+ * `reachable` adds every conversation it has had with an agent it may
+ * reach.  Never a room that is not a conversation with that fleet.
+ */
+static void
+receive_transcript(
+    ClawtDaemon  *self,
+    ClawtFedPeer *peer,
+    JsonObject   *o,
+    gpointer      answer
+){
+    g_autoptr(ClawtFedGrant) grant = grant_for(self, peer, CLAWT_FED_HEALTH_LIVE, NULL, NULL);
+    const gchar *task_id = o != NULL ? obj_str(o, "task") : NULL;
+    const gchar *agent_id = o != NULL ? obj_str(o, "agent") : NULL;
+    guint limit = o != NULL ? (guint)CLAMP(json_object_get_int_member_with_default(o, "limit", 50),
+                                           1, TRANSCRIPT_MAX) : 50;
+    g_autoptr(JsonObject) out = json_object_new();
+    JsonArray *rooms = json_array_new();
+
+    json_object_set_array_member(out, "rooms", rooms);
+    if (grant->transcripts == CLAWT_FED_TRANSCRIPTS_NONE) {
+        answer_error(answer, 403, "this fleet's grant to yours lets you read no transcripts");
+        return;
+    }
+    if (task_id != NULL) {
+        ClawtTask *task = doer_task(self, peer->alias, task_id);
+        ClawtRoom *room;
+        JsonObject *t;
+
+        if (task == NULL) {
+            answer_error(answer, 404, "no work of yours here by that id");
+            return;
+        }
+        t = json_object_new();
+        json_object_set_string_member(t, "state",
+                                      clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
+                                                         clawt_task_get_state(task)));
+        if (clawt_task_get_progress_note(task) != NULL)
+            json_object_set_string_member(t, "progress", clawt_task_get_progress_note(task));
+        if (clawt_task_get_result(task) != NULL)
+            json_object_set_string_member(t, "result", clawt_task_get_result(task));
+        json_object_set_object_member(out, "task", t);
+        room = clawt_task_get_room(task) != NULL
+            ? clawt_room_manager_get(self->rooms, clawt_task_get_room(task)) : NULL;
+        if (room != NULL)
+            json_array_add_object_element(rooms, room_excerpt(room, limit,
+                                                              clawt_task_get_id(task)));
+    } else {
+        g_autoptr(GPtrArray) all = NULL;
+        g_autofree gchar *prefix = g_strdup_printf("fed:%s:", peer->alias);
+        guint i;
+
+        if (grant->transcripts != CLAWT_FED_TRANSCRIPTS_REACHABLE) {
+            answer_error(answer, 403,
+                         "this fleet's grant lets you read the work you gave it, by task id");
+            return;
+        }
+        all = clawt_room_manager_list(self->rooms);
+        for (i = 0; all != NULL && i < all->len; i++) {
+            ClawtRoom *room = g_ptr_array_index(all, i);
+            g_autofree gchar *local = NULL;
+
+            if (!g_str_has_prefix(clawt_room_get_id(room), prefix)
+                || !clawt_fed_room_parse(clawt_room_get_id(room), NULL, &local, NULL)
+                || g_strcmp0(local, "user") == 0
+                || (agent_id != NULL && g_strcmp0(local, agent_id) != 0))
+                continue;
+            json_array_add_object_element(rooms, room_excerpt(room, limit, NULL));
+        }
+    }
+    audit(self, "in", peer->alias, "transcript", "ok", task_id != NULL ? task_id : agent_id);
+    answer_set(answer, 200, object_text(out));
+}
+
+static JsonArray *
+shares_of(
+    ClawtDaemon *self,
+    const gchar *room
+){
+    return self->fed_shares != NULL && json_object_has_member(self->fed_shares, room)
+        ? json_object_get_array_member(self->fed_shares, room) : NULL;
+}
+
+static gboolean
+room_shared_with(
+    ClawtDaemon *self,
+    const gchar *room,
+    const gchar *alias
+){
+    JsonArray *list = shares_of(self, room);
+    guint i;
+
+    for (i = 0; list != NULL && i < json_array_get_length(list); i++)
+        if (g_strcmp0(json_array_get_string_element(list, i), alias) == 0)
+            return TRUE;
+    return FALSE;
+}
+
+static void
+save_shares(
+    ClawtDaemon *self
+){
+    g_autofree gchar *path = state_path(self, "shared-rooms.json");
+    g_autofree gchar *text = object_text(self->fed_shares);
+
+    if (path != NULL && !clawt_write_file_atomic(path, text, -1, 0600, FALSE, NULL))
+        g_warning("federation: the shared rooms were not saved to %s", path);
+}
+
+/*
+ * A link that ends takes its rooms with it: the rooms it shared with us
+ * go, and it is struck from every room we shared with it.
+ */
+static void
+forget_rooms(
+    ClawtDaemon *self,
+    const gchar *alias
+){
+    g_autoptr(GPtrArray) all = clawt_room_manager_list(self->rooms);
+    g_autoptr(GPtrArray) doomed = g_ptr_array_new_with_free_func(g_free);
+    GList *members;
+    GList *l;
+    guint i;
+
+    for (i = 0; all != NULL && i < all->len; i++) {
+        g_autofree gchar *host = NULL;
+        const gchar *id = clawt_room_get_id(g_ptr_array_index(all, i));
+
+        if (clawt_fed_shared_room_parse(id, &host, NULL) && g_strcmp0(host, alias) == 0)
+            g_ptr_array_add(doomed, g_strdup(id));
+    }
+    for (i = 0; i < doomed->len; i++) {
+        clawt_room_manager_remove(self->rooms, g_ptr_array_index(doomed, i));
+        if (self->bus != NULL)
+            clawt_event_bus_emit(self->bus, "room.changed", g_ptr_array_index(doomed, i));
+    }
+    if (self->fed_shares == NULL)
+        return;
+    members = json_object_get_members(self->fed_shares);
+    for (l = members; l != NULL; l = l->next) {
+        JsonArray *list = json_object_get_array_member(self->fed_shares, l->data);
+        guint j;
+
+        for (j = 0; list != NULL && j < json_array_get_length(list); j++)
+            if (g_strcmp0(json_array_get_string_element(list, j), alias) == 0) {
+                json_array_remove_element(list, j);
+                break;
+            }
+    }
+    g_list_free(members);
+    save_shares(self);
+}
+
+static void
+load_shares(
+    ClawtDaemon *self
+){
+    g_autofree gchar *path = state_path(self, "shared-rooms.json");
+    g_autofree gchar *text = NULL;
+    JsonObject *loaded = NULL;
+
+    if (path != NULL && g_file_get_contents(path, &text, NULL, NULL))
+        loaded = parse_object(text);
+    self->fed_shares = loaded != NULL ? loaded : json_object_new();
+}
+
+/*
+ * A word said in a room we share goes to every fleet it is shared with,
+ * except the one that said it -- the host fans out, so the fleets that
+ * joined never need to know of each other.
+ */
+static void
+fan_out_room(
+    ClawtDaemon *self,
+    ClawtEvent  *event
+){
+    const gchar *room = clawt_event_get_subject(event);
+    const gchar *from = clawt_event_get_detail(event, "from");
+    const gchar *id = clawt_event_get_detail(event, "id");
+    const gchar *text = clawt_event_get_detail(event, "body");
+    JsonArray *list;
+    g_autofree gchar *from_alias = NULL;
+    guint i;
+
+    /* A joined room's word goes to its host. */
+    {
+        g_autofree gchar *host = NULL;
+        g_autofree gchar *host_room = NULL;
+
+        if (clawt_fed_shared_room_parse(room, &host, &host_room)) {
+            g_autoptr(JsonObject) o = NULL;
+            g_autofree gchar *body = NULL;
+
+            if (from == NULL || clawt_sender_kind_of(from) == CLAWT_SENDER_REMOTE
+                || clawt_sender_kind_of(from) == CLAWT_SENDER_SYSTEM || id == NULL || text == NULL)
+                return;
+            o = json_object_new();
+            json_object_set_string_member(o, "room", host_room);
+            json_object_set_string_member(o, "id", id);
+            json_object_set_string_member(o, "from", from);
+            json_object_set_string_member(o, "body", text);
+            body = object_text(o);
+            enqueue(self, host, "room.post", id, body, room);
+            return;
+        }
+    }
+    list = shares_of(self, room);
+    if (list == NULL || id == NULL || text == NULL || from == NULL
+        || clawt_sender_kind_of(from) == CLAWT_SENDER_SYSTEM)
+        return;
+    clawt_fed_sender_parse(from, &from_alias, NULL);
+    for (i = 0; i < json_array_get_length(list); i++) {
+        const gchar *alias = json_array_get_string_element(list, i);
+        g_autoptr(JsonObject) o = json_object_new();
+        g_autofree gchar *body = NULL;
+        g_autofree gchar *out_id = g_strdup_printf("%s-%s", id, alias);
+        g_autofree gchar *who = NULL;
+        g_autofree gchar *a_alias = NULL;
+        g_autofree gchar *a_agent = NULL;
+
+        if (g_strcmp0(alias, from_alias) == 0)
+            continue;
+        /* another fleet's word, named as that fleet's agent */
+        who = clawt_fed_sender_parse(from, &a_alias, &a_agent)
+            ? g_strdup_printf("%s@%s", a_agent, a_alias) : g_strdup(from);
+        json_object_set_string_member(o, "room", room);
+        json_object_set_string_member(o, "id", id);
+        json_object_set_string_member(o, "from", who);
+        json_object_set_string_member(o, "body", text);
+        body = object_text(o);
+        enqueue(self, alias, "room.post", out_id, body, NULL);
+    }
+}
+
+/*
+ * The room traffic between a host and the fleets it shares with:
+ * `room.share` makes the mirror (if our own grant to the host lets us
+ * join rooms), `room.unshare` takes it away, and `room.post` is a word --
+ * from the host, recorded in the mirror; from a joined fleet, delivered
+ * into the host's room by its rules, fenced for its agents.
+ */
+static void
+receive_room(
+    ClawtDaemon  *self,
+    ClawtFedPeer *peer,
+    const gchar  *kind,
+    JsonObject   *o,
+    gpointer      answer
+){
+    const gchar *room = o != NULL ? obj_str(o, "room") : NULL;
+    g_autoptr(ClawtFedGrant) grant = grant_for(self, peer, CLAWT_FED_HEALTH_LIVE, NULL, NULL);
+
+    if (room == NULL || !clawt_is_valid_id(room)) {
+        if (answer != NULL)
+            answer_error(answer, 400, "no room named");
+        return;
+    }
+    if (g_strcmp0(kind, "room.share") == 0) {
+        g_autofree gchar *mirror = clawt_fed_shared_room_id(peer->alias, room);
+
+        if (!grant->join_rooms) {
+            if (answer != NULL)
+                answer_error(answer, 403, "this fleet does not join rooms yours shares");
+            return;
+        }
+        clawt_room_manager_get_shared(self->rooms, peer->alias, room);
+        audit(self, "in", peer->alias, kind, "ok", room);
+        if (self->bus != NULL)
+            clawt_event_bus_emit(self->bus, "room.created", mirror);
+        if (answer != NULL)
+            answer_set(answer, 200, g_strdup("{\"ok\":true}"));
+        return;
+    }
+    if (g_strcmp0(kind, "room.unshare") == 0) {
+        g_autofree gchar *mirror = clawt_fed_shared_room_id(peer->alias, room);
+
+        clawt_room_manager_remove(self->rooms, mirror);
+        audit(self, "in", peer->alias, kind, "ok", room);
+        if (self->bus != NULL)
+            clawt_event_bus_emit(self->bus, "room.changed", mirror);
+        if (answer != NULL)
+            answer_set(answer, 200, g_strdup("{\"ok\":true}"));
+        return;
+    }
+    if (g_strcmp0(kind, "room.post") == 0) {
+        const gchar *from = obj_str(o, "from");
+        const gchar *text = obj_str(o, "body");
+        g_autofree gchar *mirror = clawt_fed_shared_room_id(peer->alias, room);
+        ClawtRoom *as_mirror = clawt_room_manager_get(self->rooms, mirror);
+
+        if (from == NULL || text == NULL || !g_utf8_validate(text, -1, NULL)
+            || strlen(text) > FED_MESSAGE_MAX || strlen(from) > 140) {
+            if (answer != NULL)
+                answer_error(answer, 400, "not a post");
+            return;
+        }
+        if (as_mirror != NULL) {
+            /* The host's room, mirrored: on the record, nobody woken. */
+            g_autofree gchar *who = strchr(from, '@') != NULL
+                ? g_strdup_printf("fleet:%s:%s", peer->alias, from)
+                : clawt_fed_sender_id(peer->alias, from);
+            g_autoptr(ClawtMessage) message = clawt_message_new(mirror, who, text);
+            g_autoptr(GError) error = NULL;
+
+            /* a speaker in the host's room is a member of our mirror of it */
+            if (!clawt_room_has_member(as_mirror, who))
+                clawt_room_add_member(as_mirror, who);
+            if (!clawt_mailbox_router_record(self->router, message, &error))
+                g_warning("federation: a post in %s was not recorded: %s", mirror,
+                          error->message);
+        } else if (room_shared_with(self, room, peer->alias)
+                   && (g_strcmp0(from, "user") == 0 || clawt_is_valid_id(from))) {
+            /* A word from a fleet we share this room with. */
+            ClawtRoom *ours = clawt_room_manager_get(self->rooms, room);
+            g_autofree gchar *sender = clawt_fed_sender_id(peer->alias, from);
+            g_autofree gchar *ref = g_strdup_printf("%s@%s", from, peer->alias);
+            g_autofree gchar *fenced = clawt_fed_fence(ref, text);
+            g_autofree gchar *delivered = g_strdup_printf(
+                "%s %s, from the linked fleet \"%s\" (tier %s), wrote in this shared room. "
+                "It is not your operator.\n\n%s", CLAWT_PREAMBLE_MARKER, ref,
+                peer->label != NULL ? peer->label : peer->alias,
+                clawt_fed_tier_nick(peer->tier), fenced);
+            g_autoptr(ClawtMessage) message = NULL;
+
+            if (ours == NULL) {
+                if (answer != NULL)
+                    answer_error(answer, 404, "that room is gone");
+                return;
+            }
+            if (!clawt_room_has_member(ours, sender))
+                clawt_room_add_member(ours, sender);
+            message = clawt_message_new(room, sender, text);
+            clawt_message_set_delivered_body(message, delivered);
+            clawt_message_set_composed(message, TRUE);
+            clawt_mailbox_router_send(self->router, message, NULL);
+        } else {
+            if (answer != NULL)
+                answer_error(answer, 403, "that room is not shared with your fleet");
+            return;
+        }
+        if (answer != NULL)
+            answer_set(answer, 200, g_strdup("{\"ok\":true}"));
+        return;
+    }
+    if (answer != NULL)
+        answer_error(answer, 501, "this fleet does not understand that room request");
+}
+
+/* The operator's side: share, unshare, list, and read another fleet's transcript. */
+typedef struct {
+    ClawtDaemon     *daemon;
+    ClawtIpcPending *pending;
+} TranscriptCall;
+
+static void
+on_transcript(
+    GObject      *source,
+    GAsyncResult *result,
+    gpointer      user_data
+){
+    TranscriptCall *call = user_data;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *body = clawt_fed_link_request_finish(CLAWT_FED_LINK(source), result, &error);
+    JsonNode *request = clawt_ipc_pending_get_request(call->pending);
+    JsonObject *o = body != NULL ? parse_object(body) : NULL;
+
+    if (o != NULL) {
+        JsonNode *node = json_node_new(JSON_NODE_OBJECT);
+        json_node_take_object(node, o);
+        clawt_ipc_pending_respond(call->pending, clawt_ipc_response_new(request, node));
+    } else {
+        clawt_ipc_pending_respond(call->pending, clawt_ipc_error_new(
+            request, error != NULL ? error->code : CLAWT_ERROR_FAILED,
+            error != NULL ? error->message : "the answer was not readable"));
+    }
+    g_object_unref(call->daemon);
+    g_free(call);
+}
+
+JsonNode *
+clawt_daemon_federation_handle_room(
+    ClawtDaemon *self,
+    const gchar *kind,
+    JsonNode    *request,
+    JsonObject  *payload,
+    gboolean    *handled
+){
+    const gchar *room = clawt_ipc_payload_string(payload, "room");
+    const gchar *alias = clawt_ipc_payload_string(payload, "alias");
+    ClawtFedPeer *peer;
+
+    *handled = g_strcmp0(kind, "room.share") == 0 || g_strcmp0(kind, "room.unshare") == 0;
+    if (!*handled)
+        return NULL;
+    if (!fed_on(self))
+        return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED, "federation is off");
+    if (room == NULL || !clawt_room_is_declared(room)
+        || clawt_room_manager_get(self->rooms, room) == NULL)
+        return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                   "only a room this fleet declared can be shared");
+    peer = alias != NULL ? clawt_fed_registry_get(self->fed_registry, alias) : NULL;
+    if (peer == NULL || g_strcmp0(peer->status, "active") != 0)
+        return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND, "no linked fleet by that alias");
+
+    if (g_strcmp0(kind, "room.share") == 0) {
+        g_autoptr(ClawtFedGrant) grant = grant_for(self, peer, health_of(self, peer), NULL, NULL);
+        g_autoptr(JsonObject) o = json_object_new();
+        g_autofree gchar *body = NULL;
+        g_autofree gchar *out_id = g_strdup_printf("share-%s-%s", room, alias);
+        JsonArray *list;
+
+        if (!grant->join_rooms)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_PERMISSION_DENIED,
+                                       "your grant to that fleet does not let it join rooms "
+                                       "(federation set ALIAS join_rooms=true)");
+        if (!room_shared_with(self, room, alias)) {
+            list = shares_of(self, room);
+            if (list == NULL) {
+                list = json_array_new();
+                json_object_set_array_member(self->fed_shares, room, list);
+            }
+            json_array_add_string_element(list, alias);
+            save_shares(self);
+        }
+        json_object_set_string_member(o, "room", room);
+        body = object_text(o);
+        enqueue(self, alias, "room.share", out_id, body, NULL);
+    } else {
+        JsonArray *list = shares_of(self, room);
+        g_autoptr(JsonObject) o = json_object_new();
+        g_autofree gchar *body = NULL;
+        g_autofree gchar *out_id = g_strdup_printf("unshare-%s-%s", room, alias);
+        guint i;
+
+        for (i = 0; list != NULL && i < json_array_get_length(list); i++)
+            if (g_strcmp0(json_array_get_string_element(list, i), alias) == 0) {
+                json_array_remove_element(list, i);
+                break;
+            }
+        save_shares(self);
+        json_object_set_string_member(o, "room", room);
+        body = object_text(o);
+        enqueue(self, alias, "room.unshare", out_id, body, NULL);
+    }
+    return reply_object(request, json_object_new());
+}
+
+static JsonNode *
+handle_transcript(
+    ClawtDaemon *self,
+    JsonNode    *request,
+    JsonObject  *payload
+){
+    JsonNode *error_reply = NULL;
+    ClawtFedPeer *peer = peer_from_payload(self, payload, request, &error_reply);
+    PeerState *ps;
+    ClawtIpcPending *pending;
+    TranscriptCall *call;
+    g_autoptr(JsonObject) o = json_object_new();
+    g_autofree gchar *body = NULL;
+    const gchar *task = clawt_ipc_payload_string(payload, "task");
+    const gchar *agent = clawt_ipc_payload_string(payload, "agent");
+
+    if (peer == NULL)
+        return error_reply;
+    ps = state_of(self, peer->alias);
+    if (ps == NULL || ps->link == NULL)
+        return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_CONNECTED,
+                                   "this fleet has no endpoint here; it dials this one");
+    /* By our proxy's id: that is the id the work has on the wire. */
+    if (task != NULL)
+        json_object_set_string_member(o, "task", task);
+    if (agent != NULL)
+        json_object_set_string_member(o, "agent", agent);
+    json_object_set_int_member(o, "limit",
+                               json_object_has_member(payload, "limit")
+                               ? json_object_get_int_member(payload, "limit") : 50);
+    body = object_text(o);
+    pending = clawt_ipc_server_defer(self->ipc_server, request);
+    if (pending == NULL)
+        return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED, "this request cannot be answered later");
+    call = g_new0(TranscriptCall, 1);
+    call->daemon = g_object_ref(self);
+    call->pending = pending;
+    clawt_fed_link_request_async(ps->link, "transcript", body, NULL, on_transcript, call);
+    return NULL;
 }
 
 /* ---- the agent tools' hooks ------------------------------------------- */
@@ -4701,6 +5337,7 @@ handle_peer_revoke(
     g_free(peer->status);
     peer->status = g_strdup("revoked");
     save_registry(self);
+    forget_rooms(self, peer->alias);
     clawt_daemon_federation_refresh_links(self);
     publish_peer(self, peer->alias, "revoked");
     audit(self, "local", peer->alias, "revoke", "ok", NULL);
@@ -4997,6 +5634,8 @@ clawt_daemon_handle_federation(
      * The operator's conversation with another fleet's agent (0.68.0):
      * the room, made if it is not there yet, for a client to open.
      */
+    if (g_strcmp0(kind, "federation.transcript") == 0)
+        return handle_transcript(self, request, payload);
     if (g_strcmp0(kind, "federation.open") == 0) {
         g_autoptr(GError) error = NULL;
         g_autofree gchar *room = clawt_daemon_federation_open(

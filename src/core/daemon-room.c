@@ -363,6 +363,15 @@ clawt_daemon_handle_room(
     builder = json_builder_new();
     *handled = TRUE;
 
+    /* Sharing a room with a linked fleet (0.70.0). */
+    {
+        gboolean shared = FALSE;
+        JsonNode *reply = clawt_daemon_federation_handle_room(self, kind, request, payload,
+                                                              &shared);
+        if (shared)
+            return reply;
+    }
+
     /* ── messages and rooms ── */
     if (g_strcmp0(kind, "msg.send") == 0) {
         const gchar *target = clawt_ipc_payload_string(payload, "target");

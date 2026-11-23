@@ -419,6 +419,13 @@ clawt_fed_room_title(
     g_autofree gchar *local = NULL;
     g_autofree gchar *remote = NULL;
 
+    {
+        g_autofree gchar *host = NULL;
+        g_autofree gchar *room = NULL;
+
+        if (clawt_fed_shared_room_parse(room_id, &host, &room))
+            return g_strdup_printf("%s @ %s", room, host);
+    }
     if (!clawt_fed_room_parse(room_id, &alias, &local, &remote))
         return NULL;
     return g_strcmp0(local, "user") == 0
@@ -435,7 +442,8 @@ clawt_fed_room_banner(
     JsonObject *fleet = NULL;
     guint i;
 
-    if (!clawt_fed_room_parse(room_id, &alias, NULL, NULL))
+    if (!clawt_fed_room_parse(room_id, &alias, NULL, NULL)
+        && !clawt_fed_shared_room_parse(room_id, &alias, NULL))
         return NULL;
     for (i = 0; fleets != NULL && i < json_array_get_length(fleets); i++) {
         JsonObject *f = json_array_get_object_element(fleets, i);
@@ -455,4 +463,32 @@ clawt_fed_room_banner(
                                str(fleet, "health_label") != NULL ? str(fleet, "health_label")
                                                                   : "unknown");
     }
+}
+
+gchar *
+clawt_fed_shared_room_id(
+    const gchar *host,
+    const gchar *room
+){
+    return g_strdup_printf("fedroom:%s:%s", host, room);
+}
+
+gboolean
+clawt_fed_shared_room_parse(
+    const gchar  *room_id,
+    gchar       **out_host,
+    gchar       **out_room
+){
+    g_auto(GStrv) parts = NULL;
+
+    if (room_id == NULL || !g_str_has_prefix(room_id, "fedroom:"))
+        return FALSE;
+    parts = g_strsplit(room_id, ":", -1);
+    if (g_strv_length(parts) != 3 || !clawt_is_valid_id(parts[1]) || !clawt_is_valid_id(parts[2]))
+        return FALSE;
+    if (out_host != NULL)
+        *out_host = g_strdup(parts[1]);
+    if (out_room != NULL)
+        *out_room = g_strdup(parts[2]);
+    return TRUE;
 }

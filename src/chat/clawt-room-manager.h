@@ -148,6 +148,23 @@ ClawtRoom *clawt_room_manager_get_fed(ClawtRoomManager *self,
                                       const gchar      *remote);
 
 /**
+ * clawt_room_manager_get_shared:
+ * @self: a #ClawtRoomManager
+ * @host: the fleet that shares the room
+ * @room: its id there
+ *
+ * This fleet's mirror of a room another fleet shares with it
+ * (clawt_fed_shared_room_id()), made if it is not there yet, with the
+ * operator as its member.
+ *
+ * Returns: (transfer none) (nullable): the room, or %NULL when an id is
+ *   not one
+ */
+ClawtRoom *clawt_room_manager_get_shared(ClawtRoomManager *self,
+                                         const gchar      *host,
+                                         const gchar      *room);
+
+/**
  * clawt_room_manager_get_routine:
  * @self: a #ClawtRoomManager
  * @routine_id: which routine

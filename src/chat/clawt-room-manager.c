@@ -580,11 +580,34 @@ clawt_room_manager_get_fed(ClawtRoomManager *self, const gchar *alias,
     sender = clawt_fed_sender_id(alias, remote);
     /* Named for whom it is with, which every client draws as its title. */
     name = clawt_fed_room_title(room_id);
-    room = clawt_room_new(room_id, name);
+    room = clawt_room_new(room_id, NULL);
+    clawt_room_set_name(room, name);
     clawt_room_add_member(room, local);
     clawt_room_add_member(room, sender);
 
     return insert_room(self, room);
+}
+
+ClawtRoom *
+clawt_room_manager_get_shared(ClawtRoomManager *self, const gchar *host, const gchar *room)
+{
+    g_autofree gchar *room_id = NULL;
+    g_autofree gchar *title = NULL;
+    ClawtRoom *made;
+
+    g_return_val_if_fail(CLAWT_IS_ROOM_MANAGER(self), NULL);
+
+    room_id = clawt_fed_shared_room_id(host, room);
+    if (!clawt_fed_shared_room_parse(room_id, NULL, NULL))
+        return NULL;
+    made = g_hash_table_lookup(self->rooms, room_id);
+    if (made != NULL)
+        return made;
+    title = clawt_fed_room_title(room_id);
+    made = clawt_room_new(room_id, NULL);
+    clawt_room_set_name(made, title);
+    clawt_room_add_member(made, "user");
+    return insert_room(self, made);
 }
 
 guint
@@ -631,6 +654,18 @@ clawt_room_manager_load_direct(ClawtRoomManager *self)
                       ? NULL : team, NULL);
             restored++;
             continue;
+        }
+
+        /* A room another fleet shares: the operator reads and writes it. */
+        {
+            g_autofree gchar *host = NULL;
+            g_autofree gchar *shared = NULL;
+
+            if (clawt_fed_shared_room_parse(room_id, &host, &shared)) {
+                clawt_room_manager_get_shared(self, host, shared);
+                restored++;
+                continue;
+            }
         }
 
         /* A conversation with another fleet: its members are in its id. */

@@ -4614,7 +4614,7 @@ cmd_room(int argc, char *argv[])
 
     if (verb == NULL) {
         g_printerr("Usage: clawtilla room "
-                   "<list|create|add|history|read> [ARGS...]\n");
+                   "<list|create|add|history|read|share|unshare> [ARGS...]\n");
         return EXIT_FAILURE;
     }
 
@@ -4695,6 +4695,24 @@ cmd_room(int argc, char *argv[])
                      build_payload("room", argv[3], "agent", argv[4], NULL));
 
         return (reply != NULL) ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    /* A declared room, shared with a linked fleet (0.70.0). */
+    if (g_strcmp0(verb, "share") == 0 || g_strcmp0(verb, "unshare") == 0) {
+        gboolean share = g_strcmp0(verb, "share") == 0;
+
+        if (argc < 5) {
+            g_printerr("Usage: clawtilla room %s <room> <fleet-alias>\n", verb);
+            return EXIT_FAILURE;
+        }
+        reply = call(client, share ? "room.share" : "room.unshare",
+                     build_payload("room", argv[3], "alias", argv[4], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        g_print(share ? "Shared %s with %s: everything said in it goes there, and what they "
+                        "write lands here.\n"
+                      : "%s is no longer shared with %s.\n", argv[3], argv[4]);
+        return EXIT_SUCCESS;
     }
 
     if (g_strcmp0(verb, "history") == 0) {
@@ -4976,6 +4994,10 @@ cmd_federation(int argc, char *argv[])
                 "  forget ALIAS               remove a revoked fleet's record\n"
                 "  invites | uninvite ID      outstanding invites; withdraw one\n"
                 "  log [ALIAS] [--limit N]    every request between fleets, newest first\n"
+                "  transcript ALIAS (--task ID | --agent AGENT) [--limit N]\n"
+                "                             read back work you gave that fleet (by\n"
+                "                             your task id), or its conversations with\n"
+                "                             an agent, as far as its grant to you lets\n"
                 "  rotate-key                 a new fleet key; linked fleets are told\n"
                 "  expose --cloudflare --hostname HOST\n"
                 "                             print a cloudflared config for this fleet\n"
@@ -5294,6 +5316,64 @@ cmd_federation(int argc, char *argv[])
                     member_or(e, "direction", "?"), member_or(e, "peer", ""),
                     member_or(e, "kind", ""), member_or(e, "outcome", ""),
                     member_or(e, "detail", ""));
+        }
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "transcript") == 0) {
+        JsonArray *rooms;
+        const gchar *limit = fed_option(argc, argv, "--limit");
+        g_autoptr(JsonBuilder) b = json_builder_new();
+
+        if (alias == NULL) {
+            g_printerr("Usage: clawtilla federation transcript ALIAS (--task ID | --agent AGENT)"
+                       " [--limit N]\n");
+            return EXIT_FAILURE;
+        }
+        json_builder_begin_object(b);
+        json_builder_set_member_name(b, "alias");
+        json_builder_add_string_value(b, alias);
+        if (fed_option(argc, argv, "--task") != NULL) {
+            json_builder_set_member_name(b, "task");
+            json_builder_add_string_value(b, fed_option(argc, argv, "--task"));
+        }
+        if (fed_option(argc, argv, "--agent") != NULL) {
+            json_builder_set_member_name(b, "agent");
+            json_builder_add_string_value(b, fed_option(argc, argv, "--agent"));
+        }
+        if (limit != NULL) {
+            json_builder_set_member_name(b, "limit");
+            json_builder_add_int_value(b, g_ascii_strtoll(limit, NULL, 10));
+        }
+        json_builder_end_object(b);
+        reply = fed_call(client, "federation.transcript", json_builder_get_root(b), 30);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        o = json_node_get_object(reply);
+        if (json) {
+            g_autofree gchar *text = json_to_string(reply, TRUE);
+            g_print("%s\n", text);
+            return EXIT_SUCCESS;
+        }
+        if (json_object_has_member(o, "task")) {
+            JsonObject *t = json_object_get_object_member(o, "task");
+            g_print("Task there: %s%s%s\n", member_or(t, "state", "?"),
+                    json_object_has_member(t, "progress") ? " -- " : "",
+                    member_or(t, "progress", ""));
+            if (json_object_has_member(t, "result"))
+                g_print("Result: %s\n", member_or(t, "result", ""));
+        }
+        rooms = json_object_get_array_member(o, "rooms");
+        for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
+            JsonObject *r = json_array_get_object_element(rooms, i);
+            JsonArray *messages = json_object_get_array_member(r, "messages");
+            guint j;
+
+            g_print("\n== %s\n", member_or(r, "title", member_or(r, "room", "?")));
+            for (j = 0; messages != NULL && j < json_array_get_length(messages); j++) {
+                JsonObject *m = json_array_get_object_element(messages, j);
+                g_print("%-16s %s\n", member_or(m, "sender", "?"), member_or(m, "body", ""));
+            }
         }
         return EXIT_SUCCESS;
     }

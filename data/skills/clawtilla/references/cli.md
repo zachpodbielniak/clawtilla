@@ -105,6 +105,7 @@ Keys and their effects: [config-keys.md](config-keys.md), [agents.md](agents.md)
 | `clawtilla room create <room> [--members a,b]` | make a group room |
 | `clawtilla room add <room> <agent>` | add a member |
 | `clawtilla room history <room>` | its transcript |
+| `clawtilla room share <room> <fleet-alias>` / `unshare` | share a declared room with a linked fleet (both grants need `join_rooms`); it appears there as `fedroom:HOST:ROOM` |
 | `clawtilla room read <agent\|room>` / `room read --all` | mark read |
 | `clawtilla notices [--agent A] [--all]` | what wants you, and alerts |
 | `clawtilla notices read <ID\|--all>` / `dismiss <ID>` / `clear [--agent A]` | settle notices |

@@ -122,6 +122,7 @@ See [routines-and-triggers.md](routines-and-triggers.md), [grok-and-venture.md](
 | `clawtilla federation list [--filter SEL]` / `show ALIAS` / `explain ALIAS` / `log [ALIAS]` | linked fleets; one fleet's grant and sources; the audit |
 | `clawtilla federation set ALIAS [--tier T] [--label L] [--owner O] [--endpoint URL] [FIELD=VALUE]...` / `tag ALIAS +X -Y` | change tier, details, grant overrides, tags |
 | `clawtilla federation hide\|unhide\|mute\|unmute\|approve\|ping\|revoke\|forget ALIAS` | per-fleet actions |
+| `clawtilla federation transcript ALIAS (--task PROXY-ID \| --agent AGENT) [--limit N]` | read back work you gave that fleet, or its conversations with an agent, per its `transcripts` grant to you |
 | `clawtilla federation rotate-key` / `expose --cloudflare --hostname H` | new fleet key; print a cloudflared config |
 
 See [skills-and-teach.md](skills-and-teach.md), [plugins.md](plugins.md), [office.md](office.md), [office-custodial.md](office-custodial.md), [federation.md](federation.md).

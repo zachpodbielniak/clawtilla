@@ -401,6 +401,30 @@ The delegator's proxy says what happened in its notes ("Bravo Lab took it", "is 
 *** Spend
 Spend is charged where the work runs: the doing fleet's usage ledger and task budgets count it, and its =budget_cents_per_day= caps it.  The proxy costs the delegating fleet nothing.
 
+** Transcripts
+:PROPERTIES:
+:CUSTOM_ID: transcripts
+:END:
+
+Since 0.70.0 a fleet can read back, as far as the grant it was given says (=transcripts=):
+
+- =none= :: nothing.
+- =own_tasks= :: the work it handed over, by its proxy's id: the real task's state, progress note and result, and what was said about that task in its conversation.
+- =reachable= :: that, and every conversation it has had with an agent it may reach (all of them, or one with =agent=).
+
+Never a room that is not a conversation with that fleet, and never more than 200 messages, each cut at 8000 characters.  Ask with ~clawtilla federation transcript ALIAS --task PROXY-ID~ or ~--agent AGENT~ (IPC ~federation.transcript~, deferred; the fleet must be reachable from here).
+
+** Shared rooms
+:PROPERTIES:
+:CUSTOM_ID: shared-rooms
+:END:
+
+Since 0.70.0 a room this fleet declared can be shared with linked fleets: ~clawtilla room share design lab~ (IPC ~room.share~ ={room, alias}=; ~room.unshare~ to stop).  Both grants must allow it: yours to them (=join_rooms=) to share, theirs to you to join.
+
+- The *host* is authoritative.  Everything said in the room -- by your people, your agents, or another fleet sharing it -- is sent to every fleet it is shared with except the one that said it.  A fleet's word arriving in the room is delivered by the room's own rules (mentions, rounds) to your agents, under the preamble and fence any remote message gets, with the sender =fleet:ALIAS:AGENT= made a member.
+- The *joining* fleet gets a mirror, =fedroom:HOST:ROOM= (titled =design @ lab=), listed in every client's sidebar beside its own rooms, with the banner a conversation with another fleet carries.  What the host's room says is recorded there and wakes nobody; what its operator writes there goes to the host.
+- Every post is a signed envelope, so authorship is the fleet's key, end to end.  Unsharing, or revoking the link, removes the mirror; a revoked link is struck from every room shared with it.
+
 ** Caps
 :PROPERTIES:
 :CUSTOM_ID: caps
@@ -546,7 +570,7 @@ Each fleet entry is ~agent.list~'s =fleets= member (see [[#requests][Requests]])
 :CUSTOM_ID: office
 :END:
 
-A linked fleet's running agents visit your office (kind /external/, id =ALIAS:AGENT=), from the roster the link already keeps -- no second connection, no device token on the other daemon.  Hidden fleets, fleets not /live/ or /degraded/, and stopped agents stay off the floor.  An agent whose fleet withholds presence is drawn idle, and one mid-turn (=see_typing=) is drawn working.  A fleet still named in =office.peers= as well is drawn once, from the link.  =office.peers= keeps working this release and is superseded.
+A linked fleet's running agents visit your office (kind /external/, id =ALIAS:AGENT=), from the roster the link already keeps -- no second connection, no device token on the other daemon.  Hidden fleets, fleets not /live/ or /degraded/, and stopped agents stay off the floor.  An agent whose fleet withholds presence is drawn idle, and one mid-turn (=see_typing=) is drawn working.  A fleet still named in =office.peers= as well is drawn once, from the link.  Since 0.70.0 a visitor that has spoken with one of your agents in the last two minutes is drawn *on a call* with it (=peer= and =room= set on the visitor), so the floor shows who is talking across fleets.  =office.peers= keeps working this release and is superseded.
 
 ** Requests
 :PROPERTIES:
@@ -575,13 +599,15 @@ A linked fleet's running agents visit your office (kind /external/, id =ALIAS:AG
 | ~federation.expose~ | ={hostname?}= | ={cloudflared_config, public_url, socket, next}= |
 | ~federation.open~ | ={ref}= | ={room}=: the operator's conversation with =AGENT@ALIAS=, made if new (0.68.0) |
 | ~msg.send~ to =AGENT@ALIAS= | ={target, body, from?}= | ={queued: 0, steered: false, room}= (0.68.0) |
+| ~federation.transcript~ | ={alias, task?, agent?, limit?}= | ={task?: {state, progress?, result?}, rooms: [{room, title?, messages: [{sender, body, ts}]}]}= (deferred; 0.70.0) |
+| ~room.share~, ~room.unshare~ | ={room, alias}= | ={}= (0.70.0) |
 | ~task.create~ with =agent: AGENT@ALIAS= | ={prompt, agent, title?}= | ={task}=, the proxy (0.69.0); every task object carries =remote_peer= when it crosses fleets |
 
 Events: ~federation.peer~ (=alias=, =change=: added, changed, health, revoked, removed), ~federation.roster~ (=alias=, since 0.67.0: that fleet's roster changed), ~federation.delivery~ (subject the conversation's room; =id=, =state=, =alias=, =detail=; since 0.68.0) and ~federation.audit~ (=direction=, =kind=, =outcome=).
 
 ~agent.list~ carries, since 0.67.0, =fleets=: one object per linked fleet that is not revoked, in the registry's order, with =alias=, =label=, =fleet_id=, =tier=, =tier_label=, =tier_tone=, =owner=, =tags=, =health=, =health_label=, =health_tone=, =hidden=, =muted=, =latency_ms= (when known), =teams= (=[{id, name}]=) and =agents= (=[{id, ref, fleet, name, team?, color?, inbox, state?, busy?}]=, =ref= being =AGENT@ALIAS=; =state= is =unknown= for a fleet that is not live).  The tones are the library's words (=success=, =accent=, =warning=, =error=, =neutral=); ~clawt_fed_badge_tone()~ turns them into the web and lrg badge names.
 
-Between fleets: =GET /fed/v1/hello= (public, signed: who this fleet is), =POST /fed/v1/invite/accept=, =POST /fed/v1/envelope=, =GET /fed/v1/events= (WebSocket, 0.67.0); on the IPC port the frames ~fed.hello~, ~fed.invite~, ~fed.envelope~ and, from the far side, ~fed.push~.  Envelope kinds: =hello=, =ping=, =revoke=, =rotate= (0.66.0), =roster= (0.67.0), =message= (={id, from, to, body, depth, invites}=, answered ={state, detail?}=) and =delivery= (={id, state, detail?}=, what became of a message that was pushed or held) (0.68.0), =task= (={id, from, to, prompt, reason?, depth}=, answered ={task, state: accepted|held|refused|declined, detail?}=), ~task.state~ (={task, state, result?, detail?}=) and ~task.cancel~ (={task, reason?}=) (0.69.0); anything else is answered "not understood yet", naming the version.
+Between fleets: =GET /fed/v1/hello= (public, signed: who this fleet is), =POST /fed/v1/invite/accept=, =POST /fed/v1/envelope=, =GET /fed/v1/events= (WebSocket, 0.67.0); on the IPC port the frames ~fed.hello~, ~fed.invite~, ~fed.envelope~ and, from the far side, ~fed.push~.  Envelope kinds: =hello=, =ping=, =revoke=, =rotate= (0.66.0), =roster= (0.67.0), =message= (={id, from, to, body, depth, invites}=, answered ={state, detail?}=) and =delivery= (={id, state, detail?}=, what became of a message that was pushed or held) (0.68.0), =task= (={id, from, to, prompt, reason?, depth}=, answered ={task, state: accepted|held|refused|declined, detail?}=), ~task.state~ (={task, state, result?, detail?}=) and ~task.cancel~ (={task, reason?}=) (0.69.0), =transcript= (={task?, agent?, limit}=) and ~room.share~, ~room.unshare~, ~room.post~ (={room, id, from, body}=) (0.70.0); anything else is answered "not understood yet", naming the version.
 
 ** Configuration
 :PROPERTIES:
@@ -623,5 +649,7 @@ Every key is in [[file:configuration-options.org][configuration-options.org]]; t
 - an agent's message to another fleet is refused with "agents.tools.federation is off" :: turn it on for that agent (=clawtilla agent set AGENT tools.federation true=) if it should write to other fleets.
 - a delegated task fails with "Bravo Lab did not take it: ..." :: their grant: =delegate= is deny, or =max_concurrent_tasks= / =budget_cents_per_day= is reached, or the agent is out of reach.  ~clawtilla federation show ALIAS~ prints what they allow you.
 - an agent working for another fleet is refused a tool with "its grant caps what may be done for it" :: that fleet's ~cap.CLASS~ is stricter than the agent's own rule.  Widen it with ~clawtilla federation set ALIAS cap.exec=ask~ if the work needs it.
+- ~room share~ is refused "your grant to that fleet does not let it join rooms" :: ~clawtilla federation set ALIAS join_rooms=true~.  The other fleet must allow it too, or its mirror is never made.
+- ~federation transcript~ is refused :: their grant's =transcripts= is =none=, or =own_tasks= and you asked by agent; ask by the task's id.
 - a message sits unsent :: the fleet is not reachable (=federation list= shows its health); it goes when it answers, or is given up after =federation.outbox_hours=.
 - "unknown fleet or key" from a peer :: it revoked or forgot you, or you rotated while it was unreachable for more than a day; link again.

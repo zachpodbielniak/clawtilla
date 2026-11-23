@@ -505,6 +505,19 @@ send_as_operator(
     g_assert_cmpstr(json_object_get_string_member(sent, "room"), ==, want_room);
 }
 
+static void
+send_as_operator_plain(
+    ClawtClient *client,
+    const gchar *target,
+    const gchar *body
+){
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *req = g_strdup_printf("{\"target\":\"%s\",\"body\":\"%s\"}", target, body);
+    g_autoptr(JsonObject) sent = ask(client, "msg.send", payload_of(req), &error);
+
+    g_assert_no_error(error);
+}
+
 /*
  * Messages between fleets (0.68.0), both ways, through both fleets'
  * grants.  A's operator writes to B's chief, which B's grant to A
@@ -535,6 +548,8 @@ test_messages_cross(
     send_as_operator(p.ca, "b-chief@bravo-lab", "hello from alpha", a_room);
     wait_for_line(&p, p.ca, a_room, "user: hello from alpha");
     wait_for_line(&p, p.cb, b_room, "fleet:alpha:user: hello from alpha");
+    g_assert_cmpstr(clawt_room_get_name(clawt_room_manager_get(p.b->rooms, b_room)), ==,
+                    "b-chief \342\206\224 user@alpha");
     /* B's chief (stopped, so it is in the mailbox) gets it fenced, under a preamble. */
     {
         ClawtAgent *chief = clawt_agent_manager_get(p.b->agents, "b-chief");
@@ -873,6 +888,169 @@ test_delegation(
     pair_down(&p);
 }
 
+static gboolean
+has_room(
+    ClawtDaemon *daemon,
+    const gchar *room
+){
+    return clawt_room_manager_get(daemon->rooms, room) != NULL;
+}
+
+/*
+ * 0.70.0.  B shares a room with A: what B says lands in A's mirror, what
+ * A's operator writes there lands in B's room, and unsharing takes the
+ * mirror away.  A reads back work it gave B, as far as B's grant lets
+ * it.  And a visitor talking to one of ours is drawn on a call with it.
+ */
+static void
+test_rooms_and_transcripts(
+    gconstpointer data
+){
+    const Transport *t = data;
+    Pair p;
+    g_autofree gchar *alias = NULL;
+    g_autoptr(GError) error = NULL;
+    gboolean is_error = FALSE;
+    const gchar *mirror = "fedroom:bravo-lab:design";
+    g_autofree gchar *proxy = NULL;
+
+    memset(&p, 0, sizeof(p));
+    pair_up(&p);
+    alias = link_them(&p, t);
+    wait_for_refs(&p, p.ca, "b-chief@bravo-lab");
+
+    {
+        g_autoptr(JsonObject) r = ask(p.cb, "room.create",
+            payload_of("{\"room\":\"design\",\"members\":\"b-chief\"}"), &error);
+        g_assert_no_error(error);
+    }
+    /* Refused until B's grant to A lets it join rooms. */
+    {
+        g_autoptr(JsonObject) r = NULL;
+        g_autoptr(JsonObject) set = ask(p.cb, "federation.peer.set",
+            payload_of("{\"alias\":\"alpha\",\"grant\":{\"join_rooms\":\"false\"}}"), &error);
+        g_assert_no_error(error);
+        r = ask(p.cb, "room.share", payload_of("{\"room\":\"design\",\"alias\":\"alpha\"}"), &error);
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED);
+        g_clear_error(&error);
+    }
+    {
+        g_autoptr(JsonObject) set = ask(p.cb, "federation.peer.set",
+            payload_of("{\"alias\":\"alpha\",\"grant\":{\"join_rooms\":\"true\","
+                       "\"delegate\":\"allow\",\"transcripts\":\"own_tasks\"}}"), &error);
+        g_autoptr(JsonObject) set_a = NULL;
+        g_autoptr(JsonObject) shared = NULL;
+        g_assert_no_error(error);
+        set_a = ask(p.ca, "federation.peer.set",
+            payload_of("{\"alias\":\"bravo-lab\",\"grant\":{\"join_rooms\":\"true\","
+                       "\"see_presence\":\"false\"}}"), &error);
+        g_assert_no_error(error);
+        shared = ask(p.cb, "room.share", payload_of("{\"room\":\"design\",\"alias\":\"alpha\"}"),
+                     &error);
+        g_assert_no_error(error);
+    }
+    {
+        gint64 deadline = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+        while (!has_room(p.a, mirror)) {
+            if (g_get_monotonic_time() > deadline)
+                g_error("A never got the mirror");
+            g_main_context_iteration(p.context, FALSE);
+            g_usleep(20000);
+        }
+    }
+    g_assert_true(clawt_room_is_listed(mirror));
+    g_assert_cmpstr(clawt_room_get_name(clawt_room_manager_get(p.a->rooms, mirror)), ==,
+                    "design @ bravo-lab");
+
+    send_as_operator_plain(p.cb, "design", "the design review is at three");
+    wait_for_line(&p, p.ca, mirror, "fleet:bravo-lab:user: the design review is at three");
+    send_as_operator_plain(p.ca, mirror, "we will be there");
+    wait_for_line(&p, p.cb, "design", "fleet:alpha:user: we will be there");
+    /* nothing echoes back into A's mirror from A's own post */
+    {
+        g_autofree gchar *a_side = room_lines(p.ca, mirror);
+        g_assert_null(strstr(a_side, "fleet:bravo-lab:fleet:alpha"));
+    }
+
+    /* Read back work A gave B. */
+    {
+        g_autofree gchar *said = call_tool(p.a, "a-chief", "clawtilla_delegate",
+            "{\"agent_id\":\"b-chief@bravo-lab\",\"task\":\"list the open design questions\"}",
+            &is_error);
+        g_assert_false(is_error);
+        proxy = task_id_in(said);
+    }
+    wait_for_doer_task(&p, proxy);
+    {
+        g_autofree gchar *req = g_strdup_printf("{\"alias\":\"bravo-lab\",\"task\":\"%s\"}", proxy);
+        g_autoptr(JsonObject) transcript = ask(p.ca, "federation.transcript", payload_of(req),
+                                               &error);
+        JsonArray *rooms;
+        g_autofree gchar *text = NULL;
+        g_autoptr(JsonNode) whole = NULL;
+
+        g_assert_no_error(error);
+        g_assert_true(json_object_has_member(transcript, "task"));
+        rooms = json_object_get_array_member(transcript, "rooms");
+        g_assert_cmpuint(json_array_get_length(rooms), ==, 1);
+        whole = json_node_init_object(json_node_alloc(), transcript);
+        text = json_to_string(whole, FALSE);
+        g_assert_nonnull(strstr(text, "list the open design questions"));
+    }
+    /* own_tasks does not open the conversations themselves */
+    {
+        g_autoptr(JsonObject) none = ask(p.ca, "federation.transcript",
+            payload_of("{\"alias\":\"bravo-lab\",\"agent\":\"b-chief\"}"), &error);
+        g_assert_nonnull(error);
+        g_clear_error(&error);
+    }
+
+    /* The handshake: A's chief, writing to B's chief, is on a call with it on B's floor. */
+    {
+        g_autofree gchar *said = call_tool(p.a, "a-chief", "clawtilla_message_agent",
+            "{\"agent_id\":\"b-chief@bravo-lab\",\"body\":\"quick question\"}", &is_error);
+        gint64 deadline = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+        gboolean on_call = FALSE;
+
+        g_assert_false(is_error);
+        while (!on_call) {
+            g_autoptr(JsonArray) floor = json_array_new();
+            guint i;
+
+            clawt_daemon_federation_office_visitors(p.b, floor, NULL);
+            for (i = 0; i < json_array_get_length(floor); i++) {
+                JsonObject *v = json_array_get_object_element(floor, i);
+                if (g_strcmp0(json_object_get_string_member(v, "id"), "alpha:a-chief") == 0
+                    && g_strcmp0(json_object_get_string_member(v, "activity"), "on_call") == 0
+                    && g_strcmp0(json_object_get_string_member(v, "peer"), "b-chief") == 0)
+                    on_call = TRUE;
+            }
+            if (on_call)
+                break;
+            if (g_get_monotonic_time() > deadline)
+                g_error("a-chief never showed on a call with b-chief");
+            g_main_context_iteration(p.context, FALSE);
+            g_usleep(20000);
+        }
+    }
+
+    /* Unshared: the mirror goes. */
+    {
+        g_autoptr(JsonObject) r = ask(p.cb, "room.unshare",
+            payload_of("{\"room\":\"design\",\"alias\":\"alpha\"}"), &error);
+        gint64 deadline = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+
+        g_assert_no_error(error);
+        while (has_room(p.a, mirror)) {
+            if (g_get_monotonic_time() > deadline)
+                g_error("A kept the mirror");
+            g_main_context_iteration(p.context, FALSE);
+            g_usleep(20000);
+        }
+    }
+    pair_down(&p);
+}
+
 /* What B's hello says when signed by A, for a hand-made connection. */
 static const gchar *
 hello_as_a(
@@ -1028,6 +1206,11 @@ main(int argc, char *argv[])
             g_autofree gchar *dpath = g_strdup_printf("/fed-link/%s/delegation",
                                                       transports[i].name);
             g_test_add_data_func(dpath, &transports[i], test_delegation);
+        }
+        {
+            g_autofree gchar *rpath2 = g_strdup_printf("/fed-link/%s/rooms-and-transcripts",
+                                                       transports[i].name);
+            g_test_add_data_func(rpath2, &transports[i], test_rooms_and_transcripts);
         }
     }
     g_test_add_func("/fed-link/fleet-connection-is-fenced", test_fleet_connection_is_fenced);

@@ -1746,7 +1746,8 @@ clawt_web_room_body(ClawtWebApp *app, const gchar *room_id)
      * time: what is written here leaves this fleet (0.68.0).  The line is
      * the library's, so the three clients say the same thing.
      */
-    if (clawt_fed_room_parse(room_id, NULL, NULL, NULL)) {
+    if (clawt_fed_room_parse(room_id, NULL, NULL, NULL)
+        || clawt_fed_shared_room_parse(room_id, NULL, NULL)) {
         g_autoptr(JsonNode) list = clawt_web_app_call(app, "agent.list", NULL);
         g_autofree gchar *line = clawt_fed_room_banner(
             room_id, clawt_web_member_array(clawt_web_root(list), "fleets"));
