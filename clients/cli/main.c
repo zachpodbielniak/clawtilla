@@ -13322,6 +13322,20 @@ cmd_daemon_token(void)
     g_autofree gchar *path = NULL;
     g_autofree gchar *token = NULL;
 
+    /*
+     * The token comes from the config's state directory, never from the
+     * daemon at --socket.  With --socket and no --config it printed the
+     * *default* fleet's token while naming another daemon -- a secret of
+     * the wrong fleet, handed to whatever the caller pipes it into.
+     */
+    if (opt_socket_path != NULL && opt_config_path == NULL) {
+        g_printerr("clawtilla: `daemon token` reads the token from a config's state "
+                   "directory, not from --socket;\n"
+                   "  pass --config with that daemon's own config "
+                   "(clawtilla -c FILE daemon token)\n");
+        return EXIT_FAILURE;
+    }
+
     config = clawt_config_load(opt_config_path, &error);
 
     if (config == NULL) {

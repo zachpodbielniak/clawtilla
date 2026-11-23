@@ -232,7 +232,7 @@ look up.
 ~daemon token~ reads the token from disk rather than asking the daemon
 for it, because nothing may write a secret's value into an IPC response.
 That also means it only works on the machine the daemon runs on, which is
-the point -- it is how you get the token to copy somewhere else.
+the point -- it is how you get the token to copy somewhere else.  It reads the loaded config's state directory, so for a daemon with a config of its own pass ~-c FILE~; given ~-s~ without ~-c~ it refuses (0.73.3) rather than print the default fleet's token while naming another daemon.
 
 ~remote list~ never prints a token.  It is the command you run to check
 what you saved, often over somebody's shoulder.

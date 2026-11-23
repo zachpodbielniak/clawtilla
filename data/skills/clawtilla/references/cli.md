@@ -50,7 +50,7 @@ runs the same daemon in the foreground.
 | Command | What it does |
 |---|---|
 | `clawtilla daemon` | run the daemon in the foreground (same code as clawtillad) |
-| `clawtilla daemon token` | print the TCP/tailnet bearer token, read from `daemon.token_file` or `<state_dir>/tcp-token` (never over IPC) |
+| `clawtilla [-c FILE] daemon token` | print the TCP/tailnet bearer token, read from `daemon.token_file` or `<state_dir>/tcp-token` of the loaded config (never over IPC); with `-s` and no `-c` it refuses, since it cannot read the token of the daemon at that socket |
 | `clawtilla remote list` | saved connections (`connections.yaml`; tokens never printed) |
 | `clawtilla remote add <name> <host> [--port N] [--token T] [--tls] [--insecure]` | save a connection |
 | `clawtilla remote pair <name> <host[:port]> <code> [--device-name N] [--tls] [--insecure]` | trade a pairing code for a device token |

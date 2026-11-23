@@ -141,7 +141,8 @@ Both daemons on the tailnet (=daemon.tailscale: true=, the default), federation 
 
 #+begin_src bash
 clawtilla federation link 100.64.0.7:8792 --alias homelab
-# asks for the other daemon's owner token (`clawtilla daemon token` there)
+# asks for the other daemon's owner token (`clawtilla daemon token` there,
+# or `clawtilla -c ITS-CONFIG daemon token` for a daemon with its own config); it reads stdin when that is not a terminal
 #+end_src
 
 The daemon connects to the other one *as its owner*, asks it for an invite giving tier =owned=, and accepts it with tier =owned=.  The token is used for that one connection and not kept.  The link itself runs over the simple daemon connection (=clawtilla://=), signed; nothing else to configure.  Both on one machine: pass the other daemon's socket path instead (~clawtilla federation link /run/user/1000/other/daemon.sock~).

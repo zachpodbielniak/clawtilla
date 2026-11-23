@@ -129,8 +129,11 @@ See [connectors.md](connectors.md), [integrations.md](integrations.md).
 2. Your own other daemon: `clawtilla federation link 100.64.0.7:8792 --alias homelab` (tailnet; asks for its owner token) or a socket path.
 3. Anyone else: `clawtilla federation invite --tier limited` here, send the `clawt-fed1-...` string;
    there: `clawtilla federation inspect ...` then `clawtilla federation accept ... --tier trusted --alias you`; read the safety words to each other.
-4. Narrow it: `clawtilla federation set ALIAS reach=listed agents=atlas cap.exec=deny`; tag it: `clawtilla federation tag ALIAS +client-acme`.
-5. Through a tunnel: `clawtilla federation expose --cloudflare --hostname H`, then `federation.public_url`. See [federation.md](federation.md).
+4. Lock one fleet down to one agent: `clawtilla federation set ALIAS reach=listed agents=atlas cap.exec=deny`; check with `clawtilla federation explain ALIAS`.
+5. Tag fleets and write one rule for all of them: `clawtilla federation tag ALIAS +client-acme`, then in clawtilla.yaml (`clawtilla config edit`) `federation.rules: ["tag:client-acme: reach=listed; cap.exec=deny"]` (or the Rules editor in any client) and `clawtilla config reload`; rules apply after the tier, before the fleet's own overrides.
+6. On a LAN with no tailnet: both sides `federation.allow_lan_plaintext: true` (sealing stays `auto`, so bodies are encrypted), listen on the LAN address (`federation.listen: ["unix:...", "192.168.1.20:7711"]`), restart, invite with `--endpoint http://192.168.1.20:7711`.
+7. Through a tunnel: `clawtilla federation expose --cloudflare --hostname H`, then `federation.public_url`; for a quick test tunnel see federation.md (it cannot reach a unix socket). See [federation.md](federation.md).
+8. Found by discovery: `clawtilla federation discover` lists clawtilla daemons on the tailnet; link one you own with `clawtilla federation link HOST:PORT --alias NAME` (it asks for that daemon's owner token).
 
 ## Write to an agent in another fleet
 
