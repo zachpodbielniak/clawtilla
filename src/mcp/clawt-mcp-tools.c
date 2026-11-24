@@ -1066,8 +1066,22 @@ static const ClawtParamInfo media_job_params[] = {
     { name_, desc_, req_, TRUE, params_, G_N_ELEMENTS(params_), action_, FALSE }
 
 /* A tool that spends money: asked of a person unless a rule allows it. */
+/*
+ * Said by every paid tool, after its own description.  The call is held
+ * until the operator answers, and an agent that does not know that ends
+ * its turn on a call it thinks is stuck: the first live run on Codex
+ * re-checked a held call for four minutes, then wrote "still pending"
+ * and stopped -- and a settled turn withdraws its asks, so the
+ * approval that came a minute later found nothing to approve.
+ */
+#define CLAWT_PAID_TOOL_WAITS \
+    " The call waits for the operator's answer, which can take minutes: " \
+    "keep waiting for it rather than ending your turn, because ending " \
+    "the turn withdraws the request."
+
 #define PAID_TOOL(name_, desc_, req_, params_, action_) \
-    { name_, desc_, req_, FALSE, params_, G_N_ELEMENTS(params_), action_, TRUE }
+    { name_, desc_ CLAWT_PAID_TOOL_WAITS, req_, FALSE, params_, \
+      G_N_ELEMENTS(params_), action_, TRUE }
 
 static const ToolDefinition tools[] = {
     TOOL("clawtilla_list_agents",

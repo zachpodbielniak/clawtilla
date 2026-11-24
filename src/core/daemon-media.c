@@ -464,6 +464,28 @@ results_dir(
 
 static void fetch_next(MediaCall *call);
 
+/*
+ * Whether @agent_id's computer has the exchange mounted at
+ * CLAWT_EXCHANGE_MOUNT_POINT: the question the daemon asks before it
+ * mounts it (clawt_computer_type_shares_host_paths()), read from config.
+ */
+static gboolean
+agent_mounts_exchange(
+	ClawtDaemon *self,
+	const gchar *agent_id
+){
+	ClawtAgentConfig *agent = clawt_config_get_agent(self->config, agent_id);
+	const gchar *nick;
+	gint type = 0;
+
+	if (agent == NULL || !clawt_agent_config_get_boolean(agent, "computer.exchange"))
+		return FALSE;
+	nick = clawt_agent_config_get_string(agent, "computer.type");
+	if (nick == NULL || !clawt_enum_from_nick(CLAWT_TYPE_COMPUTER_TYPE, nick, &type))
+		return FALSE;
+	return clawt_computer_type_shares_host_paths((ClawtComputerType)type);
+}
+
 /* What the job cost, as a note says it, for provenance and the reply. */
 static gchar *
 cost_text(
@@ -475,7 +497,8 @@ cost_text(
 	if (micros >= 0)
 		return g_strdup_printf("$%.4f", (gdouble)micros / 1e6);
 	if (credits >= 0)
-		return g_strdup_printf("%" G_GINT64_FORMAT " credits", credits);
+		return g_strdup_printf("%" G_GINT64_FORMAT " %s", credits,
+		                       credits == 1 ? "credit" : "credits");
 
 	return NULL;
 }
@@ -557,9 +580,19 @@ finish_saving(
 
 	if (call->failures != NULL)
 		g_string_append_printf(text, "Not saved: %s\n", call->failures);
+	/*
+	 * The guest spelling only for an agent whose computer has the
+	 * exchange mounted, and said as what it is: the path above is the one
+	 * its own tools read.  Offered to an agent with no computer at all,
+	 * "inside a computer it is under /mnt/..." was the path it reported
+	 * back, and nothing exists there.
+	 */
 	if (self->exchange != NULL && g_str_has_prefix(call->dir,
-	        clawt_exchange_get_root(self->exchange)))
-		g_string_append_printf(text, "Inside a computer it is under %s%s.\n",
+	        clawt_exchange_get_root(self->exchange)) &&
+	    agent_mounts_exchange(self, call->agent_id))
+		g_string_append_printf(text, "A command run in your computer "
+		                       "(clawtilla_computer_exec) sees it as %s%s; "
+		                       "your own tools read the path above.\n",
 		                       CLAWT_EXCHANGE_MOUNT_POINT,
 		                       call->dir + strlen(clawt_exchange_get_root(
 		                           self->exchange)));

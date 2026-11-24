@@ -119,6 +119,9 @@ typedef struct {
 	GString *submitted;   /* each operation, space-separated */
 	gchar   *rig_input;   /* what the rig was asked to rig */
 	gchar   *walk_for;    /* which character the walk was for */
+	gchar   *walk_mode;   /* the walk's animation mode */
+	gchar   *walk_template; /* and its template */
+	GString *walks;       /* each walk call: `direction@group ` */
 } MockMedia;
 
 typedef struct {
@@ -141,6 +144,9 @@ mock_media_finalize(GObject *object)
 	g_string_free(self->submitted, TRUE);
 	g_free(self->rig_input);
 	g_free(self->walk_for);
+	g_free(self->walk_mode);
+	g_free(self->walk_template);
+	g_string_free(self->walks, TRUE);
 	G_OBJECT_CLASS(mock_media_parent_class)->finalize(object);
 }
 
@@ -148,6 +154,7 @@ static void
 mock_media_init(MockMedia *self)
 {
 	self->submitted = g_string_new(NULL);
+	self->walks = g_string_new(NULL);
 }
 
 static void
@@ -186,6 +193,31 @@ mock_submit_async(AiMediaGenerator *self, AiMediaRequest *request,
 	else if (g_strcmp0(operation, "character-animate") == 0) {
 		g_free(mock->walk_for);
 		mock->walk_for = param(request, "character_id");
+		/* the template animates every direction; a custom action only
+		 * the south view, which is what the first live run got */
+		g_free(mock->walk_mode);
+		mock->walk_mode = param(request, "mode");
+		g_free(mock->walk_template);
+		mock->walk_template = param(request, "template_animation_id");
+		/* one direction a call, the later ones joining the first's group:
+		 * four at once is refused on plans that run one at a time */
+		{
+			g_autofree gchar *group = param(request, "animation_group_id");
+			g_autofree gchar *json = ai_media_request_to_json(request);
+			g_autoptr(JsonNode) node = json_from_string(json, NULL);
+			JsonObject *root = json_node_get_object(node);
+			JsonObject *params = json_object_has_member(root, "params")
+				? json_object_get_object_member(root, "params") : root;
+			JsonArray *directions = json_object_has_member(params, "directions")
+				? json_object_get_array_member(params, "directions") : NULL;
+			guint i;
+
+			for (i = 0; directions != NULL && i < json_array_get_length(directions); i++)
+				g_string_append_printf(mock->walks, "%s%s",
+				                       i > 0 ? "+" : "",
+				                       json_array_get_string_element(directions, i));
+			g_string_append_printf(mock->walks, "@%s ", group != NULL ? group : "-");
+		}
 		id = "character-animate:char9:g1:j2";
 	} else if (g_strcmp0(operation, "image-to-3d") == 0 ||
 	           g_strcmp0(operation, "text-to-3d") == 0)
@@ -438,8 +470,14 @@ test_pixellab_road(void)
 	made = wait_for_character(&fixture, has_sheet);
 	g_assert_nonnull(made);
 	g_assert_cmpstr(made->sheet, ==, "generated/sheet.png");
-	g_assert_cmpstr(the_mock->submitted->str, ==, "character-4 character-animate ");
+	g_assert_cmpstr(the_mock->submitted->str, ==,
+	                "character-4 character-animate character-animate "
+	                "character-animate character-animate ");
+	g_assert_cmpstr(the_mock->walks->str, ==,
+	                "south@- north@g1 west@g1 east@g1 ");
 	g_assert_cmpstr(the_mock->walk_for, ==, "char9");
+	g_assert_cmpstr(the_mock->walk_mode, ==, "template");
+	g_assert_cmpstr(the_mock->walk_template, ==, "walking");
 
 	if (clawt_office_sheet_available()) {
 		/* the cell is the tallest frame; the walk has a row per direction */
@@ -460,7 +498,8 @@ test_pixellab_road(void)
 		gint64 micros = 0;
 
 		clawt_media_spend_since(spend, 0, 0, &micros, NULL, NULL);
-		g_assert_cmpint(micros, ==, 30000);
+		/* every walk call is billed, not only the last: four at $0.03 */
+		g_assert_cmpint(micros, ==, 4 * 30000);
 	}
 
 	teardown(&fixture);

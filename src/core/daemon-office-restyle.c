@@ -275,28 +275,70 @@ model_request(
 }
 
 /* What PixelLab is asked to draw for one tile. */
+/*
+ * How much the base tile holds the new one to it, on PixelLab's 1-999
+ * (300 when unset).  Measured live: at 450 the carpet, chair and monitor
+ * came back as the base tiles pixel for pixel, no style at all; with no
+ * starting picture they came back as little rooms.  Low, so the style
+ * redraws it and the picture only says what it is.
+ */
+#define RESTYLE_INIT_STRENGTH (150)
+
 static AiMediaRequest *
 tile_request(
 	JsonObject  *kind,
 	const gchar *style,
-	guint        tile
+	Base        *base,
+	GBytes      *base_png
 ){
 	g_autofree gchar *prompt = clawt_office_restyle_prompt(kind, style, FALSE);
 	AiMediaRequest *request = ai_media_request_new(NULL, prompt);
 	g_autoptr(JsonNode) size = json_node_new(JSON_NODE_OBJECT);
 	JsonObject *object = json_object_new();
 	gboolean floor = json_object_get_boolean_member_with_default(kind, "floor", FALSE);
+	guint side = MAX(base->tile, 32u);
 
 	/* PixelLab draws at least 32 a side; a smaller tile is scaled down */
-	json_object_set_int_member(object, "width", MAX(tile, 32u));
-	json_object_set_int_member(object, "height", MAX(tile, 32u));
+	json_object_set_int_member(object, "width", side);
+	json_object_set_int_member(object, "height", side);
 	json_node_take_object(size, object);
+
+	/*
+	 * Started from the base pack's own tile, not from its name alone: from
+	 * words only, nearly every slot of the first live restyle came back as
+	 * a whole little office.  A tile that cannot be cut is still asked for,
+	 * from the prompt.
+	 */
+	if (base_png != NULL) {
+		g_autoptr(GError) error = NULL;
+		g_autoptr(GBytes) cell = clawt_office_restyle_cut(
+			base_png, base->tile, base->columns,
+			(guint)json_object_get_int_member_with_default(kind, "gid", 0), side,
+			&error);
+		g_autoptr(JsonNode) init = cell != NULL
+			? ai_pixellab_image_node_new(cell, &error) : NULL;
+
+		if (init != NULL) {
+			ai_media_request_set_param_json(request, "init_image", init);
+			ai_media_request_set_param_int(request, "init_image_strength",
+			                               RESTYLE_INIT_STRENGTH);
+		} else {
+			g_message("office: restyle: %s drawn from its name only: %s",
+			          json_object_get_string_member_with_default(kind, "name", "?"),
+			          error != NULL ? error->message : "no picture");
+		}
+	}
 
 	ai_media_request_set_param_string(request, "operation", "image");
 	ai_media_request_set_param_json(request, "image_size", size);
 	ai_media_request_set_param_string(request, "view", "high top-down");
-	/* furniture sits on the floor drawn under it; a floor covers its cell */
-	ai_media_request_set_param_boolean(request, "no_background", !floor);
+	/*
+	 * Furniture sits on the floor drawn under it; a floor or a wall covers
+	 * its cell.  A wall asked for with no background came back blank --
+	 * PixelLab refused it as "every pixel was transparent".
+	 */
+	ai_media_request_set_param_boolean(request, "no_background",
+		!floor && !json_object_get_boolean_member_with_default(kind, "structure", FALSE));
 	return request;
 }
 
@@ -508,6 +550,7 @@ typedef struct {
 	AiMediaGenerator  *client;    /* owned: the current step's */
 	JsonObject        *provenance;
 	GString           *trouble;
+	GBytes            *base_png;  /* the base sheet, read at the first tile */
 } Run;
 
 static void
@@ -524,6 +567,7 @@ run_free(
 	g_clear_pointer(&run->provenance, json_object_unref);
 	if (run->trouble != NULL)
 		g_string_free(run->trouble, TRUE);
+	g_clear_pointer(&run->base_png, g_bytes_unref);
 	g_free(run);
 }
 
@@ -690,9 +734,18 @@ step_next(
 		return;
 	}
 
+	if (g_strcmp0(service, "meshy") != 0 && run->base_png == NULL) {
+		g_autofree gchar *path = g_build_filename(run->base->base_dir,
+		                                          run->base->tiles_path, NULL);
+		gchar *data = NULL;
+		gsize length = 0;
+
+		if (g_file_get_contents(path, &data, &length, NULL))
+			run->base_png = g_bytes_new_take(data, length);
+	}
 	request = g_strcmp0(service, "meshy") == 0
 		? model_request(kind, run->style)
-		: tile_request(kind, run->style, run->base->tile);
+		: tile_request(kind, run->style, run->base, run->base_png);
 
 	g_main_context_push_thread_default(run->self->main_context);
 	ai_media_generator_submit_async(run->client, request, NULL, on_step_submitted, run);

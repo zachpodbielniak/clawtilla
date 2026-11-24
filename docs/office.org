@@ -128,7 +128,7 @@ make OFFICE=1            # clawtilla-office, and the lrg client with its Office 
 make OFFICE=1 install
 #+end_src
 
-=OFFICE=1= brings =LRG_BACKEND=1= with it and needs libregnum 0.11.0 or newer at =LRG_DIR= (default =../libregnum=): the Tiled importer, the world-space UI (name plates, bubbles, emotes), beams and frame export are that release's.  Loading a 3D level reaches libregnum's scripting, so the binary also links =girepository-2.0= and =gjs-1.0= when libregnum was built with them -- on Fedora, =gobject-introspection-devel= and =gjs-devel=, on top of the lrg client's packages ([[file:lrg-client.org][lrg-client.org]]).
+=OFFICE=1= brings =LRG_BACKEND=1= with it and needs libregnum 0.11.1 or newer at =LRG_DIR= (default =../libregnum=): the Tiled importer, the world-space UI (name plates, bubbles, emotes), beams and frame export are 0.11.0's, and 0.11.1's raylib decodes JPEG, the texture format a generated model (Meshy's) carries -- older, the model drew plain white.  The build refuses an older libregnum.  Loading a 3D level reaches libregnum's scripting, so the binary also links =girepository-2.0= and =gjs-1.0= when libregnum was built with them -- on Fedora, =gobject-introspection-devel= and =gjs-devel=, on top of the lrg client's packages ([[file:lrg-client.org][lrg-client.org]]).
 
 *** Running it
 

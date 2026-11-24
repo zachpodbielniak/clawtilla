@@ -31,7 +31,7 @@ integrations:
 
 ## Approvals: the one tool family that asks by default
 
-Every `_generate` files a policy ask with the price first ("Meshy rig: about 5 credits"; PixelLab: "priced by PixelLab when it is done, most calls cost $0.01 to $0.08") **unless a policy rule matches**. To trust an agent: `policy.rules: ["clawtilla_pixellab_*=allow"]`. A `deny` rule turns a service off for one agent without unbinding it. Rules are read before the default.
+Every `_generate` files a policy ask with the price first ("Meshy rig: about 5 credits"; PixelLab: "priced by PixelLab when it is done, most calls cost $0.01 to $0.08") **unless a policy rule matches**. To trust an agent: `policy.rules: ["clawtilla_pixellab_*=allow"]`. A `deny` rule turns a service off for one agent without unbinding it. Rules are read before the default. The call is **held** until the operator answers (up to `policy.ask_timeout_seconds`, default 600), and every paid tool's description tells the agent to keep waiting: an agent that ends its turn on a held call withdraws the ask, so the operator's approval then finds nothing (a Codex agent did, after four minutes of re-checking).
 
 ## Results
 

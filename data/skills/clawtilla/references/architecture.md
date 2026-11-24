@@ -157,7 +157,7 @@ Outside state_dir: `$XDG_DATA_HOME/clawtilla/vms/<id>/` (overlay, seed, key, `ss
 | `DEBUG=1` | `build/debug/` (`-O0 -g3`); default `build/release/` (`-O2`) |
 | `ASAN=1`, `UBSAN=1` | sanitizers (GIR auto-off; `GIR=1` forces) |
 | `LRG_BACKEND=1` | builds `clawtilla-lrg` against libregnum |
-| `OFFICE=1` | builds `clawtilla-office` and the lrg Office view; implies `LRG_BACKEND=1`, needs libregnum >= 0.11.0, `gjs-devel`, `gobject-introspection-devel` |
+| `OFFICE=1` | builds `clawtilla-office` and the lrg Office view; implies `LRG_BACKEND=1`, needs libregnum >= 0.11.1 (its raylib decodes JPEG, a generated model's texture), `gjs-devel`, `gobject-introspection-devel` |
 | `GSURF=1` | browser sessions; needs gsurf >= 0.5.14, `Xvfb` |
 | `QRENCODE=0`, `POPPLER=0` | turn off auto-detected QR codes / PDF thumbnails |
 | `PREFIX=` | install prefix (default `/usr/local`) |

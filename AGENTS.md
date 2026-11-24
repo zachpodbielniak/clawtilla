@@ -40,7 +40,7 @@ make LRG_BACKEND=1 test
 make LRG_BACKEND=1 lrg-check F=clients/lrg/lrg-chat.c
 
 # The drawn office: clawtilla-office and the lrg Office view, on
-# libregnum >= 0.11.0 at LRG_DIR (OFFICE=1 implies LRG_BACKEND=1)
+# libregnum >= 0.11.1 at LRG_DIR (OFFICE=1 implies LRG_BACKEND=1)
 make OFFICE=1
 make OFFICE=1 test
 
@@ -128,7 +128,7 @@ place when it is missing, older than its sources, or lacks a symbol in
 `LRG_REQUIRED_SYMBOLS`.  See `docs/lrg-client.org`.
 
 `OFFICE=1` (the drawn office, `clients/office/`) implies `LRG_BACKEND=1`
-and needs libregnum 0.11.0 or newer; loading a 3D level reaches
+and needs libregnum 0.11.1 or newer; loading a 3D level reaches
 libregnum's scripting, so it also links `girepository-2.0` and `gjs-1.0`
 (`gobject-introspection-devel`, `gjs-devel`).  See `docs/office.org`.
 

@@ -72,6 +72,8 @@ They reach agents as two integration types, =meshy= and =pixellab=, with seven t
 
 Every =_generate= call is put to the operator before it runs -- a decision card with the price first and the arguments under it -- unless a policy rule allows it.  That is the one difference from every other tool, whose default is to run: money is the wrong thing to spend until somebody writes a rule.
 
+The call is held until the operator answers, up to =defaults.policy.ask_timeout_seconds= (600).  An agent that ends its turn on a held call withdraws the ask -- a settled turn takes its questions with it -- so an approval pressed afterwards finds nothing to approve.  Every paid tool's description therefore tells the agent to keep waiting; the first live run needed it, when a Codex agent re-checked a held call for four minutes and then stopped with "still pending".
+
 - Meshy's price comes from its price list, in ai-glib (=ai_meshy_estimate_credits()=): "Meshy rig: about 5 credits".
 - PixelLab publishes no price table; the card says PixelLab prices the call when it is done, and that most calls cost $0.01 to $0.08.
 - To let an agent you trust generate without asking, give it a rule:

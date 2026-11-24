@@ -30,6 +30,17 @@
 #include <stdio.h>
 #include <string.h>
 
+/*
+ * 0.11.0 brought the world-space UI, the Tiled importer and frame export;
+ * 0.11.1's graylib decodes JPEG, which glTF models carry as textures --
+ * Meshy's do, and before it a generated character drew plain white.
+ */
+#if !LRG_CHECK_VERSION(0, 11, 1)
+#error "The drawn office needs libregnum 0.11.1 or newer at LRG_DIR"
+#endif
+
+static void match_skeleton_units(Model *model);
+
 #define WALK_PIXELS_PER_SECOND (150.0f)
 #define ARRIVED_PIXELS         (0.6f)
 #define BODY_RADIUS            (9.0f)
@@ -930,6 +941,7 @@ clawt_office_scene_prepare(ClawtOfficeScene *self)
             sheet->model_failed = !sheet->model_loaded;
             if (!sheet->model_loaded)
                 continue;
+            match_skeleton_units(&sheet->model);
             box = GetModelBoundingBox(sheet->model);
             height = box.max.y - box.min.y;
             sheet->model_scale = height > 0.0001f ? 2.4f / height : 1.0f;
@@ -961,6 +973,62 @@ clawt_office_scene_prepare(ClawtOfficeScene *self)
         lrg_tilemap_draw(g_ptr_array_index(self->tilemaps, i));
     EndTextureMode();
     self->baked_ok = TRUE;
+}
+
+gfloat
+clawt_office_scene_units_ratio(gfloat mesh_height, gfloat skeleton_height)
+{
+    gfloat ratio;
+
+    if (!(mesh_height > 0.0f) || !(skeleton_height > 0.0f))
+        return 1.0f;
+    ratio = skeleton_height / mesh_height;
+    if (ratio > 0.2f && ratio < 5.0f)
+        return 1.0f;
+    return powf(10.0f, roundf(log10f(ratio)));
+}
+
+/*
+ * A skinned model whose mesh loaded in other units than its skeleton is
+ * brought to the skeleton's (see clawt_office_scene_units_ratio()):
+ * every vertex scaled and sent to the GPU again, before anything is
+ * measured from it.
+ */
+static void
+match_skeleton_units(Model *model)
+{
+    BoundingBox box;
+    gfloat low = G_MAXFLOAT;
+    gfloat high = -G_MAXFLOAT;
+    gfloat ratio;
+    guint i;
+    gint m;
+
+    if (model->skeleton.boneCount < 2 || model->skeleton.bindPose == NULL)
+        return;
+    for (i = 0; i < model->skeleton.boneCount; i++) {
+        low = MIN(low, model->skeleton.bindPose[i].translation.y);
+        high = MAX(high, model->skeleton.bindPose[i].translation.y);
+    }
+    box = GetModelBoundingBox(*model);
+    ratio = clawt_office_scene_units_ratio(box.max.y - box.min.y, high - low);
+    if (ratio == 1.0f)
+        return;
+
+    for (m = 0; m < model->meshCount; m++) {
+        Mesh *mesh = &model->meshes[m];
+        gint v;
+
+        if (mesh->vertices == NULL)
+            continue;
+        for (v = 0; v < mesh->vertexCount * 3; v++) {
+            mesh->vertices[v] *= ratio;
+            if (mesh->animVertices != NULL)
+                mesh->animVertices[v] *= ratio;
+        }
+        UpdateMeshBuffer(*mesh, 0, mesh->vertices,
+                         mesh->vertexCount * 3 * (gint)sizeof(gfloat), 0);
+    }
 }
 
 gboolean

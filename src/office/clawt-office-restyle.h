@@ -28,8 +28,9 @@ G_BEGIN_DECLS
  * @error: (out) (optional): where a refusal is written
  *
  * The tile kinds a pack actually uses, each once: `{gid, name, floor,
- * model}`.  `floor` says it is on the map's floor layer (drawn edge to
- * edge, no transparency); `model` that the 3D level draws it as one node
+ * structure, model}`.  `floor` says it is on the map's floor layer (drawn
+ * edge to edge, no transparency); `structure` that it is a wall, glass or a
+ * door, which fills its cell as a floor does; `model` that the 3D level draws it as one node
  * a model can stand in for, and that it is furniture rather than the
  * building (walls, glass and doors are redrawn as tiles only).  A pack whose manifest names no tiles is
  * refused: without names there is nothing to ask a service to draw.
@@ -40,6 +41,29 @@ JsonArray *clawt_office_restyle_kinds(const gchar  *manifest_yaml,
                                       const gchar  *tmj_json,
                                       const gchar  *rlevel_yaml,
                                       GError      **error);
+
+/**
+ * clawt_office_restyle_cut:
+ * @base_png: the base pack's tile sheet
+ * @tile: one tile's size in pixels
+ * @columns: tiles a row, as the map's tileset says
+ * @gid: the tile to cut, counted from 1 as Tiled does
+ * @size: the side of the image returned
+ * @error: (out) (optional): where a failure is written
+ *
+ * One tile of the base sheet as a PNG, scaled to @size without smoothing:
+ * what a restyle hands PixelLab as the picture to start from, so a carpet
+ * is redrawn as a carpet and not invented again from its name.
+ *
+ * Returns: (transfer full) (nullable): the PNG, or %NULL with @error set
+ *   (no cairo, or no such tile)
+ */
+GBytes *clawt_office_restyle_cut(GBytes  *base_png,
+                                 guint    tile,
+                                 guint    columns,
+                                 guint    gid,
+                                 guint    size,
+                                 GError **error);
 
 /**
  * clawt_office_restyle_prompt:

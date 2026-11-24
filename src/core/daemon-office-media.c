@@ -150,12 +150,38 @@ pixellab_character(
 
 static AiMediaRequest *
 pixellab_walk(
-	const gchar *character_id
+	const gchar *character_id,
+	const gchar *direction,
+	const gchar *group_id
 ){
 	AiMediaRequest *request = ai_media_request_new(NULL, "walking");
+	g_autoptr(JsonNode) directions = json_node_new(JSON_NODE_ARRAY);
+	g_autoptr(JsonArray) one = json_array_new();
 
+	/*
+	 * The template, not a custom action: PixelLab's custom modes animate
+	 * the south view only unless told otherwise, and the first live run
+	 * came back with a single "walk" row in which she turned to face east
+	 * halfway.  The walking template defaults to every direction the
+	 * character has, one generation each, on its own skeleton.
+	 */
 	ai_media_request_set_param_string(request, "operation", "character-animate");
 	ai_media_request_set_param_string(request, "character_id", character_id);
+	ai_media_request_set_param_string(request, "mode", "template");
+	ai_media_request_set_param_string(request, "template_animation_id", "walking");
+
+	/*
+	 * One direction per call, the later ones added to the first's group.
+	 * All four in one call is four generations at once, and PixelLab's
+	 * trial and lower plans allow one at a time: the second live run was
+	 * refused with HTTP 403 for exactly that.  Asking in turn works on
+	 * every plan and costs the same.
+	 */
+	json_array_add_string_element(one, direction);
+	json_node_set_array(directions, one);
+	ai_media_request_set_param_json(request, "directions", directions);
+	if (group_id != NULL)
+		ai_media_request_set_param_string(request, "animation_group_id", group_id);
 	return request;
 }
 
@@ -217,7 +243,7 @@ road_line(
 
 		return g_strdup_printf(
 			"PixelLab: a %ux%u character in four directions, then its walk "
-			"in each -- two calls, priced by PixelLab when each is done (%s)",
+			"in each -- five calls, one at a time, priced by PixelLab when each is done (%s)",
 			px, px, CLAWT_MEDIA_PIXELLAB_TYPICAL);
 	}
 
@@ -313,6 +339,9 @@ typedef struct {
 	gchar             *object_id; /* PixelLab character, Meshy model task */
 	AiMediaJob        *first;     /* owned: the character or the model */
 	AiMediaJob        *second;    /* owned: the walk or the rig */
+	GPtrArray         *walks;     /* owned: PixelLab's earlier walk jobs */
+	guint              walk_at;   /* which of walk_directions is next */
+	gchar             *group_id;  /* PixelLab's animation group */
 	gchar            **names;     /* what is being fetched, in order */
 	guint              at;
 	GHashTable        *fetched;   /* name -> GBytes */
@@ -330,6 +359,8 @@ road_free(
 	g_free(road->object_id);
 	g_clear_object(&road->first);
 	g_clear_object(&road->second);
+	g_clear_pointer(&road->walks, g_ptr_array_unref);
+	g_free(road->group_id);
 	g_strfreev(road->names);
 	g_clear_pointer(&road->fetched, g_hash_table_unref);
 	g_free(road->trouble);
@@ -360,22 +391,29 @@ record_spend(
 	g_autofree gchar *state_dir = clawt_config_agent_state_dir(road->self->config,
 	                                                           road->agent);
 	g_autofree gchar *path = NULL;
-	AiMediaJob *jobs[2] = { road->first, road->second };
+	g_autoptr(GPtrArray) jobs = g_ptr_array_new();
 	guint i;
 
 	if (state_dir == NULL)
 		return;
 	path = clawt_media_spend_path(state_dir);
 
-	for (i = 0; i < G_N_ELEMENTS(jobs); i++) {
+	/* every call billed: the character, each walk direction, the rig */
+	if (road->first != NULL)
+		g_ptr_array_add(jobs, road->first);
+	for (i = 0; road->walks != NULL && i < road->walks->len; i++)
+		g_ptr_array_add(jobs, g_ptr_array_index(road->walks, i));
+	if (road->second != NULL)
+		g_ptr_array_add(jobs, road->second);
+
+	for (i = 0; i < jobs->len; i++) {
+		AiMediaJob *job = g_ptr_array_index(jobs, i);
 		g_autoptr(GError) error = NULL;
 
-		if (jobs[i] == NULL)
-			continue;
 		if (!clawt_media_spend_record(path, road->road, "office character",
-		                              ai_media_job_get_id(jobs[i]),
-		                              ai_media_job_get_cost_micro_usd(jobs[i]),
-		                              ai_media_job_get_credits(jobs[i]), &error))
+		                              ai_media_job_get_id(job),
+		                              ai_media_job_get_cost_micro_usd(job),
+		                              ai_media_job_get_credits(job), &error))
 			g_warning("office: %s: spend not recorded: %s", road->agent,
 			          error->message);
 	}
@@ -662,6 +700,7 @@ fetch_all(
 }
 
 static void wait_for(Road *road, const gchar *job_id, GAsyncReadyCallback done);
+static void submit_walk(Road *road);
 
 static void
 on_second_done(
@@ -679,6 +718,26 @@ on_second_done(
 		road_failed(road, g_strcmp0(road->road, "meshy") == 0
 		                  ? "the rig did not finish" : "the walk did not finish",
 		            error);
+		return;
+	}
+
+	/* PixelLab: the next direction joins this one's group */
+	if (g_strcmp0(road->road, "pixellab") == 0 &&
+	    road->walk_at + 1 < G_N_ELEMENTS(walk_directions)) {
+		if (road->group_id == NULL) {
+			/* `character-animate:<character>:<group>:<jobs>` */
+			g_auto(GStrv) parts = g_strsplit(ai_media_job_get_id(road->second), ":", -1);
+
+			if (g_strv_length(parts) < 3 || parts[2][0] == '\0' ||
+			    g_strcmp0(parts[2], "-") == 0) {
+				road_failed(road, "PixelLab named no animation group for the walk", NULL);
+				return;
+			}
+			road->group_id = g_strdup(parts[2]);
+		}
+		g_ptr_array_add(road->walks, g_steal_pointer(&road->second));
+		road->walk_at++;
+		submit_walk(road);
 		return;
 	}
 	fetch_all(road);
@@ -736,8 +795,28 @@ on_first_done(
 	}
 	road->object_id = g_strdup(g_strcmp0(road->road, "pixellab") == 0
 	                           ? parts[1] : parts[n - 1]);
-	next = g_strcmp0(road->road, "pixellab") == 0 ? pixellab_walk(road->object_id)
-	                                              : meshy_rig(road->object_id);
+	if (g_strcmp0(road->road, "pixellab") == 0) {
+		road->walks = g_ptr_array_new_with_free_func(g_object_unref);
+		road->walk_at = 0;
+		submit_walk(road);
+		return;
+	}
+	next = meshy_rig(road->object_id);
+
+	g_main_context_push_thread_default(road->self->main_context);
+	ai_media_generator_submit_async(road->client, next, NULL, on_second_submitted,
+	                                road);
+	g_main_context_pop_thread_default(road->self->main_context);
+}
+
+/* PixelLab: the walk in walk_directions[walk_at], one call at a time. */
+static void
+submit_walk(
+	Road *road
+){
+	g_autoptr(AiMediaRequest) next = pixellab_walk(road->object_id,
+	                                               walk_directions[road->walk_at],
+	                                               road->group_id);
 
 	g_main_context_push_thread_default(road->self->main_context);
 	ai_media_generator_submit_async(road->client, next, NULL, on_second_submitted,

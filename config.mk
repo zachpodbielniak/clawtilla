@@ -11,7 +11,7 @@
 PROJECT_NAME = clawtilla
 VERSION_MAJOR = 0
 VERSION_MINOR = 77
-VERSION_MICRO = 0
+VERSION_MICRO = 1
 VERSION = $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_MICRO)
 
 # Installation paths
@@ -196,7 +196,9 @@ GTK_AVAILABLE  := $(shell pkg-config --exists $(GTK_PKG_DEPS) 2>/dev/null && ech
 # The drawn office (OFFICE=1, since 0.59.0): clawtilla-office and the lrg
 # client's native Office view, both on libregnum, so it brings the lrg
 # backend with it.  libregnum 0.11.0 is the first with the world-space
-# UI, the Tiled importer and frame export the office is drawn with.
+# UI, the Tiled importer and frame export the office is drawn with, and
+# 0.11.1 the first whose raylib decodes JPEG (a generated model's
+# texture); office-scene.c refuses anything older.
 # Loading a .rlevel reaches libregnum's scripting, so the office also
 # links girepository-2.0 and gjs-1.0 when libregnum was built with them
 # (gobject-introspection-devel and gjs-devel on Fedora).

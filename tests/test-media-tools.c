@@ -463,6 +463,38 @@ test_asks_by_default(void)
 }
 
 /*
+ * A paid call is held until the operator answers, and the agent is told
+ * so in the listing it reads: the first live run's agent gave up on a
+ * held call after four minutes, ending its turn, which withdrew the ask.
+ */
+static void
+test_paid_tools_say_they_wait(void)
+{
+	Fixture fixture = { 0 };
+	g_autoptr(JsonNode) listing = NULL;
+	JsonArray *tools;
+	guint paid = 0;
+	guint i;
+
+	setup(&fixture, "");
+	listing = clawt_mcp_tools_list(fixture.daemon->mcp_tools, "alpha");
+	tools = json_object_get_array_member(json_node_get_object(listing), "tools");
+	for (i = 0; i < json_array_get_length(tools); i++) {
+		JsonObject *tool = json_array_get_object_element(tools, i);
+		const gchar *name = json_object_get_string_member(tool, "name");
+		const gchar *description = json_object_get_string_member(tool, "description");
+
+		if (!g_str_has_suffix(name, "_generate"))
+			continue;
+		paid++;
+		g_assert_nonnull(strstr(description, "ending the turn withdraws the request"));
+	}
+	/* alpha holds both services */
+	g_assert_cmpuint(paid, ==, 2);
+	teardown(&fixture);
+}
+
+/*
  * Allowed by a rule: the call goes to the service, the result is saved
  * beside a provenance.yaml where the agent can read it, a non-https link
  * is refused rather than fetched, and what it cost is recorded where the
@@ -511,6 +543,29 @@ test_generate_saves(void)
 	spend = clawt_media_spend_path(state_dir);
 	clawt_media_spend_since(spend, 0, 0, &micros, NULL, NULL);
 	g_assert_cmpint(micros, ==, 40000);
+
+	/*
+	 * alpha has no computer, so it is told the path its tools read and
+	 * nothing else: offered the guest spelling too, the first live agent
+	 * reported /mnt/clawtilla/... back, where nothing exists.
+	 */
+	g_assert_null(strstr(text, "/mnt/clawtilla"));
+
+	/* with a computer that mounts the exchange, both, each said for what */
+	{
+		g_autoptr(JsonNode) again = NULL;
+		g_autofree gchar *with_computer = NULL;
+
+		g_assert_true(clawt_agent_config_set_string(
+			clawt_config_get_agent(fixture.daemon->config, "alpha"),
+			"computer.type", "container"));
+		again = call_async(&fixture, "alpha", "clawtilla_pixellab_generate",
+		                   "{\"operation\":\"image\",\"prompt\":\"a chair\"}");
+		with_computer = response_text(again);
+		g_assert_nonnull(strstr(with_computer, "Saved to "));
+		g_assert_nonnull(strstr(with_computer, "(clawtilla_computer_exec) sees it as "
+		                                       "/mnt/clawtilla/exchange/alpha/media/"));
+	}
 
 	teardown(&fixture);
 }
@@ -612,6 +667,7 @@ main(int argc, char *argv[])
 	g_test_add_func("/media/cost-in-the-question", test_cost_in_the_question);
 	g_test_add_func("/media/daemon/gate", test_gate);
 	g_test_add_func("/media/daemon/asks-by-default", test_asks_by_default);
+	g_test_add_func("/media/daemon/paid-tools-say-they-wait", test_paid_tools_say_they_wait);
 	g_test_add_func("/media/daemon/generate-saves", test_generate_saves);
 	g_test_add_func("/media/daemon/job-is-its-own", test_job_is_its_own);
 	g_test_add_func("/media/daemon/images-stay-inside", test_images_stay_inside);

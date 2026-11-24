@@ -276,6 +276,9 @@ clawt_office_restyle_kinds(
 		json_object_set_string_member(kind, "name",
 		                              json_array_get_string_element(names, i));
 		json_object_set_boolean_member(kind, "floor", on_floor && !on_top);
+		/* walls, glass and doors fill their cell as a floor does */
+		json_object_set_boolean_member(kind, "structure",
+		                               is_structure(json_array_get_string_element(names, i)));
 		json_object_set_boolean_member(kind, "model",
 		                               on_top && g_hash_table_contains(modelled,
 		                                   GUINT_TO_POINTER(gid)) &&
@@ -299,11 +302,27 @@ clawt_office_restyle_prompt(
 	if (three_d)
 		return g_strdup_printf("A %s for an office, as one piece of furniture, "
 		                       "%s, simple game-ready shapes", name, look);
+
+	/*
+	 * A tile is one thing, and the prompt has to say what it must not
+	 * be.  The first live restyle asked for "a carpet seen from above, for
+	 * a top-down pixel-art office game" in a style that itself said
+	 * "office", and PixelLab drew a little office -- desk, window, plants
+	 * -- in nearly every slot, so the floor repeated a room every cell.
+	 */
 	if (json_object_get_boolean_member_with_default(kind, "floor", FALSE))
-		return g_strdup_printf("A seamless %s floor tile seen from directly above, "
-		                       "for a top-down pixel-art office game, %s", name, look);
-	return g_strdup_printf("A %s seen from above, for a top-down pixel-art office "
-	                       "game, %s", name, look);
+		return g_strdup_printf("A flat, seamless %s floor texture filling the whole "
+		                       "square, seen from directly above: only the floor "
+		                       "surface, with no furniture, no objects and no walls. "
+		                       "Style: %s", name, look);
+	if (is_structure(name))
+		return g_strdup_printf("A flat %s texture filling the whole square, seen from "
+		                       "directly above, for one cell of a tile map: only the "
+		                       "%s itself, with no furniture and no objects. Style: %s",
+		                       name, name, look);
+	return g_strdup_printf("One single %s seen from directly above, centred, alone: "
+	                       "only this one object, with no room, no floor, no walls and "
+	                       "no other furniture. Style: %s", name, look);
 }
 
 /* ── The sheet ───────────────────────────────────────────────────── */
@@ -447,6 +466,68 @@ clawt_office_restyle_tiles(
 	g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
 	                    "this daemon was built without cairo (POPPLER=1), so it "
 	                    "cannot redraw a tile sheet");
+	return NULL;
+#endif
+}
+
+GBytes *
+clawt_office_restyle_cut(
+	GBytes  *base_png,
+	guint    tile,
+	guint    columns,
+	guint    gid,
+	guint    size,
+	GError **error
+){
+#ifdef CLAWT_HAVE_POPPLER
+	cairo_surface_t *base;
+	cairo_surface_t *cell;
+	cairo_t *cr;
+	GByteArray *out;
+
+	g_return_val_if_fail(base_png != NULL, NULL);
+
+	base = surface_from(base_png);
+	if (base == NULL || tile == 0 || columns == 0 || gid == 0 || size == 0 ||
+	    (gint)(((gid - 1) / columns + 1) * tile) > cairo_image_surface_get_height(base)) {
+		if (base != NULL)
+			cairo_surface_destroy(base);
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		            "tile %u is not on the base pack's tile sheet", gid);
+		return NULL;
+	}
+
+	/* the slot, scaled to @size with every pixel kept a square */
+	cell = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, (gint)size, (gint)size);
+	cr = cairo_create(cell);
+	cairo_scale(cr, (gdouble)size / tile, (gdouble)size / tile);
+	cairo_set_source_surface(cr, base, -(gdouble)(((gid - 1) % columns) * tile),
+	                         -(gdouble)(((gid - 1) / columns) * tile));
+	cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_NEAREST);
+	cairo_rectangle(cr, 0, 0, tile, tile);
+	cairo_fill(cr);
+	cairo_destroy(cr);
+	cairo_surface_destroy(base);
+
+	out = g_byte_array_new();
+	if (cairo_surface_write_to_png_stream(cell, write_bytes, out) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(cell);
+		g_byte_array_unref(out);
+		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+		                    "the tile could not be written");
+		return NULL;
+	}
+	cairo_surface_destroy(cell);
+	return g_byte_array_free_to_bytes(out);
+#else
+	(void)base_png;
+	(void)tile;
+	(void)columns;
+	(void)gid;
+	(void)size;
+	g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+	                    "this daemon was built without cairo (POPPLER=1), so it "
+	                    "cannot cut a tile");
 	return NULL;
 #endif
 }

@@ -166,6 +166,29 @@ test_world_adapters(void)
     clawt_office_scene_free(scene);
 }
 
+/*
+ * A skinned model whose mesh and skeleton load in different units.
+ * Meshy's rigs nest the model under an Armature scaled 0.01 and raylib
+ * applies that to the mesh, so a 1.7 m character's mesh read 0.017 tall
+ * against bones spanning 1.6: the first live walk drew her hundreds of
+ * metres high.  A real height difference (bones short of the hair, a
+ * hat) is not a unit mistake.
+ */
+static void
+test_units_ratio(void)
+{
+    /* the Meshy case: the mesh is a hundred times small */
+    g_assert_cmpfloat_with_epsilon(clawt_office_scene_units_ratio(0.017f, 1.62f), 100.0f, 0.01f);
+    /* and the other way, millimetres against metres */
+    g_assert_cmpfloat_with_epsilon(clawt_office_scene_units_ratio(1700.0f, 1.6f), 0.001f, 1e-6f);
+    /* the same units: the skeleton stops short of the top of the head */
+    g_assert_cmpfloat(clawt_office_scene_units_ratio(1.7f, 1.45f), ==, 1.0f);
+    g_assert_cmpfloat(clawt_office_scene_units_ratio(1.0f, 2.5f), ==, 1.0f);
+    /* nothing to compare */
+    g_assert_cmpfloat(clawt_office_scene_units_ratio(0.0f, 1.6f), ==, 1.0f);
+    g_assert_cmpfloat(clawt_office_scene_units_ratio(1.7f, 0.0f), ==, 1.0f);
+}
+
 #endif /* CLAWT_HAVE_OFFICE */
 
 gint
@@ -177,6 +200,7 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/lrgui/office/simulate-uses-the-world", test_simulate_uses_the_world);
     g_test_add_func("/lrgui/office/layout-in-and-out", test_layout_in_and_out);
     g_test_add_func("/lrgui/office/world-adapters", test_world_adapters);
+    g_test_add_func("/lrgui/office/units-ratio", test_units_ratio);
 #else
     g_test_message("built without OFFICE=1: the office scene is not compiled in");
 #endif

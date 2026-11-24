@@ -20,6 +20,11 @@
 
 #include <glib/gstdio.h>
 #include <string.h>
+#include <unistd.h>
+
+#ifdef CLAWT_HAVE_POPPLER
+#include <cairo.h>
+#endif
 
 /* A 32x32 PNG: one tile, as PixelLab draws it. */
 #define TILE_PNG "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAKklEQVR4nO3OMQ0AAAACIPuX1hg+jAIkPRMQEBAQEBAQEBAQEBAQEHgHBlfR+GotGw+YAAAAAElFTkSuQmCC"
@@ -75,6 +80,9 @@ test_kinds(void)
 	g_assert_true(json_object_get_boolean_member(kind_named(kinds, "carpet"), "floor"));
 	g_assert_false(json_object_get_boolean_member(kind_named(kinds, "booth"), "model"));
 	g_assert_false(json_object_get_boolean_member(kind_named(kinds, "wall"), "model"));
+	/* a wall fills its cell: asked for with no background it came back blank */
+	g_assert_true(json_object_get_boolean_member(kind_named(kinds, "wall"), "structure"));
+	g_assert_false(json_object_get_boolean_member(kind_named(kinds, "desk"), "structure"));
 
 	/* a kind the map never uses is not drawn */
 	g_assert_null(kind_named(kinds, "empty"));
@@ -134,10 +142,103 @@ test_prompt(void)
 	a = clawt_office_restyle_prompt(floor, "neon", FALSE);
 	b = clawt_office_restyle_prompt(desk, "neon", FALSE);
 	c = clawt_office_restyle_prompt(desk, "neon", TRUE);
-	g_assert_nonnull(strstr(a, "seamless carpet floor tile"));
-	g_assert_nonnull(strstr(b, "desk seen from above"));
+	/*
+	 * Each says what it must not be: from "a carpet seen from above, for a
+	 * top-down pixel-art office game" PixelLab drew whole little offices
+	 */
+	g_assert_nonnull(strstr(a, "seamless carpet floor texture"));
+	g_assert_nonnull(strstr(a, "no furniture"));
+	g_assert_nonnull(strstr(b, "One single desk"));
+	g_assert_nonnull(strstr(b, "no other furniture"));
+	g_assert_nonnull(strstr(b, "neon"));
+	g_assert_null(strstr(b, "office"));
 	g_assert_nonnull(strstr(c, "desk for an office"));
 	g_assert_nonnull(strstr(c, "neon"));
+
+	/* a wall is a texture, not a thing standing in a room */
+	{
+		g_autoptr(JsonObject) wall = json_object_new();
+		g_autofree gchar *w = NULL;
+
+		json_object_set_string_member(wall, "name", "wall");
+		json_object_set_boolean_member(wall, "floor", FALSE);
+		w = clawt_office_restyle_prompt(wall, "neon", FALSE);
+		g_assert_nonnull(strstr(w, "flat wall texture"));
+		g_assert_nonnull(strstr(w, "no furniture"));
+	}
+}
+
+#ifdef CLAWT_HAVE_POPPLER
+/* Writes a PNG cairo hands over into the GByteArray it is given. */
+static cairo_status_t
+append_png(void *closure, const unsigned char *data, unsigned int length)
+{
+	g_byte_array_append(closure, data, length);
+	return CAIRO_STATUS_SUCCESS;
+}
+#endif
+
+/*
+ * The tile a restyle starts from: one slot of the base sheet, scaled up
+ * without smoothing.  A sheet of two 8-pixel tiles, red then blue.
+ */
+static void
+test_cut(void)
+{
+#ifdef CLAWT_HAVE_POPPLER
+	cairo_surface_t *sheet = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 16, 8);
+	cairo_t *cr = cairo_create(sheet);
+	GByteArray *png = g_byte_array_new();
+	g_autoptr(GBytes) base = NULL;
+	g_autoptr(GBytes) cell = NULL;
+	g_autoptr(GBytes) none = NULL;
+	g_autoptr(GError) error = NULL;
+	cairo_surface_t *got;
+	guint32 *pixels;
+
+	cairo_set_source_rgb(cr, 1, 0, 0);
+	cairo_rectangle(cr, 0, 0, 8, 8);
+	cairo_fill(cr);
+	cairo_set_source_rgb(cr, 0, 0, 1);
+	cairo_rectangle(cr, 8, 0, 8, 8);
+	cairo_fill(cr);
+	cairo_destroy(cr);
+	cairo_surface_write_to_png_stream(sheet, append_png, png);
+	cairo_surface_destroy(sheet);
+	base = g_byte_array_free_to_bytes(png);
+
+	cell = clawt_office_restyle_cut(base, 8, 2, 2, 32, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(cell);
+
+	/* 32 a side, and blue all the way to its edges */
+	{
+		gchar *tmp = NULL;
+		gint fd = g_file_open_tmp("clawt-cut-XXXXXX.png", &tmp, NULL);
+
+		g_assert_cmpint(fd, >=, 0);
+		close(fd);
+		g_assert_true(g_file_set_contents(tmp, g_bytes_get_data(cell, NULL),
+		                                  (gssize)g_bytes_get_size(cell), NULL));
+		got = cairo_image_surface_create_from_png(tmp);
+		g_unlink(tmp);
+		g_free(tmp);
+	}
+	g_assert_cmpint(cairo_image_surface_get_width(got), ==, 32);
+	g_assert_cmpint(cairo_image_surface_get_height(got), ==, 32);
+	cairo_surface_flush(got);
+	pixels = (guint32 *)cairo_image_surface_get_data(got);
+	g_assert_cmphex(pixels[0] & 0xffffff, ==, 0x0000ff);
+	g_assert_cmphex(pixels[32 * 31 + 31] & 0xffffff, ==, 0x0000ff);
+	cairo_surface_destroy(got);
+
+	/* a tile the sheet does not have is refused, not cut from nothing */
+	none = clawt_office_restyle_cut(base, 8, 2, 3, 32, &error);
+	g_assert_null(none);
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+#else
+	g_test_skip("built without cairo (POPPLER=1)");
+#endif
 }
 
 /* ── A mock of both services ─────────────────────────────────────── */
@@ -145,6 +246,8 @@ test_prompt(void)
 typedef struct {
 	GObject parent_instance;
 	guint   submits;
+	guint   tiles;        /* tile requests */
+	guint   started_from; /* tile requests carrying their base tile */
 } MockMedia;
 
 typedef struct {
@@ -180,6 +283,11 @@ mock_submit_async(AiMediaGenerator *self, AiMediaRequest *request,
 	g_autofree gchar *json = ai_media_request_to_json(request);
 
 	((MockMedia *)self)->submits++;
+	if (strstr(json, "text-to-3d") == NULL)
+		((MockMedia *)self)->tiles++;
+	if (strstr(json, "\"init_image\"") != NULL &&
+	    strstr(json, "\"init_image_strength\"") != NULL)
+		((MockMedia *)self)->started_from++;
 	g_task_return_pointer(task, g_strdup(strstr(json, "text-to-3d") != NULL
 	                                     ? "text-to-3d:p:r" : "sync:1"), g_free);
 }
@@ -428,6 +536,12 @@ test_restyle(void)
 	path = g_build_filename(dir, "provenance.yaml", NULL);
 	g_assert_true(g_file_test(path, G_FILE_TEST_IS_REGULAR));
 
+	/* every tile was started from its own tile in the base sheet */
+	if (clawt_office_sheet_available()) {
+		g_assert_cmpuint(the_mock->tiles, >, 0);
+		g_assert_cmpuint(the_mock->started_from, ==, the_mock->tiles);
+	}
+
 	/*
 	 * Asked again under the same name, once the world is moved aside:
 	 * the parts are kept, so the card says so and nothing is bought twice.
@@ -493,6 +607,7 @@ main(int argc, char *argv[])
 	g_test_add_func("/office-restyle/kinds-need-names", test_kinds_need_names);
 	g_test_add_func("/office-restyle/level", test_level);
 	g_test_add_func("/office-restyle/prompt", test_prompt);
+	g_test_add_func("/office-restyle/cut", test_cut);
 	g_test_add_func("/office-restyle/end-to-end", test_restyle);
 	g_test_add_func("/office-restyle/refusals", test_refusals);
 

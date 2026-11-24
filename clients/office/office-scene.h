@@ -229,6 +229,24 @@ void clawt_office_scene_orbit(ClawtOfficeScene *self, gfloat dx, gfloat zoom);
 void clawt_office_scene_set_focus(ClawtOfficeScene *self, const gchar *id);
 
 /**
+ * clawt_office_scene_units_ratio:
+ * @mesh_height: the height of a skinned model's mesh, as loaded
+ * @skeleton_height: the height its bind-pose skeleton spans
+ *
+ * By what the mesh must be multiplied to share its skeleton's units.
+ * raylib applies a skinned mesh node's world transform to the vertices,
+ * which glTF says a skinned mesh ignores; Meshy's rigs put the whole
+ * model under an `Armature` scaled 0.01, so the mesh loads a hundred
+ * times smaller than the bones that move it, and the first walk frame
+ * drew the character hundreds of metres tall.  A unit mistake is a power
+ * of ten, so that is what is answered; heights within a factor of five
+ * of each other are taken to agree (a skeleton stops short of the hair).
+ *
+ * Returns: 1, or the power of ten that brings the mesh to the skeleton
+ */
+gfloat clawt_office_scene_units_ratio(gfloat mesh_height, gfloat skeleton_height);
+
+/**
  * clawt_office_scene_n_participants:
  * @self: a scene
  *
