@@ -894,6 +894,25 @@ hook_call(const gchar *agent_id,
         return tool_character_layout(self, arguments, is_error);
     if (g_strcmp0(tool, "clawtilla_office_custodians_install") == 0)
         return tool_custodians_install(self, agent_id, arguments, is_error);
+    if (g_strcmp0(tool, "clawtilla_office_world_restyle") == 0) {
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *decision = clawt_daemon_office_restyle_ask(self,
+            clawt_ipc_payload_string(arguments, "base"),
+            clawt_ipc_payload_string(arguments, "name"),
+            clawt_ipc_payload_string(arguments, "style"),
+            clawt_ipc_payload_boolean(arguments, "two_d", TRUE),
+            clawt_ipc_payload_boolean(arguments, "three_d", FALSE),
+            agent_id, &error);
+
+        if (decision == NULL) {
+            *is_error = TRUE;
+            return g_strdup(error->message);
+        }
+        return g_strdup_printf("Asked: the restyle and its price are a decision for "
+                               "the operator (%s). Nothing is drawn or spent until they "
+                               "approve it; the outcome is said in their chat with you.",
+                               decision);
+    }
     *is_error = TRUE;
     return g_strdup_printf("%s is not an office tool.", tool);
 }

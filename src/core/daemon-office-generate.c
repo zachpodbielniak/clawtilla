@@ -859,7 +859,9 @@ clawt_daemon_office_generate_settle(ClawtDaemon   *self,
     /* only the exact word spends money -- "maybe later" is not a yes */
     if (g_strcmp0(how, "answered") == 0 &&
         g_ascii_strcasecmp(answer != NULL ? answer : "", "approve") == 0) {
-        if (g_str_has_prefix(clawt_decision_get_id(decision), "office-generate-media-"))
+        if (g_str_has_prefix(clawt_decision_get_id(decision), "office-generate-restyle-"))
+            clawt_daemon_office_restyle_start(self, clawt_decision_get_id(decision));
+        else if (g_str_has_prefix(clawt_decision_get_id(decision), "office-generate-media-"))
             clawt_daemon_office_media_start(self, clawt_decision_get_agent(decision));
         else
             clawt_daemon_office_generate_start(self, clawt_decision_get_agent(decision));

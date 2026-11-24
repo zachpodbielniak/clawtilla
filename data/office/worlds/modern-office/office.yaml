@@ -377,6 +377,37 @@ zones:
       - [39.50, 0.0, 37.50]
       - [40.50, 0.0, 37.50]
       - [41.50, 0.0, 37.50]
+tiles:
+  - "carpet"
+  - "wood"
+  - "tile"
+  - "wall"
+  - "desk"
+  - "chair"
+  - "sofa"
+  - "plant"
+  - "table"
+  - "whiteboard"
+  - "shelf"
+  - "server"
+  - "booth"
+  - "door"
+  - "glass"
+  - "grass"
+  - "path"
+  - "water"
+  - "tree"
+  - "flowers"
+  - "bench"
+  - "lamp"
+  - "red rug"
+  - "screen"
+  - "monitor"
+  - "coffee machine"
+  - "lab bench"
+  - "stone"
+  - "hedge"
+  - "podium"
 assets:
   - { path: tiles.png, sha256: 477e1a6317d6f37f006c69bf93170a17fa7090feb1e949d4c2ba37663645865b, source: "tools/clawt-office-genworld.c" }
   - { path: map.tmj, sha256: c371f057c49f5de98814ada92d143b5c2dd37bc7a1679783dd066f01b994c0ed, source: "tools/clawt-office-genworld.c" }

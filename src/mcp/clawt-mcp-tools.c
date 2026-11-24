@@ -952,6 +952,15 @@ static const ClawtParamInfo office_world_apply_params[] = {
     { "world", "string", "The world to draw the office in.", TRUE }
 };
 
+static const ClawtParamInfo office_world_restyle_params[] = {
+    { "base", "string", "The world to start from (its layout is kept).", TRUE },
+    { "name", "string", "The new world's id: letters, digits, - and _.", TRUE },
+    { "style", "string", "What it should look like, in words.", TRUE },
+    { "two_d", "boolean", "Redraw the tiles (default true).", FALSE },
+    { "three_d", "boolean", "Make the furniture as 3D models (default false).",
+      FALSE }
+};
+
 static const ClawtParamInfo office_asset_import_params[] = {
     { "world", "string",
       "The world the asset is for. Give this or character, not both.", FALSE },
@@ -1124,6 +1133,15 @@ static const ToolDefinition tools[] = {
          "Draw the office in another world, for everybody. Only when the "
          "operator or the chief asked for it.",
          NEEDS_OFFICE, office_world_apply_params, CLAWT_ACTION_WRITE),
+
+    TOOL("clawtilla_office_world_restyle",
+         "Make a new world from an existing one in another style: PixelLab "
+         "redraws every tile kind it uses (two_d, on by default) and Meshy "
+         "makes its furniture as 3D models (three_d). Paid: it files one "
+         "priced decision for the operator and returns; nothing is drawn "
+         "before they approve. The new world sits beside the old one until "
+         "somebody chooses it.",
+         NEEDS_OFFICE, office_world_restyle_params, CLAWT_ACTION_EXTERNAL),
 
     TOOL("clawtilla_office_preview",
          "Who would sit where, and in what pose, in a world as it stands -- "

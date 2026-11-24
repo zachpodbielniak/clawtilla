@@ -113,6 +113,7 @@
 #include "chat/clawt-change.h"
 #include "integration/clawt-media.h"
 #include "office/clawt-office-sheet.h"
+#include "office/clawt-office-restyle.h"
 #include "chat/clawt-draft-store.h"
 #include "chat/clawt-room.h"
 #include "chat/clawt-room-manager.h"

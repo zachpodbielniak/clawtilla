@@ -244,6 +244,7 @@ Which zone, pose, prop and emote each activity gets.  Three layers, each replaci
 | ~office.custodians_install~ (~team~, ~start~ optional) | makes the custodial team and its three agents, started unless ~start: false~; answers ~team~ and ~agents~; refused when a team already carries the tag |
 | ~office.character~ (~agent~, ~direct~ optional) | files the task that makes ~agent~'s character and answers its ~task~ id; with ~direct: true~ the daemon makes it itself through =office.asset_api= and answers ~asked: true~ and ~service~ (=comfyui=, =higgsfield=) -- a paid service's estimate arrives as a decision, a self-hosted ComfyUI starts at once.  Refused with what is missing |
 | ~office.api_key~ (~service~, ~key~) | stores the key =office.asset_api= uses; answers ~key_file~, never the key (since 0.60.0) |
+| ~office.world.restyle~ (~base~, ~name~, ~style~, ~two_d~, ~three_d~) | a new world with ~base~'s layout, its tiles redrawn by PixelLab and (~three_d~) its furniture made by Meshy; answers ~decision~, the priced card nothing runs before (since 0.77.0; see [[file:office-world-packs.org::#restyle][office-world-packs.org]]) |
 | ~office.peers~ | ~peers~: each =office.peers= fleet's ~name~, ~where~, ~state~ (=asking=, =ok=, =quiet=, =error=), ~error~, ~fleet~ (its id), ~visitors~ (how many) and ~read_at~ (since 0.64.0) |
 | ~office.peer_pair~ (~name~, ~code~) | pairs with a tailnet peer by redeeming a code its daemon printed; answers ~token_file~, never the token (since 0.64.0) |
 

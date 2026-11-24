@@ -48,6 +48,20 @@ typedef enum {
     T_COUNT
 } Tile;
 
+/*
+ * Each tile's name, by its index: written into the manifest as `tiles:`
+ * so a program restyling a pack (clawtilla office world restyle) knows
+ * a desk from a sofa without a copy of this table.  Beside the enum, in
+ * its order, so the two are one edit.
+ */
+static const gchar *const tile_names[T_COUNT] = {
+    "empty",
+    "carpet", "wood", "tile", "wall", "desk", "chair", "sofa", "plant",
+    "table", "whiteboard", "shelf", "server", "booth", "door", "glass",
+    "grass", "path", "water", "tree", "flowers", "bench", "lamp", "red rug",
+    "screen", "monitor", "coffee machine", "lab bench", "stone", "hedge", "podium"
+};
+
 static void
 rgb(cairo_t *cr, guint hex)
 {
@@ -972,6 +986,15 @@ write_manifest(const World *world, Grid *g, const gchar *dir, GError **error)
         if (anchors->len == 0)
             g_string_append_printf(out, "      - [%.2f, 0.0, %.2f]\n",
                                    r->x + r->w / 2.0, r->y + r->h / 2.0);
+    }
+
+    /* tile names by gid (firstgid 1), for a restyle to know what is what */
+    g_string_append(out, "tiles:\n");
+    {
+        gint t;
+
+        for (t = 1; t < T_COUNT; t++)
+            g_string_append_printf(out, "  - \"%s\"\n", tile_names[t]);
     }
 
     g_string_append(out, "assets:\n");

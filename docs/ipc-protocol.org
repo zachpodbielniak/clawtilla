@@ -1305,6 +1305,7 @@ from a scan that found nothing (an empty ~issues~).  See
 ~sheet_sha256~, ~frame~, ~animations~, and ~mesh~, ~mesh_sha256~ and ~background~ when set), ~office.character_file~
 (~agent~, ~path~ → ~path~, ~size~, ~base64~, resolved inside
 =<state_dir>/office/characters/<agent>/=) and ~office.api_key~ (since 0.60.0),
+~office.world.restyle~ (since 0.77.0: ~base~, ~name~, ~style~, ~two_d~, ~three_d~ → ~decision~, the priced card a restyle waits on),
 ~office.peers~ and ~office.peer_pair~ (since 0.64.0: other fleets' people, visiting --
 [[file:office.org::#federation][Federation]]), and the events
 ~office.presence~ (ephemeral, an edge per participant) and

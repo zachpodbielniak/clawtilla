@@ -5722,6 +5722,11 @@ cmd_office(int argc, char *argv[])
                 "  choreography  the built-in rules: zone, pose, prop per activity\n"
                 "  on, off       turn the office on or off, at once\n"
                 "  use WORLD     draw this world pack\n"
+                "  world restyle BASE NAME --style TEXT [--no-2d] [--3d]\n"
+                "                a new world NAME with BASE's layout, its tiles redrawn\n"
+                "                by PixelLab and (with --3d) its furniture made by\n"
+                "                Meshy; one priced decision first, nothing spent before\n"
+                "                you approve it\n"
                 "  renderer R    auto, 2d or 3d\n"
                 "  custodians    who keeps the office, and the asset generator\n"
                 "  custodians install [--team NAME]\n"
@@ -5743,6 +5748,7 @@ cmd_office(int argc, char *argv[])
                 "Examples:\n"
                 "  clawtilla office on\n"
                 "  clawtilla office use cozy-town\n"
+                "  clawtilla office world restyle modern-office neon --style \"cyberpunk, neon\" --3d\n"
                 "  clawtilla office who\n"
                 "  clawtilla office worlds --json\n"
                 "  clawtilla office choreography > my-rules.yaml\n"
@@ -5779,6 +5785,61 @@ cmd_office(int argc, char *argv[])
         g_printerr("clawtilla: could not start %s: %s.  It is built with "
                    "`make OFFICE=1 LRG_BACKEND=1`.\n", program, g_strerror(errno));
         return EXIT_FAILURE;
+    }
+
+    /*
+     * A world redrawn in another style (0.77.0): asks the daemon, which
+     * files one priced decision; nothing is drawn before it is approved.
+     */
+    if (g_strcmp0(verb, "world") == 0) {
+        const gchar *style = NULL;
+        gboolean two_d = TRUE;
+        gboolean three_d = FALSE;
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        gint k;
+
+        if (argc < 6 || g_strcmp0(argv[3], "restyle") != 0) {
+            g_printerr("Usage: clawtilla office world restyle BASE NAME --style TEXT "
+                       "[--no-2d] [--3d]\n");
+            return EXIT_FAILURE;
+        }
+        for (k = 6; k < argc; k++) {
+            if (g_strcmp0(argv[k], "--style") == 0 && k + 1 < argc)
+                style = argv[++k];
+            else if (g_strcmp0(argv[k], "--no-2d") == 0)
+                two_d = FALSE;
+            else if (g_strcmp0(argv[k], "--3d") == 0)
+                three_d = TRUE;
+            else if (g_strcmp0(argv[k], "--json") != 0) {
+                g_printerr("clawtilla: unknown option %s\n", argv[k]);
+                return EXIT_FAILURE;
+            }
+        }
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "base");
+        json_builder_add_string_value(builder, argv[4]);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, argv[5]);
+        json_builder_set_member_name(builder, "style");
+        json_builder_add_string_value(builder, style != NULL ? style : "");
+        json_builder_set_member_name(builder, "two_d");
+        json_builder_add_boolean_value(builder, two_d);
+        json_builder_set_member_name(builder, "three_d");
+        json_builder_add_boolean_value(builder, three_d);
+        json_builder_end_object(builder);
+
+        client = connect_to_daemon();
+        if (client == NULL)
+            return EXIT_FAILURE;
+        reply = call(client, "office.world.restyle", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        g_print("Asked: the restyle and its price are decision %s.  Approve it with "
+                "`clawtilla decision answer %s approve`; nothing is drawn or spent "
+                "before that.\n",
+                member_or(json_node_get_object(reply), "decision", "?"),
+                member_or(json_node_get_object(reply), "decision", "?"));
+        return EXIT_SUCCESS;
     }
 
     /* on, off, which world, how to draw it: office.set, applied at once */

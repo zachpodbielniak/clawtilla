@@ -333,6 +333,37 @@ zones:
     anchors_3d:
       - [35.50, 0.0, 38.50]
       - [36.50, 0.0, 38.50]
+tiles:
+  - "carpet"
+  - "wood"
+  - "tile"
+  - "wall"
+  - "desk"
+  - "chair"
+  - "sofa"
+  - "plant"
+  - "table"
+  - "whiteboard"
+  - "shelf"
+  - "server"
+  - "booth"
+  - "door"
+  - "glass"
+  - "grass"
+  - "path"
+  - "water"
+  - "tree"
+  - "flowers"
+  - "bench"
+  - "lamp"
+  - "red rug"
+  - "screen"
+  - "monitor"
+  - "coffee machine"
+  - "lab bench"
+  - "stone"
+  - "hedge"
+  - "podium"
 assets:
   - { path: tiles.png, sha256: 477e1a6317d6f37f006c69bf93170a17fa7090feb1e949d4c2ba37663645865b, source: "tools/clawt-office-genworld.c" }
   - { path: map.tmj, sha256: e998e987f3b3267358fabb7b6438edf1ab8c627c5d883d8009af0c7c05ba78af, source: "tools/clawt-office-genworld.c" }

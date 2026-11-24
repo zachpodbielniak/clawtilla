@@ -176,6 +176,7 @@ The six `never` tools are served only to the Grok bot over its own endpoint
 | `clawtilla_office_world_read` | one file of a pack, with loader warnings | world, path | office | read |
 | `clawtilla_office_world_write` | write one pack file; a load-breaking write is undone | world*, path*, content*, from | office | write |
 | `clawtilla_office_world_apply` | draw the office in another world, for everybody | world* | office | write |
+| `clawtilla_office_world_restyle` | a new world from an existing one in another style: PixelLab tiles (two_d, default on), Meshy furniture models (three_d); files one priced decision for the operator and returns | base*, name*, style*, two_d, three_d | office | external |
 | `clawtilla_office_preview` | who would sit where, in what pose | world | office | read |
 | `clawtilla_office_asset_import` | copy a workspace file into a pack or a character | world or character, source*, path*, license, provenance* | office | write |
 | `clawtilla_office_character_layout` | describe an imported sprite sheet's frames | agent*, sheet*, frame_width*, frame_height*, animations*, background | office | write |

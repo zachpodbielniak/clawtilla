@@ -937,6 +937,29 @@ clawt_daemon_handle_office(ClawtDaemon *self,
      * The key the daemon makes characters with directly.  It crosses IPC
      * once, inward; the reply names the file, never the value.
      */
+    /*
+     * A new world from an old one, redrawn by PixelLab and Meshy
+     * (0.77.0): checked and put to a person here; nothing is spent
+     * before the card is approved.
+     */
+    if (g_strcmp0(kind, "office.world.restyle") == 0) {
+        g_autofree gchar *decision = clawt_daemon_office_restyle_ask(self,
+            clawt_ipc_payload_string(payload, "base"),
+            clawt_ipc_payload_string(payload, "name"),
+            clawt_ipc_payload_string(payload, "style"),
+            clawt_ipc_payload_boolean(payload, "two_d", TRUE),
+            clawt_ipc_payload_boolean(payload, "three_d", FALSE),
+            NULL, &error);
+
+        if (decision == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "decision");
+        json_builder_add_string_value(builder, decision);
+        json_builder_end_object(builder);
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "office.api_key") == 0) {
         g_autofree gchar *path = clawt_daemon_office_store_api_key(self,
             clawt_ipc_payload_string(payload, "service"),

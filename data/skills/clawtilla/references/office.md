@@ -39,6 +39,7 @@ clawtilla office off
 | `custodians` / `custodians install [--team NAME]` | see office-custodial.md |
 | `character AGENT [--direct]` | commission a character (office-custodial.md) |
 | `api-key SERVICE` | `higgsfield`, `comfyui`, `pixellab` or `meshy`, read from stdin, echo off |
+| `world restyle BASE NAME --style TEXT [--no-2d] [--3d]` | a new world with BASE's layout: tiles redrawn by PixelLab, furniture (with `--3d`) made by Meshy; one priced decision first |
 | `peers` / `peer-pair NAME CODE` | federation, below |
 | `open [ARGS...]` | execs `clawtilla-office` (beside the CLI, else `PATH`) with the remaining args |
 
@@ -187,3 +188,7 @@ clawtilla office peers                     # name, where, state asking|ok|quiet|
 | GTK: "stopped drawing" | banner has exit status + last stderr line; rerun the command without `--embed`; `G_MESSAGES_DEBUG=Clawtilla clawtilla-gtk` |
 | GTK with `--host`: cannot follow | save the connection as a profile and switch to it (a token cannot go in argv) |
 | Character not drawn | sheet sha256 mismatch with its manifest, or no layout yet (office-custodial.md) |
+
+## Restyling a world (0.77.0)
+
+`clawtilla office world restyle BASE NAME --style "..." [--no-2d] [--3d]` (IPC `office.world.restyle`; agent tool `clawtilla_office_world_restyle`, gate `tools.office`). Keeps BASE's map, zones and anchors; PixelLab redraws each tile kind the map uses into its own slot of a new `tiles.png` (needs a cairo build, `POPPLER=1`); with `--3d` Meshy makes each furniture kind the level draws as one `T<x>-<y>` node (`kind: mesh-asset`, `models/<kind>.glb`) -- walls, glass, doors and multi-node kinds (booths) stay primitives. Needs the base manifest's `tiles:` list (`make office-worlds` writes it). One card (id `office-generate-restyle-<name>:...`); parts kept in `<state_dir>/office/restyle/<name>/parts/`, so asking again buys only what is missing. The pack appears in `<state_dir>/office/worlds/<name>/` only once it loads and every checksum holds; licence names the services, never CC0. Switch to it with `clawtilla office use NAME`. Keys as for characters (`office api-key pixellab|meshy`, or any agent's integration).

@@ -191,3 +191,10 @@ Open the operator's chat with the agent (`clawtilla room history AGENT`): since 
 3. `clawtilla agent restart artist` (tools are read at session start).
 4. Every generation is asked of the operator with its price. To trust the agent, add `clawtilla_pixellab_*=allow` to its `policy.rules` with `clawtilla config edit` -- an agent's list **replaces** `defaults.policy.rules`, so copy the fleet's rules in too (see [security.md](security.md)).
 5. For Meshy spend in dollars and caps: set `orchestration.meshy_credit_micros`.
+
+## Restyle the office
+
+1. Keys: `clawtilla office api-key pixellab` (and `meshy` for 3D furniture), or bind those integrations to any agent.
+2. `clawtilla office world restyle modern-office neon --style "cyberpunk, neon signs" --3d` -- prints a decision id; nothing is spent yet.
+3. `clawtilla decision answer <id> approve`. The outcome is logged (and said in the asking agent's chat when an agent asked).
+4. `clawtilla office use neon` when you like it. A failed step is listed; ask again with the same name to buy only what is missing.

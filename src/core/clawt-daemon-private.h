@@ -1811,6 +1811,15 @@ gboolean clawt_daemon_office_media_ask(ClawtDaemon  *self,
                                        gboolean      all_roads,
                                        GError      **error);
 void clawt_daemon_office_media_start(ClawtDaemon *self, const gchar *agent_id);
+gchar *clawt_daemon_office_restyle_ask(ClawtDaemon  *self,
+                                       const gchar  *base_id,
+                                       const gchar  *name,
+                                       const gchar  *style,
+                                       gboolean      two_d,
+                                       gboolean      three_d,
+                                       const gchar  *asked_by,
+                                       GError      **error);
+void clawt_daemon_office_restyle_start(ClawtDaemon *self, const gchar *decision_id);
 void clawt_daemon_change_notes_saved(ClawtDaemon *self, const gchar *text);
 void clawt_daemon_change_notes_teardown(ClawtDaemon *self);
 void clawt_daemon_revisions_teardown(ClawtDaemon *self);

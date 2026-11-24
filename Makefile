@@ -227,6 +227,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-change.h \
 	$(SRCDIR)/integration/clawt-media.h \
 	$(SRCDIR)/office/clawt-office-sheet.h \
+	$(SRCDIR)/office/clawt-office-restyle.h \
 	$(SRCDIR)/chat/clawt-draft-store.h \
 	$(SRCDIR)/chat/clawt-room.h \
 	$(SRCDIR)/chat/clawt-room-manager.h \
@@ -356,6 +357,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-change-notes.c \
 	$(SRCDIR)/core/daemon-media.c \
 	$(SRCDIR)/core/daemon-office-media.c \
+	$(SRCDIR)/core/daemon-office-restyle.c \
 	$(SRCDIR)/core/daemon-replay.c \
 	$(SRCDIR)/core/daemon-rebuild.c \
 	$(SRCDIR)/core/daemon-tree.c \
@@ -498,6 +500,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-change.c \
 	$(SRCDIR)/integration/clawt-media.c \
 	$(SRCDIR)/office/clawt-office-sheet.c \
+	$(SRCDIR)/office/clawt-office-restyle.c \
 	$(SRCDIR)/chat/clawt-draft-store.c \
 	$(SRCDIR)/chat/clawt-room.c \
 	$(SRCDIR)/chat/clawt-room-manager.c \

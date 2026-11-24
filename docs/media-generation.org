@@ -17,7 +17,7 @@ Two paid services make game art, and clawtilla talks to both directly:
 
 Both are closed, prepaid services: clawtilla's code is free software and the HTTP clients are ai-glib's (=AiMeshyClient=, =AiPixellabClient=, ai-glib 0.16.0), but what comes back is governed by each service's terms, which every saved result says beside it.
 
-They reach agents as two integration types, =meshy= and =pixellab=, with seven tools of clawtilla's own.  The drawn office uses the same clients for its characters: =office.asset_api: pixellab= for a walking sprite sheet and =office.asset_api_3d: meshy= for a rigged 3D model that walks, with a key from =clawtilla office api-key pixellab|meshy= or any agent's integration (see [[file:office-custodial-team.org][office-custodial-team.org]], "PixelLab and Meshy").
+They reach agents as two integration types, =meshy= and =pixellab=, with seven tools of clawtilla's own.  The drawn office uses the same clients for its characters: =office.asset_api: pixellab= for a walking sprite sheet and =office.asset_api_3d: meshy= for a rigged 3D model that walks, with a key from =clawtilla office api-key pixellab|meshy= or any agent's integration (see [[file:office-custodial-team.org][office-custodial-team.org]], "PixelLab and Meshy"), and a whole world pack can be redrawn in another style with =clawtilla office world restyle= ([[file:office-world-packs.org::#restyle][office-world-packs.org]]).
 
 ** Setting one up
 
