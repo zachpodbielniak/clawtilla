@@ -38,7 +38,7 @@ clawtilla office off
 | `on` / `off` / `use WORLD` / `renderer R` | `office.set` |
 | `custodians` / `custodians install [--team NAME]` | see office-custodial.md |
 | `character AGENT [--direct]` | commission a character (office-custodial.md) |
-| `api-key SERVICE` | `higgsfield` or `comfyui`, read from stdin, echo off |
+| `api-key SERVICE` | `higgsfield`, `comfyui`, `pixellab` or `meshy`, read from stdin, echo off |
 | `peers` / `peer-pair NAME CODE` | federation, below |
 | `open [ARGS...]` | execs `clawtilla-office` (beside the CLI, else `PATH`) with the remaining args |
 

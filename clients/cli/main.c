@@ -5884,19 +5884,26 @@ cmd_office(int argc, char *argv[])
          * a secret, typed it, and only then heard the name was wrong.
          */
         if (argc >= 4 && (g_strcmp0(argv[3], "-h") == 0 || g_strcmp0(argv[3], "--help") == 0)) {
-            g_print("Usage: clawtilla office api-key <higgsfield|comfyui>\n"
+            g_print("Usage: clawtilla office api-key <higgsfield|comfyui|pixellab|meshy>\n"
                     "Reads the key from the terminal with echo off and stores it for the daemon.\n"
                     "  higgsfield  KEY_ID:KEY_SECRET from console.higgsfield.ai\n"
-                    "  comfyui     a bearer token, for a ComfyUI behind an auth proxy\n");
+                    "  comfyui     a bearer token, for a ComfyUI behind an auth proxy\n"
+                    "  pixellab    the API token from pixellab.ai (office.asset_api: pixellab)\n"
+                    "  meshy       the API key (msy_...) from meshy.ai (office.asset_api_3d: meshy)\n\n"
+                    "Example:\n"
+                    "  clawtilla office api-key pixellab\n");
             return EXIT_SUCCESS;
         }
         if (argc < 4 || (g_strcmp0(argv[3], "higgsfield") != 0 &&
-                         g_strcmp0(argv[3], "comfyui") != 0)) {
-            g_printerr("Usage: clawtilla office api-key <higgsfield|comfyui>\n");
+                         g_strcmp0(argv[3], "comfyui") != 0 &&
+                         g_strcmp0(argv[3], "pixellab") != 0 &&
+                         g_strcmp0(argv[3], "meshy") != 0)) {
+            g_printerr("Usage: clawtilla office api-key <higgsfield|comfyui|pixellab|meshy>\n");
             return EXIT_FAILURE;
         }
         key = read_secret(g_strcmp0(argv[3], "higgsfield") == 0
-                          ? "Key (KEY_ID:KEY_SECRET): " : "Token: ");
+                          ? "Key (KEY_ID:KEY_SECRET): "
+                          : g_strcmp0(argv[3], "comfyui") == 0 ? "Token: " : "API key: ");
         if (key == NULL || *key == '\0') {
             g_printerr("clawtilla: no key was given\n");
             return EXIT_FAILURE;

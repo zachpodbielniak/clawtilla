@@ -1098,6 +1098,135 @@ media_call(
 	}
 }
 
+/* ── For the office ──────────────────────────────────────────────── */
+
+/*
+ * The client the office makes characters with: the key stored with
+ * `clawtilla office api-key <service>` (secrets.dir/office/<service>.key),
+ * else the first agent's binding of that service -- the account somebody
+ * already gave the fleet.  The test seam stands in for both.
+ */
+AiMediaGenerator *
+clawt_daemon_media_office_client(
+	ClawtDaemon  *self,
+	const gchar  *service,
+	GError      **error
+){
+	g_autofree gchar *secrets_dir = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *key = NULL;
+	GPtrArray *agents;
+	AiMediaGenerator *client = NULL;
+	guint i;
+
+	g_return_val_if_fail(CLAWT_IS_DAEMON(self), NULL);
+
+	if (self->media_client_factory != NULL)
+		return self->media_client_factory(self, service);
+
+	secrets_dir = clawt_config_get_path_value(self->config, "secrets.dir");
+	path = secrets_dir != NULL
+		? g_build_filename(secrets_dir, "office", service, NULL) : NULL;
+	if (path != NULL) {
+		g_autofree gchar *file = g_strconcat(path, ".key", NULL);
+
+		if (g_file_get_contents(file, &key, NULL, NULL))
+			g_strstrip(key);
+	}
+
+	if (key != NULL && *key != '\0') {
+		g_main_context_push_thread_default(self->main_context);
+		client = g_strcmp0(service, "meshy") == 0
+			? AI_MEDIA_GENERATOR(ai_meshy_client_new_with_api_key(key))
+			: AI_MEDIA_GENERATOR(ai_pixellab_client_new_with_api_key(key));
+		g_main_context_pop_thread_default(self->main_context);
+		return client;
+	}
+
+	agents = clawt_config_get_agents(self->config);
+	for (i = 0; agents != NULL && i < agents->len; i++) {
+		const gchar *id = clawt_agent_config_get_id(g_ptr_array_index(agents, i));
+
+		if (media_available(id, service, self))
+			return media_client(self, id, service, error);
+	}
+
+	g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+	            "no %s key: store one with `clawtilla office api-key %s`, or "
+	            "bind a %s integration to an agent",
+	            clawt_media_service_label(service), service, service);
+	return NULL;
+}
+
+static void
+on_office_fetched(
+	GObject      *source,
+	GAsyncResult *result,
+	gpointer      data
+){
+	GTask *task = data;
+	g_autoptr(GError) error = NULL;
+	GBytes *bytes = AI_IS_MEDIA_GENERATOR(source)
+		? ai_media_generator_download_finish(AI_MEDIA_GENERATOR(source), result,
+		                                     &error)
+		: clawt_mcp_http_send_bounded_finish(result, &error);
+	gsize cap = GPOINTER_TO_SIZE(g_task_get_task_data(task));
+
+	if (bytes == NULL)
+		g_task_return_error(task, g_steal_pointer(&error));
+	else if (g_bytes_get_size(bytes) > cap) {
+		g_bytes_unref(bytes);
+		g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		                        "the result is larger than one may be");
+	} else
+		g_task_return_pointer(task, bytes, (GDestroyNotify)g_bytes_unref);
+	g_object_unref(task);
+}
+
+void
+clawt_daemon_media_fetch_async(
+	ClawtDaemon         *self,
+	AiMediaGenerator    *client,
+	const gchar         *url,
+	gsize                max_bytes,
+	GAsyncReadyCallback  callback,
+	gpointer             user_data
+){
+	GTask *task;
+	g_autoptr(SoupMessage) message = NULL;
+
+	g_main_context_push_thread_default(self->main_context);
+	task = g_task_new(NULL, NULL, callback, user_data);
+	g_task_set_task_data(task, GSIZE_TO_POINTER(max_bytes), NULL);
+
+	/* the same rules as an agent's results: data: decoded, else https only */
+	if (url != NULL && g_str_has_prefix(url, "data:")) {
+		ai_media_generator_download_async(client, url, NULL, on_office_fetched,
+		                                  task);
+	} else if (url == NULL || !g_str_has_prefix(url, "https://") ||
+	           (message = clawt_http_message_new("GET", url,
+	                                             CLAWT_HTTP_NO_CREDENTIALS)) == NULL) {
+		g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+		                        "the result is not an https link");
+		g_object_unref(task);
+	} else {
+		if (self->media_session == NULL)
+			self->media_session = soup_session_new();
+		clawt_mcp_http_send_bounded_async(self->media_session, message,
+		                                  max_bytes, NULL, on_office_fetched,
+		                                  task);
+	}
+	g_main_context_pop_thread_default(self->main_context);
+}
+
+GBytes *
+clawt_daemon_media_fetch_finish(
+	GAsyncResult  *result,
+	GError       **error
+){
+	return g_task_propagate_pointer(G_TASK(result), error);
+}
+
 /* ── Wiring ──────────────────────────────────────────────────────── */
 
 void

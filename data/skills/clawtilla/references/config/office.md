@@ -103,13 +103,56 @@ key pair stored with `clawtilla office api-key higgsfield`, billed to
 the API balance in Higgsfield's console); `higgsfield-mcp` (Higgsfield's
 MCP server through a connector's sign-in -- office.asset_generator, or
 the only higgsfield connector -- billed to the account's app credits,
-the ones the website and the hf CLI spend); or empty for none.
+the ones the website and the hf CLI spend); `pixellab` (a pixel-art
+character in four directions with a walk cycle in each, at
+office.pixel_size; a key stored with `clawtilla office api-key
+pixellab`, or any agent's pixellab integration); `meshy` (a rigged 3D
+model that walks, for the 3D view: see office.asset_api_3d); or empty
+for none.
 The two Higgsfield roads are billed separately: choose the one your
 money is in.
 `clawtilla office character AGENT --direct` makes one; a paid service's
 estimate is put to you as a decision and nothing is spent until you
 approve.
 See docs/office-custodial-team.org.
+
+### `office.asset_api_3d`
+
+- Type: string
+- Default: unset
+- Since: 0.76.0
+
+A service that makes each character a 3D model as well: `meshy`, or
+empty for none.
+
+Meshy makes a model from the agent's picture (or, with none, its
+description) and rigs it; the rig comes with a walking clip, which the
+3D view plays when the character walks. Beside office.asset_api, so
+one request can make a PixelLab sprite for the 2D view and a Meshy
+model for the 3D one. The key is `clawtilla office api-key meshy` or
+any agent's meshy integration; the price, in Meshy credits, is put to
+you before anything runs. Meshy deletes what it made after three days;
+the office keeps its copy.
+
+### `office.pixel_size`
+
+- Type: integer
+- Default: `48`
+- Since: 0.76.0
+
+The size, in pixels a side, of a character PixelLab draws for the
+office (office.asset_api: pixellab): 16 to 128. The 2D office's tiles
+are 32 pixels, so 48 stands a head taller than a desk.
+
+### `office.mesh_polycount`
+
+- Type: integer
+- Default: `8000`
+- Since: 0.76.0
+
+How many polygons Meshy aims for in a character's model
+(office.asset_api_3d: meshy): 100 to 300000. A fleet's worth of
+characters is drawn at once, so the default is light.
 
 ### `office.comfyui_url`
 

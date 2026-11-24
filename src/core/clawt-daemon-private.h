@@ -1792,6 +1792,25 @@ void clawt_daemon_revisions_setup(ClawtDaemon *self);
 void clawt_daemon_change_notes_rebase(ClawtDaemon *self);
 void clawt_daemon_media_setup(ClawtDaemon *self);
 void clawt_daemon_media_teardown(ClawtDaemon *self);
+struct _AiMediaGenerator *clawt_daemon_media_office_client(ClawtDaemon  *self,
+                                                           const gchar  *service,
+                                                           GError      **error);
+void clawt_daemon_media_fetch_async(ClawtDaemon               *self,
+                                    struct _AiMediaGenerator  *client,
+                                    const gchar               *url,
+                                    gsize                      max_bytes,
+                                    GAsyncReadyCallback        callback,
+                                    gpointer                   user_data);
+GBytes *clawt_daemon_media_fetch_finish(GAsyncResult  *result,
+                                        GError       **error);
+void clawt_daemon_office_tell_operator(ClawtDaemon *self, const gchar *agent_id,
+                                       const gchar *body);
+gboolean clawt_daemon_office_media_wanted(ClawtDaemon *self);
+gboolean clawt_daemon_office_media_ask(ClawtDaemon  *self,
+                                       const gchar  *agent_id,
+                                       gboolean      all_roads,
+                                       GError      **error);
+void clawt_daemon_office_media_start(ClawtDaemon *self, const gchar *agent_id);
 void clawt_daemon_change_notes_saved(ClawtDaemon *self, const gchar *text);
 void clawt_daemon_change_notes_teardown(ClawtDaemon *self);
 void clawt_daemon_revisions_teardown(ClawtDaemon *self);

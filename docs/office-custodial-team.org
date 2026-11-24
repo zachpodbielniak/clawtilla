@@ -110,7 +110,7 @@ To ask again (a new picture, a better generator):
 clawtilla office character <agent>
 #+end_src
 
-Higgsfield makes images and video and no 3D models.  A model comes from elsewhere -- a ComfyUI workflow with an image-to-3D node (TRELLIS and its kin, licences yours to check), an artist, a CC0 pack -- and is imported like any asset, then attached with ~clawtilla_office_character_mesh~.  A rigged =.glb= with an animation whose name says /walk/ walks; without one the model glides, and a still one never moves.  A character with no model is its current frame on a billboard facing the camera.
+Higgsfield makes images and video and no 3D models.  Meshy does (=office.asset_api_3d: meshy=, below, since 0.76.0); otherwise a model comes from elsewhere -- a ComfyUI workflow with an image-to-3D node (TRELLIS and its kin, licences yours to check), an artist, a CC0 pack -- and is imported like any asset, then attached with ~clawtilla_office_character_mesh~.  A rigged =.glb= with an animation whose name says /walk/ walks; without one the model glides, and a still one never moves.  A character with no model is its current frame on a billboard facing the camera.
 
 ** Made by the daemon itself
 :PROPERTIES:
@@ -186,7 +186,31 @@ Only a self-hosted server skips the card.  A paid service that estimates zero --
 
 Higgsfield's REST API (~api.higgsfield.ai~, the key pair from ~console.higgsfield.ai~) bills a balance of its own, separate from the credits the app, the ~hf~ CLI and the connector spend: on 2026-11-22 an account with 8.5 app credits was refused every submit with =HTTP 403 not_enough_credits=, and the note in the agent's conversation said exactly that.  Fund the API balance in the console to use this road, or switch to ~higgsfield-mcp~, which spends the app credits.
 
-Keys and tokens are files under =secrets.dir/office/= (0600); a reply names the file and never the value, and a key is read when a generation starts, never kept.  A one-frame character stands still in every pose -- a walk cycle needs a sheet, which is the custodial team's road.
+Keys and tokens are files under =secrets.dir/office/= (0600); a reply names the file and never the value, and a key is read when a generation starts, never kept.  A one-frame character stands still in every pose -- a walk cycle needs a sheet, which PixelLab makes on its own road (below) and the custodial team cuts on theirs.
+
+*** PixelLab and Meshy: a character that walks, in 2D and 3D
+
+Since 0.76.0 two more services make characters the renderer animates, in several steps per request and with one card for all of them:
+
+| Key | Value | Makes | Steps |
+|---+---+---+---|
+| =office.asset_api= | ~pixellab~ | a pixel-art sprite sheet: rows =idle=, =walk_down=, =walk_up=, =walk_left=, =walk_right= | a character in four directions at =office.pixel_size= (default 48), then its walk in each direction |
+| =office.asset_api_3d= | ~meshy~ | a rigged GLB with a walking clip, which the 3D view plays when the character walks | a model from the agent's picture (=image-to-3d=) or, with none, its description (=text-to-3d=), at =office.mesh_polycount= (default 8000), A-pose; then Meshy's rig (=biped=), whose free walking clip is the GLB kept |
+
+=office.asset_api_3d= sits beside =office.asset_api=: set both to ~pixellab~ and ~meshy~ and one request makes the 2D sprite and the 3D model on one card.  With =office.asset_api= on another road (Higgsfield, ComfyUI) a Meshy model gets a card of its own beside that road's.
+
+#+begin_src bash
+clawtilla office api-key pixellab       # or bind a pixellab integration to any agent
+clawtilla office api-key meshy          # or bind a meshy integration to any agent
+clawtilla office character kudu --direct
+#+end_src
+
+- *The key*: =secrets.dir/office/<service>.key= from =clawtilla office api-key=, else the first agent's =pixellab= / =meshy= integration ([[file:media-generation.org][media-generation.org]]) -- the account somebody already gave the fleet.  With neither, the request is refused when you ask, naming both remedies.
+- *The card* lists each road and its price: Meshy's from its credit list (=image-to-3d= plus =rig=, "about 35 credits"), PixelLab's as "priced by PixelLab when each is done".  No deadline, default decline, the id prefix =office-generate-media-=.
+- *On approve* each road runs on its own: submit, wait (a Meshy model can take most of an hour on a busy day; the wait allows an hour), the second step with the first's id (PixelLab's character, Meshy's newest task), wait, fetch every result it needs -- https only, no credential, capped while read -- and import it with provenance naming both jobs and the service's terms.  A step that fails stops its road, keeps what was already imported, and is said in your chat with the agent; the other road carries on.
+- *The sheet* is laid out by =clawt_office_sheet_compose()=: every cell the size of the largest frame, frames centred, transparent, so no backdrop keying.  It needs cairo, which comes with the build's optional PDF support (=POPPLER=1=); without it the character is PixelLab's front view, standing, and the note says why.
+- *Spend*: what each job cost goes into the agent's media spend, which the daily caps read (=orchestration.meshy_credit_micros= prices Meshy's credits).
+- Meshy deletes what it made after about three days; the office's copy under =<state_dir>/office/characters/<agent>/generated/= is the one that lasts.
 
 ** Generators
 :PROPERTIES:

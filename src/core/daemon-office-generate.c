@@ -55,10 +55,18 @@ clawt_daemon_office_store_api_key(ClawtDaemon  *self,
     g_autofree gchar *path = NULL;
     g_autofree gchar *dir = NULL;
 
-    if (g_strcmp0(service, "higgsfield") != 0 && g_strcmp0(service, "comfyui") != 0) {
+    if (g_strcmp0(service, "higgsfield") != 0 && g_strcmp0(service, "comfyui") != 0 &&
+        g_strcmp0(service, "pixellab") != 0 && g_strcmp0(service, "meshy") != 0) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
-                    "the office makes characters itself through higgsfield or comfyui "
-                    "(office.asset_api)");
+                    "the office makes characters itself through higgsfield, comfyui, "
+                    "pixellab or meshy (office.asset_api, office.asset_api_3d)");
+        return NULL;
+    }
+    /* PixelLab's and Meshy's keys are one line, like a ComfyUI token */
+    if ((g_strcmp0(service, "pixellab") == 0 || g_strcmp0(service, "meshy") == 0) &&
+        (key == NULL || *key == '\0' || strpbrk(key, "\r\n") != NULL)) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "the key is one line, as the service shows it");
         return NULL;
     }
     /* a ComfyUI behind an auth proxy takes a bearer token: any one line */
@@ -460,9 +468,30 @@ clawt_daemon_office_generate_ask(ClawtDaemon  *self,
                     agent_id != NULL ? agent_id : "");
         return FALSE;
     }
+    /*
+     * PixelLab and Meshy make a character in several steps, with one card
+     * for all of them (daemon-office-media.c).
+     */
+    if (clawt_daemon_office_media_wanted(self)) {
+        if (out_service != NULL)
+            *out_service = g_strdup(clawt_config_get_string(self->config,
+                                                            "office.asset_api"));
+        return clawt_daemon_office_media_ask(self, agent_id, TRUE, error);
+    }
+
     generator = generator_for(self, error);
     if (generator == NULL)
         return FALSE;
+
+    /* a 3D model from Meshy beside this road's picture: a card of its own */
+    if (g_strcmp0(clawt_config_get_string(self->config, "office.asset_api_3d"),
+                  "meshy") == 0) {
+        g_autoptr(GError) deep = NULL;
+
+        if (!clawt_daemon_office_media_ask(self, agent_id, FALSE, &deep))
+            g_warning("office: %s's 3D character was not asked for: %s", agent_id,
+                      deep->message);
+    }
 
     request = request_for(self, agent);
 
@@ -554,6 +583,13 @@ tell_operator(ClawtDaemon *self, const gchar *agent_id, const gchar *body)
     if (!clawt_mailbox_router_record(self->router, message, &error))
         g_warning("office: could not record the outcome for %s: %s", agent_id,
                   error->message);
+}
+
+void
+clawt_daemon_office_tell_operator(ClawtDaemon *self, const gchar *agent_id,
+                                  const gchar *body)
+{
+    tell_operator(self, agent_id, body);
 }
 
 static void
@@ -822,7 +858,11 @@ clawt_daemon_office_generate_settle(ClawtDaemon   *self,
 
     /* only the exact word spends money -- "maybe later" is not a yes */
     if (g_strcmp0(how, "answered") == 0 &&
-        g_ascii_strcasecmp(answer != NULL ? answer : "", "approve") == 0)
-        clawt_daemon_office_generate_start(self, clawt_decision_get_agent(decision));
+        g_ascii_strcasecmp(answer != NULL ? answer : "", "approve") == 0) {
+        if (g_str_has_prefix(clawt_decision_get_id(decision), "office-generate-media-"))
+            clawt_daemon_office_media_start(self, clawt_decision_get_agent(decision));
+        else
+            clawt_daemon_office_generate_start(self, clawt_decision_get_agent(decision));
+    }
     return TRUE;
 }

@@ -2764,13 +2764,41 @@ static const ClawtSchemaEntry schema[] = {
   "the API balance in Higgsfield's console); `higgsfield-mcp` (Higgsfield's\n"
   "MCP server through a connector's sign-in -- office.asset_generator, or\n"
   "the only higgsfield connector -- billed to the account's app credits,\n"
-  "the ones the website and the hf CLI spend); or empty for none.\n"
+  "the ones the website and the hf CLI spend); `pixellab` (a pixel-art\n"
+  "character in four directions with a walk cycle in each, at\n"
+  "office.pixel_size; a key stored with `clawtilla office api-key\n"
+  "pixellab`, or any agent's pixellab integration); `meshy` (a rigged 3D\n"
+  "model that walks, for the 3D view: see office.asset_api_3d); or empty\n"
+  "for none.\n"
   "The two Higgsfield roads are billed separately: choose the one your\n"
   "money is in.\n"
   "`clawtilla office character AGENT --direct` makes one; a paid service's\n"
   "estimate is put to you as a decision and nothing is spent until you\n"
   "approve.\n"
   "See docs/office-custodial-team.org.", "0.60.0" },
+
+{ "office.asset_api_3d", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "A service that makes each character a 3D model as well: `meshy`, or\n"
+  "empty for none.\n"
+  "\n"
+  "Meshy makes a model from the agent's picture (or, with none, its\n"
+  "description) and rigs it; the rig comes with a walking clip, which the\n"
+  "3D view plays when the character walks. Beside office.asset_api, so\n"
+  "one request can make a PixelLab sprite for the 2D view and a Meshy\n"
+  "model for the 3D one. The key is `clawtilla office api-key meshy` or\n"
+  "any agent's meshy integration; the price, in Meshy credits, is put to\n"
+  "you before anything runs. Meshy deletes what it made after three days;\n"
+  "the office keeps its copy.", "0.76.0" },
+
+{ "office.pixel_size", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "48", NULL,
+  "The size, in pixels a side, of a character PixelLab draws for the\n"
+  "office (office.asset_api: pixellab): 16 to 128. The 2D office's tiles\n"
+  "are 32 pixels, so 48 stands a head taller than a desk.", "0.76.0" },
+
+{ "office.mesh_polycount", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "8000", NULL,
+  "How many polygons Meshy aims for in a character's model\n"
+  "(office.asset_api_3d: meshy): 100 to 300000. A fleet's worth of\n"
+  "characters is drawn at once, so the default is light.", "0.76.0" },
 
 { "office.comfyui_url", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   "http://127.0.0.1:8188", NULL,
