@@ -111,34 +111,39 @@ test_unread_two_rooms(void)
     gint64 connected = 1000;
 
     /* two rooms, counted apart */
-    g_assert_true(clawt_lrg_unread_note(unread, "dm:ann:user", "war", "ann",
+    g_assert_true(clawt_lrg_unread_note(unread, "dm:ann:user", "war", "ann", NULL,
                                         2000, connected, rows));
-    g_assert_true(clawt_lrg_unread_note(unread, "dm:ann:user", "war", "ann",
+    g_assert_true(clawt_lrg_unread_note(unread, "dm:ann:user", "war", "ann", NULL,
                                         2001, connected, rows));
-    g_assert_true(clawt_lrg_unread_note(unread, "lobby", "war", "chief",
+    g_assert_true(clawt_lrg_unread_note(unread, "lobby", "war", "chief", NULL,
                                         2002, connected, rows));
     g_assert_cmpuint(clawt_lrg_unread_count(unread, "dm:ann:user"), ==, 2);
     g_assert_cmpuint(clawt_lrg_unread_count(unread, "lobby"), ==, 1);
     g_assert_cmpuint(clawt_lrg_unread_total(unread), ==, 3);
 
     /* the room on screen never counts, whatever the scroll position */
-    g_assert_false(clawt_lrg_unread_note(unread, "war", "war", "ann", 2003,
+    g_assert_false(clawt_lrg_unread_note(unread, "war", "war", "ann", NULL, 2003,
                                          connected, rows));
 
     /* the operator's own words do not count */
-    g_assert_false(clawt_lrg_unread_note(unread, "lobby", "war", "user", 2004,
+    g_assert_false(clawt_lrg_unread_note(unread, "lobby", "war", "user", NULL, 2004,
                                          connected, rows));
 
     /* a replay from before this client connected does not count */
-    g_assert_false(clawt_lrg_unread_note(unread, "lobby", "war", "chief", 10,
+    g_assert_false(clawt_lrg_unread_note(unread, "lobby", "war", "chief", NULL, 10,
                                          connected, rows));
 
     /* peer traffic has no row to clear it, so it never counts */
-    g_assert_false(clawt_lrg_unread_note(unread, "dm:ann:chief", "war", "ann",
+    g_assert_false(clawt_lrg_unread_note(unread, "dm:ann:chief", "war", "ann", NULL,
                                          2005, connected, rows));
 
+    /* a change note is a record, not a word from the agent: never counted */
+    g_assert_false(clawt_lrg_unread_note(unread, "dm:ann:user", "war",
+                                         CLAWT_SYSTEM_SENDER, "routine",
+                                         2007, connected, rows));
+
     /* no listing yet: nothing is known, so nothing counts */
-    g_assert_false(clawt_lrg_unread_note(unread, "lobby", NULL, "chief",
+    g_assert_false(clawt_lrg_unread_note(unread, "lobby", NULL, "chief", NULL,
                                          2006, connected, NULL));
     g_assert_cmpuint(clawt_lrg_unread_total(unread), ==, 3);
 

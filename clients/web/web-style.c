@@ -719,6 +719,10 @@ clawt_web_stylesheet(void)
      * name set in small caps reads as metadata about a message rather
      * than as a person saying something.
      */
+    ".change-note{display:flex;gap:8px;align-items:flex-start;"
+    "margin:4px 0 4px 44px;font-size:12px;color:var(--muted);"
+    "white-space:pre-line}"
+    ".change-note .change-icon{flex:none}"
     ".msg-who{display:flex;align-items:center;gap:8px;font-size:13px;"
       "color:var(--ink-2);margin-bottom:3px;font-weight:600}"
     /*

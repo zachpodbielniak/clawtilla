@@ -134,6 +134,7 @@ see security.md).
 | `orchestration.answer_in_request_room` | boolean | `true` |  | Hand an agent's answer to the asker in the conversation it asked from, rather than in the room the two agents share. |
 | `orchestration.crosstalk_summary` | enum | `chief` | `crosstalk_summary` | Tell you about agent-to-agent conversations: chief, on or off. |
 | `orchestration.crosstalk_summary_to` | enum | `source` | `crosstalk_summary_to` | Where a cross-talk summary is posted: source or chat. |
+| `orchestration.config_notes` | enum | `agents` |  | Say in an agent's chat when its configuration was changed: agents, all or off. |
 | `orchestration.crosstalk_summary_model` | string | `` |  | A small model that rewrites each cross-talk summary as one friendly paragraph, as provider/model -- the same spelling as orchestration.ack_check_model. |
 | `orchestration.mailbox` | section |  |  | Defaults for every agent's mailbox. |
 | `orchestration.mailbox.max_depth` | integer | `1000` | `mailbox.max_depth` | How many undelivered items a mailbox holds before overflow applies. |

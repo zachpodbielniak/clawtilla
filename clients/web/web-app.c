@@ -881,7 +881,8 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
          * badge, and a chat you have to remember to open is a chat you
          * forget.
          */
-        if (clawt_unread_should_count(subject, viewing_room, from,
+        if (clawt_unread_should_count_message(subject, viewing_room, from,
+                                      clawt_event_get_detail(event, "change"),
                                       clawt_event_get_timestamp(event),
                                       self->connected_at,
                                       self->sidebar_rooms))

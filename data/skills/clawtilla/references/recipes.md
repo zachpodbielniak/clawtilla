@@ -179,3 +179,7 @@ See [connectors.md](connectors.md), [integrations.md](integrations.md).
 1. Both sides: `clawtilla federation set ALIAS join_rooms=true`.
 2. Host: `clawtilla room share design lab`. Their sidebar shows "design @ <your fleet>".
 3. Stop: `clawtilla room unshare design lab` (revoking the link also ends it). See [federation.md](federation.md).
+
+## See who changed an agent, and when
+
+Open the operator's chat with the agent (`clawtilla room history AGENT`): since 0.74.0 every change another agent (or the agent itself) made to its settings, routines, triggers, mounts, integrations or skills is a compact note there, with who made it. `clawtilla history config` has the full text of each version, authored by the same actor. To see the operator's own changes in the chats too: `clawtilla config edit` and set `orchestration.config_notes: all`, then `clawtilla config reload`. When you change another agent and it needs to act on the change, message it -- the note is a record and starts no turn.

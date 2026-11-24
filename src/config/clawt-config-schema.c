@@ -926,6 +926,25 @@ static const ClawtSchemaEntry schema[] = {
   "lost where it came from and comes to your chat. Set per agent as\n"
   "`crosstalk_summary_to`.", "0.33.0" },
 
+{ "orchestration.config_notes", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "agents", clawt_config_notes_get_type,
+  "Say in an agent's chat when its configuration was changed: agents,\n"
+  "all or off.\n"
+  "\n"
+  "When an agent changes another agent's settings -- or its own -- or\n"
+  "adds, edits, turns on or off or removes a routine or trigger that runs\n"
+  "as it, a one-line note appears in your chat with the agent that was\n"
+  "changed: what changed and who changed it. Without it the only trace\n"
+  "is the acting agent's own tool step, in the acting agent's chat.\n"
+  "\n"
+  "agents, the default: changes an agent or another fleet made. all:\n"
+  "your own changes from a client or the CLI as well. off: none. A\n"
+  "hand edit of this file names nobody and is never noted.\n"
+  "\n"
+  "The note is the daemon's, recorded and never delivered: it starts no\n"
+  "turn and the changed agent is not told by it. A credential's value is\n"
+  "never shown, and nothing in an agent's env: block is.", "0.74.0" },
+
 { "orchestration.crosstalk_summary_model", CLAWT_SCHEMA_STRING,
   CLAWT_SCHEMA_FLAG_COMMENTED, "", NULL,
   "A small model that rewrites each cross-talk summary as one friendly\n"

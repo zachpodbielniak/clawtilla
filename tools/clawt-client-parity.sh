@@ -370,6 +370,7 @@ declare -A AFFORDANCES=(
     ["office.peers deprecation notice"]="clawt-fed-deprecated|fed-deprecated|clawt-fed-deprecated"
     # federation (0.73.0)
     ["message delivery ticks"]="clawt-fed-delivery|fed-delivery|clawt-fed-delivery"
+    ["config change notes"]="clawt_gtk_append_change_note|change_note_element|append_change_note(app"
     #
     # The Office page (0.56.0): the roster line from the library, and the
     # slot the drawn office goes in -- a note in a build without OFFICE=1.

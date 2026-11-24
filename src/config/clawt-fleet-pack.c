@@ -48,29 +48,13 @@ machine_specific(const gchar *path)
  * A credential by its schema type, or -- for keys the schema types as
  * plain strings -- by its name.  Both are left behind: a secret
  * reference names a file or variable on this machine, and a value is a
- * value.
+ * value.  clawt_change_key_is_credential() is the one rule, shared with
+ * the change notes.
  */
 static gboolean
 credential(const gchar *path, const gchar *key)
 {
-	const ClawtSchemaEntry *entry = clawt_config_schema_lookup(path);
-	static const gchar *const names[] = {
-		"token", "secret", "password", "api_key", "token_file",
-		"secret_file", "password_file", NULL
-	};
-	guint i;
-
-	if (entry != NULL && entry->type == CLAWT_SCHEMA_SECRET)
-		return TRUE;
-
-	for (i = 0; names[i] != NULL; i++) {
-		if (g_strcmp0(key, names[i]) == 0)
-			return TRUE;
-	}
-
-	return g_str_has_suffix(key, "_token") ||
-	       g_str_has_suffix(key, "_secret") ||
-	       g_str_has_suffix(key, "_password");
+	return clawt_change_key_is_credential(path, key);
 }
 
 /*

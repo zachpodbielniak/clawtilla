@@ -113,6 +113,7 @@ struct _ClawtDaemon {
     /* who and why for the save being made now (a restore), else NULL */
     const gchar        *revision_author;
     const gchar        *revision_note;
+    JsonNode           *change_snapshot;  /* the config before the next save, for change notes */
     /* project id -> ProjectSpend, a minute's cache of the month's spend */
     GHashTable         *project_spend;
     /* "<project>:<YYYY-MM>" for each budget warning already given */
@@ -1782,6 +1783,9 @@ gchar *clawt_daemon_skill_test_verdict(const gchar         *result,
                                        const gchar * const *expect,
                                        const gchar * const *reject);
 void clawt_daemon_revisions_setup(ClawtDaemon *self);
+void clawt_daemon_change_notes_rebase(ClawtDaemon *self);
+void clawt_daemon_change_notes_saved(ClawtDaemon *self, const gchar *text);
+void clawt_daemon_change_notes_teardown(ClawtDaemon *self);
 void clawt_daemon_revisions_teardown(ClawtDaemon *self);
 void clawt_daemon_revisions_watch_skills(ClawtDaemon *self);
 void clawt_daemon_revisions_record_file(ClawtDaemon *self,

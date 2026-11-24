@@ -1624,6 +1624,39 @@ append_waiting_mark(ClawtLrgApp *app, const gchar *waiting_on)
     clawt_lrg_take(chat.transcript, line);
 }
 
+/*
+ * A change note: an agent's configuration changed by somebody else, as
+ * one quiet row -- the kind as a badge (the kind's icon is an emoji,
+ * which the face this draws with need not have), then the note's lines.
+ * Not a message: nobody said it, so it has no face or name.
+ */
+static void
+append_change_note(ClawtLrgApp *app, const gchar *change, const gchar *body)
+{
+    ClawtChangeKind kind = CLAWT_CHANGE_SETTING;
+    g_auto(GStrv) lines = NULL;
+    g_autofree gchar *joined = NULL;
+    LrgWidget *mark;
+
+    if (chat.transcript == NULL)
+        return;
+
+    /*
+     * One line: the caption under a mark draws each line as a paragraph
+     * of its own, which spread a two-line note into what read as two
+     * notes.  "--", not a dot or a dash, for the face's glyph set.
+     */
+    lines = g_strsplit(body != NULL ? body : "", "\n", -1);
+    joined = g_strjoinv("  --  ", lines);
+
+    (void)clawt_change_kind_from_nick(change, &kind);
+    mark = clawt_lrg_message_mark(clawt_change_kind_label(kind), "neutral",
+                                  joined, FALSE,
+                                  px(app, CHAT_ROW_MARGIN + CHAT_GUTTER));
+    lrg_widget_set_name(mark, "clawt-change-note");
+    clawt_lrg_take(chat.transcript, mark);
+}
+
 /* A message's tick in a conversation with another fleet (0.73.0). */
 static void
 append_delivery_mark(ClawtLrgApp *app, const gchar *state)
@@ -3110,6 +3143,14 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps,
         if ((gint)i == rule_at && chat.unread_rule == NULL) {
             chat.unread_rule = unread_rule_new(app);
             clawt_lrg_take(chat.transcript, chat.unread_rule);
+        }
+
+        /* a change note is one compact row, and nothing more */
+        if (clawt_ipc_payload_string(message, "change") != NULL) {
+            append_change_note(app,
+                               clawt_ipc_payload_string(message, "change"),
+                               clawt_ipc_payload_string(message, "body"));
+            continue;
         }
 
         append_round_marks(app, clawt_ipc_payload_int(message, "round", 0),
@@ -5513,6 +5554,14 @@ on_message_event(ClawtLrgApp *app, ClawtEvent *event)
 
         /* the rule goes above the first thing not yet seen */
         note_arrival(app);
+
+        /* a change note: one compact row, never a message or a turn */
+        if (clawt_event_get_detail(event, "change") != NULL) {
+            append_change_note(app, clawt_event_get_detail(event, "change"),
+                               body);
+            return;
+        }
+
         append_round_marks(app, clawt_event_get_detail_int(event, "round"),
                            NULL, NULL, TRUE);
         /*
@@ -5574,6 +5623,7 @@ on_message_event(ClawtLrgApp *app, ClawtEvent *event)
     rows = clawt_lrg_chat_row_rooms(app->agents, app->rooms);
 
     if (clawt_lrg_unread_note(app->unread, room, chat.room, from,
+                              clawt_event_get_detail(event, "change"),
                               clawt_event_get_timestamp(event),
                               chat.connected_at, rows))
         fleet_marks_changed(app);

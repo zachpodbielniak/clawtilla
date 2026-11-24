@@ -2259,6 +2259,15 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
              */
             clawt_gtk_note_arrival(self);
 
+            /* A change note: one compact row, never a message or a turn. */
+            if (clawt_event_get_detail(event, "change") != NULL) {
+                clawt_gtk_append_change_note(self,
+                    clawt_event_get_detail(event, "change"),
+                    body != NULL ? body : "");
+                clawt_gtk_queue_scroll(self);
+                return;
+            }
+
             clawt_gtk_append_round_marks(self,
                                      clawt_event_get_detail_int(event, "round"),
                                      NULL, NULL, TRUE);

@@ -38,12 +38,25 @@ on_config_saved(
 
 	(void)config;
 
-	if (self->revisions == NULL || self != observed)
+	if (self != observed)
 		return;
 
+	/* Notes first: they do not depend on the history having opened. */
+	clawt_daemon_change_notes_saved(self, text);
+
+	if (self->revisions == NULL)
+		return;
+
+	/*
+	 * The actor whoever started this save pushed, so the history and the
+	 * note name the same author; revision_author still wins for the two
+	 * writers that set it on purpose (a restore, an import).
+	 */
 	if (clawt_revisions_record(self->revisions, "config", "config", text,
-	                           self->revision_author, self->revision_note,
-	                           &error) == 0)
+	                           self->revision_author != NULL
+	                               ? self->revision_author
+	                               : clawt_change_actor_get(),
+	                           self->revision_note, &error) == 0)
 		g_warning("revisions: the config was saved but not kept: %s",
 		          error->message);
 }
@@ -138,6 +151,15 @@ clawt_daemon_revisions_setup(
 
 	g_return_if_fail(CLAWT_IS_DAEMON(self));
 
+	/*
+	 * The observer first, and whether or not the history opens: the
+	 * change notes ride the same observer and must not depend on a
+	 * database they never read.
+	 */
+	clawt_daemon_change_notes_rebase(self);
+	observed = self;
+	clawt_config_set_save_observer(on_config_saved, self);
+
 	path = g_build_filename(self->state_dir, "revisions.db", NULL);
 	self->revisions = clawt_revisions_new(path, &error);
 
@@ -146,9 +168,6 @@ clawt_daemon_revisions_setup(
 		          path, error->message);
 		return;
 	}
-
-	observed = self;
-	clawt_config_set_save_observer(on_config_saved, self);
 
 	/*
 	 * The config's baseline here; each agent's persona files are recorded
@@ -210,6 +229,7 @@ clawt_daemon_revisions_teardown(
 	}
 
 	g_clear_object(&self->revisions);
+	clawt_daemon_change_notes_teardown(self);
 }
 
 /* ── The current text of a subject ───────────────────────────────── */

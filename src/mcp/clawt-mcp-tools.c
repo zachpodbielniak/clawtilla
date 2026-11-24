@@ -10865,12 +10865,38 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
     return tools_call(self, agent_id, room_id, request, FALSE);
 }
 
+static JsonNode *tools_call_run(ClawtMcpTools *self, const gchar *agent_id,
+                                const gchar *room_id, JsonNode *request,
+                                gboolean policy_done);
+
+/*
+ * Every tool call is made as its agent: a save one causes is
+ * attributed to that agent in the change notes and the revision
+ * history.  Here rather than in each tool, because every tool that can
+ * save goes through this and a list of the ones that do would drift.
+ */
 static JsonNode *
 tools_call(ClawtMcpTools *self,
            const gchar   *agent_id,
            const gchar   *room_id,
            JsonNode      *request,
            gboolean       policy_done)
+{
+    JsonNode *response;
+
+    clawt_change_actor_push(agent_id, NULL);
+    response = tools_call_run(self, agent_id, room_id, request, policy_done);
+    clawt_change_actor_pop();
+
+    return response;
+}
+
+static JsonNode *
+tools_call_run(ClawtMcpTools *self,
+               const gchar   *agent_id,
+               const gchar   *room_id,
+               JsonNode      *request,
+               gboolean       policy_done)
 {
     const gchar *turn_room = NULL;
     JsonObject *root;

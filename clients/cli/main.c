@@ -4734,6 +4734,22 @@ cmd_room(int argc, char *argv[])
 
         for (i = 0; i < json_array_get_length(messages); i++) {
             JsonObject *message = json_array_get_object_element(messages, i);
+            const gchar *change = member_or(message, "change", NULL);
+            ClawtChangeKind kind = CLAWT_CHANGE_SETTING;
+
+            /*
+             * A change note: the kind's icon in the sender's column,
+             * because the daemon wrote it, nobody said it.
+             */
+            if (change != NULL &&
+                clawt_change_kind_from_nick(change, &kind)) {
+                g_auto(GStrv) lines = g_strsplit(
+                    member_or(message, "body", ""), "\n", -1);
+                g_autofree gchar *joined = g_strjoinv("; ", lines);
+
+                g_print("%-16s %s\n", clawt_change_kind_icon(kind), joined);
+                continue;
+            }
 
             g_print("%-16s %s\n", member_or(message, "sender", "?"),
                     member_or(message, "body", ""));

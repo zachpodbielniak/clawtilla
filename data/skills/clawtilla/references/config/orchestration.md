@@ -331,6 +331,30 @@ chat with it. An exchange picked up again after a daemon restart has
 lost where it came from and comes to your chat. Set per agent as
 `crosstalk_summary_to`.
 
+### `orchestration.config_notes`
+
+- Type: enum
+- Values: agents, all, off
+- Default: `agents`
+- Since: 0.74.0
+
+Say in an agent's chat when its configuration was changed: agents,
+all or off.
+
+When an agent changes another agent's settings -- or its own -- or
+adds, edits, turns on or off or removes a routine or trigger that runs
+as it, a one-line note appears in your chat with the agent that was
+changed: what changed and who changed it. Without it the only trace
+is the acting agent's own tool step, in the acting agent's chat.
+
+agents, the default: changes an agent or another fleet made. all:
+your own changes from a client or the CLI as well. off: none. A
+hand edit of this file names nobody and is never noted.
+
+The note is the daemon's, recorded and never delivered: it starts no
+turn and the changed agent is not told by it. A credential's value is
+never shown, and nothing in an agent's env: block is.
+
 ### `orchestration.crosstalk_summary_model`
 
 - Type: string

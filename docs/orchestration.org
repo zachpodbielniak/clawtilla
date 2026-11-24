@@ -2022,6 +2022,54 @@ A fleet that has never had the ledger -- the first start of a daemon with this f
 
 All three draw a summary apart from ordinary talk -- libclawt's badge (~clawt_crosstalk_mark_label()~) and one action per exchange (~clawt_crosstalk_flow_label()~) that opens the conversation on the Flow page: GTK selects that room in Flow's list, lrg opens it in Flow's pane, and the web client links to the room's card on its Flow digest (~clawt_crosstalk_anchor()~).  See [[file:clients.org][clients.org]].
 
+** Telling an agent's chat that it was changed
+:PROPERTIES:
+:CUSTOM_ID: change-notes
+:END:
+
+When an agent changes another agent's configuration -- or its own -- the only trace used to be the acting agent's own tool step, in the acting agent's chat.  Reading the agent that was changed showed nothing, so a routine somebody else switched off looked like a scheduler that had stopped firing.  Since 0.74.0 the change is said where it happened: a one-line note in your chat with the agent that was changed, naming what changed and who changed it.
+
+#+begin_example
+⏱ Disabled routine Bass Pro Black Friday go-live watch
+  by oxpecker
+#+end_example
+
+*What is seen.*  Every save of ~clawtilla.yaml~ is compared with the configuration as it was before (=clawt_change_diff()=), so nothing that changes the file can be missed by a list of call sites:
+
+| Kind | What it covers | Told to |
+|---+---+---|
+| setting | any key in the agent's own block, with the old and new value | the agent |
+| integration, mount, skills, team | the same, by where the key sits | the agent |
+| routine | added, removed, enabled, disabled, or edited (the fields named) | the agent it runs as |
+| trigger | the same | every agent it delivers to (=agent= and =agents=) |
+| created | a new agent | the new agent |
+| removed | an agent taken out of the fleet | the agent that removed it, when an agent did |
+
+Fleet-wide settings (=defaults.*=, =orchestration.*=) are about no one agent and are not noted.  A routine moved from one agent to another is removed from the first's chat and added to the second's.  One save that changes many keys is one note: the first five lines and "+N more".
+
+*Who acted.*  Each door that can lead to a save says who is acting, and the innermost wins:
+
+- a tool call is its agent;
+- an IPC request is the operator (=user=) -- unless the CLI was run in an agent's own shell, where =CLAWTILLA_AGENT_ID= is set, and the CLI sends it as =acting_agent=.  That hint is attribution only: the request is still judged on the credential that sent it, a name that is not one of this fleet's agents is ignored, and the note says "via the CLI";
+- another fleet is =fleet:ALIAS:AGENT=, shown as =AGENT@ALIAS=.
+
+The same actor is the author recorded in the revision history (=clawtilla history config=), so the two never name different people for one change.  A hand edit of the file, taken up by a reload, names nobody: the comparison is rebased without a note, so it is never pinned on whoever saves next.
+
+*Which are noted* is ~orchestration.config_notes~:
+
+#+begin_src yaml
+orchestration:
+  config_notes: agents    # agents | all | off
+#+end_src
+
+=agents= (the default) notes changes an agent or another fleet made; =all= adds the operator's own changes from a client or the CLI; =off= notes nothing.
+
+*The note is the daemon's record, not a message to the agent.*  It is recorded into the room and never delivered: it starts no turn, invites no reply, touches no mailbox, hop or budget, and is never summarised as cross-talk.  A change waking the agent it changed would invite it to react, and a reaction that changes something back is a loop nobody asked for.  If the changed agent must act on the change, telling it is the acting agent's job, by message.  A change note never counts as unread (=clawt_unread_should_count_message()=), because it is something that happened to the agent rather than something it said.
+
+*Secrets.*  A credential's value is never shown -- a key the schema types as a secret, or named like one (=token=, =password=, =*_secret=...), says only that it changed -- and nor is anything in an agent's =env:= or =credentials:= block, whatever its name.
+
+Every client draws a note as one compact row with the kind's icon (=clawt_change_kind_icon()=; lrg, whose face need not carry the emoji, draws the kind's name as a badge), and =clawtilla room history= prints it with the icon in the sender's column.  On the wire it is a message with ~change~ and ~change_actor~; see [[file:ipc-protocol.org][ipc-protocol.org]].
+
 ** Waits: a condition checked by code
 
 "Tell me when the build finishes" used to be a routine that woke the model on every tick to look and go back to sleep -- a turn's worth of money for each "not yet".  A *wait* is the same request with the looking done by the daemon: the model is needed when it sets the wait and once more when the condition holds, and nothing in between.  A pending wait costs no turns and no tokens, and the tool's own description says so, because that is the whole decision an agent makes about it.

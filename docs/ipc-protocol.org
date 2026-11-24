@@ -2625,6 +2625,26 @@ reader serves either source:
   reply.  See "Telling you about cross-talk" in
   [[file:orchestration.org][orchestration.org]].
 
+- ~change~ and ~change_actor~ --- strings (since 0.74.0): the message is
+  the daemon's note that the agent's configuration was changed
+  (~orchestration.config_notes~).  ~change~ is a ~ClawtChangeKind~ nick
+  (~setting~, ~routine~, ~trigger~, ~mount~, ~integration~, ~skill~,
+  ~persona~, ~team~, ~created~, ~removed~) for the note's first line;
+  ~change_actor~ is who made the change (an agent id, ~user~, ~system~ or
+  ~fleet:ALIAS:AGENT~).  Draw it as one compact row -- the kind's icon
+  from ~clawt_change_kind_icon()~ (~clawt_change_kind_from_nick()~), then
+  the body -- not as a message with a face and a name.  It is from
+  ~clawtilla~, never delivered to the agent, and never counted as unread:
+  count with ~clawt_unread_should_count_message()~.  See "Telling an
+  agent's chat that it was changed" in [[file:orchestration.org][orchestration.org]].
+
+A request frame may carry a top-level ~acting_agent~ (since 0.74.0): the
+CLI sets it from ~CLAWTILLA_AGENT_ID~, which every agent's process has,
+so a change made from an agent's shell is attributed to that agent in
+the change notes and the revision history.  It is a name, never a
+credential: the request is judged on the connection's credential, and a
+name that is not one of the fleet's agents is ignored.
+
 ~turn.step~ is one step of a turn that is still running: a tool the
 agent reached for, or a paragraph it wrote between two of them.  It
 carries the same members ~room.steps~ does.

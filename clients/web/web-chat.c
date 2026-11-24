@@ -201,6 +201,35 @@ round_divider(gint64 round)
     return HTMX_ELEMENT(g_steal_pointer(&row));
 }
 
+/*
+ * A change note: an agent's configuration changed by somebody else, as
+ * one quiet row -- libclawt's icon for the kind, then the note's lines.
+ * Not a message: nobody said it, so it has no face and no name.
+ */
+static HtmxElement *
+change_note_element(JsonObject *message)
+{
+    g_autoptr(HtmxDiv) row = htmx_div_new();
+    g_autoptr(HtmxSpan) icon = htmx_span_new();
+    g_autoptr(HtmxSpan) text = htmx_span_new();
+    ClawtChangeKind kind = CLAWT_CHANGE_SETTING;
+
+    (void)clawt_change_kind_from_nick(
+        clawt_web_member(message, "change", NULL), &kind);
+
+    htmx_element_add_class(HTMX_ELEMENT(row), "change-note");
+    htmx_element_add_class(HTMX_ELEMENT(icon), "change-icon");
+    htmx_element_set_attribute(HTMX_ELEMENT(icon), "title",
+                               clawt_change_kind_label(kind));
+    htmx_node_set_text_content(HTMX_NODE(icon), clawt_change_kind_icon(kind));
+    htmx_node_set_text_content(HTMX_NODE(text),
+                               clawt_web_member(message, "body", ""));
+    clawt_web_add(row, g_steal_pointer(&icon));
+    clawt_web_add(row, g_steal_pointer(&text));
+
+    return HTMX_ELEMENT(g_steal_pointer(&row));
+}
+
 static HtmxElement *
 message_element(JsonObject *message, const gchar *agent_id,
                 gboolean has_avatar, gboolean run_start, const gchar *color,
@@ -1158,6 +1187,16 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
 
             if ((gint)i == rule_at)
                 clawt_web_add(inner, unread_rule());
+
+            /*
+             * A change note is one compact row; the message after it
+             * starts a run of its own, naming its sender again.
+             */
+            if (clawt_web_member(one, "change", NULL) != NULL) {
+                clawt_web_add(inner, change_note_element(one));
+                g_clear_pointer(&run_sender, g_free);
+                continue;
+            }
 
             clawt_web_add(inner,
                           message_element(one, agent_id, has_avatar,

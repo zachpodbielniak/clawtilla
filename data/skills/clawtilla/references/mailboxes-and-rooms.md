@@ -119,6 +119,16 @@ Mute: alerts arrive already read, the agent leaves every count, push/desktop not
 
 Messages from sender `clawtilla` (settled tasks, wait endings, interrupted turns, rebuild outcomes, incident reports) are the daemon's voice: depth 0, `invites_reply` false, quoted text escaped with `clawt_preamble_escape()` so nothing quoted can pose as `[clawtilla]`. A turn started by one sends no closing text anywhere.
 
+## Change notes: a change to an agent is said in its chat
+
+Since 0.74.0, when an agent changes another agent's configuration (or its own) -- a setting, a routine or trigger that runs as it, a mount, an integration, its skills or team -- the daemon records one compact note in the operator's chat with the agent that was changed: "Disabled routine Bass Pro watch / by oxpecker". It is found by comparing `clawtilla.yaml` before and after every save, so every writer is covered; fleet-wide keys (`defaults.*`, `orchestration.*`) are not about one agent and are not noted.
+
+- **Who**: a tool call is its agent; an IPC request is the operator, unless the `clawtilla` CLI runs in an agent's shell (`CLAWTILLA_AGENT_ID` is set there), which is attributed to that agent "via the CLI" -- a label, never a permission. A hand edit names nobody and is never noted.
+- **Which**: `orchestration.config_notes`: `agents` (default: changes by agents and other fleets), `all` (the operator's too), `off`.
+- **It is not a message to the agent.** Recorded, never delivered: no turn, no reply, no mailbox, never unread. **If the agent you changed must act on the change, tell it yourself** with `clawtilla_message_agent`; the note does not.
+- Credentials and anything in `env:`/`credentials:` are never shown, only that they changed.
+- Wire: message members `change` (a `ClawtChangeKind` nick) and `change_actor`; `clawtilla room history` prints the kind's icon in the sender column.
+
 ## Decisions and waits (overview)
 
 - **Decisions**: `clawtilla_ask_decision` files a choice with a required default and optional reversibility window (hours) and the agent keeps going. Inside delegated work it goes to the delegating agent first (`clawtilla_decision_answer`). Lapsed ones settle as *defaulted* every 15 s (`decision.settled`). Policy asks have ids `policy-...`; rebuild requests `rebuild-...`.

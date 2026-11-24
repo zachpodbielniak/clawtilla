@@ -1270,6 +1270,10 @@ clawt_gtk_mark_crosstalk(ClawtWindow *self, const gchar *rooms,
 /* The quiet line under what a turn that asked a teammate ended with. */
 void
 clawt_gtk_mark_waiting(ClawtWindow *self, const gchar *waiting_on);
+
+void
+clawt_gtk_append_change_note(ClawtWindow *self, const gchar *change,
+                             const gchar *body);
 void
 clawt_gtk_mark_delivery(ClawtWindow *self, const gchar *state, const gchar *detail);
 

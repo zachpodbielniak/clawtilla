@@ -44,6 +44,7 @@ GHashTable *clawt_lrg_chat_row_rooms(JsonNode *agents, JsonNode *rooms);
  * @room_id: (nullable): where the message arrived
  * @viewing_room: (nullable): the room on screen
  * @from: (nullable): who sent it
+ * @change: (nullable): the message's `change` member; a change note never counts
  * @event_ts: when it happened, in microseconds
  * @connected_at: when this client connected, in microseconds
  * @rows: (nullable): clawt_lrg_chat_row_rooms()
@@ -56,6 +57,7 @@ gboolean clawt_lrg_unread_note(GHashTable  *unread,
                                const gchar *room_id,
                                const gchar *viewing_room,
                                const gchar *from,
+                               const gchar *change,
                                gint64       event_ts,
                                gint64       connected_at,
                                GHashTable  *rows);

@@ -130,7 +130,8 @@ clawt_gtk_note_unread(ClawtWindow *self, ClawtEvent *event, const gchar *from)
      * the count: there is no row to click to clear those, so a number
      * against one could only ever climb.
      */
-    if (!clawt_unread_should_count(room_id, self->selected_room, from,
+    if (!clawt_unread_should_count_message(room_id, self->selected_room, from,
+                                   clawt_event_get_detail(event, "change"),
                                    clawt_event_get_timestamp(event),
                                    self->connected_at,
                                    self->sidebar_rooms))

@@ -2639,6 +2639,48 @@ clawt_gtk_mark_waiting(ClawtWindow *self, const gchar *waiting_on)
     gtk_box_append(self->transcript, label);
 }
 
+/*
+ * A change note: an agent's configuration changed by somebody else,
+ * drawn as one quiet row -- the kind's icon, then the note's own lines
+ * ("Disabled routine Bass Pro watch", "by oxpecker") -- rather than as a
+ * message, because nobody said it.  The icon is libclawt's, so every
+ * client draws the same one.
+ */
+void
+clawt_gtk_append_change_note(ClawtWindow *self, const gchar *change,
+                             const gchar *body)
+{
+    ClawtChangeKind kind = CLAWT_CHANGE_SETTING;
+    GtkWidget *row;
+    GtkWidget *icon;
+    GtkWidget *label;
+
+    (void)clawt_change_kind_from_nick(change, &kind);
+
+    row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_add_css_class(row, "clawt-change-note");
+    gtk_widget_set_margin_start(row, CHAT_ROW_MARGIN + CHAT_GUTTER);
+    gtk_widget_set_margin_end(row, CHAT_ROW_MARGIN);
+    gtk_widget_set_margin_top(row, 4);
+    gtk_widget_set_margin_bottom(row, 4);
+
+    icon = gtk_label_new(clawt_change_kind_icon(kind));
+    gtk_widget_set_valign(icon, GTK_ALIGN_START);
+    gtk_widget_set_tooltip_text(icon, clawt_change_kind_label(kind));
+    gtk_box_append(GTK_BOX(row), icon);
+
+    label = gtk_label_new(body != NULL ? body : "");
+    gtk_widget_add_css_class(label, "caption");
+    gtk_widget_add_css_class(label, "dim-label");
+    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+    gtk_widget_set_hexpand(label, TRUE);
+    gtk_box_append(GTK_BOX(row), label);
+
+    gtk_box_append(self->transcript, row);
+}
+
 /* A message's tick in a conversation with another fleet (0.73.0). */
 void
 clawt_gtk_mark_delivery(ClawtWindow *self, const gchar *state, const gchar *detail)
@@ -5255,6 +5297,14 @@ clawt_gtk_load_history(ClawtWindow *self)
             if ((gint)i == rule_at && self->unread_marker == NULL) {
                 self->unread_marker = unread_marker_new();
                 gtk_box_append(self->transcript, self->unread_marker);
+            }
+
+            /* A change note is one compact row, and nothing more. */
+            if (clawt_json_string(message, "change", NULL) != NULL) {
+                clawt_gtk_append_change_note(self,
+                    clawt_json_string(message, "change", NULL),
+                    clawt_json_string(message, "body", ""));
+                continue;
             }
 
             clawt_gtk_append_round_marks(self,

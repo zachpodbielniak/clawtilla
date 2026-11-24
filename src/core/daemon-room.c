@@ -1258,6 +1258,16 @@ clawt_daemon_handle_room(
 					clawt_message_get_crosstalk_messages(message));
 			}
 
+			/* A change note: its kind and who made it (0.74.0). */
+			if (clawt_message_get_change(message) != NULL) {
+				json_builder_set_member_name(builder, "change");
+				json_builder_add_string_value(builder,
+					clawt_message_get_change(message));
+				json_builder_set_member_name(builder, "change_actor");
+				json_builder_add_string_value(builder,
+					clawt_message_get_change_actor(message));
+			}
+
 			if (clawt_message_get_answer_from(message) != NULL) {
 				json_builder_set_member_name(builder, "answer_from");
 				json_builder_add_string_value(builder,

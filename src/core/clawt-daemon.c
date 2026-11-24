@@ -5213,6 +5213,18 @@ start_agent_launch(ClawtDaemon *self, const gchar *agent_id,
             env = clawt_agent_config_get_env(config);
 
             /*
+             * Who this process is, for a clawtilla CLI run from the
+             * agent's own shell: the CLI sends it as `acting_agent`, so a
+             * change it makes is attributed to the agent in the change
+             * notes.  Attribution only; it authorises nothing.
+             */
+            if (env == NULL)
+                env = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                            g_free);
+            g_hash_table_insert(env, g_strdup("CLAWTILLA_AGENT_ID"),
+                                g_strdup(clawt_agent_config_get_id(config)));
+
+            /*
              * The agent's resolved credentials go in alongside its own
              * `env:` block: an API key that never reaches the child is an
              * agent that cannot talk to its provider.
@@ -8690,6 +8702,13 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
                                            ? self->revision_author : "edit");
 
     /*
+     * And the change notes' snapshot, without a note: a hand edit has
+     * nobody to name, and leaving it in the snapshot's past would pin it
+     * on whoever saves next.
+     */
+    clawt_daemon_change_notes_rebase(self);
+
+    /*
      * Dropped rather than rebuilt here: connectors.dir may itself have
      * changed, and nothing needs the catalogue until something asks.
      */
@@ -11316,8 +11335,53 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_orchestration,
 };
 
+static JsonNode *handle_request(ClawtDaemon *self, JsonNode *request);
+
 JsonNode *
 clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
+{
+    JsonObject *frame;
+    const gchar *acting = NULL;
+    JsonNode *reply;
+
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), NULL);
+
+    frame = (request != NULL && JSON_NODE_HOLDS_OBJECT(request))
+            ? json_node_get_object(request) : NULL;
+
+    /*
+     * Who a save made by this request is attributed to, for the change
+     * notes and the revision history.  An owner or device credential is
+     * the operator -- unless the CLI was run in an agent's shell, which
+     * says so with `acting_agent` (CLAWTILLA_AGENT_ID, set on every
+     * agent's process).  That hint names; it never grants: the request
+     * is still judged on the credential that sent it, and the note says
+     * "via the CLI".  A name that is not one of our agents is ignored.
+     * Here rather than at the socket, so every door into the handler
+     * attributes the same way.
+     */
+    if (frame != NULL && json_object_has_member(frame, "acting_agent")) {
+        JsonNode *node = json_object_get_member(frame, "acting_agent");
+
+        if (JSON_NODE_HOLDS_VALUE(node) &&
+            json_node_get_value_type(node) == G_TYPE_STRING)
+            acting = json_node_get_string(node);
+
+        if (acting != NULL && (self->agents == NULL ||
+            clawt_agent_manager_get(self->agents, acting) == NULL))
+            acting = NULL;
+    }
+
+    clawt_change_actor_push(acting != NULL ? acting : "user",
+                            acting != NULL ? "cli" : NULL);
+    reply = handle_request(self, request);
+    clawt_change_actor_pop();
+
+    return reply;
+}
+
+static JsonNode *
+handle_request(ClawtDaemon *self, JsonNode *request)
 {
     JsonObject *payload;
     const gchar *kind;

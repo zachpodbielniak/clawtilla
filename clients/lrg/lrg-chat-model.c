@@ -123,7 +123,8 @@ clawt_lrg_unread_count(GHashTable *unread, const gchar *room_id)
 gboolean
 clawt_lrg_unread_note(GHashTable *unread, const gchar *room_id,
                       const gchar *viewing_room, const gchar *from,
-                      gint64 event_ts, gint64 connected_at, GHashTable *rows)
+                      const gchar *change, gint64 event_ts,
+                      gint64 connected_at, GHashTable *rows)
 {
     g_return_val_if_fail(unread != NULL, FALSE);
 
@@ -133,8 +134,9 @@ clawt_lrg_unread_note(GHashTable *unread, const gchar *room_id,
      * room, never the agent: a group room has no agent to key on, and
      * every sidebar row has a room.
      */
-    if (!clawt_unread_should_count(room_id, viewing_room, from, event_ts,
-                                   connected_at, rows))
+    if (!clawt_unread_should_count_message(room_id, viewing_room, from,
+                                           change, event_ts, connected_at,
+                                           rows))
         return FALSE;
 
     g_hash_table_insert(unread, g_strdup(room_id),

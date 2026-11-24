@@ -1374,6 +1374,21 @@ begin_request(ClawtClient *self, const gchar *kind, JsonNode *payload,
     if (payload != NULL)
         clawt_ipc_frame_set_payload(request, payload);
 
+    /*
+     * Run from an agent's shell (CLAWTILLA_AGENT_ID is set on every
+     * agent's process): say which agent, so a change this makes is
+     * attributed to it in the change notes.  The daemon treats it as a
+     * name, never as a credential.
+     */
+    {
+        const gchar *acting = g_getenv("CLAWTILLA_AGENT_ID");
+
+        if (acting != NULL && *acting != '\0' &&
+            JSON_NODE_HOLDS_OBJECT(request))
+            json_object_set_string_member(json_node_get_object(request),
+                                          "acting_agent", acting);
+    }
+
     pending = g_new0(Pending, 1);
     g_hash_table_insert(self->pending, g_strdup(id), pending);
 

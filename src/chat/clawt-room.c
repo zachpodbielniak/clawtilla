@@ -635,6 +635,16 @@ append_to_transcript(ClawtRoom     *self,
 			clawt_message_get_crosstalk_messages(message));
 	}
 
+	/* A change note's kind and who made it (since 0.74.0). */
+	if (clawt_message_get_change(message) != NULL) {
+		json_builder_set_member_name(builder, "change");
+		json_builder_add_string_value(builder,
+			clawt_message_get_change(message));
+		json_builder_set_member_name(builder, "change_actor");
+		json_builder_add_string_value(builder,
+			clawt_message_get_change_actor(message));
+	}
+
 	/* A handed-back answer and an interim line (since 0.34.2). */
 	if (clawt_message_get_answer_from(message) != NULL) {
 		json_builder_set_member_name(builder, "answer_from");
@@ -923,7 +933,9 @@ clawt_room_get_history(ClawtRoom *self, guint limit)
 static gboolean
 counts_as_unread(ClawtMessage *message)
 {
-    return g_strcmp0(clawt_message_get_sender_id(message), "user") != 0;
+    /* Nor a change note, as clawt_unread_should_count_message() says. */
+    return g_strcmp0(clawt_message_get_sender_id(message), "user") != 0 &&
+           clawt_message_get_change(message) == NULL;
 }
 
 guint

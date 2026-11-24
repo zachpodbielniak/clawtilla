@@ -467,6 +467,51 @@ void clawt_message_set_steered(ClawtMessage *self,
                                const gchar  *outcome);
 
 /**
+ * clawt_message_get_change:
+ * @self: a #ClawtMessage
+ *
+ * What a change note is about, as a #ClawtChangeKind nick
+ * ("routine", "setting"...): set only on the daemon's own notes in an
+ * agent's chat saying its configuration was changed by somebody else.
+ * Every client draws such a message as one compact row, with
+ * clawt_change_kind_icon() before the body.
+ *
+ * Returns: (transfer none) (nullable): the kind, or %NULL when the
+ *   message is not a change note
+ *
+ * Since: 0.74.0
+ */
+const gchar *clawt_message_get_change(ClawtMessage *self);
+
+/**
+ * clawt_message_get_change_actor:
+ * @self: a #ClawtMessage
+ *
+ * Who made the change a note is about: an agent id, `user`, `system`
+ * or `fleet:ALIAS:AGENT`; empty when nobody said.
+ *
+ * Returns: (transfer none) (nullable): the actor, or %NULL when the
+ *   message is not a change note
+ *
+ * Since: 0.74.0
+ */
+const gchar *clawt_message_get_change_actor(ClawtMessage *self);
+
+/**
+ * clawt_message_set_change:
+ * @self: a #ClawtMessage
+ * @kind: (nullable): a #ClawtChangeKind nick, or %NULL to clear
+ * @actor: (nullable): who made the change
+ *
+ * Marks @self as a change note.
+ *
+ * Since: 0.74.0
+ */
+void clawt_message_set_change(ClawtMessage *self,
+                              const gchar  *kind,
+                              const gchar  *actor);
+
+/**
  * clawt_message_get_crosstalk_rooms:
  * @self: a #ClawtMessage
  *
@@ -928,6 +973,37 @@ gboolean clawt_unread_should_count(const gchar *room_id,
                                    GHashTable  *rows);
 
 /**
+ * clawt_unread_should_count_message:
+ * @room_id: (nullable): the room the message arrived in
+ * @viewing_room: (nullable): the room on screen, or %NULL
+ * @from: (nullable): who sent it
+ * @change: (nullable): the message's `change` member: set on a change
+ *   note, %NULL on anything else
+ * @event_ts: when it happened, in microseconds
+ * @connected_at: when this client connected, in microseconds
+ * @rows: (nullable) (element-type utf8 gpointer): the rooms this client
+ *   draws a row for
+ *
+ * clawt_unread_should_count(), and one more condition: a change note
+ * (an agent's configuration changed by somebody else) never counts.  It
+ * is a record of what happened to the agent, not something the agent
+ * said, and a badge that lights because a teammate turned a routine off
+ * reads as the agent asking for attention.  The daemon's seeded count
+ * (clawt_room_count_unread()) leaves them out the same way.
+ *
+ * Returns: %TRUE if the message should increment an unread count
+ *
+ * Since: 0.74.0
+ */
+gboolean clawt_unread_should_count_message(const gchar *room_id,
+                                           const gchar *viewing_room,
+                                           const gchar *from,
+                                           const gchar *change,
+                                           gint64       event_ts,
+                                           gint64       connected_at,
+                                           GHashTable  *rows);
+
+/**
  * clawt_unread_rule_index:
  * @messages: (nullable): a `room.history` reply's `messages`, oldest
  *   first -- objects with at least `id` and `sender`
@@ -938,7 +1014,8 @@ gboolean clawt_unread_should_count(const gchar *room_id,
  * Where the "New messages" rule goes when a conversation is opened.
  *
  * Before the first message after the read mark that somebody else
- * sent.  The operator's own messages never start the unread run, the
+ * sent.  The operator's own messages and change notes (a `change`
+ * member) never start the unread run, the
  * same exclusion clawt_room_count_unread() makes, so the rule and the
  * sidebar's count agree on what is new.
  *

@@ -57,6 +57,13 @@ struct _ClawtMessage {
 	 */
 	gchar        *crosstalk_rooms;
 	gchar        *crosstalk_messages;
+
+	/*
+	 * A change note: the kind of change (a ClawtChangeKind nick) and
+	 * who made it.  Both or neither.
+	 */
+	gchar        *change;
+	gchar        *change_actor;
 };
 
 static ClawtMessage *
@@ -150,6 +157,8 @@ clawt_message_copy(ClawtMessage *self)
 	copy->steered = g_strdup(self->steered);
 	copy->crosstalk_rooms = g_strdup(self->crosstalk_rooms);
 	copy->crosstalk_messages = g_strdup(self->crosstalk_messages);
+	copy->change = g_strdup(self->change);
+	copy->change_actor = g_strdup(self->change_actor);
 	copy->skipped = g_strdup(self->skipped);
 	copy->skip_reason = g_strdup(self->skip_reason);
 
@@ -185,6 +194,8 @@ clawt_message_free(ClawtMessage *self)
 	g_free(self->steered);
 	g_free(self->crosstalk_rooms);
 	g_free(self->crosstalk_messages);
+	g_free(self->change);
+	g_free(self->change_actor);
 	g_free(self->skipped);
 	g_free(self->skip_reason);
     g_free(self);
@@ -453,6 +464,22 @@ clawt_unread_should_count(const gchar *room_id, const gchar *viewing_room,
     return TRUE;
 }
 
+gboolean
+clawt_unread_should_count_message(const gchar *room_id,
+                                  const gchar *viewing_room,
+                                  const gchar *from,
+                                  const gchar *change,
+                                  gint64       event_ts,
+                                  gint64       connected_at,
+                                  GHashTable  *rows)
+{
+    if (change != NULL && *change != '\0')
+        return FALSE;
+
+    return clawt_unread_should_count(room_id, viewing_room, from, event_ts,
+                                     connected_at, rows);
+}
+
 gint
 clawt_unread_rule_index(JsonArray *messages, const gchar *read_upto)
 {
@@ -492,6 +519,14 @@ clawt_unread_rule_index(JsonArray *messages, const gchar *read_upto)
         const gchar *sender = (message != NULL &&
                                json_object_has_member(message, "sender"))
             ? json_object_get_string_member(message, "sender") : NULL;
+
+        /*
+         * Not a change note either: it is never counted as unread, so a
+         * rule above one would announce new messages that no badge ever
+         * said were there.
+         */
+        if (message != NULL && json_object_has_member(message, "change"))
+            continue;
 
         if (sender != NULL && g_strcmp0(sender, "user") != 0)
             return (gint)i;
@@ -781,6 +816,43 @@ clawt_message_set_crosstalk(
 
 	self->crosstalk_rooms = g_strdup(rooms);
 	self->crosstalk_messages = g_strdup(messages != NULL ? messages : "");
+}
+
+const gchar *
+clawt_message_get_change(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+
+	return self->change;
+}
+
+const gchar *
+clawt_message_get_change_actor(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+
+	return self->change_actor;
+}
+
+void
+clawt_message_set_change(
+	ClawtMessage *self,
+	const gchar  *kind,
+	const gchar  *actor
+){
+	g_return_if_fail(self != NULL);
+
+	g_clear_pointer(&self->change, g_free);
+	g_clear_pointer(&self->change_actor, g_free);
+
+	/* Both or neither, as the crosstalk pair is. */
+	if (kind == NULL || *kind == '\0')
+		return;
+
+	self->change = g_strdup(kind);
+	self->change_actor = g_strdup(actor != NULL ? actor : "");
 }
 
 guint

@@ -212,6 +212,15 @@ load_room(ClawtRoomManager *self, ClawtRoom *room)
 						"crosstalk_message")
 					: NULL);
 
+		/* A change note's kind and who made it (0.74.0). */
+		if (json_object_has_member(object, "change"))
+			clawt_message_set_change(message,
+				json_object_get_string_member(object, "change"),
+				json_object_has_member(object, "change_actor")
+					? json_object_get_string_member(object,
+						"change_actor")
+					: NULL);
+
 		if (json_object_has_member(object, "answer_from"))
 			clawt_message_set_answer_from(message,
 				json_object_get_string_member(object, "answer_from"));

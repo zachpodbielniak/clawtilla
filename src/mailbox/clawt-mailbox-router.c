@@ -424,6 +424,14 @@ record_in_room(ClawtMailboxRouter *self, ClawtRoom *room,
 				clawt_message_get_crosstalk_messages(message));
 		}
 
+		/* A change note's kind and who made it; see room.history. */
+		if (clawt_message_get_change(message) != NULL) {
+			clawt_event_set_detail(event, "change",
+				clawt_message_get_change(message));
+			clawt_event_set_detail(event, "change_actor",
+				clawt_message_get_change_actor(message));
+		}
+
 		if (clawt_message_get_answer_from(message) != NULL)
 			clawt_event_set_detail(event, "answer_from",
 				clawt_message_get_answer_from(message));
