@@ -710,6 +710,18 @@ static const ClawtSchemaEntry schema[] = {
   "Override with daily_agent_budget_micros on an agent.\n"
   "Uses local midnight and persisted usage; in-flight work can overshoot.", "0.1.0" },
 
+{ "orchestration.meshy_credit_micros", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "0", NULL,
+  "What one Meshy credit costs you, in integer millionths of USD (20000\n"
+  "for two cents); 0, the default, leaves it unknown.\n"
+  "\n"
+  "Meshy prices its jobs in credits, not dollars. With a price here, an\n"
+  "agent's Meshy jobs count towards the daily caps\n"
+  "(daily_agent_budget_micros, daily_fleet_budget_micros) and the\n"
+  "Spending page's total; without one they are listed as credits and\n"
+  "leave both alone -- unknown, never free. PixelLab says its price in\n"
+  "dollars and needs nothing here.", "0.75.0" },
+
 { "orchestration.task_budget_usd", CLAWT_SCHEMA_DOUBLE, CLAWT_SCHEMA_FLAG_NONE,
   "5.0", NULL,
   "Spend cap for one delegated task and everything it spawns.\n"
@@ -1881,7 +1893,8 @@ static const ClawtSchemaEntry schema[] = {
   "wrong account.", "0.2.0" },
 
 { "integrations.type", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
-  "Which kind: matrix, email, webhook, local, cmacs or mcp.\n"
+  "Which kind: matrix, email, webhook, local, cmacs, mcp, connector,\n"
+  "libresearch, grokbot, meshy, pixellab or notify.\n"
   "\n"
   "An unknown type disables that instance and nothing else, with the\n"
   "reason recorded -- the same treatment a shadow agent gets, and for the\n"
@@ -2024,7 +2037,8 @@ static const ClawtSchemaEntry schema[] = {
   "notify: the credential for ntfy, gotify or Matrix, as a secret\n"
   "reference. libresearch: the server's token. grokbot: the routine's\n"
   "webhook key (`crsr_...`), which is the whole of what lets anybody\n"
-  "start that bot.\n"
+  "start that bot. meshy and pixellab: the service's API key, which\n"
+  "spends that account's credits.\n"
   "\n"
   "Resolved once when the configuration loads rather than on every\n"
   "notification: a `command` reference to a locked password manager\n"
@@ -2113,7 +2127,9 @@ static const ClawtSchemaEntry schema[] = {
   "two different servers and there is no way to tell which was meant.\n"
   "\n"
   "libresearch: where its server answers. grokbot: the Grok routine's\n"
-  "webhook address, as Grok shows it under \"POST to\".\n"
+  "webhook address, as Grok shows it under \"POST to\". meshy and\n"
+  "pixellab: empty for the service itself; set only for a proxy or a\n"
+  "test server.\n"
   "\n"
   "connector: a remote MCP server, instead of the catalogue's. With\n"
   "`provider: remote` -- or no provider at all -- this is the only thing\n"

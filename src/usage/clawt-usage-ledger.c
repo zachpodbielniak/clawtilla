@@ -949,6 +949,46 @@ clawt_usage_ledger_unpriced_line(
 }
 
 gchar *
+clawt_usage_ledger_media_line(
+	JsonObject *reply
+){
+	JsonObject *media = member_object(reply, "media");
+	gint64 calls = clawt_ipc_payload_int(media, "calls", 0);
+	gint64 micros = clawt_ipc_payload_int(media, "micro_usd", 0);
+	gint64 unpriced = clawt_ipc_payload_int(media, "unpriced_credits", 0);
+
+	if (calls <= 0)
+		return NULL;
+
+	if (unpriced > 0)
+		return g_strdup_printf("Paid media: $%.2f over %" G_GINT64_FORMAT
+				       " call%s, on top of the total, and %"
+				       G_GINT64_FORMAT " Meshy credits with no dollar "
+				       "price set (orchestration.meshy_credit_micros)",
+				       (gdouble)micros / 1e6, calls,
+				       calls == 1 ? "" : "s", unpriced);
+
+	return g_strdup_printf("Paid media: $%.2f over %" G_GINT64_FORMAT
+			       " call%s, on top of the total",
+			       (gdouble)micros / 1e6, calls, calls == 1 ? "" : "s");
+}
+
+gchar *
+clawt_usage_ledger_notes(
+	JsonObject *reply
+){
+	g_autofree gchar *unpriced = clawt_usage_ledger_unpriced_line(reply);
+	g_autofree gchar *media = clawt_usage_ledger_media_line(reply);
+
+	if (unpriced != NULL && media != NULL)
+		return g_strdup_printf("%s\n%s", unpriced, media);
+	if (unpriced != NULL)
+		return g_steal_pointer(&unpriced);
+
+	return g_steal_pointer(&media);
+}
+
+gchar *
 clawt_usage_csv_cell(
 	const gchar *value
 ){

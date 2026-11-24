@@ -108,7 +108,7 @@ on_ledger(
 	}
 
 	/* the turns a total quietly leaves out, said in words */
-	unpriced = clawt_usage_ledger_unpriced_line(root);
+	unpriced = clawt_usage_ledger_notes(root);
 	clawt_lrg_paragraph_set_text(spending.unpriced,
 				     unpriced != NULL ? unpriced : "");
 	lrg_widget_set_visible(spending.unpriced, unpriced != NULL);

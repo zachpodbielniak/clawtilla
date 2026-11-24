@@ -6269,7 +6269,7 @@ cost_ledger(
 
 	{
 		g_autofree gchar *cost = clawt_usage_ledger_cost_label(total);
-		g_autofree gchar *unpriced = clawt_usage_ledger_unpriced_line(root);
+		g_autofree gchar *unpriced = clawt_usage_ledger_notes(root);
 
 		g_print("%-28s %8" G_GINT64_FORMAT " %9" G_GINT64_FORMAT
 			" %12" G_GINT64_FORMAT " %12" G_GINT64_FORMAT " %12s\n",

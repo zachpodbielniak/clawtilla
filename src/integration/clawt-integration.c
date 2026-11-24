@@ -66,6 +66,19 @@ static const gchar *const libresearch_credentials[] = {
     "token", NULL
 };
 
+/*
+ * Meshy and PixelLab: the key is the whole configuration.  Required,
+ * because without it there is nothing to call -- unlike libresearch,
+ * whose local server may need no token.
+ */
+static const gchar *const media_required[] = {
+    "token", NULL
+};
+
+static const gchar *const media_credentials[] = {
+    "token", NULL
+};
+
 static const gchar *const grokbot_required[] = {
     "url", "token", NULL
 };
@@ -176,6 +189,25 @@ static const ClawtIntegrationInfo integrations[] = {
       "Hand work to a Grok bot and hear back when it is done.",
       grokbot_required, grokbot_credentials, NULL,
       NULL, FALSE, FALSE },
+
+    /*
+     * Paid media services, reached through clawtilla's own tools
+     * (clawtilla_meshy_*, clawtilla_pixellab_*) on the deferred path.
+     * one_per_agent: two keys would be two accounts paying for "make a
+     * model", with nothing to say which.  No identity keys: one account
+     * shared by the fleet is the ordinary case.  Every generation is
+     * asked first, with its cost, unless a policy rule allows it.
+     */
+    { "meshy", CLAWT_INTEGRATION_KIND_TOOLS,
+      "3D models from a prompt or a picture, rigged and animated, through Meshy.",
+      media_required, media_credentials, NULL,
+      NULL, TRUE, FALSE },
+
+    { "pixellab", CLAWT_INTEGRATION_KIND_TOOLS,
+      "Pixel art -- images, characters in four or eight directions, walk "
+      "cycles, tilesets and map objects -- through PixelLab.",
+      media_required, media_credentials, NULL,
+      NULL, TRUE, FALSE },
 
     { "notify", CLAWT_INTEGRATION_KIND_NOTIFY,
       "Tell you when an agent is blocked on you or has broken.",
@@ -1505,6 +1537,40 @@ clawt_integration_health_check_async(ClawtIntegrationBinding *binding,
                                     "\"POST to\"");
             g_object_unref(task);
             return;
+        }
+
+        g_task_return_boolean(task, TRUE);
+        g_object_unref(task);
+        return;
+    }
+
+    /*
+     * Meshy and PixelLab, on paper like grokbot: a server somebody set
+     * must be https (or this machine's loopback, for a test server).
+     * The key is not tried here -- the agent's own balance tools do that
+     * when asked, and a health check that spent a request on every
+     * refresh would be one more thing hitting a rate limit.
+     */
+    if (g_strcmp0(id, "meshy") == 0 || g_strcmp0(id, "pixellab") == 0) {
+        const gchar *url = clawt_integration_binding_get_string(binding,
+                                                                "url");
+        g_autoptr(GUri) uri = NULL;
+
+        if (url != NULL && *url != '\0') {
+            uri = g_uri_parse(url, G_URI_FLAGS_NONE, NULL);
+            if (uri == NULL ||
+                (g_strcmp0(g_uri_get_scheme(uri), "https") != 0 &&
+                 !(g_strcmp0(g_uri_get_scheme(uri), "http") == 0 &&
+                   (g_strcmp0(g_uri_get_host(uri), "127.0.0.1") == 0 ||
+                    g_strcmp0(g_uri_get_host(uri), "localhost") == 0)))) {
+                g_task_return_new_error(task, CLAWT_ERROR,
+                                        CLAWT_ERROR_CONFIG_INVALID,
+                                        "the server must be an https "
+                                        "address, or empty for the service "
+                                        "itself");
+                g_object_unref(task);
+                return;
+            }
         }
 
         g_task_return_boolean(task, TRUE);

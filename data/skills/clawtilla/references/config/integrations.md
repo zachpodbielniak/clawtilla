@@ -43,7 +43,8 @@ wrong account.
 - Required: yes
 - Since: 0.2.0
 
-Which kind: matrix, email, webhook, local, cmacs or mcp.
+Which kind: matrix, email, webhook, local, cmacs, mcp, connector,
+libresearch, grokbot, meshy, pixellab or notify.
 
 An unknown type disables that instance and nothing else, with the
 reason recorded -- the same treatment a shadow agent gets, and for the
@@ -278,7 +279,8 @@ hundred-odd services -- Telegram, Signal, email, Pushover, Gotify, SMS
 notify: the credential for ntfy, gotify or Matrix, as a secret
 reference. libresearch: the server's token. grokbot: the routine's
 webhook key (`crsr_...`), which is the whole of what lets anybody
-start that bot.
+start that bot. meshy and pixellab: the service's API key, which
+spends that account's credits.
 
 Resolved once when the configuration loads rather than on every
 notification: a `command` reference to a locked password manager
@@ -404,7 +406,9 @@ One or the other, never both: an entry naming a command and a URL is
 two different servers and there is no way to tell which was meant.
 
 libresearch: where its server answers. grokbot: the Grok routine's
-webhook address, as Grok shows it under "POST to".
+webhook address, as Grok shows it under "POST to". meshy and
+pixellab: empty for the service itself; set only for a proxy or a
+test server.
 
 connector: a remote MCP server, instead of the catalogue's. With
 `provider: remote` -- or no provider at all -- this is the only thing

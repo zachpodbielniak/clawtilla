@@ -311,6 +311,9 @@ struct _ClawtDaemon {
     /* direct character generation (0.60.0): test seams */
     struct _AiMediaGenerator *(*office_generator_factory)(ClawtDaemon *self);
     guint                    office_generate_poll_ms;
+    /* tests: the Meshy/PixelLab client an agent's binding resolves to */
+    struct _AiMediaGenerator *(*media_client_factory)(ClawtDaemon *self,
+                                                      const gchar *service);
 
     /* the office (0.56.0): NULL unless office.enabled */
     ClawtOfficePresence     *office;
@@ -486,6 +489,9 @@ struct _ClawtDaemon {
      * stale client.
      */
     GHashTable        *search_clients;
+    GHashTable        *media_clients;    /* agent\x1fservice\x1furl\x1fkey -> AiMediaGenerator */
+    JsonNode          *media_jobs;       /* "service:job" -> {agent, operation, prompt, created, saved} */
+    SoupSession       *media_session;    /* fetches results: no credentials, bounded */
 
     /* Machines several agents share, keyed by computers: id. */
     GHashTable        *shared_computers;
@@ -1784,6 +1790,8 @@ gchar *clawt_daemon_skill_test_verdict(const gchar         *result,
                                        const gchar * const *reject);
 void clawt_daemon_revisions_setup(ClawtDaemon *self);
 void clawt_daemon_change_notes_rebase(ClawtDaemon *self);
+void clawt_daemon_media_setup(ClawtDaemon *self);
+void clawt_daemon_media_teardown(ClawtDaemon *self);
 void clawt_daemon_change_notes_saved(ClawtDaemon *self, const gchar *text);
 void clawt_daemon_change_notes_teardown(ClawtDaemon *self);
 void clawt_daemon_revisions_teardown(ClawtDaemon *self);

@@ -1245,7 +1245,7 @@ agents:
 
 *** Rules
 
-Each rule is ~MATCH=MODE~. ~MATCH~ is an action class or a tool-name glob (~clawtilla_create_*~, ~Bash~, ~mcp__github__*~). The first rule that matches decides; a call no rule matches runs. An agent's own ~policy.rules~ replaces the fleet's ~defaults.policy.rules~ rather than adding to it, so one list, read top to bottom, is the whole answer.
+Each rule is ~MATCH=MODE~. ~MATCH~ is an action class or a tool-name glob (~clawtilla_create_*~, ~Bash~, ~mcp__github__*~). The first rule that matches decides; a call no rule matches runs -- except a paid media generation (~clawtilla_meshy_generate~, ~clawtilla_pixellab_generate~, since 0.75.0), which is asked when no rule matches, because spending money until somebody writes a rule is the wrong default (see [[file:media-generation.org][media-generation.org]]). An agent's own ~policy.rules~ replaces the fleet's ~defaults.policy.rules~ rather than adding to it, so one list, read top to bottom, is the whole answer.
 
 | Class           | Covers |
 |-----------------+--------|

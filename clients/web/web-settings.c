@@ -1141,7 +1141,7 @@ spending_content(
 	htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(wrap));
 
 	/* the turns a total quietly leaves out, said where nobody misses it */
-	unpriced = clawt_usage_ledger_unpriced_line(root);
+	unpriced = clawt_usage_ledger_notes(root);
 	if (unpriced != NULL) {
 		g_autoptr(HtmxDiv) notice = htmx_div_new();
 

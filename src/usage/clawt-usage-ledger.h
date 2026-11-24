@@ -382,6 +382,37 @@ gchar *clawt_usage_ledger_row_subtitle(JsonObject *group);
 gchar *clawt_usage_ledger_unpriced_line(JsonObject *reply);
 
 /**
+ * clawt_usage_ledger_media_line:
+ * @reply: a `usage.ledger` reply
+ *
+ * What the period's paid media calls (Meshy, PixelLab) cost, said
+ * beside the turns' total because they are not turns: the dollars, and
+ * any Meshy credits with no dollar price set
+ * (`orchestration.meshy_credit_micros`).
+ *
+ * Returns: (transfer full) (nullable): the line, or %NULL when there
+ *   were none
+ *
+ * Since: 0.75.0
+ */
+gchar *clawt_usage_ledger_media_line(JsonObject *reply);
+
+/**
+ * clawt_usage_ledger_notes:
+ * @reply: a `usage.ledger` reply
+ *
+ * Everything a Spending page says under its table, one line each:
+ * clawt_usage_ledger_unpriced_line() and clawt_usage_ledger_media_line().
+ * The one call every client makes, so a line added later reaches all
+ * of them.
+ *
+ * Returns: (transfer full) (nullable): the lines, or %NULL for none
+ *
+ * Since: 0.75.0
+ */
+gchar *clawt_usage_ledger_notes(JsonObject *reply);
+
+/**
  * clawt_usage_csv_cell:
  * @value: (nullable): one cell's text
  *

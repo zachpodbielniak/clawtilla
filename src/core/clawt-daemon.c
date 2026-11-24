@@ -5981,6 +5981,7 @@ release_components(ClawtDaemon *self)
     clawt_daemon_notices_teardown(self);
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
+    clawt_daemon_media_teardown(self);
     clawt_daemon_policy_teardown(self);
     clawt_daemon_rebuild_teardown(self);
     clawt_daemon_idle_teardown(self);
@@ -8342,6 +8343,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     clawt_daemon_handoff_setup(self);
     clawt_daemon_search_setup(self);
+    clawt_daemon_media_setup(self);
 
     /*
      * The read marks, after the rooms are loaded -- the first open of
@@ -8578,6 +8580,7 @@ clawt_daemon_stop(ClawtDaemon *self)
     clawt_daemon_notices_teardown(self);
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
+    clawt_daemon_media_teardown(self);
     clawt_daemon_policy_teardown(self);
     clawt_daemon_idle_teardown(self);
     clawt_daemon_memory_review_teardown(self);

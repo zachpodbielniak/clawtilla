@@ -129,6 +129,20 @@ refused on that page until it navigates away. See [security.md](security.md).
 | `clawtilla_web_research` | cited answer (takes minutes) | question*, deep, pages | web | read |
 | `clawtilla_web_query_environment` | LQL commands, sources, functions on this server | -- | web | read |
 
+## Media generation (Meshy, PixelLab)
+
+Offered only to an agent with a `meshy` / `pixellab` integration. The `_generate` tools are **asked of a person by default** (price first) unless a policy rule allows them. See [media-generation.md](media-generation.md).
+
+| Tool | Does | Key args (* required) | Gate | Class |
+|---|---|---|---|---|
+| `clawtilla_meshy_generate` | start a Meshy job; answers with its id | operation* (text-to-3d, image-to-3d, multi-image-to-3d, retexture, remesh, rig, animate), prompt, images ({field: path}), params (Meshy's fields) | meshy | external, asked by default |
+| `clawtilla_meshy_job` | status; once done saves every file to `exchange/<agent>/media/<job>/` | job_id* | meshy | read |
+| `clawtilla_meshy_cancel` | cancel a queued job (refunded) | job_id* | meshy | external |
+| `clawtilla_meshy_balance` | credits left | -- | meshy | read |
+| `clawtilla_pixellab_generate` | start a PixelLab job; a picture is saved at once | operation* (image, bitforge, rotate, inpaint, animate, character-4, character-8, character-animate, tileset-topdown, tileset-sidescroller, isometric-tile, map-object), prompt, model (pixen), images, params | pixellab | external, asked by default |
+| `clawtilla_pixellab_job` | status; once done saves every direction, frame and sheet | job_id* | pixellab | read |
+| `clawtilla_pixellab_balance` | dollars and subscription generations left | -- | pixellab | read |
+
 ## Connectors
 
 | Tool | Does | Key args (* required) | Gate | Class |

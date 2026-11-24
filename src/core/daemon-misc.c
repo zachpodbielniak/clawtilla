@@ -1033,6 +1033,43 @@ clawt_daemon_handle_misc(
 		body = clawt_usage_ledger_to_json(ledger);
 		object = json_node_get_object(body);
 		json_object_set_int_member(object, "since", since);
+
+		/*
+		 * Paid media beside the turns: not a turn, so not in the
+		 * groups, but what an agent spent all the same (0.75.0).
+		 */
+		{
+			JsonObject *media = json_object_new();
+			gint64 credit_micros = clawt_config_get_int(self->config,
+				"orchestration.meshy_credit_micros");
+			gint64 micros = 0, unpriced = 0, calls = 0;
+
+			for (i = 0; agents != NULL && i < agents->len; i++) {
+				const gchar *agent_id = clawt_agent_get_id(
+					g_ptr_array_index(agents, i));
+				g_autofree gchar *state_dir = NULL;
+				g_autofree gchar *path = NULL;
+				gint64 m = 0, u = 0, c = 0;
+
+				if (only != NULL && *only != '\0' &&
+				    g_strcmp0(only, agent_id) != 0)
+					continue;
+				state_dir = clawt_config_agent_state_dir(self->config,
+				                                         agent_id);
+				if (state_dir == NULL)
+					continue;
+				path = clawt_media_spend_path(state_dir);
+				clawt_media_spend_since(path, since, credit_micros, &m, &u, &c);
+				micros = (m > G_MAXINT64 - micros) ? G_MAXINT64 : micros + m;
+				unpriced += u;
+				calls += c;
+			}
+
+			json_object_set_int_member(media, "micro_usd", micros);
+			json_object_set_int_member(media, "unpriced_credits", unpriced);
+			json_object_set_int_member(media, "calls", calls);
+			json_object_set_object_member(object, "media", media);
+		}
 		json_object_set_int_member(object, "now",
 					   g_get_real_time() / G_USEC_PER_SEC);
 		if (only != NULL && *only != '\0')

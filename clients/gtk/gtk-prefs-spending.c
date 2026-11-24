@@ -164,7 +164,7 @@ clawt_gtk_refresh_settings_spending(
 				spending_row("Total", subtitle, cost, TRUE));
 		}
 
-		unpriced = clawt_usage_ledger_unpriced_line(root);
+		unpriced = clawt_usage_ledger_notes(root);
 		if (self->settings_spending_unpriced != NULL) {
 			gtk_label_set_text(GTK_LABEL(self->settings_spending_unpriced),
 					   unpriced != NULL ? unpriced : "");

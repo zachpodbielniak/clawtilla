@@ -2597,6 +2597,50 @@ describe_integration(GString *out, ClawtIntegrationBinding *binding,
         return;
     }
 
+    /*
+     * The paid media services: what each makes, that every call is put
+     * to the operator with its price, and where the files land -- the
+     * three things an agent otherwise learns by spending money.
+     */
+    if (g_strcmp0(info->id, "meshy") == 0) {
+        g_string_append(out,
+            "Meshy makes 3D models. ~clawtilla_meshy_generate~ takes an\n"
+            "~operation~: ~text-to-3d~ (a ~prompt~), ~image-to-3d~ (a picture,\n"
+            "~images: {\"image_url\": \"path\"}~), ~multi-image-to-3d~,\n"
+            "~retexture~, ~remesh~, ~rig~ (a humanoid or four-legged model: it\n"
+            "comes back with walking and running clips) or ~animate~; Meshy's own\n"
+            "fields go in ~params~ (~ai_model~, ~topology~, ~target_polycount~,\n"
+            "~enable_pbr~, ~input_task_id~, ~rig_task_id~, ~action_ids~...).\n\n"
+            "Every generation is paid in credits and is put to the operator with\n"
+            "its price before it runs, unless a policy rule allows it. A model\n"
+            "takes minutes: the call answers with a job id, and\n"
+            "~clawtilla_meshy_job~ saves every file into your exchange directory\n"
+            "under ~media/<job>/~ once it is done. Meshy deletes results after\n"
+            "about three days, so collect them. ~clawtilla_meshy_balance~ says\n"
+            "what is left.\n\n");
+        return;
+    }
+
+    if (g_strcmp0(info->id, "pixellab") == 0) {
+        g_string_append(out,
+            "PixelLab makes pixel art. ~clawtilla_pixellab_generate~ takes an\n"
+            "~operation~: ~image~ (16 to 400 pixels a side), ~bitforge~,\n"
+            "~rotate~, ~inpaint~, ~animate~ (64x64), ~character-4~ or\n"
+            "~character-8~ (16 to 128), ~character-animate~ (a walk or another\n"
+            "action for a character, ~params: {\"character_id\": ...}~),\n"
+            "~tileset-topdown~, ~tileset-sidescroller~, ~isometric-tile~ or\n"
+            "~map-object~; PixelLab's own fields go in ~params~ (~image_size~,\n"
+            "~view~, ~direction~, ~outline~, ~shading~, ~detail~,\n"
+            "~no_background~...), pictures in ~images~ as paths.\n\n"
+            "Every generation is put to the operator before it runs, unless a\n"
+            "policy rule allows it; PixelLab prices it when it is done. A picture\n"
+            "is saved at once; a character, an animation or a tileset answers\n"
+            "with a job id, and ~clawtilla_pixellab_job~ saves every direction,\n"
+            "frame and sheet into your exchange directory under\n"
+            "~media/<job>/~. ~clawtilla_pixellab_balance~ says what is left.\n\n");
+        return;
+    }
+
     if (g_strcmp0(info->id, "mcp") == 0) {
         const gchar *command =
             clawt_integration_binding_get_string(binding, "command");

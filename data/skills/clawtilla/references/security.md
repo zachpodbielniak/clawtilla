@@ -46,7 +46,7 @@ clawtilla device revoke <id>                # closes its live connections too
 
 ## Action policy and approvals
 
-`tools.allow` / `tools.deny` decide which tools exist; action rules decide what a call does. `defaults.policy.rules` for the fleet; an agent's `policy.rules` **replaces** it (not merged). First match wins; unmatched calls run.
+`tools.allow` / `tools.deny` decide which tools exist; action rules decide what a call does. `defaults.policy.rules` for the fleet; an agent's `policy.rules` **replaces** it (not merged). First match wins; unmatched calls run -- except the paid media tools (`clawtilla_meshy_generate`, `clawtilla_pixellab_generate`), which ask when no rule matches.
 
 ```yaml
 defaults:

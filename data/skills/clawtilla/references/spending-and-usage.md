@@ -101,3 +101,7 @@ Never re-derive these in a client: `clawt_usage_window_level()` / `clawt_allowan
 | a login missing from limits | no agent uses it and it is not under `accounts:` |
 | Claude login "permission denied" | old CLI fell back to the panel behind a trust prompt: update Claude Code or trust the daemon's working directory once |
 | "Reports no plan limits" on a subscription | CLI signed in with an API key/Bedrock/Vertex; check its `/status` as the daemon's user |
+
+## Paid media (Meshy, PixelLab)
+
+Media calls are not turns but are spend: recorded per agent in `<state_dir>/media-spend.ndjson`, **counted by the daily caps**, and shown under every Spending table as "Paid media: $X over N calls, on top of the total". Meshy prices in credits: set `orchestration.meshy_credit_micros` (micro-dollars per credit) for them to count in dollars and caps; until then they are listed as unpriced credits. See [media-generation.md](media-generation.md).

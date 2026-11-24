@@ -581,6 +581,54 @@ void clawt_mcp_tools_set_grok_hooks(ClawtMcpTools           *self,
                                     GDestroyNotify           destroy);
 
 /**
+ * ClawtMcpMediaReply:
+ * @text: what the agent is told
+ * @image: (nullable): a small picture to show it inline, or %NULL
+ * @is_error: whether it was refused or failed
+ * @reply_data: as handed to the call hook
+ *
+ * How a media tool is answered, exactly once.
+ */
+typedef void (*ClawtMcpMediaReply)(const gchar *text,
+                                   GBytes      *image,
+                                   gboolean     is_error,
+                                   gpointer     reply_data);
+
+/**
+ * ClawtMcpMediaHooks:
+ * @available: whether the agent has the service (`meshy`, `pixellab`)
+ *   bound: asked by the gate and by nothing else, so a tool offered is a
+ *   tool that works
+ * @call: runs one `clawtilla_meshy_*` or `clawtilla_pixellab_*` call and
+ *   answers through the reply exactly once
+ *
+ * What the daemon supplies so agents can use the paid media services
+ * (since 0.75.0).  Unset, those tools are offered to nobody.
+ */
+typedef struct {
+    gboolean (*available)(const gchar *agent_id, const gchar *service,
+                          gpointer user_data);
+    void     (*call)(const gchar        *agent_id,
+                     const gchar        *tool,
+                     JsonObject         *arguments,
+                     ClawtMcpMediaReply  reply,
+                     gpointer            reply_data,
+                     gpointer            user_data);
+} ClawtMcpMediaHooks;
+
+/**
+ * clawt_mcp_tools_set_media_hooks:
+ * @self: a #ClawtMcpTools
+ * @hooks: (nullable): the hooks, copied
+ * @user_data: passed to each hook
+ * @destroy: frees @user_data
+ */
+void clawt_mcp_tools_set_media_hooks(ClawtMcpTools            *self,
+                                     const ClawtMcpMediaHooks *hooks,
+                                     gpointer                  user_data,
+                                     GDestroyNotify            destroy);
+
+/**
  * ClawtMcpEphemeralHooks:
  * @spawn: makes a helper for the agent and answers what to tell it, with
  *   @is_error set on a refusal (transfer full)

@@ -42,6 +42,8 @@ typedef enum {
     NEEDS_BROWSER_SCRIPTS,
     NEEDS_BROWSER_SECRETS,
     NEEDS_GROK,
+    NEEDS_MESHY,
+    NEEDS_PIXELLAB,
     NEEDS_WAITS,
     NEEDS_DECISION_ANSWER,
     NEEDS_RETRY,
@@ -89,6 +91,15 @@ typedef struct {
      * refuses a TOOL() without one.
      */
     ClawtActionClass      action;
+
+    /*
+     * Whether a call is asked of a person when no policy rule says
+     * otherwise.  Set on the paid media tools: each generation spends an
+     * account's credits, and "allowed until somebody writes a rule" is
+     * the wrong way round for money.  A rule (`meshy=allow`, a glob)
+     * still decides first.
+     */
+    gboolean              asks_by_default;
 } ToolDefinition;
 
 /* ── Parameter tables ────────────────────────────────────────────── */
@@ -991,14 +1002,63 @@ static const ClawtParamInfo office_custodians_params[] = {
       "office-custodial tag. Defaults to facilities.", FALSE }
 };
 
+static const ClawtParamInfo meshy_generate_params[] = {
+    { "operation", "string", "text-to-3d (a prompt; a preview then a "
+      "textured refine), image-to-3d (a picture), multi-image-to-3d (one to "
+      "four pictures of one object), retexture, remesh, rig (a humanoid or "
+      "four-legged model, with walking and running clips) or animate (more "
+      "clips for a rigged model).", TRUE },
+    { "prompt", "string", "What to make, for text-to-3d; the texture to "
+      "paint, for retexture.", FALSE },
+    { "images", "object", "Pictures to send, as {\"<Meshy field>\": "
+      "\"<path>\"}: image_url for image-to-3d, image_style_url for "
+      "retexture. Paths are in your workspace or your exchange directory; "
+      "nothing else is read.", FALSE },
+    { "params", "object", "Meshy's own fields, passed as they are: "
+      "ai_model, topology (triangle or quad), target_polycount, "
+      "should_remesh, enable_pbr, texture_resolution, pose_mode (a-pose, "
+      "t-pose), target_formats, input_task_id, rig_task_id, action_ids, "
+      "animation_type (biped, quadruped)...", FALSE }
+};
+
+static const ClawtParamInfo pixellab_generate_params[] = {
+    { "operation", "string", "image (a picture), bitforge (a picture in a "
+      "style), rotate, inpaint, animate (four frames of an action), "
+      "character-4 or character-8 (a character in four or eight "
+      "directions), character-animate (a walk or another action for a "
+      "character, every direction), tileset-topdown, tileset-sidescroller, "
+      "isometric-tile or map-object.", TRUE },
+    { "prompt", "string", "What to draw; for character-animate, the "
+      "action.", FALSE },
+    { "model", "string", "pixen for image to use PixelLab's newer image "
+      "model; empty for pixflux.", FALSE },
+    { "images", "object", "Pictures to send, as {\"<PixelLab field>\": "
+      "\"<path>\"}: init_image, from_image, reference_image, "
+      "inpainting_image, mask_image, color_image... Paths are in your "
+      "workspace or your exchange directory.", FALSE },
+    { "params", "object", "PixelLab's own fields, passed as they are: "
+      "image_size ({width, height}), view, direction, outline, shading, "
+      "detail, no_background, seed, character_id, template_id, "
+      "lower_description, upper_description, tile_size...", FALSE }
+};
+
+static const ClawtParamInfo media_job_params[] = {
+    { "job_id", "string", "The job id a generate call answered with.",
+      TRUE }
+};
+
 /* ── The tools ───────────────────────────────────────────────────── */
 
 #define TOOL(name_, desc_, req_, params_, action_) \
-    { name_, desc_, req_, FALSE, params_, G_N_ELEMENTS(params_), action_ }
+    { name_, desc_, req_, FALSE, params_, G_N_ELEMENTS(params_), action_, FALSE }
 
 /* A tool whose whole purpose is to reach another agent. */
 #define HOP_TOOL(name_, desc_, req_, params_, action_) \
-    { name_, desc_, req_, TRUE, params_, G_N_ELEMENTS(params_), action_ }
+    { name_, desc_, req_, TRUE, params_, G_N_ELEMENTS(params_), action_, FALSE }
+
+/* A tool that spends money: asked of a person unless a rule allows it. */
+#define PAID_TOOL(name_, desc_, req_, params_, action_) \
+    { name_, desc_, req_, FALSE, params_, G_N_ELEMENTS(params_), action_, TRUE }
 
 static const ToolDefinition tools[] = {
     TOOL("clawtilla_list_agents",
@@ -1628,6 +1688,52 @@ static const ToolDefinition tools[] = {
          "guessing; the answer is this server's, modules included.",
          NEEDS_WEB_RESEARCH, no_params, CLAWT_ACTION_READ),
 
+    PAID_TOOL("clawtilla_meshy_generate",
+         "Make a 3D model with Meshy: from a prompt, from pictures, or "
+         "by retexturing, remeshing, rigging or animating one it made "
+         "before. Paid: each call is put to the operator with its price "
+         "first, unless a policy rule allows it. Returns a job id at once; "
+         "a model takes minutes, so check it later with "
+         "clawtilla_meshy_job, which saves the files. Meshy keeps results "
+         "for three days.",
+         NEEDS_MESHY, meshy_generate_params, CLAWT_ACTION_EXTERNAL),
+
+    TOOL("clawtilla_meshy_job",
+         "How a Meshy job is doing. Once it has finished, every file it "
+         "made (GLB, FBX, textures, thumbnails, clips) is saved to your "
+         "exchange directory under media/<job>/ with a provenance.yaml, "
+         "and this says where.",
+         NEEDS_MESHY, media_job_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_meshy_cancel",
+         "Stop a Meshy job that has not started; Meshy refunds it. One "
+         "already running cannot be stopped.",
+         NEEDS_MESHY, media_job_params, CLAWT_ACTION_EXTERNAL),
+
+    TOOL("clawtilla_meshy_balance",
+         "How many Meshy credits the account you use has left.",
+         NEEDS_MESHY, no_params, CLAWT_ACTION_READ),
+
+    PAID_TOOL("clawtilla_pixellab_generate",
+         "Make pixel art with PixelLab: a picture, a character in four or "
+         "eight directions, a walk or another action for it, a tileset or "
+         "a map object. Paid: each call is put to the operator first, "
+         "unless a policy rule allows it. A picture comes back at once and "
+         "is saved; characters, animations and tilesets return a job id to "
+         "check with clawtilla_pixellab_job.",
+         NEEDS_PIXELLAB, pixellab_generate_params, CLAWT_ACTION_EXTERNAL),
+
+    TOOL("clawtilla_pixellab_job",
+         "How a PixelLab job is doing. Once it has finished, every file it "
+         "made (each direction, each frame, the sprite sheet) is saved to "
+         "your exchange directory under media/<job>/ with a "
+         "provenance.yaml, and this says where.",
+         NEEDS_PIXELLAB, media_job_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_pixellab_balance",
+         "How much PixelLab credit the account you use has left.",
+         NEEDS_PIXELLAB, no_params, CLAWT_ACTION_READ),
+
     TOOL("clawtilla_grok_dispatch",
          "Hand a piece of work to one of the Grok bots listed in your "
          "TOOLS.org and return at once with a job id. The bot works on "
@@ -1797,6 +1903,9 @@ struct _ClawtMcpTools {
     ClawtMcpGrokHooks       grok;
     gpointer                grok_data;
     GDestroyNotify          grok_destroy;
+    ClawtMcpMediaHooks      media;
+    gpointer                media_data;
+    GDestroyNotify          media_destroy;
 
     ClawtMcpEphemeralHooks  ephemeral;
     ClawtMcpOfficeHooks     office;
@@ -1958,6 +2067,26 @@ clawt_mcp_tools_set_grok_hooks(ClawtMcpTools           *self,
 
     self->grok_data = user_data;
     self->grok_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_media_hooks(ClawtMcpTools            *self,
+                                const ClawtMcpMediaHooks *hooks,
+                                gpointer                  user_data,
+                                GDestroyNotify            destroy)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    if (self->media_destroy != NULL && self->media_data != NULL)
+        self->media_destroy(self->media_data);
+
+    if (hooks != NULL)
+        self->media = *hooks;
+    else
+        memset(&self->media, 0, sizeof(self->media));
+
+    self->media_data = user_data;
+    self->media_destroy = destroy;
 }
 
 void
@@ -2951,8 +3080,27 @@ policy_mode(ClawtMcpTools *self, const gchar *agent_id, const gchar *room_id,
     }
 
     {
+        gchar *matched = NULL;
+        const ToolDefinition *definition = find_tool(tool);
         ClawtPolicyMode mode = clawt_policy_mode_for(
-            agent != NULL ? clawt_agent_get_config(agent) : NULL, tool, action, out_rule);
+            agent != NULL ? clawt_agent_get_config(agent) : NULL, tool, action, &matched);
+
+        /*
+         * A tool that spends money asks when no rule said anything: a
+         * rule that allows it (`meshy=allow`, `clawtilla_pixellab_*=allow`)
+         * is how an operator who trusts an agent says so.
+         */
+        if (matched == NULL && mode == CLAWT_POLICY_ALLOW &&
+            definition != NULL && definition->asks_by_default) {
+            mode = CLAWT_POLICY_ASK;
+            matched = g_strdup("a paid service: each call is asked unless a "
+                               "policy rule allows it");
+        }
+
+        if (out_rule != NULL)
+            *out_rule = matched;
+        else
+            g_free(matched);
 
         /*
          * Work done for another fleet: the stricter of the agent's rule
@@ -2995,6 +3143,24 @@ policy_summary(const gchar *tool, JsonObject *arguments)
 {
     g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
     g_autofree gchar *json = NULL;
+    const gchar *service = clawt_media_service_for_tool(tool);
+
+    /*
+     * A paid generation says what it costs first: the question a person
+     * answers is "spend this?", and the arguments are the detail.
+     */
+    if (service != NULL && g_str_has_suffix(tool, "_generate")) {
+        g_autofree gchar *cost = clawt_media_cost_line(service, arguments);
+        g_autofree gchar *rest = NULL;
+
+        json_node_set_object(node, arguments != NULL ? arguments
+                                                     : json_object_new());
+        json = json_to_string(node, FALSE);
+        if (strlen(json) > 300)
+            json[300] = '\0';
+        rest = g_strdup_printf("%s\n%s %s", cost, tool, json);
+        return g_steal_pointer(&rest);
+    }
 
     json_node_set_object(node, arguments != NULL ? arguments : json_object_new());
     json = json_to_string(node, FALSE);
@@ -3321,6 +3487,20 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
             if (granted == NULL || granted[0] == NULL)
                 return FALSE;
         }
+        break;
+
+    case NEEDS_MESHY:
+    case NEEDS_PIXELLAB:
+        /*
+         * Only to an agent the service is bound to, asked of the hook the
+         * call itself uses, so "offered" and "works" agree.
+         */
+        if (self->media.available == NULL ||
+            !self->media.available(agent_id,
+                                   tool->requirement == NEEDS_MESHY
+                                   ? "meshy" : "pixellab",
+                                   self->media_data))
+            return FALSE;
         break;
 
     case NEEDS_GROK:
@@ -9339,6 +9519,7 @@ clawt_mcp_tools_call_defers(ClawtMcpTools *self,
 
     if (g_strcmp0(tool_name, "clawtilla_computer_exec") != 0 &&
         g_strcmp0(tool_name, "clawtilla_grok_dispatch") != 0 &&
+        clawt_media_service_for_tool(tool_name) == NULL &&
         !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_web_") &&
         !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_browser_") &&
         !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_display_")) {
@@ -9654,6 +9835,59 @@ tool_grok_jobs(ClawtMcpTools *self, const gchar *agent_id,
     }
 
     return self->grok.jobs(agent_id, self->grok_data);
+}
+
+static JsonNode *make_image_response(JsonNode *request_id, GBytes *png,
+                                     const gchar *text);
+
+/* A media call on its way to the daemon. */
+typedef struct {
+    GTask    *outer;
+    JsonNode *request_id;
+} MediaAsync;
+
+static void
+on_media_answered(const gchar *text, GBytes *image, gboolean is_error,
+                  gpointer data)
+{
+    MediaAsync *async = data;
+
+    g_task_return_pointer(async->outer,
+                          (image != NULL && !is_error)
+                          ? make_image_response(async->request_id, image,
+                                                text != NULL ? text : "")
+                          : make_response(async->request_id,
+                                          text != NULL ? text : "", is_error),
+                          (GDestroyNotify)json_node_unref);
+
+    g_clear_object(&async->outer);
+    g_clear_pointer(&async->request_id, json_node_unref);
+    g_free(async);
+}
+
+/*
+ * Hands one media call to the daemon, which owns the keys, the files and
+ * the ledger.  Answers through @outer in every case, a refusal included,
+ * because the caller has already deferred its IPC frame.
+ */
+static void
+media_call_start(ClawtMcpTools *self, const gchar *agent_id,
+                 const gchar *tool, JsonObject *arguments,
+                 JsonNode *request_id, GTask *outer)
+{
+    MediaAsync *async = g_new0(MediaAsync, 1);
+
+    async->outer = outer;
+    async->request_id = request_id != NULL ? json_node_ref(request_id) : NULL;
+
+    if (self->media.call == NULL) {
+        on_media_answered("No media service is configured for you.", NULL,
+                          TRUE, async);
+        return;
+    }
+
+    self->media.call(agent_id, tool, arguments, on_media_answered, async,
+                     self->media_data);
 }
 
 /* A call waiting on an action rule's answer. */
@@ -10762,6 +10996,11 @@ call_async_dispatch(ClawtMcpTools *self, const gchar *agent_id,
         return;
     }
 
+    if (clawt_media_service_for_tool(tool) != NULL) {
+        media_call_start(self, agent_id, tool, arguments, request_id, outer);
+        return;
+    }
+
     if (g_strcmp0(tool, "clawtilla_grok_dispatch") == 0) {
         grok_call_start(self, agent_id, room_id, arguments, request_id,
                         outer);
@@ -11212,6 +11451,15 @@ tools_call_run(ClawtMcpTools *self,
         text = tool_skill_list(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_grok_jobs") == 0)
         text = tool_grok_jobs(self, agent_id, &is_error);
+    else if (clawt_media_service_for_tool(tool_name) != NULL) {
+        /*
+         * Only reachable when the deferred path declined it -- a refusal
+         * -- or from a route that cannot wait: every media call waits on
+         * the service.
+         */
+        text = g_strdup_printf("%s is not available to you here.", tool_name);
+        is_error = TRUE;
+    }
     else if (g_strcmp0(tool_name, "clawtilla_grok_dispatch") == 0) {
         /*
          * Only reachable when the deferred path declined it, which it
@@ -11338,6 +11586,11 @@ clawt_mcp_tools_dispose(GObject *object)
         self->grok_destroy(self->grok_data);
         self->grok_destroy = NULL;
         self->grok_data = NULL;
+    }
+    if (self->media_destroy != NULL && self->media_data != NULL) {
+        self->media_destroy(self->media_data);
+        self->media_destroy = NULL;
+        self->media_data = NULL;
     }
     memset(&self->grok, 0, sizeof(self->grok));
 

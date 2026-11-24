@@ -183,3 +183,11 @@ See [connectors.md](connectors.md), [integrations.md](integrations.md).
 ## See who changed an agent, and when
 
 Open the operator's chat with the agent (`clawtilla room history AGENT`): since 0.74.0 every change another agent (or the agent itself) made to its settings, routines, triggers, mounts, integrations or skills is a compact note there, with who made it. `clawtilla history config` has the full text of each version, authored by the same actor. To see the operator's own changes in the chats too: `clawtilla config edit` and set `orchestration.config_notes: all`, then `clawtilla config reload`. When you change another agent and it needs to act on the change, message it -- the note is a record and starts no turn.
+
+## Give an agent Meshy or PixelLab
+
+1. Key in a 0600 file under `secrets.dir` (or an env var the daemon has).
+2. `clawtilla config edit`: add `integrations: [{name: pixellab, type: pixellab, scope: selected, agents: [artist], token: {file: ~/.clawtilla/secrets/pixellab.key}}]`, then `clawtilla config reload`.
+3. `clawtilla agent restart artist` (tools are read at session start).
+4. Every generation is asked of the operator with its price. To trust the agent, add `clawtilla_pixellab_*=allow` to its `policy.rules` with `clawtilla config edit` -- an agent's list **replaces** `defaults.policy.rules`, so copy the fleet's rules in too (see [security.md](security.md)).
+5. For Meshy spend in dollars and caps: set `orchestration.meshy_credit_micros`.

@@ -120,6 +120,7 @@ see security.md).
 | `orchestration.rate_limit_per_minute` | integer | `30` |  | Messages one agent may send per minute. |
 | `orchestration.daily_fleet_budget_micros` | integer | `0` |  | Daily fleet admission cap in integer millionths of USD; 0 disables. Uses recorded usage since local midnight, including reset archives. Already running work can overshoot; new deliveries wait until reset. |
 | `orchestration.daily_agent_budget_micros` | integer | `0` | `daily_agent_budget_micros` | Daily admission cap per agent in integer millionths of USD; 0 disables. Override with daily_agent_budget_micros on an agent. Uses local midnight and persisted usage; in-flight work can overshoot. |
+| `orchestration.meshy_credit_micros` | integer | `0` |  | What one Meshy credit costs you, in integer millionths of USD (20000 for two cents); 0, the default, leaves it unknown. |
 | `orchestration.task_budget_usd` | number | `5.0` |  | Spend cap for one delegated task and everything it spawns. |
 | `orchestration.idle_hours` | integer | `72` |  | How long without a turn before the Fleet page calls an agent idle. |
 | `orchestration.cycle_window` | integer | `10` |  | How many recent messages per room are remembered for loop detection. |
@@ -290,7 +291,7 @@ see security.md).
 |---|---|---|---|---|
 | `integrations` | list of mappings |  |  | Named integrations, each handed to one agent, some agents or all of them. |
 | `integrations.name` | string |  |  | What this instance is called. |
-| `integrations.type` | string |  |  | Which kind: matrix, email, webhook, local, cmacs or mcp. |
+| `integrations.type` | string |  |  | Which kind: matrix, email, webhook, local, cmacs, mcp, connector, libresearch, grokbot, meshy, pixellab or notify. |
 | `integrations.enabled` | boolean | `true` |  | Whether this instance is live at all. |
 | `integrations.scope` | enum | `selected` |  | Who gets it: all, selected or none. |
 | `integrations.teams` | list of strings |  |  | Team ids, when `scope: selected`. |

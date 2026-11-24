@@ -9,7 +9,7 @@ Source docs: docs/integrations.org, docs/research.org, docs/connectors.org (brok
 | Kind | Types | What it is |
 |---|---|---|
 | channel | `matrix`, `email`, `webhook`, `local`, `cmacs` | a person on the other end; a message arrives as a turn and costs a turn |
-| tools | `mcp`, `connector`, `libresearch`, `grokbot` | tools beside the agent's own; free until called |
+| tools | `mcp`, `connector`, `libresearch`, `grokbot`, `meshy`, `pixellab` | tools beside the agent's own; free until called (`meshy`/`pixellab` are paid per call: see [media-generation.md](media-generation.md)) |
 | notify | `notify` | the daemon telling a person about an agent; the agent never sees it |
 
 `clawtilla integration types` prints the table the build has. An unknown `type` disables that instance only (config from a newer clawtilla still loads).
@@ -35,7 +35,7 @@ Both go through one resolver (`clawt_integration_resolve_for_agent()`); inline b
 
 ### one_per_agent and identity_keys
 
-Channel types are `one_per_agent`: libreclaw renders one `channels.<type>` block per agent. When an inline block and a shared instance of the same channel type both apply, the inline one wins and the instance is dropped with a warning. `libresearch` is also one per agent. `mcp`, `connector`, `notify`, `grokbot` may repeat.
+Channel types are `one_per_agent`: libreclaw renders one `channels.<type>` block per agent. When an inline block and a shared instance of the same channel type both apply, the inline one wins and the instance is dropped with a warning. `libresearch`, `meshy` and `pixellab` are also one per agent. `mcp`, `connector`, `notify`, `grokbot` may repeat.
 
 Identity keys must differ between agents sharing one instance; put them under `per_agent:`:
 

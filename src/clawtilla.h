@@ -111,6 +111,7 @@
 #include "chat/clawt-steer-policy.h"
 #include "chat/clawt-crosstalk.h"
 #include "chat/clawt-change.h"
+#include "integration/clawt-media.h"
 #include "chat/clawt-draft-store.h"
 #include "chat/clawt-room.h"
 #include "chat/clawt-room-manager.h"

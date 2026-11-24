@@ -51,6 +51,7 @@ clawtilla is a C/GLib daemon (`clawtillad`) that owns a fleet of AI agents -- ea
 | Spend, budgets, cost, provider plan limits | [spending-and-usage.md](references/spending-and-usage.md) |
 | Integrations (Matrix, mail, MCP, libresearch, notifiers), the broker | [integrations.md](references/integrations.md) |
 | Connectors, sign-in, grants, the relay, Higgsfield's two roads | [connectors.md](references/connectors.md) |
+| Meshy (3D) and PixelLab (pixel art): integrations, tools, approvals, results, spend | [media-generation.md](references/media-generation.md) |
 | Tokens, policy and approvals, confinement, egress, secrets | [security.md](references/security.md) |
 | Grok bots and the VENTURE mirror | [grok-and-venture.md](references/grok-and-venture.md) |
 | Routines (cron), triggers (webhooks) | [routines-and-triggers.md](references/routines-and-triggers.md) |

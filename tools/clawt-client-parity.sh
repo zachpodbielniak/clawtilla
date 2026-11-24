@@ -388,7 +388,7 @@ declare -A AFFORDANCES=(
     # export is a save dialog in GTK and lrg and a download in the web
     # client; each writes libclawt's document, so the marker is that.
     #
-    ["spending unpriced turns"]="clawt_usage_ledger_unpriced_line|clawt_usage_ledger_unpriced_line|clawt_usage_ledger_unpriced_line"
+    ["spending notes (unpriced turns, paid media)"]="clawt_usage_ledger_notes|clawt_usage_ledger_notes|clawt_usage_ledger_notes"
     ["spending csv export"]="clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)"
     #
     # The ledger's Group by control itself.  Layer 3 sees a client walk

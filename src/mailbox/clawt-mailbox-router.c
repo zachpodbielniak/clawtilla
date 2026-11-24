@@ -86,6 +86,20 @@ daily_cost(ClawtConfig *config, const gchar *id, gint64 since,
 	*cost = MAX(totals.cost_micros, 0);
 	if (!g_file_test(state, G_FILE_TEST_EXISTS))
 		return TRUE;
+
+	/*
+	 * And what the agent spent on paid media (Meshy, PixelLab): a cap on
+	 * model spend that a picture could walk past is not a daily cap.
+	 */
+	{
+		g_autofree gchar *media = clawt_media_spend_path(state);
+		gint64 micros = 0;
+
+		clawt_media_spend_since(media, since,
+			clawt_config_get_int(config, "orchestration.meshy_credit_micros"),
+			&micros, NULL, NULL);
+		*cost = (micros > G_MAXINT64 - *cost) ? G_MAXINT64 : *cost + micros;
+	}
 	dir = g_dir_open(state, 0, error);
 	if (dir == NULL)
 		return FALSE;

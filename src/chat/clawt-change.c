@@ -257,7 +257,9 @@ clawt_change_config_to_json(
 	if (json == NULL || !JSON_NODE_HOLDS_OBJECT(json) ||
 	    json_node_get_object(json) == NULL) {
 		g_clear_pointer(&json, json_node_unref);
-		json = json_node_init_object(json_node_alloc(), json_object_new());
+		/* take, not init: init refs the object, and a new one would leak */
+		json = json_node_new(JSON_NODE_OBJECT);
+		json_node_take_object(json, json_object_new());
 	}
 
 	return json;

@@ -1,0 +1,117 @@
+#+title: Media generation
+#+description: Meshy (3D models) and PixelLab (pixel art) as first-party integrations: setting one up, the agent tools, approvals and prices, where results land, spend, and what the office makes with them
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-11-23 Mon]
+#+updated: [2026-11-23 Mon]
+#+version: 0.75.0
+
+* Media generation
+
+Two paid services make game art, and clawtilla talks to both directly:
+
+| Service | Makes | Priced in |
+|---+---+---|
+| [[https://www.meshy.ai][Meshy]] | 3D models from a prompt or pictures; retexturing, remeshing; rigging a humanoid or four-legged model with walking and running clips; more clips for a rigged model | credits (a price list; see [[*Spend][Spend]]) |
+| [[https://www.pixellab.ai][PixelLab]] | pixel art: pictures, characters in four or eight directions, walk and other cycles for them, top-down and side-on tilesets, isometric tiles, map objects | dollars, decided by PixelLab when the call is done |
+
+Both are closed, prepaid services: clawtilla's code is free software and the HTTP clients are ai-glib's (=AiMeshyClient=, =AiPixellabClient=, ai-glib 0.16.0), but what comes back is governed by each service's terms, which every saved result says beside it.
+
+They reach agents as two integration types, =meshy= and =pixellab=, with seven tools of clawtilla's own.  The drawn office uses the same clients for its characters (see [[file:office-custodial-team.org][office-custodial-team.org]]).
+
+** Setting one up
+
+1. Make a key: Meshy under Settings → API (a paid plan is needed), PixelLab under Account → API.
+2. Put it where a secret reference can find it -- a file only you can read is the usual place:
+
+   #+begin_src bash
+   install -m 0600 /dev/null ~/.clawtilla/secrets/meshy.key
+   $EDITOR ~/.clawtilla/secrets/meshy.key
+   #+end_src
+
+3. Add the integration, for the agents that should have it:
+
+   #+begin_src yaml
+   integrations:
+     - name: meshy
+       type: meshy
+       scope: selected
+       agents: [artist]
+       token: {file: ~/.clawtilla/secrets/meshy.key}
+     - name: pixellab
+       type: pixellab
+       scope: selected
+       teams: [office]
+       token: {env: PIXELLAB_API_KEY}
+   #+end_src
+
+   or from any client's Integrations page, or =clawtilla integration add=.  Both types are one per agent: two keys would be two accounts paying for one request, with nothing to say which.  A =url= is accepted for a proxy or a test server and must be https (or this machine's loopback).
+
+4. Restart the agent (=clawtilla agent restart artist=): a tool list is read when a session starts.  Its =TOOLS.org= gains a paragraph on what the service makes and how to use it.
+
+=clawtilla integration health AGENT NAME= checks the configuration on paper; it never calls the service, so a health check never spends a request.  The agent's =clawtilla_meshy_balance= / =clawtilla_pixellab_balance= tries the key.
+
+** The tools
+
+| Tool | Does | Class |
+|---+---+---|
+| ~clawtilla_meshy_generate~ | starts a Meshy job: ~operation~ (=text-to-3d=, =image-to-3d=, =multi-image-to-3d=, =retexture=, =remesh=, =rig=, =animate=), ~prompt~, ~images~, ~params~ | external, asked by default |
+| ~clawtilla_meshy_job~ | how a job is doing; once done, saves every file | read |
+| ~clawtilla_meshy_cancel~ | cancels a job still queued (Meshy refunds it) | external |
+| ~clawtilla_meshy_balance~ | credits left | read |
+| ~clawtilla_pixellab_generate~ | starts a PixelLab job: ~operation~ (=image=, =bitforge=, =rotate=, =inpaint=, =animate=, =character-4=, =character-8=, =character-animate=, =tileset-topdown=, =tileset-sidescroller=, =isometric-tile=, =map-object=), ~prompt~, ~model~ (=pixen=), ~images~, ~params~ | external, asked by default |
+| ~clawtilla_pixellab_job~ | how a job is doing; once done, saves every file | read |
+| ~clawtilla_pixellab_balance~ | dollars and subscription generations left | read |
+
+- ~params~ is the service's own fields, passed untouched (Meshy's =ai_model=, =topology=, =target_polycount=, =enable_pbr=, =input_task_id=, =rig_task_id=, =action_ids=...; PixelLab's =image_size=, =view=, =direction=, =outline=, =shading=, =no_background=, =character_id=...).  Neither service's field list is copied into clawtilla, so a field either adds works on the day it appears; the client refuses what it cannot send, naming the limit (PixelLab's sizes per operation).
+- ~images~ maps the service's field to a path: ={"image_url": "ref/front.png"}= for Meshy, ={"from_image": "sprite.png"}= for PixelLab.  A path is read only from the agent's workspace (relative paths are the workspace's) or the exchange, after it is made canonical -- =..= and a symlink outward both fail the same test, and the refusal says so.
+- When a job is done the reply names the service's own id a next step needs: Meshy's task id (for ~input_task_id~ to retexture, remesh or rig, and ~rig_task_id~ to animate) and PixelLab's character id (for ~character_id~ in =character-animate=).  A Meshy =text-to-3d= job changes its id when its refine starts; clawtilla keeps the newest beside the one the agent was given, so the agent always asks by its first id.
+- A generation answers with a job id at once.  A PixelLab picture is done at submit and is saved then; a model, a character or a tileset takes seconds to minutes, so the agent checks it later with the =_job= tool, which saves the results the first time it sees them done.  Jobs are remembered in ~<state_dir>/media/jobs.json~ with the agent that started them: one agent cannot read or cancel another's, and a restart loses nothing.
+
+** Approvals and prices
+
+Every =_generate= call is put to the operator before it runs -- a decision card with the price first and the arguments under it -- unless a policy rule allows it.  That is the one difference from every other tool, whose default is to run: money is the wrong thing to spend until somebody writes a rule.
+
+- Meshy's price comes from its price list, in ai-glib (=ai_meshy_estimate_credits()=): "Meshy rig: about 5 credits".
+- PixelLab publishes no price table; the card says PixelLab prices the call when it is done, and that most calls cost $0.01 to $0.08.
+- To let an agent you trust generate without asking, give it a rule:
+
+  #+begin_src yaml
+  agents:
+    - id: artist
+      policy:
+        rules: ["clawtilla_pixellab_*=allow", "clawtilla_meshy_generate=ask"]
+  #+end_src
+
+  A rule is read before the default, so =deny= turns a service off for one agent while the integration stays bound.
+
+** Where results land
+
+Each job's files go to the agent's exchange directory, =<exchange>/<agent>/media/<job>/= (inside a computer, =/mnt/clawtilla/exchange/<agent>/media/<job>/=), or to =<workspace>/media/<job>/= for an agent with no exchange.  Beside them, ~provenance.yaml~ says which service made them, the operation, the prompt, the job, the cost, when, and that the service's terms govern them.
+
+- Named results are saved by name: Meshy's =glb=, =fbx=, =thumbnail=, =texture-base_color=, =rig-glb=, =anim-walking=...; PixelLab's =image=, =south=, =south-0=, =spritesheet=...
+- A result is fetched from an https link only, with no credential, and refused past its cap *while it is read* -- 48 MiB for a picture, sheet or archive, 200 MiB for a model.  A link that is not https is listed as not saved rather than fetched.
+- Meshy deletes results about three days after a job finishes.  Saving them when first seen done is why the =_job= tool downloads rather than linking; a job left uncollected for longer is gone.
+- The first small PNG of a job is also shown to the agent inline.
+
+** Spend
+
+What each job cost is recorded in the agent's ~<state_dir>/media-spend.ndjson~ when its results are saved, from what the service reported: PixelLab in dollars, Meshy in credits.
+
+- The daily caps (=orchestration.daily_agent_budget_micros=, =orchestration.daily_fleet_budget_micros=) count media calls as well as turns.
+- Meshy's credits count only once you say what one costs you: =orchestration.meshy_credit_micros= (=20000= for two cents).  Until then they are listed as credits and left out of every dollar figure -- unknown, never free.
+- Every Spending page (and =clawtilla cost=) says, under its table, "Paid media: $0.12 over 3 calls, on top of the total", and how many Meshy credits have no price.  Media calls are not turns, so they are not in the table's groups.
+
+** Troubleshooting
+
+| Says | Means | Do |
+|---+---+---|
+| "no Meshy integration is bound to AGENT", or the tool is not offered | the agent is not in the integration's scope | =clawtilla integration list=; add the agent; restart it |
+| "a paid service: each call is asked unless a policy rule allows it", from a route that cannot wait | the call reached the agent's link rather than its MCP server | nothing: the =.mcp.json= route asks; this is the refusal on the other |
+| "refused it: ... 402" | out of credits, or (Meshy) a free plan | top up; =_balance= says what is left |
+| "... 429" with a delay | rate limited | wait the delay |
+| "... 429" naming concurrency (=NoMoreConcurrentTasks=) | the plan's limit on jobs at once | let some finish |
+| "is outside your workspace and the exchange, so it is not sent" | an ~images~ path the agent may not read | copy the picture into the workspace or the exchange |
+| "Not saved: x.png (not an https link)" | the service answered with a link clawtilla will not fetch | report it; nothing of ours was sent |
+| a job id is "not one you started" | another agent's job, or one from before a reinstall | each agent checks its own |
+| results missing after a few days | Meshy deleted them | run the job again |

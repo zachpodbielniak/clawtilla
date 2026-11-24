@@ -55,6 +55,22 @@ Daily admission cap per agent in integer millionths of USD; 0 disables.
 Override with daily_agent_budget_micros on an agent.
 Uses local midnight and persisted usage; in-flight work can overshoot.
 
+### `orchestration.meshy_credit_micros`
+
+- Type: integer
+- Default: `0`
+- Since: 0.75.0
+
+What one Meshy credit costs you, in integer millionths of USD (20000
+for two cents); 0, the default, leaves it unknown.
+
+Meshy prices its jobs in credits, not dollars. With a price here, an
+agent's Meshy jobs count towards the daily caps
+(daily_agent_budget_micros, daily_fleet_budget_micros) and the
+Spending page's total; without one they are listed as credits and
+leave both alone -- unknown, never free. PixelLab says its price in
+dollars and needs nothing here.
+
 ### `orchestration.task_budget_usd`
 
 - Type: number

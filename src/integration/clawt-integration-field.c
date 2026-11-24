@@ -128,6 +128,34 @@ static const ClawtIntegrationField fields[] = {
       "file:~/.clawtilla/secrets/libresearch.token",
       CLAWT_FIELD_SECRET, NULL, NULL, NULL, NULL, FALSE },
 
+    /* ── meshy ─────────────────────────────────────────────────── */
+
+    { "meshy", "token", "API key",
+      "From meshy.ai, Settings, API (msy_...). A reference -- "
+      "env:NAME, file:PATH or command:... -- never the key itself. A paid "
+      "plan is needed to make one.",
+      "file:~/.clawtilla/secrets/meshy.key",
+      CLAWT_FIELD_SECRET, NULL, NULL, NULL, NULL, TRUE },
+
+    { "meshy", "url", "Server",
+      "Leave empty for Meshy itself. Set only for a proxy or a test server.",
+      "https://api.meshy.ai",
+      CLAWT_FIELD_TEXT, NULL, NULL, NULL, NULL, FALSE },
+
+    /* ── pixellab ──────────────────────────────────────────────────── */
+
+    { "pixellab", "token", "API token",
+      "From pixellab.ai, Account, API. A reference -- env:NAME, file:PATH "
+      "or command:... -- never the token itself.",
+      "file:~/.clawtilla/secrets/pixellab.key",
+      CLAWT_FIELD_SECRET, NULL, NULL, NULL, NULL, TRUE },
+
+    { "pixellab", "url", "Server",
+      "Leave empty for PixelLab itself. Set only for a proxy or a test "
+      "server.",
+      "https://api.pixellab.ai/v2",
+      CLAWT_FIELD_TEXT, NULL, NULL, NULL, NULL, FALSE },
+
     /* ── grokbot ─────────────────────────────────────────────────── */
 
     { "grokbot", "url", "Routine webhook",
@@ -412,6 +440,8 @@ static const struct {
     { "connector", "Connected account" },
     { "libresearch", "Web research (libresearch)" },
     { "grokbot",   "Grok bot" },
+    { "meshy",     "3D models (Meshy)" },
+    { "pixellab",  "Pixel art (PixelLab)" },
     { "notify",    "Notifications" }
 };
 

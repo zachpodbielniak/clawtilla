@@ -479,6 +479,21 @@ integrations:
 
 Not =one_per_agent= -- an agent may reach several bots -- and no identity keys, because a bot shared by the fleet is one bot several agents hand work to. Health check: on paper only (an https routine URL and a key reference), because calling the webhook would *start a run*. The bot reports back over the tailnet to the webhook listener, so =daemon.webhook_enabled= and =daemon.tailscale= must be on. A bot connected over MCP can also start conversations with the agents it is shared with; their replies go back to it as new runs of its routine unless =push_replies= is off. Everything else -- the routine prompt, the MCP connection, the reporting contract, conversations, what each failure means -- is in [[file:grok.org][grok.org]].
 
+** meshy and pixellab -- paid 3D models and pixel art
+
+Meshy makes 3D models (from a prompt or pictures, retextured, remeshed, rigged and animated); PixelLab makes pixel art (pictures, characters in four or eight directions with walk cycles, tilesets, map objects).  The agents in scope get ~clawtilla_meshy_generate~, ~clawtilla_meshy_job~, ~clawtilla_meshy_cancel~ and ~clawtilla_meshy_balance~, or ~clawtilla_pixellab_generate~, ~clawtilla_pixellab_job~ and ~clawtilla_pixellab_balance~, and a paragraph of =TOOLS.org= on what the service makes.
+
+#+begin_src yaml
+integrations:
+  - name: meshy
+    type: meshy
+    scope: selected
+    agents: [artist]
+    token: {file: ~/.clawtilla/secrets/meshy.key}
+#+end_src
+
+=token= (the service's API key, as a secret reference) is the only key needed; =url= is for a proxy or a test server.  =one_per_agent=: two keys would be two accounts paying for one request.  Health check: on paper only, never a request.  Every generation is asked of you with its price unless a policy rule allows it; results are saved into the agent's exchange directory; spend counts towards the daily caps.  All of it is in [[file:media-generation.org][media-generation.org]].
+
 ** notify -- when an agent is blocked on you, or has broken
 
 ~clawtilla_message_user~ puts an agent's question where you will see it
