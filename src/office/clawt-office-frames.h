@@ -23,8 +23,10 @@
 #define CLAWT_OFFICE_FRAMES_H
 
 #include <glib-object.h>
+#include <gio/gio.h>
 
 #include "ipc/clawt-connection.h"
+#include "office/clawt-office-view.h"
 
 G_BEGIN_DECLS
 
@@ -380,6 +382,98 @@ gchar **clawt_office_renderer_embed_argv(const gchar      *binary,
                                          guint             width,
                                          guint             height,
                                          GError          **error);
+
+/**
+ * CLAWT_OFFICE_RENDERER_TOKEN_FD:
+ *
+ * The fd a standalone renderer reads a typed (unsaved) remote
+ * connection's token from: clawt_office_renderer_open_window() hands it
+ * over through a pipe on this fd, and the command line names it as
+ * `--token-file /dev/fd/3`.
+ */
+#define CLAWT_OFFICE_RENDERER_TOKEN_FD (3)
+
+/**
+ * clawt_office_renderer_window_argv:
+ * @binary: the renderer, from clawt_office_renderer_resolve()
+ * @connection: (nullable): the daemon the client is connected to
+ * @saved: whether @connection is a saved connection profile
+ * @mode: draw the map (%CLAWT_OFFICE_VIEW_2D) or the level
+ *   (%CLAWT_OFFICE_VIEW_3D)
+ * @token_fd: the fd the child will read @connection's token from, when
+ *   it is a remote connection that is not saved and has one; -1 otherwise
+ * @error: return location for a #GError
+ *
+ * The command line that opens the renderer as a window of its own:
+ * `clawtilla-office --2d|--3d CONNECTION`, with no `--embed`.  It names
+ * the client's own connection outright, so the window draws that daemon
+ * rather than whichever one the renderer would follow on its own:
+ *
+ * - a local connection by its socket, `--socket PATH` -- the default
+ *   socket (clawt_client_default_socket_path()) spelled out too;
+ * - a saved remote one by its profile, `--profile NAME`;
+ * - a typed remote one (`clawtilla-gtk --host`) by `--host HOST
+ *   --daemon-port PORT`, and its token, if it has one, by `--token-file
+ *   /dev/fd/@token_fd`.
+ *
+ * Never `--token`: an argv is readable by every user on the machine.  A
+ * typed remote connection with a token and no @token_fd is refused with
+ * %CLAWT_ERROR_INVALID_ARGUMENT, and one using TLS with
+ * %CLAWT_ERROR_NOT_SUPPORTED, because the renderer takes TLS settings
+ * only from a saved profile.  With no @connection the renderer is left
+ * to choose (`clawtilla-office --2d`).
+ *
+ * Returns: (transfer full) (array zero-terminated=1) (nullable): the argv
+ */
+gchar **clawt_office_renderer_window_argv(const gchar          *binary,
+                                          ClawtConnection      *connection,
+                                          gboolean              saved,
+                                          ClawtOfficeViewMode   mode,
+                                          gint                  token_fd,
+                                          GError              **error);
+
+/**
+ * clawt_office_renderer_describe_connection:
+ * @connection: (nullable): the daemon handed to the renderer
+ * @saved: whether @connection is a saved connection profile
+ *
+ * Which daemon a standalone renderer was handed, in words, for the
+ * client's toast and log: "the local daemon (PATH)", "the saved
+ * connection “NAME” (HOST:PORT)" or "HOST:PORT".  Never the token, only
+ * how it travelled.
+ *
+ * Returns: (transfer full): the sentence fragment
+ */
+gchar *clawt_office_renderer_describe_connection(ClawtConnection *connection,
+                                                 gboolean         saved);
+
+/**
+ * clawt_office_renderer_open_window:
+ * @connection: (nullable): the daemon the client is connected to
+ * @saved: whether @connection is a saved connection profile
+ * @mode: draw the map or the level
+ * @handed_over: (out) (optional) (transfer full): which daemon the
+ *   window was handed, from clawt_office_renderer_describe_connection()
+ * @error: return location for a #GError
+ *
+ * Opens clawtilla-office as a window of its own on @connection, drawing
+ * in @mode -- the "Open office" action of the GTK and lrg clients.  The
+ * renderer is found with clawt_office_renderer_resolve() and started
+ * with clawt_office_renderer_window_argv().  A typed remote connection's
+ * token goes through a pipe, on %CLAWT_OFFICE_RENDERER_TOKEN_FD, read
+ * once by the child and never written to disk or an argv.
+ *
+ * Nothing waits for the window: the child inherits the client's stdout
+ * and stderr, is reaped by GLib when it exits, and outlives the client
+ * that opened it.  Failing to find or start it is the error.
+ *
+ * Returns: (transfer full) (nullable): the child, already running
+ */
+GSubprocess *clawt_office_renderer_open_window(ClawtConnection      *connection,
+                                               gboolean              saved,
+                                               ClawtOfficeViewMode   mode,
+                                               gchar               **handed_over,
+                                               GError              **error);
 
 G_END_DECLS
 

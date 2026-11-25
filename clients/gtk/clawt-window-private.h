@@ -1566,9 +1566,10 @@ clawt_gtk_refresh_office(ClawtWindow *self);
  * clawtilla-office run as a child that streams frames over a socketpair,
  * or a line saying how to build it.  The child runs only while the
  * office is on (set_enabled, from each snapshot) and the slot is mapped
- * (the Office page is on screen); attach builds the slot once, detach
- * stops the child, dispose stops it and lets the state go with the
- * window.
+ * (the Office page is on screen) or the drawing is popped out; attach
+ * builds the slot once, set_participants fills the Follow picker from
+ * each snapshot, detach stops the child, dispose closes a popped-out
+ * window, stops the child and lets the state go with the window.
  */
 void
 clawt_gtk_office_view_attach(ClawtWindow *self);
@@ -1577,10 +1578,26 @@ void
 clawt_gtk_office_view_set_enabled(ClawtWindow *self, gboolean enabled);
 
 void
+clawt_gtk_office_view_set_participants(ClawtWindow *self, JsonArray *participants);
+
+void
 clawt_gtk_office_view_detach(ClawtWindow *self);
 
 void
 clawt_gtk_office_view_dispose(ClawtWindow *self);
+
+/*
+ * Open office: clawtilla-office started as a window of its own, on this
+ * window's active connection, in @mode -- never waited for, a failure a
+ * toast, and which daemon it was handed logged and toasted (never the
+ * token).  clawt_gtk_on_open_office() is win.open-office, whose string
+ * parameter is "2d" or "3d".
+ */
+void
+clawt_gtk_office_open_window(ClawtWindow *self, ClawtOfficeViewMode mode);
+
+void
+clawt_gtk_on_open_office(GSimpleAction *action, GVariant *parameter, gpointer user_data);
 
 void
 clawt_gtk_refresh_grok(ClawtWindow *self);

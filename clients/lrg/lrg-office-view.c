@@ -164,6 +164,16 @@ on_mode(LrgButton *button, gpointer user_data)
     clawt_lrg_app_wake(user_data);
 }
 
+/* Open office, beside the switch: clawtilla-office in the mode drawn here. */
+static void
+on_open_office(LrgButton *button, gpointer user_data)
+{
+    (void)button;
+    clawt_lrg_office_open_window(user_data,
+        clawt_office_scene_get_mode(view.scene) == CLAWT_OFFICE_SCENE_3D
+        ? CLAWT_OFFICE_VIEW_3D : CLAWT_OFFICE_VIEW_2D);
+}
+
 void
 clawt_lrg_office_view_add(ClawtLrgApp *app, LrgWidget *parent)
 {
@@ -187,6 +197,8 @@ clawt_lrg_office_view_add(ClawtLrgApp *app, LrgWidget *parent)
     g_signal_connect(view.viewport, "pointer-scroll", G_CALLBACK(on_pointer_scroll), app);
 
     clawt_lrg_take(bar, clawt_lrg_button("2D / 3D", "flat", G_CALLBACK(on_mode), app));
+    clawt_lrg_take(bar, clawt_lrg_button("Open office", "flat", G_CALLBACK(on_open_office),
+                                         app));
     {
         /*
          * One line beside a fixed button: it takes the row's slack and

@@ -25,6 +25,8 @@
 #include "clawt-office-frames.h"
 #include "clawt-error.h"
 
+#include <glib-unix.h>
+
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
@@ -853,4 +855,195 @@ clawt_office_renderer_embed_argv(const gchar *binary, gint fd,
     g_ptr_array_add(argv, g_strdup_printf("%u", MAX(height, 1u)));
     g_ptr_array_add(argv, NULL);
     return (gchar **)g_ptr_array_free(g_steal_pointer(&argv), FALSE);
+}
+
+/* ── Opening the renderer as a window of its own ──────────────────── */
+
+gchar **
+clawt_office_renderer_window_argv(const gchar *binary, ClawtConnection *connection,
+                                  gboolean saved, ClawtOfficeViewMode mode,
+                                  gint token_fd, GError **error)
+{
+    g_autoptr(GPtrArray) argv = g_ptr_array_new_with_free_func(g_free);
+
+    g_return_val_if_fail(binary != NULL, NULL);
+
+    g_ptr_array_add(argv, g_strdup(binary));
+    /* always said, so the renderer's own default never decides */
+    g_ptr_array_add(argv, g_strdup(mode == CLAWT_OFFICE_VIEW_3D ? "--3d" : "--2d"));
+
+    if (connection == NULL) {
+        /* nothing to hand over: the renderer chooses, and says so */
+    } else if (clawt_connection_is_local(connection)) {
+        const gchar *socket_path = clawt_connection_get_socket_path(connection);
+        g_autofree gchar *fallback = NULL;
+
+        /*
+         * Spelled out even for the default socket: left unsaid, the
+         * renderer follows whichever client last published a connection,
+         * which need not be the one that opened it.
+         */
+        if (socket_path == NULL || *socket_path == '\0') {
+            fallback = clawt_client_default_socket_path();
+            socket_path = fallback;
+        }
+        g_ptr_array_add(argv, g_strdup("--socket"));
+        g_ptr_array_add(argv, g_strdup(socket_path));
+    } else if (saved) {
+        /* the profile carries the host, the TLS settings and the token */
+        g_ptr_array_add(argv, g_strdup("--profile"));
+        g_ptr_array_add(argv, g_strdup(clawt_connection_get_name(connection)));
+    } else {
+        const gchar *token = clawt_connection_get_token(connection);
+
+        /* clawtilla-office has no TLS flags: those live in a saved profile */
+        if (clawt_connection_get_tls(connection)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                        "the office can open a TLS daemon only through a saved "
+                        "connection, and \"%s\" is not one: save it under Connections",
+                        clawt_connection_get_name(connection));
+            return NULL;
+        }
+        if (token != NULL && *token != '\0' && token_fd < 0) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "\"%s\" has a token, and a token never goes in an argv: "
+                        "it needs an fd to be read from",
+                        clawt_connection_get_name(connection));
+            return NULL;
+        }
+        g_ptr_array_add(argv, g_strdup("--host"));
+        g_ptr_array_add(argv, g_strdup(clawt_connection_get_host(connection)));
+        g_ptr_array_add(argv, g_strdup("--daemon-port"));
+        g_ptr_array_add(argv, g_strdup_printf("%u",
+                                              (guint)clawt_connection_get_port(connection)));
+        if (token != NULL && *token != '\0') {
+            g_ptr_array_add(argv, g_strdup("--token-file"));
+            g_ptr_array_add(argv, g_strdup_printf("/dev/fd/%d", token_fd));
+        }
+    }
+
+    g_ptr_array_add(argv, NULL);
+    return (gchar **)g_ptr_array_free(g_steal_pointer(&argv), FALSE);
+}
+
+gchar *
+clawt_office_renderer_describe_connection(ClawtConnection *connection, gboolean saved)
+{
+    g_autofree gchar *where = NULL;
+    const gchar *token;
+
+    if (connection == NULL)
+        return g_strdup("whichever daemon it finds itself");
+
+    where = clawt_connection_describe(connection);
+    if (clawt_connection_is_local(connection)) {
+        g_autofree gchar *fallback = NULL;
+        const gchar *socket_path = clawt_connection_get_socket_path(connection);
+
+        if (socket_path == NULL || *socket_path == '\0') {
+            fallback = clawt_client_default_socket_path();
+            socket_path = fallback;
+        }
+        return g_strdup_printf("the local daemon (%s)", socket_path);
+    }
+    if (saved)
+        return g_strdup_printf("the saved connection \342\200\234%s\342\200\235 (%s)",
+                               clawt_connection_get_name(connection), where);
+
+    token = clawt_connection_get_token(connection);
+    return g_strdup_printf("%s, %s", where,
+                           token != NULL && *token != '\0'
+                           ? "its token through a pipe" : "with no token");
+}
+
+/*
+ * Writes all of @token into @fd, the write end of a fresh pipe.  A token
+ * is far smaller than a pipe's buffer, so this never blocks; a short
+ * write that makes no progress is an error rather than a spin.
+ */
+static gboolean
+write_token(gint fd, const gchar *token, GError **error)
+{
+    gsize length = strlen(token);
+    gsize done = 0;
+
+    while (done < length) {
+        gssize n = write(fd, token + done, length - done);
+
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0) {
+            gint saved_errno = errno;
+
+            g_set_error(error, G_IO_ERROR, g_io_error_from_errno(saved_errno),
+                        "handing the token to the office: %s", g_strerror(saved_errno));
+            return FALSE;
+        }
+        done += (gsize)n;
+    }
+    return TRUE;
+}
+
+GSubprocess *
+clawt_office_renderer_open_window(ClawtConnection *connection, gboolean saved,
+                                  ClawtOfficeViewMode mode, gchar **handed_over,
+                                  GError **error)
+{
+    g_autofree gchar *binary = NULL;
+    g_auto(GStrv) argv = NULL;
+    g_autoptr(GSubprocessLauncher) launcher = NULL;
+    GSubprocess *child;
+    const gchar *token = NULL;
+    gint token_fd = -1;
+    gint fds[2] = { -1, -1 };
+
+    if (handed_over != NULL)
+        *handed_over = NULL;
+
+    binary = clawt_office_renderer_resolve(error);
+    if (binary == NULL)
+        return NULL;
+
+    /*
+     * A typed remote connection's token goes through a pipe: written
+     * whole and the write end closed before the child exists, so the
+     * child reads it to EOF from /dev/fd/N and it is on no disk and in
+     * no argv.  Only the read end reaches the child; both are CLOEXEC
+     * here, and the launcher's dup2 onto the target fd clears it there.
+     */
+    if (connection != NULL && !clawt_connection_is_local(connection) && !saved &&
+        !clawt_connection_get_tls(connection))
+        token = clawt_connection_get_token(connection);
+    if (token != NULL && *token != '\0') {
+        if (!g_unix_open_pipe(fds, O_CLOEXEC, error))
+            return NULL;
+        if (!write_token(fds[1], token, error)) {
+            close(fds[0]);
+            close(fds[1]);
+            return NULL;
+        }
+        close(fds[1]);
+        token_fd = CLAWT_OFFICE_RENDERER_TOKEN_FD;
+    }
+
+    argv = clawt_office_renderer_window_argv(binary, connection, saved, mode, token_fd,
+                                             error);
+    if (argv == NULL) {
+        if (fds[0] >= 0)
+            close(fds[0]);
+        return NULL;
+    }
+
+    /* stdin, stdout and stderr are the client's: the window says which daemon there */
+    launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_NONE);
+    /* the launcher owns the read end from here, and closes it once it has spawned */
+    if (fds[0] >= 0)
+        g_subprocess_launcher_take_fd(launcher, fds[0], token_fd);
+    child = g_subprocess_launcher_spawnv(launcher, (const gchar *const *)argv, error);
+    if (child == NULL)
+        return NULL;
+
+    if (handed_over != NULL)
+        *handed_over = clawt_office_renderer_describe_connection(connection, saved);
+    return child;
 }

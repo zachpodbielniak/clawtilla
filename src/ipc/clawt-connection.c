@@ -12,7 +12,10 @@
 
 #include <errno.h>
 #include <glib/gstdio.h>
+#include <signal.h>
 #include <string.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include <yaml-glib.h>
 
@@ -22,6 +25,7 @@ struct _ClawtConnection {
     gchar   *host;          /* set for a remote one */
     guint16  port;
     gchar   *token;
+    gchar   *token_file;    /* where token was read from, if a file */
     gboolean tls;
     gboolean accept_unknown_certificate;
 };
@@ -67,6 +71,7 @@ clawt_connection_copy(ClawtConnection *self)
     copy->host = g_strdup(self->host);
     copy->port = self->port;
     copy->token = g_strdup(self->token);
+    copy->token_file = g_strdup(self->token_file);
     copy->tls = self->tls;
     copy->accept_unknown_certificate = self->accept_unknown_certificate;
 
@@ -82,6 +87,7 @@ clawt_connection_free(ClawtConnection *self)
     g_free(self->name);
     g_free(self->socket_path);
     g_free(self->host);
+    g_free(self->token_file);
 
     /*
      * Wiped rather than merely freed.  This is the one long-lived copy of
@@ -218,8 +224,65 @@ clawt_connection_set_token(ClawtConnection *self, const gchar *token)
 {
     g_return_if_fail(self != NULL);
 
+    /* wiped, for the reason clawt_connection_free() gives */
+    if (self->token != NULL)
+        memset(self->token, 0, strlen(self->token));
+
     g_free(self->token);
     self->token = g_strdup(token);
+}
+
+const gchar *
+clawt_connection_get_token_file(ClawtConnection *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->token_file;
+}
+
+gboolean
+clawt_connection_load_token_file(ClawtConnection  *self,
+                                 const gchar      *path,
+                                 GError          **error)
+{
+    g_autofree gchar *resolved = NULL;
+    gchar *text = NULL;
+    gsize length = 0;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    g_return_val_if_fail(path != NULL, FALSE);
+
+    resolved = clawt_expand_path(path);
+
+    if (!g_file_get_contents(resolved, &text, &length, error)) {
+        g_prefix_error(error, "--token-file: ");
+        return FALSE;
+    }
+
+    /*
+     * Trimmed in place, so the only copy left is the connection's own:
+     * the buffer read is wiped below whichever way this goes, and a
+     * token file written by `echo` ends in a newline the daemon would
+     * otherwise be asked to match.
+     */
+    g_strstrip(text);
+
+    if (*text == '\0') {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "--token-file: %s is empty", resolved);
+        memset(text, 0, length);
+        g_free(text);
+        return FALSE;
+    }
+
+    clawt_connection_set_token(self, text);
+    g_free(self->token_file);
+    self->token_file = g_steal_pointer(&resolved);
+
+    memset(text, 0, length);
+    g_free(text);
+
+    return TRUE;
 }
 
 /*
@@ -1061,6 +1124,361 @@ clawt_connection_last_save(const gchar     *path,
     return clawt_write_file_atomic(resolved, text, -1, 0600, FALSE, error);
 }
 
+/* ── The daemon a running client is on now ─────────────────────────── */
+
+#define CURRENT_PREFIX "current-connection-"
+#define CURRENT_GROUP  "connection"
+
+gchar *
+clawt_connection_current_default_dir(void)
+{
+    /*
+     * Runtime, not state: it describes processes that are running, so
+     * it belongs somewhere a reboot empties.  A directory of its own
+     * rather than the daemon's `clawtilla/` itself, because saving
+     * forces the directory to 0700 and the daemon's is not ours to
+     * re-mode.
+     */
+    return g_build_filename(g_get_user_runtime_dir(), "clawtilla",
+                            "clients", NULL);
+}
+
+/* The file for @pid in @dir. */
+static gchar *
+current_path_for(const gchar *dir, gint pid)
+{
+    g_autofree gchar *base = g_strdup_printf(CURRENT_PREFIX "%d", pid);
+
+    return g_build_filename(dir, base, NULL);
+}
+
+gboolean
+clawt_connection_current_save(const gchar      *dir,
+                              ClawtConnection  *connection,
+                              GError          **error)
+{
+    g_autofree gchar *resolved = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *text = NULL;
+    g_autoptr(GKeyFile) file = NULL;
+    const gchar *client;
+
+    resolved = dir != NULL ? clawt_expand_path(dir)
+                           : clawt_connection_current_default_dir();
+    path = current_path_for(resolved, (gint)getpid());
+
+    /* no connection: this process is on nothing, so it says nothing */
+    if (connection == NULL) {
+        if (g_unlink(path) != 0 && errno != ENOENT) {
+            g_set_error(error, G_IO_ERROR, g_io_error_from_errno(errno),
+                        "could not remove %s: %s", path, g_strerror(errno));
+            return FALSE;
+        }
+
+        return TRUE;
+    }
+
+    if (!clawt_ensure_dir(resolved, 0700, error))
+        return FALSE;
+
+    /*
+     * What identifies the daemon, and where its token can be found
+     * again -- never the token.  A reader resolves a remote one through
+     * connections.yaml or the token file named here, both of which the
+     * person controls and can rotate; a token copied into a runtime
+     * file would outlive a rotation and be one more place to leak from.
+     */
+    file = g_key_file_new();
+    client = g_get_prgname();
+    g_key_file_set_string(file, CURRENT_GROUP, "client",
+                          client != NULL ? client : "a client");
+    g_key_file_set_int64(file, CURRENT_GROUP, "written", g_get_real_time());
+    g_key_file_set_string(file, CURRENT_GROUP, "name",
+                          clawt_connection_get_name(connection));
+
+    if (clawt_connection_is_local(connection)) {
+        g_key_file_set_string(file, CURRENT_GROUP, "kind", "local");
+
+        if (connection->socket_path != NULL)
+            g_key_file_set_string(file, CURRENT_GROUP, "socket",
+                                  connection->socket_path);
+    } else {
+        g_key_file_set_string(file, CURRENT_GROUP, "kind", "remote");
+        g_key_file_set_string(file, CURRENT_GROUP, "host", connection->host);
+        g_key_file_set_integer(file, CURRENT_GROUP, "port",
+                               (gint)connection->port);
+        g_key_file_set_boolean(file, CURRENT_GROUP, "tls", connection->tls);
+        g_key_file_set_boolean(file, CURRENT_GROUP,
+                               "accept-unknown-certificate",
+                               connection->accept_unknown_certificate);
+
+        if (connection->token_file != NULL)
+            g_key_file_set_string(file, CURRENT_GROUP, "token-file",
+                                  connection->token_file);
+    }
+
+    text = g_key_file_to_data(file, NULL, NULL);
+
+    return clawt_write_file_atomic(path, text, -1, 0600, FALSE, error);
+}
+
+/*
+ * Whether @pid is a process that is still there.  EPERM is alive: the
+ * process exists and is somebody else's, which in a per-user runtime
+ * directory should not happen, but is not a dead client either.
+ */
+static gboolean
+pid_is_alive(gint pid)
+{
+    if (pid <= 0)
+        return FALSE;
+
+    return kill((pid_t)pid, 0) == 0 || errno == EPERM;
+}
+
+/*
+ * The live file written most recently in @dir, loaded, or %NULL.  A file
+ * whose process is gone -- a client that crashed, or was killed before
+ * it could clean up -- is ignored and, being nobody's, removed.
+ */
+static GKeyFile *
+current_newest(const gchar *dir, gint *pid_out)
+{
+    g_autoptr(GDir) listing = NULL;
+    g_autoptr(GKeyFile) best = NULL;
+    gint64 best_written = G_MININT64;
+    gint best_pid = 0;
+    const gchar *entry;
+
+    listing = g_dir_open(dir, 0, NULL);
+
+    if (listing == NULL)
+        return NULL;
+
+    while ((entry = g_dir_read_name(listing)) != NULL) {
+        g_autofree gchar *path = NULL;
+        g_autoptr(GKeyFile) file = NULL;
+        guint64 pid = 0;
+        gint64 written;
+
+        if (!g_str_has_prefix(entry, CURRENT_PREFIX))
+            continue;
+
+        /* the name carries the pid; anything else there is not ours */
+        if (!g_ascii_string_to_unsigned(entry + strlen(CURRENT_PREFIX), 10,
+                                        1, G_MAXINT, &pid, NULL))
+            continue;
+
+        path = g_build_filename(dir, entry, NULL);
+
+        if (!pid_is_alive((gint)pid)) {
+            (void)g_unlink(path);
+            continue;
+        }
+
+        file = g_key_file_new();
+
+        if (!g_key_file_load_from_file(file, path, G_KEY_FILE_NONE, NULL))
+            continue;
+
+        written = g_key_file_get_int64(file, CURRENT_GROUP, "written", NULL);
+
+        /*
+         * Newest wins; a tie (two writes inside the same microsecond)
+         * goes to the higher pid, which is arbitrary but at least the
+         * same answer every time it is asked.
+         */
+        if (best == NULL || written > best_written ||
+            (written == best_written && (gint)pid > best_pid)) {
+            g_clear_pointer(&best, g_key_file_unref);
+            best = g_steal_pointer(&file);
+            best_written = written;
+            best_pid = (gint)pid;
+        }
+    }
+
+    if (pid_out != NULL)
+        *pid_out = best_pid;
+
+    return g_steal_pointer(&best);
+}
+
+/*
+ * A remote record's profile in @saved: the one it is named for, when
+ * that still points at the same daemon, else @by_address and any
+ * profile for the same host and port.
+ */
+static ClawtConnection *
+find_profile_for(GPtrArray   *saved,
+                 const gchar *name,
+                 const gchar *host,
+                 guint16      port,
+                 gboolean     by_address)
+{
+    guint i;
+
+    for (i = 0; saved != NULL && i < saved->len; i++) {
+        ClawtConnection *candidate = g_ptr_array_index(saved, i);
+
+        if (clawt_connection_is_local(candidate) ||
+            g_strcmp0(candidate->host, host) != 0 || candidate->port != port)
+            continue;
+
+        if (by_address || g_strcmp0(candidate->name, name) == 0)
+            return candidate;
+    }
+
+    return NULL;
+}
+
+/*
+ * The connection @file describes, with a token found the way the header
+ * says, or %NULL with @notice saying why when it names a remote daemon
+ * whose token cannot be found.
+ */
+static ClawtConnection *
+current_resolve(GKeyFile    *file,
+                const gchar *connections_path,
+                const gchar *who,
+                gint         pid,
+                gchar      **notice)
+{
+    g_autofree gchar *kind = NULL;
+    g_autofree gchar *name = NULL;
+    g_autofree gchar *host = NULL;
+    g_autofree gchar *token_file = NULL;
+    g_autoptr(GPtrArray) saved = NULL;
+    g_autoptr(ClawtConnection) connection = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtConnection *found;
+    gint port;
+
+    kind = g_key_file_get_string(file, CURRENT_GROUP, "kind", NULL);
+    name = g_key_file_get_string(file, CURRENT_GROUP, "name", NULL);
+
+    /* a local daemon needs no token: the socket is the whole address */
+    if (g_strcmp0(kind, "local") == 0) {
+        g_autofree gchar *socket_path =
+            g_key_file_get_string(file, CURRENT_GROUP, "socket", NULL);
+
+        return clawt_connection_new_local(name != NULL ? name : "Local",
+                                          socket_path);
+    }
+
+    host = g_key_file_get_string(file, CURRENT_GROUP, "host", NULL);
+    port = g_key_file_get_integer(file, CURRENT_GROUP, "port", NULL);
+
+    if (g_strcmp0(kind, "remote") != 0 || host == NULL || port <= 0 ||
+        port > G_MAXUINT16)
+        return NULL;
+
+    /*
+     * A remote one's token, in order.  The profile it is named for, if
+     * that still points at the same daemon: read afresh, so a token
+     * rotated since is the one used.  Then the token file it was started
+     * with.  Then any profile for the same host and port -- a client
+     * started with --host and --token on a daemon that is also saved.
+     * The current-connection file is never asked: it holds no token, on
+     * purpose.
+     */
+    saved = clawt_connection_list_load(connections_path, NULL);
+    found = find_profile_for(saved, name, host, (guint16)port, FALSE);
+
+    if (found != NULL)
+        return clawt_connection_copy(found);
+
+    token_file = g_key_file_get_string(file, CURRENT_GROUP, "token-file",
+                                       NULL);
+
+    if (token_file != NULL) {
+        connection = clawt_connection_new_remote(name, host, (guint16)port,
+                                                 NULL);
+        clawt_connection_set_tls(
+            connection,
+            g_key_file_get_boolean(file, CURRENT_GROUP, "tls", NULL),
+            g_key_file_get_boolean(file, CURRENT_GROUP,
+                                   "accept-unknown-certificate", NULL));
+
+        if (clawt_connection_load_token_file(connection, token_file, &error))
+            return g_steal_pointer(&connection);
+
+        if (notice != NULL)
+            *notice = g_strdup_printf(
+                "%s (pid %d) is on %s:%d, but its token file cannot be "
+                "read (%s).", who, pid, host, port, error->message);
+
+        return NULL;
+    }
+
+    found = find_profile_for(saved, name, host, (guint16)port, TRUE);
+
+    if (found != NULL)
+        return clawt_connection_copy(found);
+
+    /*
+     * Started with --host and a --token this process cannot see.  Not
+     * guessed at and not dialled without one: a daemon that refuses us
+     * is a worse start than saying so and choosing something else.
+     */
+    if (notice != NULL)
+        *notice = g_strdup_printf(
+            "%s (pid %d) is on %s:%d with a token given on its command "
+            "line, which is not shared; save that daemon with `clawtilla "
+            "remote add`, or start the client with --token-file.",
+            who, pid, host, port);
+
+    return NULL;
+}
+
+ClawtConnection *
+clawt_connection_current_load(const gchar  *dir,
+                              const gchar  *connections_path,
+                              gint         *pid,
+                              gchar       **client,
+                              gchar       **notice)
+{
+    g_autofree gchar *resolved = NULL;
+    g_autofree gchar *who = NULL;
+    g_autoptr(GKeyFile) file = NULL;
+    ClawtConnection *connection;
+    gint found_pid = 0;
+
+    if (pid != NULL)
+        *pid = 0;
+
+    if (client != NULL)
+        *client = NULL;
+
+    if (notice != NULL)
+        *notice = NULL;
+
+    resolved = dir != NULL ? clawt_expand_path(dir)
+                           : clawt_connection_current_default_dir();
+    file = current_newest(resolved, &found_pid);
+
+    if (file == NULL)
+        return NULL;
+
+    who = g_key_file_get_string(file, CURRENT_GROUP, "client", NULL);
+
+    if (who == NULL)
+        who = g_strdup("a client");
+
+    connection = current_resolve(file, connections_path, who, found_pid,
+                                 notice);
+
+    if (connection == NULL)
+        return NULL;
+
+    if (pid != NULL)
+        *pid = found_pid;
+
+    if (client != NULL)
+        *client = g_steal_pointer(&who);
+
+    return connection;
+}
+
 ClawtConnection *
 clawt_connection_choose(const gchar  *host,
                         guint16       port,
@@ -1142,4 +1560,165 @@ clawt_connection_choose(const gchar  *host,
     }
 
     return clawt_connection_new_local("Local", NULL);
+}
+
+/* The sentence saying which daemon @source chose, and why. */
+static gchar *
+source_text(ClawtConnectionSource  source,
+            ClawtConnection       *connection,
+            const gchar           *client,
+            gint                   pid,
+            gboolean               passed_over)
+{
+    g_autofree gchar *where = clawt_connection_describe(connection);
+    const gchar *name = clawt_connection_get_name(connection);
+
+    switch (source) {
+    case CLAWT_CONNECTION_FROM_HOST:
+        return g_strdup_printf("Opening on %s, as --host asked.", where);
+
+    case CLAWT_CONNECTION_FROM_PROFILE:
+        return g_strdup_printf("Opening on %s (%s), as --profile asked.",
+                               name, where);
+
+    case CLAWT_CONNECTION_FROM_SOCKET:
+        return g_strdup_printf("Opening on the local daemon (%s), as "
+                               "--socket asked.", where);
+
+    case CLAWT_CONNECTION_FROM_RUNNING_CLIENT:
+        return g_strdup_printf("Opening on %s (%s), the daemon %s (pid %d) "
+                               "is on.", name, where,
+                               client != NULL ? client : "a client", pid);
+
+    case CLAWT_CONNECTION_FROM_LAST:
+        return g_strdup_printf("Opening on %s (%s), the daemon the clients "
+                               "were last on.", name, where);
+
+    case CLAWT_CONNECTION_FROM_LOCAL:
+    default:
+        /* the sentence before this one has already said why */
+        if (passed_over)
+            return g_strdup_printf("Opening on the local daemon (%s).",
+                                   where);
+
+        return g_strdup_printf("Opening on the local daemon (%s): no client "
+                               "is running, and none was last on another.",
+                               where);
+    }
+}
+
+ClawtConnection *
+clawt_connection_choose_following(const gchar            *host,
+                                  guint16                 port,
+                                  const gchar            *token,
+                                  const gchar            *token_file,
+                                  const gchar            *profile,
+                                  const gchar            *socket_path,
+                                  const gchar            *connections_path,
+                                  const gchar            *last_path,
+                                  const gchar            *current_dir,
+                                  ClawtConnectionSource  *source,
+                                  gchar                 **reason,
+                                  GError                **error)
+{
+    g_autoptr(ClawtConnection) connection = NULL;
+    g_autofree gchar *running_notice = NULL;
+    g_autofree gchar *last_notice = NULL;
+    g_autofree gchar *client = NULL;
+    g_autofree gchar *sentence = NULL;
+    ClawtConnectionSource chosen;
+    gboolean from_last = FALSE;
+    gint pid = 0;
+
+    if (source != NULL)
+        *source = CLAWT_CONNECTION_FROM_LOCAL;
+
+    if (reason != NULL)
+        *reason = NULL;
+
+    /*
+     * A token file is a --host's token.  A profile carries its own, and
+     * the local socket wants none, so one given with either is a
+     * mistake to point out rather than a file to read and ignore.
+     */
+    if (token != NULL && token_file != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "--token or --token-file, not both");
+        return NULL;
+    }
+
+    if (token_file != NULL && host == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "--token-file goes with --host; a profile keeps its "
+                    "own token");
+        return NULL;
+    }
+
+    if (host != NULL || profile != NULL || socket_path != NULL) {
+        /*
+         * Named on the command line: exactly what clawt_connection_choose()
+         * does with it, and nothing remembered or running is consulted.
+         */
+        connection = clawt_connection_choose(host, port, token, profile,
+                                             socket_path, connections_path,
+                                             last_path, FALSE, NULL, NULL,
+                                             error);
+
+        if (connection == NULL)
+            return NULL;
+
+        if (host != NULL && token_file != NULL &&
+            !clawt_connection_load_token_file(connection, token_file, error))
+            return NULL;
+
+        chosen = host != NULL    ? CLAWT_CONNECTION_FROM_HOST
+               : profile != NULL ? CLAWT_CONNECTION_FROM_PROFILE
+                                 : CLAWT_CONNECTION_FROM_SOCKET;
+    } else {
+        connection = clawt_connection_current_load(current_dir,
+                                                   connections_path, &pid,
+                                                   &client, &running_notice);
+
+        if (connection != NULL) {
+            chosen = CLAWT_CONNECTION_FROM_RUNNING_CLIENT;
+        } else {
+            connection = clawt_connection_choose(NULL, 0, NULL, NULL, NULL,
+                                                 connections_path, last_path,
+                                                 TRUE, &from_last,
+                                                 &last_notice, error);
+
+            if (connection == NULL)
+                return NULL;
+
+            chosen = from_last ? CLAWT_CONNECTION_FROM_LAST
+                               : CLAWT_CONNECTION_FROM_LOCAL;
+        }
+    }
+
+    if (source != NULL)
+        *source = chosen;
+
+    /*
+     * Why a level was passed over comes first, then what was chosen: the
+     * sentence is read top to bottom by somebody wondering why this is
+     * not the daemon they expected.
+     */
+    if (reason != NULL) {
+        GString *text = g_string_new(NULL);
+
+        sentence = source_text(chosen, connection, client, pid,
+                               running_notice != NULL ||
+                               last_notice != NULL);
+
+        if (running_notice != NULL)
+            g_string_append_printf(text, "%s ", running_notice);
+
+        if (last_notice != NULL)
+            g_string_append_printf(text, "%s ", last_notice);
+
+        g_string_append(text, sentence);
+        *reason = g_string_free(text, FALSE);
+    }
+
+    return g_steal_pointer(&connection);
 }

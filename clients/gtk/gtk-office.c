@@ -230,6 +230,8 @@ refresh_office_once(ClawtWindow *self)
 
     people = json_object_has_member(root, "participants")
         ? json_object_get_array_member(root, "participants") : NULL;
+    /* the drawing's Follow picker offers the same people as the roster */
+    clawt_gtk_office_view_set_participants(self, people);
     for (i = 0; people != NULL && i < json_array_get_length(people); i++)
         gtk_list_box_append(self->office_list,
                             roster_row(json_array_get_object_element(people, i), now));

@@ -142,14 +142,19 @@ clawtilla-office --screenshot office.png --width 1600 --height 900
 
 | Option | Does |
 |--------+------|
-| ~--socket~, ~--profile~, ~--host~ | which daemon, as every client takes it |
+| ~--socket~, ~--profile~, ~--host~ | which daemon, as every client takes it; with none, the one a running GTK or lrg client is on (below) |
+| ~--token-file FILE~ | the token for ~--host~, read from a file; ~--token~ still works but warns, since argv is readable by every user |
 | ~--world ID~ | draw this pack rather than =office.world= |
 | ~--2d~, ~--3d~ | the view to start in (Tab switches in a window) |
 | ~--simulate~ | deal the real participants into calls, a meeting, a question, a failure -- on this screen only, with "Simulation" written over it |
 | ~--screenshot FILE~ | draw offscreen until the office has loaded and people have walked to their seats (~--frames~, default 90), write a PNG, exit; 30 seconds without a world or a layout is a failure that says so |
 | ~--embed FD~ | stream frames over the socket =FD= for a host that does not link libregnum (the GTK client); see below |
 | ~--width~, ~--height~ | the size, 64 to 8192 pixels |
-| ~--focus ID~ | the 3D camera follows this participant, close up |
+| ~--focus ID~ | the 3D camera follows this participant, close up; a 2D map zoomed past the view is centred on them |
+| ~--zoom fit\|1x\|2x~ | how far the 2D map is zoomed (below); in 3D, the camera's starting distance |
+| ~--ui-scale N~ | draw text, name plates and marks /N/ times larger (1 to 4), for a frame shown on a HiDPI screen; ~--ui-scale 2~ with a 4K ~--screenshot~ reads like 1080p |
+
+*Which daemon, run bare.*  With no ~--socket~, ~--profile~ or ~--host~, the office opens on the daemon a running ~clawtilla-gtk~ or ~clawtilla-lrg~ is on right now, so it draws the fleet that is on screen beside it; with none running, on the one the clients were last switched to; then on the local socket.  It prints which and why on stderr.  The details -- the per-process ~current-connection-PID~ file, why it never holds a token, and where the token comes from instead -- are in [[file:clients.org::#office-follows-the-clients][clients.org]].
 
 In a window: Tab switches 2D and 3D, the arrow keys or a right-drag turn the 3D camera, the wheel zooms, Escape quits, and a click on somebody prints ~{"event":"open_agent","agent":"<id>"}~ on stdout.
 
@@ -157,14 +162,57 @@ The pack is fetched from the daemon file by file (~office.file~) into =$XDG_CACH
 
 *** In the lrg client
 
-The lrg client draws the same scene in its own process, into an =LrgViewport= on the Office page: no child and no frames over a socket, since it already is libregnum.  A *2D / 3D* button switches the view, a drag or the wheel turns the 3D camera, and a click on somebody opens their conversation.
+The lrg client draws the same scene in its own process, into an =LrgViewport= on the Office page: no child and no frames over a socket, since it already is libregnum.  A *2D / 3D* button switches the view, a drag or the wheel turns the 3D camera, and a click on somebody opens their conversation.  *Open office* beside it starts ~clawtilla-office~ in a window of its own, in the mode drawn there ([[#open-office][Open office]]).
 
 #+caption: the lrg client's Office page
 [[file:images/office/lrg-office.png]]
 
+*** Open office
+:PROPERTIES:
+:CUSTOM_ID: open-office
+:END:
+
+The GTK and lrg clients can start ~clawtilla-office~ as a program of its own -- its own window, keyboard and all (Tab, the arrow keys, Escape) -- on the daemon the client is on, rather than drawn inside the client:
+
+| Client | Where | Mode |
+|--------+-------+------|
+| GTK | *Open office* on the Office page, beside the *2D / 3D* switch | the one the switch shows |
+| GTK | the main menu (the sidebar's ☰), *Open office* → *2D* or *3D* (the ~win.open-office~ action, parameter ~"2d"~ or ~"3d"~) | chosen there |
+| lrg | *Open office* on the Office page, beside *2D / 3D* (=OFFICE=1= builds, where the page draws the office) | the one drawn there |
+| lrg | the main menu, *Open office* → *2D* or *3D* (~win.office-2d~, ~win.office-3d~), in every build | chosen there |
+| web | not offered: see below | -- |
+
+Unlike *Pop out*, which moves the embedded drawing into another window and keeps it the client's child, this is a separate process: nothing waits for it, it is not killed when the client closes, and closing it does not touch the client.  Each press starts another.  =clawt_office_renderer_open_window()= does it, for both clients.
+
+*Which daemon.*  The client's own connection is named outright, so the window never falls back on following whichever client last published a connection ([[file:clients.org::#office-follows-the-clients][clients.org]]).  =clawt_office_renderer_window_argv()= builds the line -- the embed's, without ~--embed~, ~--width~ and ~--height~, and with ~--2d~ or ~--3d~ always said:
+
+#+begin_example
+clawtilla-office --3d --socket /run/user/1000/clawtilla/daemon.sock
+clawtilla-office --2d --profile workstation
+clawtilla-office --3d --host 100.64.0.9 --daemon-port 8792 --token-file /dev/fd/3
+#+end_example
+
+- A local daemon by its socket, the default one spelled out too.
+- A saved connection by ~--profile NAME~: the profile carries the host, the TLS settings and the token.
+- A connection typed on the command line (~clawtilla-gtk --host~), which is not saved, by ~--host~ and ~--daemon-port~, and its token -- if it has one -- through a pipe: the client writes the token into a fresh pipe and closes the write end before the child exists, and the child gets the read end as fd 3 and reads it to the end with ~--token-file /dev/fd/3~.  The token is never in an argv, which every user on the machine can read through ~/proc/PID/cmdline~, and never on disk.  So the embed's "save it under Connections" refusal does not apply here.
+- A typed connection with TLS is refused -- ~clawtilla-office~ takes TLS settings only from a saved profile -- with a toast saying to save it.
+
+*It says which.*  Every launch logs, with =g_message()=, the pid, the mode and the daemon it was handed -- /opened clawtilla-office (pid 48211) in 3D on the saved connection “workstation” (100.72.0.41:8792)/ -- and toasts the same: /Opened the office in 3D on the local daemon (/run/user/1000/clawtilla/daemon.sock)./  For a typed connection it says /100.64.0.9:8792, its token through a pipe/: how the token went, never the token.  The window itself prints which daemon it opened on, on the client's stderr, as it always does.
+
+*Failing.*  A renderer that is not found (the same three places as the embed, and the same advice), or that cannot be started, is a toast -- /The office did not open: .../ -- and the same line in the log.  What happens after it has started is the window's own business: it prints to the client's stdout and stderr.
+
+*The web client.*  Not offered.  ~clawtilla-web~ is a server; the browser it serves can be on another machine, so a process it started would open on the server's display, not in front of the person who pressed the button.  The web Office page draws the office itself, in the browser ([[file:web-client.org::#office-drawn][web-client.org]]), which is the web client's answer to opening it.
+
 *** Embedding it
 
-~--embed FD~ draws offscreen and streams each frame over the unix socket =FD= in libregnum's frame protocol (LFRM v1: a 16-byte header, RGBA8 frames inline or in a sealed memfd passed with =SCM_RIGHTS=; pointer, button, scroll, key and resize back), dropping frames rather than queueing them when the host falls behind.  The host owns the size: a resize message re-sizes the frames.  A click on somebody is the same stdout line as in a window.  The protocol is specified in libregnum's =docs/modules/remote/frame-protocol.org=.
+~--embed FD~ draws offscreen and streams each frame over the unix socket =FD= in libregnum's frame protocol (LFRM v1: a 16-byte header, RGBA8 frames inline or in a sealed memfd passed with =SCM_RIGHTS=; pointer, button, scroll, key and resize back), dropping frames rather than queueing them when the host falls behind.  The host owns the size: a resize message re-sizes the frames.  The protocol is specified in libregnum's =docs/modules/remote/frame-protocol.org=.
+
+Embedded, a left click on somebody (a press and release within four logical pixels) is the same stdout line as in a window; a left drag turns the 3D camera, or moves a 2D map that is zoomed past the view; the wheel zooms the 3D camera.  The click is sent on release, so a drag that starts on somebody does not open their chat.
+
+Two more channels, both JSON lines, so a host can change the view without restarting the child:
+
+- *stdin, host to renderer.*  ~{"mode":"3d","focus":"chief","zoom":"fit","ui_scale":2}~ -- =clawt_office_view_control_line()= writes it and =clawt_office_view_control_parse()= reads it.  Every member is optional; ~"focus":""~ (or =null=) follows nobody; unknown members are ignored, and a line with a member of the wrong type or an unknown mode or zoom is refused whole, with the reason on stderr.  Lines are applied between frames.  The stream is read only with ~--embed~; at end of file the view stays as it is.
+- *stdout, renderer to host.*  Besides ~open_agent~, ~{"event":"view","mode":"2d","has_3d":true}~ whenever what is drawn changes: a world without a 3D level is drawn in 2D whatever was asked, and says so.
 
 *** Characters
 
@@ -263,18 +311,42 @@ The GTK client never links libregnum, so it cannot draw the office itself.  It r
 2. *Starting it.*  The window makes a =socketpair()= and hands one end to the child as fd 3:
 
    #+begin_src bash
-   clawtilla-office --embed=3 --socket /run/user/1000/clawtilla/daemon.sock --width 966 --height 420
-   clawtilla-office --embed=3 --profile workstation --width 966 --height 420
+   clawtilla-office --embed=3 --socket /run/user/1000/clawtilla/daemon.sock --width 1600 --height 675
+   clawtilla-office --embed=3 --profile workstation --width 3200 --height 1350
    #+end_src
 
    The connection argument reproduces the window's own: ~--socket PATH~ for a local daemon (nothing at all for the default socket), ~--profile NAME~ for a saved connection profile.  A remote daemon reached through a connection that is not saved cannot be followed -- its token would have to go in the argv, which every user on the machine can read -- so the page says to save it under Connections.  =clawt_office_renderer_embed_argv()= builds the line.  The child is given =PR_SET_PDEATHSIG= (=SIGTERM=) in its setup, so it dies with the window however the window ends.
-3. *Frames.*  The socket speaks libregnum's frame protocol, version 1 (libregnum's =docs/modules/remote/frame-protocol.org=): a 16-byte little-endian header (="LFRM"=, version, type, body size), a HELLO, then FRAME messages of RGBA8 pixels, inline or in a sealed memfd passed with =SCM_RIGHTS=.  =ClawtOfficeFrames= in libclawt is the host side, written from the specification rather than linked.  It is watched by a source on the window's main context; each frame becomes a =GdkMemoryTexture= in a =GtkPicture= 420 pixels tall and as wide as the page.  A memfd frame is shown straight from its read-only mapping, so it costs no copy -- which is why an unsealed memfd is refused: a file shrunk under a live mapping would be a =SIGBUS= in the window.
-4. *Input.*  Pointer motion, buttons and the wheel are sent back as POINTER_MOVE, POINTER_BUTTON and SCROLL in frame pixels (the letterbox subtracted, buttons renumbered to raylib's 0 left, 1 right, 2 middle, the wheel's sign flipped to the protocol's "positive away from the user").  When the page changes size a RESIZE follows once the size has held for 200 ms, at the display's scale factor, so the child draws at the size it is shown.  Keys are not forwarded yet; =clawt_office_frames_send_key()= exists for when they are.
-5. *Events.*  The child writes JSON lines on stdout.  ~{"event":"open_agent","agent":"kudu"}~ opens that agent's chat.  Anything else is ignored, and a line longer than 64 KiB is dropped rather than buffered.  Its stderr is kept, last line only, to explain an exit; with =G_MESSAGES_DEBUG=Clawtilla= every line is logged.
+3. *Frames.*  The socket speaks libregnum's frame protocol, version 1 (libregnum's =docs/modules/remote/frame-protocol.org=): a 16-byte little-endian header (="LFRM"=, version, type, body size), a HELLO, then FRAME messages of RGBA8 pixels, inline or in a sealed memfd passed with =SCM_RIGHTS=.  =ClawtOfficeFrames= in libclawt is the host side, written from the specification rather than linked.  It is watched by a source on the window's main context; each frame becomes a =GdkMemoryTexture=, drawn in a =GtkPicture= through a small paintable that scales with =GSK_SCALING_FILTER_NEAREST= -- pixel art is repeated, never smeared, including in the moment between a resize and the frame drawn for it.  A memfd frame is shown straight from its read-only mapping, so it costs no copy -- which is why an unsealed memfd is refused: a file shrunk under a live mapping would be a =SIGBUS= in the window.
+4. *Input.*  Pointer motion, buttons and the wheel are sent back as POINTER_MOVE, POINTER_BUTTON and SCROLL in frame pixels (the letterbox subtracted, buttons renumbered to raylib's 0 left, 1 right, 2 middle, the wheel's sign flipped to the protocol's "positive away from the user").  When the drawing changes size -- the window resized, maximized or tiled, the drawing popped out, or moved to a monitor with another scale -- a RESIZE follows once the size has held for 200 ms, in device pixels (=clawt_office_view_device_size()=), so the child draws at the size it is shown and is never restarted for it.  Keys are not forwarded yet; =clawt_office_frames_send_key()= exists for when they are.
+5. *Control.*  The child's stdin is a pipe.  The mode, zoom, whom to follow and the scale factor go down it as one control line ([[*Embedding it][Embedding it]]) right after the child starts -- before the world has loaded, so it loads in the mode asked for -- and again, whole, whenever any of them changes.  One write is in flight at a time; a change during it is folded into the next line, which says the newest state.
+6. *Events.*  The child writes JSON lines on stdout.  ~{"event":"open_agent","agent":"kudu"}~ opens that agent's chat; ~{"event":"view",...}~ sets the 2D / 3D switch to what is drawn and makes 3D insensitive for a world without a level.  Anything else is ignored, and a line longer than 64 KiB is dropped rather than buffered.  Its stderr is kept, last line only, to explain an exit; with =G_MESSAGES_DEBUG=Clawtilla= every line is logged.
+
+*** The Office page
+:PROPERTIES:
+:CUSTOM_ID: gtk-office-page
+:END:
+
+Above the drawing:
+
+| Control | Does |
+|---------+------|
+| *2D / 3D* | the map from above, or the 3D level from an orbiting camera.  Shows what is drawn: a world without a level is 2D, and *3D* is greyed out with a tooltip saying why.  Remembered as ~office_view~ in ~appearance.yaml~ |
+| *Fit / 1x / 2x* | the zoom.  *Fit* is the whole map at the largest whole-number scale that fits, or the fraction that fits when the map is bigger than the view; *1x* is one map pixel per logical pixel and *2x* two, each crisp on any screen.  Zoomed past the view, a drag moves the map; in 3D the three set the camera's distance and the wheel goes on from there.  Remembered as ~office_zoom~ |
+| *Follow* | nobody, or a participant from the roster: the 3D camera centres on them and comes in close; a zoomed 2D map stays centred on them; their name plate is always drawn.  Not remembered -- it names an agent of one fleet -- and reset to nobody when they leave the office |
+| *Pop out* | the drawing, toolbar and all, in a window of its own (1280 by 800 to start), for another monitor.  The page says it is out, with *Bring back*; closing the window brings it back too.  The child is not restarted for either: the drawing moves, and its new size is a RESIZE |
+| *Open office* | beside *2D / 3D*: ~clawtilla-office~ started as a separate program, in a window of its own, on this window's connection and in the mode the switch shows.  Not the embedded drawing: see [[#open-office][Open office]] |
+
+Under them, the lrg client's hint: /Click somebody to open their conversation; drag or scroll to turn the 3D view./
+
+*Size.*  The drawing is as wide as the page and three quarters as tall as what the page shows (=clawt_office_view_height_for_page()=), never under 320 logical pixels -- a short window scrolls the page instead -- so the roster's heading still shows beneath it.  The height follows the page's visible height (its scrolled window's =page-size=), which changes when the window does, not when the roster grows.  Popped out, it is the whole window.  Frames are asked for in device pixels, at most 8192 on a side (past that the frame keeps its shape and is scaled up, nearest-neighbour).
+
+*Readable at 1080p and 4K.*  The child is told the scale factor (=ui_scale=): name plates, bubbles, marks, the status line and the usage board are drawn that many times larger, so a 4K frame at scale 2 has the text of a 1080p one, at twice the sharpness.  *Fit* rounds down to a whole number whenever the map fits at one or more, which on a 4K page draws the shipped worlds at exactly one device pixel per map pixel.
+
+*Name plates do not overlap.*  People at adjacent desks used to draw their names over each other (/aye-a elephant neyguide/).  Plates are now placed together, in screen space, by =clawt_office_labels_arrange()=: the hovered and the followed are drawn where they are; everyone else keeps their place if it is free, else is pushed just below the plate in the way, at most twice; a plate with no room within reach, or pushed off the bottom of the view, is not drawn and appears when its person is hovered.  Zoomed out, fewer names show; zoomed in, all of them.  The same placement is used in 2D, 3D and by world adapters, and by the lrg client, which draws the same scene.
 
 *** When it runs
 
-Only while it can be seen: the office is on (the last ~office.snapshot~ said =enabled=) *and* the Office page is on screen.  Leaving the page, turning the office off and closing the window each stop the child -- =SIGTERM=, then =SIGKILL= if it has not gone within three seconds -- and coming back starts a fresh one.  A child is also restarted when the window switches to another daemon, since it was told about the old one.
+Only while it can be seen: the office is on (the last ~office.snapshot~ said =enabled=) *and* the Office page is on screen, or the drawing is popped out.  Leaving the page (unless the drawing is popped out), turning the office off (which also closes a popped-out window) and closing the main window each stop the child -- =SIGTERM=, then =SIGKILL= if it has not gone within three seconds -- and coming back starts a fresh one.  A child is also restarted when the window switches to another daemon, since it was told about the old one.
 
 *** When it stops
 
@@ -349,5 +421,7 @@ Not built here: anything that acts across fleets -- messages, delegation, handin
 - *The GTK Office page says clawtilla-office was not found.*  It names the three places it looked.  Build it with ~make OFFICE=1 LRG_BACKEND=1~ in the same checkout as =clawtilla-gtk= (it lands beside it), or install it.
 - *The GTK Office page says the office stopped drawing.*  The banner carries the exit status and the child's last line on stderr; run the command from [[#gtk-embed][the GTK embed]] by hand, with =--embed= left off, to see the rest.  /closed its frame socket/ means the child shut the socket and kept running; /does not add up/, /bad magic/ or /not sealed/ mean it is not speaking frame protocol version 1.  *Restart* tries again.
 - *The GTK Office page says a remote daemon can be followed only through a saved connection.*  The window was opened with ~--host~; save the connection (the connection menu), switch to it, and come back.
+- *Open office toasts "The office did not open".*  The rest of the line says why: not found (build it as above), not startable, or a typed ~--host~ connection with TLS, which only a saved connection can hand over.
+- *Open office opened a window on the wrong daemon.*  It cannot: the line names the client's connection outright.  Check the client's log -- /opened clawtilla-office (pid N) in 2D on .../ -- and the window's own first line on stderr.
 - *The drawing is blank but nothing is reported.*  The child is running but has sent no frame yet; =G_MESSAGES_DEBUG=Clawtilla clawtilla-gtk= shows its stderr.
 - *Somebody is "at the lounge instead".*  The pack has no zone with the tag the choreography asked for; ~office.layout~ names the fallback.  Add the zone, or override the rule.

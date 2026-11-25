@@ -139,11 +139,24 @@ Fields: `activity` (required), `station` (working only: desk/library/lab/whitebo
 | Client | How |
 |---|---|
 | CLI | `clawtilla office open [clawtilla-office args]` |
-| renderer | `clawtilla-office [--socket F | --profile NAME | --host H --daemon-port P --token T] [--world ID] [--2d|--3d] [--focus ID]` |
+| renderer | `clawtilla-office [--socket F | --profile NAME | --host H --daemon-port P --token-file F] [--world ID] [--2d|--3d] [--focus ID] [--zoom fit|1x|2x] [--ui-scale N]` |
 | GTK / lrg | `clawtilla-gtk --office`, `clawtilla-lrg --office` (open on the Office page) |
-| web | `clawtilla-web --office` sends `/` to the Office page (wall display) |
+| GTK / lrg, own window | **Open office**: a button beside 2D / 3D on the Office page (that mode), and main menu -> Open office -> 2D / 3D (GTK `win.open-office` with `"2d"`/`"3d"`; lrg `win.office-2d`/`win.office-3d`) |
+| web | `clawtilla-web --office` sends `/` to the Office page (wall display); no Open office (a server would open it on its own display) |
 
-`clawtilla-office` options: `--simulate` (invents calls/meetings/questions/failures for the real participants, on this screen only, labelled "Simulation"), `--screenshot FILE` (offscreen, settles `--frames N` default 90, writes PNG, exits; 30 s without world or layout is a failure), `--width`/`--height` (64-8192, default 1280x720), `--embed FD` (LFRM v1 frame stream for the GTK host), `--adapter-dir DIR` (repeatable). Window keys: Tab 2D/3D, arrows or right-drag orbit, wheel zoom, Escape quits; a click prints `{"event":"open_agent","agent":"<id>"}` on stdout. Pack files are fetched via `office.file` into `$XDG_CACHE_HOME/clawtilla/office/<world>/`, so a laptop draws a remote daemon's office. Verify a change visually: `clawtilla-office --simulate --screenshot /tmp/o.png --world my-office`.
+**Open office** (`clawt_office_renderer_open_window()`) starts `clawtilla-office` as a separate program -- not waited for, not killed with the client, one more per press -- on the client's own connection, named outright by `clawt_office_renderer_window_argv()` (no `--embed`, always `--2d` or `--3d`): local -> `--socket PATH` (default socket spelled out); saved -> `--profile NAME`; typed `--host` -> `--host H --daemon-port P` plus, if it has a token, `--token-file /dev/fd/3`, the token written into a pipe whose read end is the child's fd 3. Never `--token`. Typed + TLS is refused (TLS only via a saved profile). Each launch logs (`g_message`) and toasts the pid, mode and daemon -- "the local daemon (PATH)", "the saved connection “NAME” (HOST:PORT)", "HOST:PORT, its token through a pipe" -- never the token; a failure is a toast "The office did not open: ...".
+
+`clawtilla-office` options: `--simulate` (invents calls/meetings/questions/failures for the real participants, on this screen only, labelled "Simulation"), `--screenshot FILE` (offscreen, settles `--frames N` default 90, writes PNG, exits; 30 s without world or layout is a failure), `--width`/`--height` (64-8192, default 1280x720), `--embed FD` (LFRM v1 frame stream for the GTK host), `--adapter-dir DIR` (repeatable), `--zoom fit|1x|2x` (2D map zoom: fit = largest whole-number scale that fits, 1x/2x = logical px per map px; in 3D the camera distance), `--ui-scale N` (1-4: text, plates and marks N times larger, for HiDPI frames). Window keys: Tab 2D/3D, arrows or right-drag orbit, wheel zoom, Escape quits; a click prints `{"event":"open_agent","agent":"<id>"}` on stdout.
+
+Embedded (`--embed`): left click (press+release within 4 logical px) opens, left drag orbits 3D or pans a zoomed 2D map, wheel zooms 3D. stdin takes control lines `{"mode":"2d|3d","focus":"<id>|","zoom":"fit|1x|2x","ui_scale":N}` (every member optional; unknown members ignored; a bad member refuses the whole line, reason on stderr) -- `clawt_office_view_control_line()` / `_parse()`. stdout adds `{"event":"view","mode":"2d","has_3d":true}` when what is drawn changes (a world without a level stays 2D).
+
+Name plates never overlap (`clawt_office_labels_arrange()`): hovered and followed plates stay put; others keep their place if free, else are pushed just below the plate in the way (at most twice), else are hidden until hovered. Same in 2D, 3D, adapters, and the lrg client.
+
+### GTK Office page
+
+Toolbar over the drawing: **2D / 3D** (shows what is drawn; 3D greyed out for a world with no level), **Open office** (separate `clawtilla-office` window in that mode, on this connection), **Fit / 1x / 2x**, **Follow** (nobody or a roster participant; not remembered; reset when they leave), **Pop out** (own window, 1280x800; page shows **Bring back**; closing it brings it back; the child is not restarted). Hint: "Click somebody to open their conversation; drag or scroll to turn the 3D view." Mode and zoom are remembered in `appearance.yaml` as `office_view: 2d|3d` and `office_zoom: fit|1x|2x` (unknown spelling -> default, warned).
+
+Size: page width x 3/4 of the page's visible height, min 320 logical px (`clawt_office_view_height_for_page()`); popped out, the whole window. Frames are requested in device px (`clawt_office_view_device_size()`, max 8192 a side) and resized with a RESIZE message, never a restart; the scale factor goes to the child as `ui_scale` so 4K at scale 2 reads like 1080p. Frames are drawn nearest-neighbour (`GSK_SCALING_FILTER_NEAREST`). The child runs while the office is on and (the page is on screen or the drawing is popped out). Pack files are fetched via `office.file` into `$XDG_CACHE_HOME/clawtilla/office/<world>/`, so a laptop draws a remote daemon's office. Verify a change visually: `clawtilla-office --simulate --screenshot /tmp/o.png --world my-office`.
 
 IPC (see mcp-tools.md / architecture.md for the wire): `office.snapshot`, `office.worlds`, `office.world`, `office.layout`, `office.file`, `office.set`, `office.characters`, `office.character_file`, `office.custodians`, `office.custodians_install`, `office.character`, `office.api_key`, `office.peers`, `office.peer_pair`; events `office.changed`, `office.presence` (ephemeral, not replayed: read `office.snapshot` on connect).
 
@@ -187,6 +200,9 @@ clawtilla office peers                     # name, where, state asking|ok|quiet|
 | GTK: clawtilla-office not found | build `make OFFICE=1` in the same checkout, or install |
 | GTK: "stopped drawing" | banner has exit status + last stderr line; rerun the command without `--embed`; `G_MESSAGES_DEBUG=Clawtilla clawtilla-gtk` |
 | GTK with `--host`: cannot follow | save the connection as a profile and switch to it (a token cannot go in argv) |
+| Open office: "The office did not open" | renderer not found (build `make OFFICE=1`), not startable, or a typed `--host` connection with TLS (save it) |
+| GTK: 3D button greyed out | the world has no 3D level (`office worlds` shows `has_3d`); the saved 3D choice is kept for the next world |
+| Some names missing | crowded or zoomed out: plates with no room are hidden; hover shows them, 1x/2x shows more |
 | Character not drawn | sheet sha256 mismatch with its manifest, or no layout yet (office-custodial.md) |
 
 ## Restyling a world (0.77.0)

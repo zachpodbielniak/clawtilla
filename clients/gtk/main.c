@@ -15,6 +15,7 @@
 #include "clawt-gtk.h"
 #include "clawt-window-private.h"
 
+#include <signal.h>
 #include <stdlib.h>
 
 static gchar *opt_socket_path = NULL;
@@ -229,6 +230,22 @@ main(int argc, char *argv[])
     gboolean from_last = FALSE;
     gint status;
 
+    /*
+     * A write into a child's pipe after the child has gone must fail
+     * with EPIPE, not kill the window: the Office page writes control
+     * lines to clawtilla-office's stdin (gtk-office-view.c), and a
+     * renderer that crashed with a line in flight would otherwise take
+     * clawtilla-gtk with it.  on_control_written() already treats the
+     * EPIPE as the child on its way out.
+     *
+     * GLib happens to do this too -- initialising the GSubprocess or
+     * GSocket class sets SIGPIPE to ignored (seen on GLib 2.88) -- but
+     * that is a side effect of which class some code touched first, and
+     * nothing here should depend on it.  So it is said outright, before
+     * anything runs.
+     */
+    signal(SIGPIPE, SIG_IGN);
+
     context = g_option_context_new("- the clawtilla desktop client");
     g_option_context_add_main_entries(context, entries, NULL);
     g_option_context_set_description(context, description_text);
@@ -402,6 +419,15 @@ main(int argc, char *argv[])
     g_signal_connect(app, "activate", G_CALLBACK(on_activate), client);
 
     status = g_application_run(G_APPLICATION(app), 1, argv);
+
+    /*
+     * The windows published which daemon they were on
+     * (clawt_connection_current_save()); a clean exit takes that back, so
+     * a `clawtilla-office` started afterwards does not follow a window
+     * that is gone.  A crash leaves the file, and readers skip it because
+     * this pid is no longer alive.
+     */
+    (void)clawt_connection_current_save(NULL, NULL, NULL);
 
     return status;
 }

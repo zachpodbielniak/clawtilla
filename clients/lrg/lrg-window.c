@@ -1043,6 +1043,10 @@ on_action(GSimpleAction *action, GVariant *parameter, gpointer user_data)
         clawt_lrg_open_settings(app, "connections");
     else if (g_strcmp0(name, "toggle-sidebar") == 0)
         clawt_lrg_window_toggle_sidebar(app);
+    else if (g_strcmp0(name, "office-2d") == 0)
+        clawt_lrg_office_open_window(app, CLAWT_OFFICE_VIEW_2D);
+    else if (g_strcmp0(name, "office-3d") == 0)
+        clawt_lrg_office_open_window(app, CLAWT_OFFICE_VIEW_3D);
 }
 
 static GSimpleActionGroup *
@@ -1051,7 +1055,7 @@ build_actions(ClawtLrgApp *app)
     static const gchar *const names[] = {
         "navigate", "settings", "quit", "pause-fleet", "resume-fleet",
         "agent-create", "agent-import", "room-create", "connections",
-        "toggle-sidebar"
+        "toggle-sidebar", "office-2d", "office-3d"
     };
     GSimpleActionGroup *group = g_simple_action_group_new();
     gsize i;
@@ -1072,12 +1076,21 @@ build_app_menu(void)
     GMenu *menu = g_menu_new();
     g_autoptr(GMenu) fleet = g_menu_new();
     g_autoptr(GMenu) app_section = g_menu_new();
+    g_autoptr(GMenu) office = g_menu_new();
 
     g_menu_append(fleet, "New agent…", "win.agent-create");
     g_menu_append(fleet, "Import an agent…", "win.agent-import");
     g_menu_append(fleet, "New room…", "win.room-create");
     g_menu_append(fleet, "Pause the fleet", "win.pause-fleet");
     g_menu_append(fleet, "Resume the fleet", "win.resume-fleet");
+    /*
+     * Open office: clawtilla-office in a window of its own, on this
+     * client's connection (lrg-office.c).  From any page, so the mode is
+     * chosen here rather than taken from the Office page's switch.
+     */
+    g_menu_append(office, "2D", "win.office-2d");
+    g_menu_append(office, "3D", "win.office-3d");
+    g_menu_append_submenu(fleet, "Open office", G_MENU_MODEL(office));
     g_menu_append_section(menu, NULL, G_MENU_MODEL(fleet));
 
     /*

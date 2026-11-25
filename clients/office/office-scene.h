@@ -20,6 +20,7 @@
 
 #include <glib.h>
 #include <json-glib/json-glib.h>
+#include <clawtilla.h>
 
 G_BEGIN_DECLS
 
@@ -156,6 +157,58 @@ void clawt_office_scene_set_mode(ClawtOfficeScene *self, ClawtOfficeSceneMode mo
 ClawtOfficeSceneMode clawt_office_scene_get_mode(ClawtOfficeScene *self);
 
 /**
+ * clawt_office_scene_has_3d:
+ * @self: a scene
+ *
+ * Returns: whether the loaded world has a 3D level to draw
+ */
+gboolean clawt_office_scene_has_3d(ClawtOfficeScene *self);
+
+/**
+ * clawt_office_scene_set_zoom:
+ * @self: a scene
+ * @zoom: Fit, 1x or 2x
+ *
+ * How far the 2D map is zoomed (clawt_office_view_map_zoom()): Fit is the
+ * whole map at the largest whole-number scale that fits.  In 3D it sets
+ * the camera's distance, which the wheel then changes.  Either way a
+ * drag's panning is forgotten.
+ */
+void clawt_office_scene_set_zoom(ClawtOfficeScene *self, ClawtOfficeZoom zoom);
+
+/**
+ * clawt_office_scene_get_zoom:
+ * @self: a scene
+ *
+ * Returns: the zoom last set
+ */
+ClawtOfficeZoom clawt_office_scene_get_zoom(ClawtOfficeScene *self);
+
+/**
+ * clawt_office_scene_set_ui_scale:
+ * @self: a scene
+ * @ui_scale: device pixels per logical pixel (1 to
+ *   %CLAWT_OFFICE_VIEW_MAX_UI_SCALE)
+ *
+ * The host's device scale.  Text, labels and markers are drawn this much
+ * larger, so a frame drawn at a 4K screen's device size reads like one
+ * at 1080p; 1x and 2x zoom are logical pixels per map pixel.
+ */
+void clawt_office_scene_set_ui_scale(ClawtOfficeScene *self, gint ui_scale);
+
+/**
+ * clawt_office_scene_pan:
+ * @self: a scene
+ * @dx: how far the pointer dragged, in target pixels
+ * @dy: likewise
+ *
+ * Drags a 2D map that is larger than the view, within its edges.  Does
+ * nothing in 3D (a drag turns the camera there) or at a zoom where the
+ * whole map is in view.
+ */
+void clawt_office_scene_pan(ClawtOfficeScene *self, gfloat dx, gfloat dy);
+
+/**
  * clawt_office_scene_set_status:
  * @self: a scene
  * @text: (nullable): a line drawn over the office ("The office is off",
@@ -224,7 +277,9 @@ void clawt_office_scene_orbit(ClawtOfficeScene *self, gfloat dx, gfloat zoom);
  * @id: (nullable): a participant to follow, or %NULL for the whole office
  *
  * The 3D camera centres on @id and comes in close, following it as it
- * walks; 2D always shows the whole map.
+ * walks.  In 2D a map zoomed past the view is centred on @id; at Fit the
+ * whole map shows anyway.  Its name label is always drawn.  %NULL or ""
+ * is nobody.
  */
 void clawt_office_scene_set_focus(ClawtOfficeScene *self, const gchar *id);
 

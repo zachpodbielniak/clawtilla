@@ -1758,6 +1758,63 @@ count_warning(const gchar *domain, GLogLevelFlags level, const gchar *message,
     return FALSE;
 }
 
+/*
+ * The Office page's 2D/3D and zoom: 2D at Fit by default (what the page
+ * drew before either was remembered), through the file and the copy,
+ * and an unknown spelling is the default, said -- never a neighbour.
+ */
+static void
+test_office_view_round_trip(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autoptr(ClawtAppearance) back = NULL;
+    g_autoptr(ClawtAppearance) copy = NULL;
+    g_autoptr(ClawtAppearance) typo = NULL;
+    g_autoptr(ClawtAppearance) shouted = NULL;
+    g_autofree gchar *fresh = NULL;
+    g_autofree gchar *data = NULL;
+
+    g_assert_cmpint(clawt_appearance_get_office_mode(appearance), ==, CLAWT_OFFICE_VIEW_2D);
+    g_assert_cmpint(clawt_appearance_get_office_zoom(appearance), ==, CLAWT_OFFICE_ZOOM_FIT);
+    fresh = clawt_appearance_to_data(appearance);
+    g_assert_nonnull(strstr(fresh, "office_view: 2d\n"));
+    g_assert_nonnull(strstr(fresh, "office_zoom: fit\n"));
+
+    clawt_appearance_set_office_mode(appearance, CLAWT_OFFICE_VIEW_3D);
+    clawt_appearance_set_office_zoom(appearance, CLAWT_OFFICE_ZOOM_2X);
+    data = clawt_appearance_to_data(appearance);
+    g_assert_nonnull(strstr(data, "office_view: 3d\n"));
+    g_assert_nonnull(strstr(data, "office_zoom: 2x\n"));
+    back = clawt_appearance_parse(data, NULL);
+    g_assert_nonnull(back);
+    g_assert_cmpint(clawt_appearance_get_office_mode(back), ==, CLAWT_OFFICE_VIEW_3D);
+    g_assert_cmpint(clawt_appearance_get_office_zoom(back), ==, CLAWT_OFFICE_ZOOM_2X);
+
+    copy = clawt_appearance_copy(appearance);
+    g_assert_cmpint(clawt_appearance_get_office_mode(copy), ==, CLAWT_OFFICE_VIEW_3D);
+    g_assert_cmpint(clawt_appearance_get_office_zoom(copy), ==, CLAWT_OFFICE_ZOOM_2X);
+
+    /* the nicks are read in any case, as a hand-edited file spells them */
+    shouted = clawt_appearance_parse("office_view: 3D\noffice_zoom: 1X\n", NULL);
+    g_assert_nonnull(shouted);
+    g_assert_cmpint(clawt_appearance_get_office_mode(shouted), ==, CLAWT_OFFICE_VIEW_3D);
+    g_assert_cmpint(clawt_appearance_get_office_zoom(shouted), ==, CLAWT_OFFICE_ZOOM_1X);
+
+    /* a value out of the enum is clamped by the setter, not stored */
+    clawt_appearance_set_office_zoom(appearance, (ClawtOfficeZoom)7);
+    g_assert_cmpint(clawt_appearance_get_office_zoom(appearance), ==, CLAWT_OFFICE_ZOOM_FIT);
+
+    /* said, both of them: a typo that silently did nothing would look like the setting working */
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING, "*office_view '4d'*");
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING, "*office_zoom '3x'*");
+    typo = clawt_appearance_parse("office_view: 4d\noffice_zoom: 3x\n", NULL);
+    g_test_assert_expected_messages();
+
+    g_assert_nonnull(typo);
+    g_assert_cmpint(clawt_appearance_get_office_mode(typo), ==, CLAWT_OFFICE_VIEW_2D);
+    g_assert_cmpint(clawt_appearance_get_office_zoom(typo), ==, CLAWT_OFFICE_ZOOM_FIT);
+}
+
 static void
 test_lrg_unknown_nick_is_the_default(void)
 {
@@ -2212,6 +2269,7 @@ main(int argc, char *argv[])
     g_test_add_func("/appearance/window-buttons/shown",
                     test_window_buttons_shown);
 
+    g_test_add_func("/appearance/office-view/round-trip", test_office_view_round_trip);
     g_test_add_func("/appearance/lrg/defaults", test_lrg_keys_default_to_zero);
     g_test_add_func("/appearance/lrg/round-trip", test_lrg_keys_round_trip);
     g_test_add_func("/appearance/lrg/unknown-nick-is-default",

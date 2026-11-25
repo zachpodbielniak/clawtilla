@@ -18,6 +18,7 @@
 #include <glib/gstdio.h>
 
 #include <string.h>
+#include <unistd.h>
 
 #include "clawt-test-util.h"
 
@@ -418,6 +419,452 @@ test_choosing_a_daemon(void)
                                       &error);
     g_assert_null(unknown);
     g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND);
+
+    clawt_test_remove_tree(dir);
+}
+
+/* ── Following a running client (clawtilla-office run bare) ─────────── */
+
+/*
+ * Files @connection as process @pid's current connection in @dir.  It is
+ * saved into @scratch first -- clawt_connection_current_save() always
+ * writes this process's own file, with the time of writing inside it --
+ * and moved into place, so each call is a record written *now* by @pid.
+ */
+static void
+record_for(const gchar *dir, const gchar *scratch, gint pid,
+           ClawtConnection *connection)
+{
+    g_autofree gchar *own = NULL;
+    g_autofree gchar *base = NULL;
+    g_autofree gchar *target = NULL;
+    g_autoptr(GError) error = NULL;
+
+    g_assert_true(clawt_connection_current_save(scratch, connection, &error));
+    g_assert_no_error(error);
+
+    own = g_strdup_printf("%s/current-connection-%d", scratch, (gint)getpid());
+    base = g_strdup_printf("current-connection-%d", pid);
+    target = g_build_filename(dir, base, NULL);
+    g_assert_true(clawt_ensure_dir(dir, 0700, NULL));
+    g_assert_cmpint(g_rename(own, target), ==, 0);
+}
+
+/*
+ * The whole order a bare clawtilla-office opens by, one level at a time:
+ * every flag beats a running client, a running client beats the memory,
+ * the memory beats the local default -- and each choice says which it
+ * was.
+ *
+ * If this regresses, the office opens on the local socket while the GTK
+ * window beside it is on the workstation (the bug in ticket #12), or a
+ * --profile somebody typed loses to whatever window happens to be open.
+ */
+static void
+test_following_the_running_client(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-follow-XXXXXX", NULL);
+    g_autofree gchar *list_path = g_build_filename(dir, "conn.yaml", NULL);
+    g_autofree gchar *last_path = g_build_filename(dir, "last", NULL);
+    g_autofree gchar *current = g_build_filename(dir, "clients", NULL);
+    g_autofree gchar *token_path = g_build_filename(dir, "ws.token", NULL);
+    g_autoptr(GPtrArray) list = empty_list();
+    g_autoptr(GError) error = NULL;
+    ClawtConnectionSource source;
+
+    g_ptr_array_add(list, clawt_connection_new_remote("workstation",
+                                                       "10.0.0.9", 8792,
+                                                       "tok-w"));
+    g_ptr_array_add(list, clawt_connection_new_remote("laptop", "10.0.0.7",
+                                                       8792, "tok-l"));
+    g_assert_true(clawt_connection_list_save(list_path, list, NULL));
+    g_assert_true(g_file_set_contents(token_path, "  tok-file\n", -1, NULL));
+
+    /* 4. nothing running, nothing remembered: the local daemon */
+    {
+        g_autoptr(ClawtConnection) chosen = NULL;
+        g_autofree gchar *reason = NULL;
+
+        chosen = clawt_connection_choose_following(
+            NULL, 0, NULL, NULL, NULL, NULL, list_path, last_path, current,
+            &source, &reason, &error);
+        g_assert_no_error(error);
+        g_assert_true(clawt_connection_is_local(chosen));
+        g_assert_cmpint(source, ==, CLAWT_CONNECTION_FROM_LOCAL);
+        g_assert_cmpstr(reason, ==, "Opening on the local daemon (this "
+                        "machine): no client is running, and none was "
+                        "last on another.");
+    }
+
+    /* 3. remembered: the workstation, token from the profile */
+    g_assert_true(clawt_connection_last_save(last_path,
+                                             g_ptr_array_index(list, 0),
+                                             NULL));
+    {
+        g_autoptr(ClawtConnection) chosen = NULL;
+        g_autofree gchar *reason = NULL;
+
+        chosen = clawt_connection_choose_following(
+            NULL, 0, NULL, NULL, NULL, NULL, list_path, last_path, current,
+            &source, &reason, &error);
+        g_assert_no_error(error);
+        g_assert_cmpint(source, ==, CLAWT_CONNECTION_FROM_LAST);
+        g_assert_cmpstr(clawt_connection_get_name(chosen), ==, "workstation");
+        g_assert_cmpstr(clawt_connection_get_token(chosen), ==, "tok-w");
+        g_assert_cmpstr(reason, ==, "Opening on workstation "
+                        "(10.0.0.9:8792), the daemon the clients were last "
+                        "on.");
+    }
+
+    /* 2. a client running (this process) on the laptop beats the memory */
+    g_assert_true(clawt_connection_current_save(
+        current, g_ptr_array_index(list, 1), &error));
+    g_assert_no_error(error);
+    {
+        g_autoptr(ClawtConnection) chosen = NULL;
+        g_autofree gchar *reason = NULL;
+        g_autofree gchar *expected = NULL;
+
+        chosen = clawt_connection_choose_following(
+            NULL, 0, NULL, NULL, NULL, NULL, list_path, last_path, current,
+            &source, &reason, &error);
+        g_assert_no_error(error);
+        g_assert_cmpint(source, ==, CLAWT_CONNECTION_FROM_RUNNING_CLIENT);
+        g_assert_cmpstr(clawt_connection_get_name(chosen), ==, "laptop");
+        g_assert_cmpstr(clawt_connection_get_token(chosen), ==, "tok-l");
+
+        expected = g_strdup_printf("Opening on laptop (10.0.0.7:8792), the "
+                                   "daemon %s (pid %d) is on.",
+                                   g_get_prgname(), (gint)getpid());
+        g_assert_cmpstr(reason, ==, expected);
+    }
+
+    /* 1. and every flag beats the running client */
+    {
+        g_autoptr(ClawtConnection) host = NULL;
+        g_autoptr(ClawtConnection) profile = NULL;
+        g_autoptr(ClawtConnection) socket = NULL;
+        g_autofree gchar *host_reason = NULL;
+        g_autofree gchar *profile_reason = NULL;
+        g_autofree gchar *socket_reason = NULL;
+
+        host = clawt_connection_choose_following(
+            "10.0.0.5", 0, NULL, token_path, NULL, NULL, list_path,
+            last_path, current, &source, &host_reason, &error);
+        g_assert_no_error(error);
+        g_assert_cmpint(source, ==, CLAWT_CONNECTION_FROM_HOST);
+        g_assert_cmpstr(clawt_connection_get_host(host), ==, "10.0.0.5");
+        g_assert_cmpstr(clawt_connection_get_token(host), ==, "tok-file");
+        g_assert_cmpstr(clawt_connection_get_token_file(host), ==,
+                        token_path);
+        g_assert_cmpstr(host_reason, ==,
+                        "Opening on 10.0.0.5:8792, as --host asked.");
+
+        profile = clawt_connection_choose_following(
+            NULL, 0, NULL, NULL, "workstation", NULL, list_path, last_path,
+            current, &source, &profile_reason, &error);
+        g_assert_no_error(error);
+        g_assert_cmpint(source, ==, CLAWT_CONNECTION_FROM_PROFILE);
+        g_assert_cmpstr(clawt_connection_get_name(profile), ==,
+                        "workstation");
+
+        socket = clawt_connection_choose_following(
+            NULL, 0, NULL, NULL, NULL, "/run/x.sock", list_path, last_path,
+            current, &source, &socket_reason, &error);
+        g_assert_no_error(error);
+        g_assert_cmpint(source, ==, CLAWT_CONNECTION_FROM_SOCKET);
+        g_assert_cmpstr(clawt_connection_get_socket_path(socket), ==,
+                        "/run/x.sock");
+        g_assert_cmpstr(socket_reason, ==, "Opening on the local daemon "
+                        "(/run/x.sock), as --socket asked.");
+    }
+
+    /* the token flags are --host's, and one at a time */
+    {
+        g_autoptr(ClawtConnection) both = NULL;
+        g_autoptr(ClawtConnection) stray = NULL;
+
+        both = clawt_connection_choose_following(
+            "10.0.0.5", 0, "t", token_path, NULL, NULL, list_path,
+            last_path, current, NULL, NULL, &error);
+        g_assert_null(both);
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+        g_clear_error(&error);
+
+        stray = clawt_connection_choose_following(
+            NULL, 0, NULL, token_path, "workstation", NULL, list_path,
+            last_path, current, NULL, NULL, &error);
+        g_assert_null(stray);
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+        g_clear_error(&error);
+    }
+
+    /* the client exits cleanly: back to the memory */
+    g_assert_true(clawt_connection_current_save(current, NULL, &error));
+    g_assert_no_error(error);
+    {
+        g_autoptr(ClawtConnection) chosen = NULL;
+
+        chosen = clawt_connection_choose_following(
+            NULL, 0, NULL, NULL, NULL, NULL, list_path, last_path, current,
+            &source, NULL, &error);
+        g_assert_no_error(error);
+        g_assert_cmpint(source, ==, CLAWT_CONNECTION_FROM_LAST);
+    }
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * A client that crashed leaves its file behind.  Its pid is not alive,
+ * so the file is not followed -- and, being nobody's, it is cleared.
+ *
+ * If this regresses, the office follows a window that closed last week
+ * onto a daemon nobody is looking at.
+ */
+static void
+test_a_dead_clients_file_is_ignored(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-follow-XXXXXX", NULL);
+    g_autofree gchar *current = g_build_filename(dir, "clients", NULL);
+    g_autofree gchar *scratch = g_build_filename(dir, "scratch", NULL);
+    g_autofree gchar *list_path = g_build_filename(dir, "conn.yaml", NULL);
+    g_autofree gchar *stale = NULL;
+    g_autoptr(ClawtConnection) local = clawt_connection_new_local(
+        "Local", "/run/elsewhere.sock");
+    g_autoptr(ClawtConnection) found = NULL;
+    g_autofree gchar *notice = NULL;
+    gint pid = -1;
+
+    /*
+     * G_MAXINT is above any pid a kernel hands out (Linux's ceiling is
+     * 2^22), so kill(2) is certain to say there is no such process.
+     */
+    record_for(current, scratch, G_MAXINT, local);
+    stale = g_strdup_printf("%s/current-connection-%d", current, G_MAXINT);
+    g_assert_true(g_file_test(stale, G_FILE_TEST_EXISTS));
+
+    found = clawt_connection_current_load(current, list_path, &pid, NULL,
+                                          &notice);
+    g_assert_null(found);
+    g_assert_cmpint(pid, ==, 0);
+    g_assert_null(notice);
+    g_assert_false(g_file_test(stale, G_FILE_TEST_EXISTS));
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * Two clients alive on two daemons: the one written last is the one
+ * somebody was last looking at, and wins -- whichever process it is.
+ */
+static void
+test_two_live_clients_the_newest_wins(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-follow-XXXXXX", NULL);
+    g_autofree gchar *current = g_build_filename(dir, "clients", NULL);
+    g_autofree gchar *scratch = g_build_filename(dir, "scratch", NULL);
+    g_autofree gchar *list_path = g_build_filename(dir, "conn.yaml", NULL);
+    g_autoptr(GPtrArray) list = empty_list();
+    gint parent = (gint)getppid();
+    gint self = (gint)getpid();
+
+    g_ptr_array_add(list, clawt_connection_new_remote("workstation",
+                                                       "10.0.0.9", 8792,
+                                                       "tok-w"));
+    g_ptr_array_add(list, clawt_connection_new_remote("laptop", "10.0.0.7",
+                                                       8792, "tok-l"));
+    g_assert_true(clawt_connection_list_save(list_path, list, NULL));
+
+    /* the parent process stands in for a second, older client */
+    record_for(current, scratch, parent, g_ptr_array_index(list, 0));
+    g_usleep(2000);
+    record_for(current, scratch, self, g_ptr_array_index(list, 1));
+    {
+        g_autoptr(ClawtConnection) found = NULL;
+        gint pid = 0;
+
+        found = clawt_connection_current_load(current, list_path, &pid, NULL,
+                                              NULL);
+        g_assert_nonnull(found);
+        g_assert_cmpstr(clawt_connection_get_name(found), ==, "laptop");
+        g_assert_cmpint(pid, ==, self);
+    }
+
+    /* the older one switches: now it is the newest */
+    g_usleep(2000);
+    record_for(current, scratch, parent, g_ptr_array_index(list, 0));
+    {
+        g_autoptr(ClawtConnection) found = NULL;
+        g_autofree gchar *client = NULL;
+        gint pid = 0;
+
+        found = clawt_connection_current_load(current, list_path, &pid,
+                                              &client, NULL);
+        g_assert_nonnull(found);
+        g_assert_cmpstr(clawt_connection_get_name(found), ==, "workstation");
+        g_assert_cmpstr(clawt_connection_get_token(found), ==, "tok-w");
+        g_assert_cmpint(pid, ==, parent);
+        g_assert_cmpstr(client, ==, g_get_prgname());
+    }
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * The current-connection file names the daemon and where its token can
+ * be found, never the token -- not for a profile, not for --token, not
+ * for --token-file -- and it is 0600 in a 0700 directory.  A reader gets
+ * the token back from the profile store or the named file, and a client
+ * whose token was only ever on its command line is not followed.
+ *
+ * If this regresses, every bearer token a desktop client holds is copied
+ * into a world-listable runtime directory for as long as it runs.
+ */
+static void
+test_the_current_file_holds_no_token(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-follow-XXXXXX", NULL);
+    g_autofree gchar *current = g_build_filename(dir, "run", "clients",
+                                                 NULL);
+    g_autofree gchar *list_path = g_build_filename(dir, "conn.yaml", NULL);
+    g_autofree gchar *token_path = g_build_filename(dir, "ws.token", NULL);
+    g_autofree gchar *own = NULL;
+    g_autoptr(GPtrArray) list = empty_list();
+    g_autoptr(GError) error = NULL;
+    GStatBuf info;
+
+    own = g_strdup_printf("%s/current-connection-%d", current,
+                          (gint)getpid());
+
+    /* a profile with its token inline */
+    g_ptr_array_add(list, clawt_connection_new_remote(
+        "workstation", "10.0.0.9", 8792, "s3cret-profile-token"));
+    g_assert_true(clawt_connection_list_save(list_path, list, NULL));
+    g_assert_true(clawt_connection_current_save(
+        current, g_ptr_array_index(list, 0), &error));
+    g_assert_no_error(error);
+    {
+        g_autofree gchar *text = NULL;
+        g_autofree gchar *parent = g_path_get_dirname(own);
+        GStatBuf parent_info;
+
+        g_assert_true(g_file_get_contents(own, &text, NULL, NULL));
+        g_assert_null(strstr(text, "s3cret-profile-token"));
+        g_assert_nonnull(strstr(text, "10.0.0.9"));
+        g_assert_cmpint(g_stat(own, &info), ==, 0);
+        g_assert_cmpuint(info.st_mode & 0777, ==, 0600);
+        g_assert_cmpint(g_stat(parent, &parent_info), ==, 0);
+        g_assert_cmpuint(parent_info.st_mode & 0777, ==, 0700);
+    }
+
+    /* --host with --token-file: the path is shared, the token is not */
+    g_assert_true(g_file_set_contents(token_path, "s3cret-file-token\n", -1,
+                                      NULL));
+    {
+        g_autoptr(ClawtConnection) host = clawt_connection_new_remote(
+            "10.0.0.20", "10.0.0.20", 8792, NULL);
+        g_autoptr(ClawtConnection) back = NULL;
+        g_autofree gchar *text = NULL;
+
+        g_assert_true(clawt_connection_load_token_file(host, token_path,
+                                                       &error));
+        g_assert_no_error(error);
+        g_assert_cmpstr(clawt_connection_get_token(host), ==,
+                        "s3cret-file-token");
+        g_assert_true(clawt_connection_current_save(current, host, &error));
+        g_assert_no_error(error);
+
+        g_assert_true(g_file_get_contents(own, &text, NULL, NULL));
+        g_assert_null(strstr(text, "s3cret-file-token"));
+        g_assert_nonnull(strstr(text, token_path));
+        g_assert_cmpint(g_stat(own, &info), ==, 0);
+        g_assert_cmpuint(info.st_mode & 0777, ==, 0600);
+
+        back = clawt_connection_current_load(current, list_path, NULL, NULL,
+                                             NULL);
+        g_assert_nonnull(back);
+        g_assert_cmpstr(clawt_connection_get_token(back), ==,
+                        "s3cret-file-token");
+    }
+
+    /*
+     * --host with --token: nothing to find it by.  A daemon saved under
+     * the same address lends its token; with none, it is not followed,
+     * and the notice says what would make it so.
+     */
+    {
+        g_autoptr(ClawtConnection) argv_host = clawt_connection_new_remote(
+            "10.0.0.9", "10.0.0.9", 8792, "s3cret-argv-token");
+        g_autoptr(ClawtConnection) lent = NULL;
+        g_autoptr(ClawtConnection) none = NULL;
+        g_autofree gchar *text = NULL;
+        g_autofree gchar *notice = NULL;
+        g_autofree gchar *empty = g_build_filename(dir, "none.yaml", NULL);
+
+        g_assert_true(clawt_connection_current_save(current, argv_host,
+                                                    &error));
+        g_assert_no_error(error);
+        g_assert_true(g_file_get_contents(own, &text, NULL, NULL));
+        g_assert_null(strstr(text, "s3cret-argv-token"));
+
+        lent = clawt_connection_current_load(current, list_path, NULL, NULL,
+                                             NULL);
+        g_assert_nonnull(lent);
+        g_assert_cmpstr(clawt_connection_get_name(lent), ==, "workstation");
+        g_assert_cmpstr(clawt_connection_get_token(lent), ==,
+                        "s3cret-profile-token");
+
+        none = clawt_connection_current_load(current, empty, NULL, NULL,
+                                             &notice);
+        g_assert_null(none);
+        g_assert_nonnull(notice);
+        g_assert_nonnull(strstr(notice, "--token-file"));
+        g_assert_null(strstr(notice, "s3cret-argv-token"));
+    }
+
+    g_assert_true(clawt_connection_current_save(current, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_false(g_file_test(own, G_FILE_TEST_EXISTS));
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * --token-file: trimmed, because `echo token > file` ends in a newline;
+ * an empty or missing file is an error naming the flag, not an empty
+ * token the daemon refuses without saying whose mistake it was.
+ */
+static void
+test_a_token_file_is_read_and_trimmed(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-token-XXXXXX", NULL);
+    g_autofree gchar *good = g_build_filename(dir, "good", NULL);
+    g_autofree gchar *blank = g_build_filename(dir, "blank", NULL);
+    g_autofree gchar *missing = g_build_filename(dir, "missing", NULL);
+    g_autoptr(ClawtConnection) remote = clawt_connection_new_remote(
+        "box", "10.0.0.1", 8792, "old");
+    g_autoptr(GError) error = NULL;
+
+    g_assert_true(g_file_set_contents(good, "\n  tok-123 \n", -1, NULL));
+    g_assert_true(g_file_set_contents(blank, " \n", -1, NULL));
+
+    g_assert_true(clawt_connection_load_token_file(remote, good, &error));
+    g_assert_no_error(error);
+    g_assert_cmpstr(clawt_connection_get_token(remote), ==, "tok-123");
+    g_assert_cmpstr(clawt_connection_get_token_file(remote), ==, good);
+
+    g_assert_false(clawt_connection_load_token_file(remote, blank, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+    g_clear_error(&error);
+
+    g_assert_false(clawt_connection_load_token_file(remote, missing, &error));
+    g_assert_nonnull(error);
+    g_assert_nonnull(strstr(error->message, "--token-file"));
+    g_clear_error(&error);
+
+    /* a failure leaves what was there */
+    g_assert_cmpstr(clawt_connection_get_token(remote), ==, "tok-123");
 
     clawt_test_remove_tree(dir);
 }
@@ -2341,6 +2788,16 @@ main(int argc, char *argv[])
     g_test_add_func("/connection/choose", test_choosing_a_daemon);
     g_test_add_func("/connection/choose-says-what-memory-did",
                     test_choosing_says_what_the_memory_did);
+    g_test_add_func("/connection/follow-running-client",
+                    test_following_the_running_client);
+    g_test_add_func("/connection/follow-ignores-a-dead-client",
+                    test_a_dead_clients_file_is_ignored);
+    g_test_add_func("/connection/follow-newest-live-client",
+                    test_two_live_clients_the_newest_wins);
+    g_test_add_func("/connection/current-file-holds-no-token",
+                    test_the_current_file_holds_no_token);
+    g_test_add_func("/connection/token-file",
+                    test_a_token_file_is_read_and_trimmed);
     g_test_add_func("/connection/offer-local",
                     test_use_local_is_offered_only_for_a_stale_memory);
     g_test_add_func("/connection/notice-remembered",

@@ -19,6 +19,7 @@
 #include "clawtilla.h"
 
 #include <fcntl.h>
+#include <glib/gstdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -646,6 +647,209 @@ test_embed_argv(void)
     clawt_connection_free(remote);
 }
 
+/* Every word of a standalone command line, joined; for asserting on. */
+static gchar *
+window_line(ClawtConnection *connection, gboolean saved, ClawtOfficeViewMode mode,
+            gint token_fd, GError **error)
+{
+    g_auto(GStrv) argv = clawt_office_renderer_window_argv("o", connection, saved, mode,
+                                                           token_fd, error);
+
+    return argv != NULL ? g_strjoinv(" ", argv) : NULL;
+}
+
+/*
+ * The standalone window's command line: never --embed, always --2d or
+ * --3d, the client's own connection named outright, and never a token --
+ * a saved remote by profile, a typed one by --host and a token fd.
+ */
+static void
+test_window_argv(void)
+{
+    g_autoptr(GError) error = NULL;
+    ClawtConnection *local = clawt_connection_new_local("Local", "/run/x/daemon.sock");
+    ClawtConnection *plain = clawt_connection_new_local("Local", NULL);
+    ClawtConnection *remote = clawt_connection_new_remote("workstation", "100.64.0.9",
+                                                          7413, "sekrit-token");
+    ClawtConnection *bare = clawt_connection_new_remote("100.64.0.9", "100.64.0.9",
+                                                        7413, NULL);
+    ClawtConnection *tls = clawt_connection_new_remote("vault", "vault.example", 443,
+                                                       "sekrit-token");
+    g_autofree gchar *default_socket = clawt_client_default_socket_path();
+    g_autofree gchar *want = NULL;
+    gchar *line;
+
+    clawt_connection_set_tls(tls, TRUE, FALSE);
+
+    /* local: the socket, and the mode always spelled out */
+    line = window_line(local, FALSE, CLAWT_OFFICE_VIEW_2D, -1, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(line, ==, "o --2d --socket /run/x/daemon.sock");
+    g_free(line);
+
+    /* the default socket too: unsaid, the renderer would follow another client */
+    line = window_line(plain, FALSE, CLAWT_OFFICE_VIEW_3D, -1, &error);
+    g_assert_no_error(error);
+    want = g_strdup_printf("o --3d --socket %s", default_socket);
+    g_assert_cmpstr(line, ==, want);
+    g_free(line);
+
+    /* saved: the profile, which keeps the token; the fd is not used */
+    line = window_line(remote, TRUE, CLAWT_OFFICE_VIEW_3D, 3, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(line, ==, "o --3d --profile workstation");
+    g_free(line);
+
+    /* typed: --host, and the token from an fd */
+    line = window_line(remote, FALSE, CLAWT_OFFICE_VIEW_2D, 3, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(line, ==,
+                    "o --2d --host 100.64.0.9 --daemon-port 7413 --token-file /dev/fd/3");
+    g_assert_null(strstr(line, "sekrit"));
+    g_assert_null(strstr(line, "--token "));
+    g_free(line);
+
+    /* typed with a token and nowhere to read it from: no command at all */
+    line = window_line(remote, FALSE, CLAWT_OFFICE_VIEW_2D, -1, &error);
+    g_assert_null(line);
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+    g_assert_null(strstr(error->message, "sekrit"));
+    g_clear_error(&error);
+
+    /* typed without a token: --host alone */
+    line = window_line(bare, FALSE, CLAWT_OFFICE_VIEW_3D, -1, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(line, ==, "o --3d --host 100.64.0.9 --daemon-port 7413");
+    g_free(line);
+
+    /* TLS lives only in a saved profile */
+    line = window_line(tls, FALSE, CLAWT_OFFICE_VIEW_2D, 3, &error);
+    g_assert_null(line);
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED);
+    g_clear_error(&error);
+
+    /* nothing to hand over: the renderer chooses */
+    line = window_line(NULL, FALSE, CLAWT_OFFICE_VIEW_2D, -1, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(line, ==, "o --2d");
+    g_free(line);
+
+    clawt_connection_free(local);
+    clawt_connection_free(plain);
+    clawt_connection_free(remote);
+    clawt_connection_free(bare);
+    clawt_connection_free(tls);
+}
+
+/* What the launch says it handed over: where, how the token went, never the token. */
+static void
+test_window_describe(void)
+{
+    ClawtConnection *local = clawt_connection_new_local("Local", "/run/x/daemon.sock");
+    ClawtConnection *remote = clawt_connection_new_remote("workstation", "100.64.0.9",
+                                                          7413, "sekrit-token");
+    g_autofree gchar *a = clawt_office_renderer_describe_connection(local, FALSE);
+    g_autofree gchar *b = clawt_office_renderer_describe_connection(remote, TRUE);
+    g_autofree gchar *c = clawt_office_renderer_describe_connection(remote, FALSE);
+
+    g_assert_cmpstr(a, ==, "the local daemon (/run/x/daemon.sock)");
+    g_assert_nonnull(strstr(b, "saved connection"));
+    g_assert_nonnull(strstr(b, "workstation"));
+    g_assert_nonnull(strstr(c, "100.64.0.9:7413"));
+    g_assert_nonnull(strstr(c, "through a pipe"));
+    g_assert_null(strstr(b, "sekrit"));
+    g_assert_null(strstr(c, "sekrit"));
+
+    clawt_connection_free(local);
+    clawt_connection_free(remote);
+}
+
+/*
+ * The whole launch, against a stand-in renderer on PATH that writes
+ * down its argv and whatever its --token-file held: the token arrives,
+ * through the pipe, and is nowhere in the command line.
+ */
+static void
+test_open_window_token_pipe(void)
+{
+    static const gchar fake[] =
+        "#!/bin/sh\n"
+        "out=\"$CLAWT_TEST_OFFICE_OUT\"\n"
+        ": > \"$out/argv.part\"\n"
+        "prev=\n"
+        "for a in \"$@\"; do\n"
+        "    printf '%s\\n' \"$a\" >> \"$out/argv.part\"\n"
+        "    if [ \"$prev\" = --token-file ]; then cat \"$a\" > \"$out/token\"; fi\n"
+        "    prev=\"$a\"\n"
+        "done\n"
+        "mv \"$out/argv.part\" \"$out/argv\"\n";
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-office-open-XXXXXX", &error);
+    g_autofree gchar *script = NULL;
+    g_autofree gchar *found = NULL;
+    g_autofree gchar *old_path = g_strdup(g_getenv("PATH"));
+    g_autofree gchar *argv_path = NULL;
+    g_autofree gchar *token_path = NULL;
+    g_autofree gchar *argv_text = NULL;
+    g_autofree gchar *token_text = NULL;
+    g_autofree gchar *handed_over = NULL;
+    g_autofree gchar *want = NULL;
+    g_autoptr(GSubprocess) child = NULL;
+    ClawtConnection *remote = clawt_connection_new_remote("100.64.0.9", "100.64.0.9",
+                                                          7413, "sekrit-token");
+
+    g_assert_no_error(error);
+    script = g_build_filename(dir, "clawtilla-office", NULL);
+    g_assert_true(g_file_set_contents(script, fake, -1, &error));
+    g_assert_cmpint(g_chmod(script, 0700), ==, 0);
+    /* in front, not alone: the stand-in needs cat and mv from the rest */
+    {
+        g_autofree gchar *path = g_strdup_printf("%s:%s", dir,
+                                                 old_path != NULL ? old_path : "/usr/bin:/bin");
+
+        g_setenv("PATH", path, TRUE);
+    }
+    g_setenv("CLAWT_TEST_OFFICE_OUT", dir, TRUE);
+
+    /* a real renderer beside the tests or installed would be found first */
+    found = clawt_office_renderer_resolve(NULL);
+    if (g_strcmp0(found, script) != 0) {
+        g_setenv("PATH", old_path != NULL ? old_path : "", TRUE);
+        clawt_connection_free(remote);
+        g_test_skip("a clawtilla-office is installed beside the tests or in the prefix");
+        return;
+    }
+
+    child = clawt_office_renderer_open_window(remote, FALSE, CLAWT_OFFICE_VIEW_3D,
+                                              &handed_over, &error);
+    g_setenv("PATH", old_path != NULL ? old_path : "", TRUE);
+    g_assert_no_error(error);
+    g_assert_nonnull(child);
+    g_assert_nonnull(strstr(handed_over, "100.64.0.9:7413"));
+    g_assert_null(strstr(handed_over, "sekrit"));
+
+    /* the test may wait; the clients never do */
+    g_assert_true(g_subprocess_wait_check(child, NULL, &error));
+    g_assert_no_error(error);
+
+    argv_path = g_build_filename(dir, "argv", NULL);
+    token_path = g_build_filename(dir, "token", NULL);
+    g_assert_true(g_file_get_contents(argv_path, &argv_text, NULL, &error));
+    g_assert_true(g_file_get_contents(token_path, &token_text, NULL, &error));
+    /* "$@": everything after the program, which resolve() already checked */
+    want = g_strdup_printf("--3d\n--host\n100.64.0.9\n--daemon-port\n7413\n"
+                           "--token-file\n/dev/fd/%d\n", CLAWT_OFFICE_RENDERER_TOKEN_FD);
+    g_assert_cmpstr(argv_text, ==, want);
+    g_assert_null(strstr(argv_text, "sekrit"));
+    g_assert_cmpstr(token_text, ==, "sekrit-token");
+
+    g_unlink(argv_path);
+    g_unlink(token_path);
+    g_unlink(script);
+    g_rmdir(dir);
+    clawt_connection_free(remote);
+}
+
 /* Missing, the error names the three places and how to build it. */
 static void
 test_resolve_missing(void)
@@ -692,6 +896,9 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office-frames/closed", test_closed);
     g_test_add_func("/office-frames/input-bytes", test_input_bytes);
     g_test_add_func("/office-frames/embed-argv", test_embed_argv);
+    g_test_add_func("/office-frames/window-argv", test_window_argv);
+    g_test_add_func("/office-frames/window-describe", test_window_describe);
+    g_test_add_func("/office-frames/open-window-token-pipe", test_open_window_token_pipe);
     g_test_add_func("/office-frames/resolve-missing", test_resolve_missing);
 
     return g_test_run();

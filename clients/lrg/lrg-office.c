@@ -275,6 +275,55 @@ event(ClawtLrgApp *app, ClawtEvent *event)
         request_snapshot(app);
 }
 
+/* ── Open office: clawtilla-office as a program of its own ────────── */
+
+/*
+ * Whether @connection is one of connections.yaml's, by name, as the GTK
+ * client decides it: a saved one is handed over by --profile, which
+ * carries its TLS settings and its token.  One small local file, read on
+ * a click; nothing here waits on the daemon.
+ */
+static gboolean
+connection_saved(ClawtConnection *connection)
+{
+    g_autoptr(GPtrArray) saved = NULL;
+
+    if (connection == NULL || clawt_connection_is_local(connection))
+        return FALSE;
+    saved = clawt_connection_list_load(NULL, NULL);
+    return saved != NULL &&
+           clawt_connection_list_find(saved, clawt_connection_get_name(connection)) != NULL;
+}
+
+void
+clawt_lrg_office_open_window(ClawtLrgApp *app, ClawtOfficeViewMode mode)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GSubprocess) child = NULL;
+    g_autofree gchar *handed_over = NULL;
+    g_autofree gchar *text = NULL;
+    const gchar *mode_name = mode == CLAWT_OFFICE_VIEW_3D ? "3D" : "2D";
+
+    g_return_if_fail(app != NULL);
+
+    /* this client's own connection, said outright; a typed token goes by pipe */
+    child = clawt_office_renderer_open_window(app->connection,
+                                              connection_saved(app->connection), mode,
+                                              &handed_over, &error);
+    if (child == NULL) {
+        text = g_strdup_printf("The office did not open: %s", error->message);
+        g_message("%s", text);
+        clawt_lrg_toast(app, text);
+        return;
+    }
+
+    /* which daemon it was handed, for the log and the person; never the token */
+    g_message("opened clawtilla-office (pid %s) in %s on %s",
+              g_subprocess_get_identifier(child), mode_name, handed_over);
+    text = g_strdup_printf("Opened the office in %s on %s.", mode_name, handed_over);
+    clawt_lrg_toast(app, text);
+}
+
 static const ClawtLrgPage page_impl = {
     CLAWT_PAGE_OFFICE, build, refresh, event
 };

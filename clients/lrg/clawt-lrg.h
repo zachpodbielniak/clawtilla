@@ -206,6 +206,14 @@ struct _ClawtLrgApp {
     gboolean         reached_once;
     gboolean         connection_remembered;
     gchar           *start_notice;    /* nullable, toasted once */
+
+    /*
+     * Whether to tell other clients which daemon this one is on
+     * (clawt_connection_current_save()), so a bare `clawtilla-office`
+     * opens on it.  Off for the self-test, which runs against whatever
+     * it was told and is nobody's daemon to follow.
+     */
+    gboolean         publish_connection;
     ClawtLrgIslandState island;
 
     /* ── per-page state, owned by each page file ── */
@@ -410,6 +418,10 @@ const ClawtLrgPage *clawt_lrg_office_page(void);     /* lrg-office.c */
 /* The drawn office on the Office page: native with OFFICE=1, else a note. */
 void clawt_lrg_office_view_add(ClawtLrgApp *app, LrgWidget *parent);
 void clawt_lrg_office_view_event(ClawtLrgApp *app, ClawtEvent *event);
+/* Open office: clawtilla-office as a window of its own, on app->connection,
+ * in @mode; never waited for, a failure a toast, and which daemon it was
+ * handed logged and toasted, never the token (lrg-office.c). */
+void clawt_lrg_office_open_window(ClawtLrgApp *app, ClawtOfficeViewMode mode);
 const ClawtLrgPage *clawt_lrg_skills_page(void);     /* lrg-skills.c */
 /* Draws @skill into one library tile (a fixed-size vbox): name and
  * description each one line, cut short at the tile's edge. */

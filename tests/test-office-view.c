@@ -1,0 +1,511 @@
+/*
+ * test-office-view.c - The arithmetic of a drawn office in a view
+ *
+ * Copyright (C) 2026
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * This file is part of clawtilla.
+ *
+ * What the GTK client and clawtilla-office agree on, checked without a
+ * display or a GL context: how tall the view is on a page, the device
+ * size the renderer is asked for at 1080p and 4K, the map's zoom and
+ * centre, where name labels go, and the control line both ends speak --
+ * including what happens when the renderer is gone and a line is still
+ * written to its stdin.
+ */
+
+#include "clawtilla.h"
+
+#include <signal.h>
+#include <string.h>
+
+/* ── Size ─────────────────────────────────────────────────────────── */
+
+/*
+ * Three quarters of the visible page, never under the minimum, and the
+ * fallback before the page is known.  The old view was 420 high on any
+ * window: a 1080p window's page is ~900, so the drawing is now ~675.
+ */
+static void
+test_height_for_page(void)
+{
+    g_assert_cmpint(clawt_office_view_height_for_page(0), ==,
+                    CLAWT_OFFICE_VIEW_FALLBACK_HEIGHT);
+    g_assert_cmpint(clawt_office_view_height_for_page(-5), ==,
+                    CLAWT_OFFICE_VIEW_FALLBACK_HEIGHT);
+    g_assert_cmpint(clawt_office_view_height_for_page(900), ==, 675);
+    g_assert_cmpint(clawt_office_view_height_for_page(2000), ==, 1500);
+    /* a short window scrolls the page rather than squash the office */
+    g_assert_cmpint(clawt_office_view_height_for_page(300), ==, CLAWT_OFFICE_VIEW_MIN_HEIGHT);
+    g_assert_cmpint(clawt_office_view_height_for_page(426), ==, CLAWT_OFFICE_VIEW_MIN_HEIGHT);
+    g_assert_cmpint(clawt_office_view_height_for_page(428), ==, 321);
+}
+
+/* Logical size times the device scale: one frame pixel per screen pixel. */
+static void
+test_device_size_scales(void)
+{
+    guint w = 0;
+    guint h = 0;
+
+    /* a 1080p monitor at scale 1 */
+    g_assert_true(clawt_office_view_device_size(1600, 675, 1, &w, &h));
+    g_assert_cmpuint(w, ==, 1600);
+    g_assert_cmpuint(h, ==, 675);
+
+    /* a 4K monitor at scale 2: the same logical view, twice the pixels */
+    g_assert_true(clawt_office_view_device_size(1600, 675, 2, &w, &h));
+    g_assert_cmpuint(w, ==, 3200);
+    g_assert_cmpuint(h, ==, 1350);
+
+    /* a scale under 1 is 1, never a smaller frame than the view */
+    g_assert_true(clawt_office_view_device_size(800, 450, 0, &w, &h));
+    g_assert_cmpuint(w, ==, 800);
+    g_assert_cmpuint(h, ==, 450);
+}
+
+/* Past the renderer's limit both sides shrink by one factor; tiny sides grow. */
+static void
+test_device_size_clamps(void)
+{
+    guint w = 7;
+    guint h = 7;
+
+    g_assert_true(clawt_office_view_device_size(5120, 1440, 2, &w, &h));
+    g_assert_cmpuint(w, ==, CLAWT_OFFICE_VIEW_MAX_DIMENSION);
+    g_assert_cmpuint(h, ==, 2304);  /* 2880 * 8192 / 10240: the shape is kept */
+
+    g_assert_true(clawt_office_view_device_size(10, 30, 1, &w, &h));
+    g_assert_cmpuint(w, ==, CLAWT_OFFICE_VIEW_MIN_DIMENSION);
+    g_assert_cmpuint(h, ==, CLAWT_OFFICE_VIEW_MIN_DIMENSION);
+
+    /* nothing laid out yet: nothing to ask for, and the outs are left alone */
+    w = 7;
+    h = 9;
+    g_assert_false(clawt_office_view_device_size(0, 400, 2, &w, &h));
+    g_assert_false(clawt_office_view_device_size(400, -1, 2, &w, &h));
+    g_assert_cmpuint(w, ==, 7);
+    g_assert_cmpuint(h, ==, 9);
+}
+
+static void
+test_ui_scale_clamped(void)
+{
+    g_assert_cmpint(clawt_office_view_clamp_ui_scale(0), ==, 1);
+    g_assert_cmpint(clawt_office_view_clamp_ui_scale(-3), ==, 1);
+    g_assert_cmpint(clawt_office_view_clamp_ui_scale(2), ==, 2);
+    g_assert_cmpint(clawt_office_view_clamp_ui_scale(9), ==, CLAWT_OFFICE_VIEW_MAX_UI_SCALE);
+}
+
+/* ── Zoom ─────────────────────────────────────────────────────────── */
+
+/*
+ * modern-office is 1408 x 1280.  In a 1080p view (1600 x 675) it fits
+ * only below one, as a fraction; in a 4K one at scale 2 (3200 x 1350) it
+ * fits at 1.05 and is drawn at exactly 1 -- a whole number, so pixels are
+ * repeated, not smeared.
+ */
+static void
+test_fit_zoom_is_whole_when_it_can_be(void)
+{
+    gfloat z;
+
+    z = clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_FIT, 1, 1600.0f, 675.0f,
+                                   1408.0f, 1280.0f);
+    g_assert_cmpfloat_with_epsilon(z, 675.0f / 1280.0f, 1e-6);
+
+    z = clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_FIT, 2, 3200.0f, 1350.0f,
+                                   1408.0f, 1280.0f);
+    g_assert_cmpfloat(z, ==, 1.0f);
+
+    /* a 4K view of a small map: the largest whole number, never 2.6 */
+    z = clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_FIT, 2, 3840.0f, 2000.0f,
+                                   1408.0f, 640.0f);
+    g_assert_cmpfloat(z, ==, 2.0f);
+
+    /* no map yet, or no view: 1, never a division by zero */
+    g_assert_cmpfloat(clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_FIT, 1, 800.0f, 600.0f,
+                                                 0.0f, 0.0f), ==, 1.0f);
+    g_assert_cmpfloat(clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_FIT, 1, 0.0f, 0.0f,
+                                                 100.0f, 100.0f), ==, 1.0f);
+}
+
+/* 1x and 2x are logical pixels per map pixel, whatever the view. */
+static void
+test_fixed_zoom_follows_ui_scale(void)
+{
+    g_assert_cmpfloat(clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_1X, 1, 100.0f, 100.0f,
+                                                 1408.0f, 1280.0f), ==, 1.0f);
+    g_assert_cmpfloat(clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_1X, 2, 100.0f, 100.0f,
+                                                 1408.0f, 1280.0f), ==, 2.0f);
+    g_assert_cmpfloat(clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_2X, 1, 100.0f, 100.0f,
+                                                 1408.0f, 1280.0f), ==, 2.0f);
+    g_assert_cmpfloat(clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_2X, 2, 100.0f, 100.0f,
+                                                 1408.0f, 1280.0f), ==, 4.0f);
+}
+
+/* A zoomed map never shows past its edge; a small one is centred. */
+static void
+test_clamp_centre(void)
+{
+    gfloat cx;
+    gfloat cy;
+
+    /* 1408 x 1280 at 2x in an 800 x 600 view: 400 x 300 map pixels show */
+    cx = 0.0f;
+    cy = 5000.0f;
+    clawt_office_view_clamp_centre(800.0f, 600.0f, 1408.0f, 1280.0f, 2.0f, &cx, &cy);
+    g_assert_cmpfloat(cx, ==, 200.0f);
+    g_assert_cmpfloat(cy, ==, 1280.0f - 150.0f);
+
+    /* somebody in the middle stays in the middle */
+    cx = 700.0f;
+    cy = 640.0f;
+    clawt_office_view_clamp_centre(800.0f, 600.0f, 1408.0f, 1280.0f, 2.0f, &cx, &cy);
+    g_assert_cmpfloat(cx, ==, 700.0f);
+    g_assert_cmpfloat(cy, ==, 640.0f);
+
+    /* each axis alone: wider than the view across, shorter than it down */
+    cx = 0.0f;
+    cy = 0.0f;
+    clawt_office_view_clamp_centre(800.0f, 2000.0f, 1408.0f, 640.0f, 1.0f, &cx, &cy);
+    g_assert_cmpfloat(cx, ==, 400.0f);
+    g_assert_cmpfloat(cy, ==, 320.0f);
+}
+
+/* ── Labels ───────────────────────────────────────────────────────── */
+
+static ClawtOfficeLabel
+label_at(gfloat x, gfloat y, gfloat w, gfloat h, gboolean pinned)
+{
+    ClawtOfficeLabel l;
+
+    memset(&l, 0, sizeof(l));
+    l.x = x;
+    l.y = y;
+    l.width = w;
+    l.height = h;
+    l.pinned = pinned;
+    /* garbage the arrangement must overwrite */
+    l.dy = 99.0f;
+    l.shown = TRUE;
+    return l;
+}
+
+static gboolean
+overlap(const ClawtOfficeLabel *a, const ClawtOfficeLabel *b)
+{
+    return a->x < b->x + b->width && b->x < a->x + a->width &&
+           a->y + a->dy < b->y + b->dy + b->height && b->y + b->dy < a->y + a->dy + a->height;
+}
+
+/* Labels apart from each other stay exactly where they were. */
+static void
+test_labels_apart_stay(void)
+{
+    ClawtOfficeLabel labels[2];
+
+    labels[0] = label_at(0.0f, 100.0f, 60.0f, 14.0f, FALSE);
+    labels[1] = label_at(200.0f, 100.0f, 60.0f, 14.0f, FALSE);
+    g_assert_cmpuint(clawt_office_labels_arrange(labels, 2, 2.0f, 2, 1000.0f), ==, 2);
+    g_assert_true(labels[0].shown && labels[1].shown);
+    g_assert_cmpfloat(labels[0].dy, ==, 0.0f);
+    g_assert_cmpfloat(labels[1].dy, ==, 0.0f);
+}
+
+/*
+ * Three people at adjacent desks, their plates on top of each other --
+ * "aye-a elephant neyguide": the first keeps its place and the others
+ * stack just below it, a pixel off each other's anchors or not, none
+ * covering another.
+ */
+static void
+test_labels_crowded_stack(void)
+{
+    ClawtOfficeLabel labels[3];
+    guint i;
+    guint j;
+
+    labels[0] = label_at(100.0f, 100.0f, 60.0f, 14.0f, FALSE);
+    labels[1] = label_at(120.0f, 101.0f, 60.0f, 14.0f, FALSE);
+    labels[2] = label_at(140.0f, 99.0f, 60.0f, 14.0f, FALSE);
+    g_assert_cmpuint(clawt_office_labels_arrange(labels, 3, 2.0f, 2, 1000.0f), ==, 3);
+    g_assert_cmpfloat(labels[0].dy, ==, 0.0f);
+    g_assert_cmpfloat(labels[1].dy, ==, 15.0f);   /* 100 + 14 + 2 - 101 */
+    g_assert_cmpfloat(labels[2].dy, ==, 33.0f);   /* below both: 116 + 14 + 2 - 99 */
+    for (i = 0; i < 3; i++)
+        for (j = i + 1; j < 3; j++)
+            g_assert_false(overlap(&labels[i], &labels[j]));
+}
+
+/*
+ * Too many for the rows allowed: the first ones win, the rest wait for a
+ * hover.  Nothing shown covers anything else shown.
+ */
+static void
+test_labels_too_many_hide(void)
+{
+    ClawtOfficeLabel labels[5];
+    guint i;
+    guint j;
+
+    for (i = 0; i < 5; i++)
+        labels[i] = label_at(100.0f + (gfloat)i, 100.0f, 60.0f, 14.0f, FALSE);
+    g_assert_cmpuint(clawt_office_labels_arrange(labels, 5, 2.0f, 2, 1000.0f), ==, 3);
+    g_assert_true(labels[0].shown && labels[1].shown && labels[2].shown);
+    g_assert_false(labels[3].shown);
+    g_assert_false(labels[4].shown);
+    for (i = 0; i < 5; i++)
+        for (j = i + 1; j < 5; j++)
+            if (labels[i].shown && labels[j].shown)
+                g_assert_false(overlap(&labels[i], &labels[j]));
+}
+
+/*
+ * The hovered (pinned) label is placed first, where it is, even when it
+ * comes last; whoever was in its way moves.
+ */
+static void
+test_labels_pinned_wins(void)
+{
+    ClawtOfficeLabel labels[2];
+
+    labels[0] = label_at(100.0f, 100.0f, 60.0f, 14.0f, FALSE);
+    labels[1] = label_at(110.0f, 100.0f, 60.0f, 14.0f, TRUE);
+    g_assert_cmpuint(clawt_office_labels_arrange(labels, 2, 2.0f, 2, 1000.0f), ==, 2);
+    g_assert_cmpfloat(labels[1].dy, ==, 0.0f);
+    g_assert_cmpfloat(labels[0].dy, ==, 16.0f);
+
+    /* pinned is shown even with no room for it at all */
+    labels[0] = label_at(100.0f, 100.0f, 60.0f, 14.0f, TRUE);
+    labels[1] = label_at(100.0f, 100.0f, 60.0f, 14.0f, TRUE);
+    g_assert_cmpuint(clawt_office_labels_arrange(labels, 2, 2.0f, 0, 1000.0f), ==, 2);
+}
+
+/* A label is not pushed off the bottom of the view: it waits for a hover. */
+static void
+test_labels_bottom_edge(void)
+{
+    ClawtOfficeLabel labels[2];
+
+    labels[0] = label_at(100.0f, 580.0f, 60.0f, 14.0f, FALSE);
+    labels[1] = label_at(110.0f, 580.0f, 60.0f, 14.0f, FALSE);
+    g_assert_cmpuint(clawt_office_labels_arrange(labels, 2, 2.0f, 2, 600.0f), ==, 1);
+    g_assert_true(labels[0].shown);
+    g_assert_false(labels[1].shown);
+
+    /* nothing to arrange is not an error */
+    g_assert_cmpuint(clawt_office_labels_arrange(NULL, 0, 2.0f, 2, 600.0f), ==, 0);
+}
+
+/* ── Names and the control line ───────────────────────────────────── */
+
+static void
+test_nicks(void)
+{
+    ClawtOfficeViewMode mode = CLAWT_OFFICE_VIEW_2D;
+    ClawtOfficeZoom zoom = CLAWT_OFFICE_ZOOM_FIT;
+
+    g_assert_cmpstr(clawt_office_view_mode_nick(CLAWT_OFFICE_VIEW_2D), ==, "2d");
+    g_assert_cmpstr(clawt_office_view_mode_nick(CLAWT_OFFICE_VIEW_3D), ==, "3d");
+    g_assert_true(clawt_office_view_mode_from_nick("3D", &mode));
+    g_assert_cmpint(mode, ==, CLAWT_OFFICE_VIEW_3D);
+    g_assert_false(clawt_office_view_mode_from_nick("4d", &mode));
+    g_assert_false(clawt_office_view_mode_from_nick(NULL, &mode));
+    g_assert_cmpint(mode, ==, CLAWT_OFFICE_VIEW_3D);
+
+    g_assert_cmpstr(clawt_office_zoom_nick(CLAWT_OFFICE_ZOOM_FIT), ==, "fit");
+    g_assert_cmpstr(clawt_office_zoom_nick(CLAWT_OFFICE_ZOOM_1X), ==, "1x");
+    g_assert_cmpstr(clawt_office_zoom_nick(CLAWT_OFFICE_ZOOM_2X), ==, "2x");
+    g_assert_true(clawt_office_zoom_from_nick("2X", &zoom));
+    g_assert_cmpint(zoom, ==, CLAWT_OFFICE_ZOOM_2X);
+    g_assert_false(clawt_office_zoom_from_nick("3x", &zoom));
+    g_assert_cmpint(zoom, ==, CLAWT_OFFICE_ZOOM_2X);
+}
+
+/* What the host writes is exactly what the renderer reads back. */
+static void
+test_control_round_trip(void)
+{
+    g_autofree gchar *line = clawt_office_view_control_line(CLAWT_OFFICE_VIEW_3D, "chief",
+                                                            CLAWT_OFFICE_ZOOM_2X, 2);
+    g_autofree gchar *nobody = clawt_office_view_control_line(CLAWT_OFFICE_VIEW_2D, NULL,
+                                                              CLAWT_OFFICE_ZOOM_FIT, 9);
+    g_autofree gchar *bare = NULL;
+    ClawtOfficeViewControl control;
+    g_autoptr(GError) error = NULL;
+
+    g_assert_cmpstr(line, ==,
+                    "{\"mode\":\"3d\",\"focus\":\"chief\",\"zoom\":\"2x\",\"ui_scale\":2}\n");
+    bare = g_strndup(line, strlen(line) - 1);
+    g_assert_true(clawt_office_view_control_parse(bare, &control, &error));
+    g_assert_no_error(error);
+    g_assert_true(control.has_mode);
+    g_assert_cmpint(control.mode, ==, CLAWT_OFFICE_VIEW_3D);
+    g_assert_true(control.has_focus);
+    g_assert_cmpstr(control.focus, ==, "chief");
+    g_assert_true(control.has_zoom);
+    g_assert_cmpint(control.zoom, ==, CLAWT_OFFICE_ZOOM_2X);
+    g_assert_cmpint(control.ui_scale, ==, 2);
+    clawt_office_view_control_clear(&control);
+    g_assert_null(control.focus);
+
+    /* nobody is "", and a scale past the limit is the limit */
+    g_assert_nonnull(strstr(nobody, "\"focus\":\"\""));
+    g_assert_nonnull(strstr(nobody, "\"ui_scale\":4"));
+    g_assert_true(clawt_office_view_control_parse(nobody, &control, &error));
+    g_assert_true(control.has_focus);
+    g_assert_null(control.focus);
+    clawt_office_view_control_clear(&control);
+}
+
+/* Each member is optional; unknown members are ignored, for newer hosts. */
+static void
+test_control_partial(void)
+{
+    ClawtOfficeViewControl control;
+    g_autoptr(GError) error = NULL;
+
+    g_assert_true(clawt_office_view_control_parse("{\"zoom\":\"1x\",\"later\":[1,2]}",
+                                                  &control, &error));
+    g_assert_no_error(error);
+    g_assert_false(control.has_mode);
+    g_assert_false(control.has_focus);
+    g_assert_true(control.has_zoom);
+    g_assert_cmpint(control.zoom, ==, CLAWT_OFFICE_ZOOM_1X);
+    g_assert_cmpint(control.ui_scale, ==, 0);
+    clawt_office_view_control_clear(&control);
+
+    g_assert_true(clawt_office_view_control_parse("{\"focus\":null}", &control, &error));
+    g_assert_true(control.has_focus);
+    g_assert_null(control.focus);
+    clawt_office_view_control_clear(&control);
+}
+
+/* A line two versions disagree on is refused whole, naming what is wrong. */
+static void
+test_control_refused(void)
+{
+    static const gchar *const bad[] = {
+        "not json",
+        "[1,2]",
+        "{\"mode\":\"4d\"}",
+        "{\"mode\":3}",
+        "{\"zoom\":\"3x\"}",
+        "{\"ui_scale\":\"two\"}",
+        "{\"ui_scale\":1.5}",
+        "{\"focus\":7}",
+        "{\"focus\":\"chief\",\"mode\":\"sideways\"}",
+    };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(bad); i++) {
+        ClawtOfficeViewControl control;
+        g_autoptr(GError) error = NULL;
+
+        g_assert_false(clawt_office_view_control_parse(bad[i], &control, &error));
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+        /* refused whole: nothing was kept, so nothing leaks */
+        g_assert_null(control.focus);
+        g_assert_false(control.has_focus);
+    }
+}
+
+/* ── A control line to a renderer that is gone ─────────────────────── */
+
+typedef struct {
+    GMainLoop *loop;
+    GError    *error;
+    gboolean   ok;
+} Written;
+
+static void
+on_written(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    Written *written = user_data;
+
+    written->ok = g_output_stream_write_all_finish(G_OUTPUT_STREAM(source), result, NULL,
+                                                   &written->error);
+    g_main_loop_quit(written->loop);
+}
+
+/*
+ * What clawtilla-gtk's send_control() does, minus the widgets: a child
+ * spawned with its stdin a pipe, which has already exited, and a control
+ * line written to it asynchronously.  The write meets a pipe with no
+ * reader.  Returns how the write ended.
+ */
+static gboolean
+write_to_a_dead_child(GError **error)
+{
+    g_autoptr(GSubprocess) child = NULL;
+    g_autoptr(GMainLoop) loop = g_main_loop_new(NULL, FALSE);
+    g_autofree gchar *line = clawt_office_view_control_line(CLAWT_OFFICE_VIEW_3D, "chief",
+                                                            CLAWT_OFFICE_ZOOM_FIT, 1);
+    g_autoptr(GError) spawn_error = NULL;
+    Written written = { NULL, NULL, FALSE };
+
+    child = g_subprocess_new(G_SUBPROCESS_FLAGS_STDIN_PIPE, &spawn_error, "true", NULL);
+    g_assert_no_error(spawn_error);
+    /* gone, and with it the only read end of the pipe */
+    g_assert_true(g_subprocess_wait(child, NULL, &spawn_error));
+    g_assert_no_error(spawn_error);
+
+    written.loop = loop;
+    g_output_stream_write_all_async(g_subprocess_get_stdin_pipe(child), line, strlen(line),
+                                    G_PRIORITY_DEFAULT, NULL, on_written, &written);
+    g_main_loop_run(loop);
+    if (written.error != NULL)
+        g_propagate_error(error, written.error);
+    return written.ok;
+}
+
+/*
+ * With SIGPIPE ignored, as clawtilla-gtk's main() now does before
+ * anything runs, the write fails with G_IO_ERROR_BROKEN_PIPE -- which the
+ * Office page treats as the child on its way out -- and this process is
+ * still here to say so.
+ *
+ * There is no companion test showing the default disposition killing
+ * the writer through this path: creating a GSubprocess sets SIGPIPE to
+ * ignored itself (GLib's class initialisation, seen on 2.88), so the
+ * default cannot be had once the child exists.  main()'s line is there
+ * so that is not what the window's survival rests on.
+ */
+static void
+test_control_to_dead_child_is_an_error(void)
+{
+    g_autoptr(GError) error = NULL;
+    void (*was)(gint) = signal(SIGPIPE, SIG_IGN);
+
+    g_assert_false(write_to_a_dead_child(&error));
+    g_assert_error(error, G_IO_ERROR, G_IO_ERROR_BROKEN_PIPE);
+    signal(SIGPIPE, was);
+}
+
+gint
+main(gint argc, gchar *argv[])
+{
+    g_test_init(&argc, &argv, NULL);
+
+    g_test_add_func("/office-view/height-for-page", test_height_for_page);
+    g_test_add_func("/office-view/device-size/scales", test_device_size_scales);
+    g_test_add_func("/office-view/device-size/clamps", test_device_size_clamps);
+    g_test_add_func("/office-view/ui-scale", test_ui_scale_clamped);
+    g_test_add_func("/office-view/zoom/fit-whole", test_fit_zoom_is_whole_when_it_can_be);
+    g_test_add_func("/office-view/zoom/fixed", test_fixed_zoom_follows_ui_scale);
+    g_test_add_func("/office-view/zoom/clamp-centre", test_clamp_centre);
+    g_test_add_func("/office-view/labels/apart", test_labels_apart_stay);
+    g_test_add_func("/office-view/labels/crowded", test_labels_crowded_stack);
+    g_test_add_func("/office-view/labels/too-many", test_labels_too_many_hide);
+    g_test_add_func("/office-view/labels/pinned", test_labels_pinned_wins);
+    g_test_add_func("/office-view/labels/bottom", test_labels_bottom_edge);
+    g_test_add_func("/office-view/nicks", test_nicks);
+    g_test_add_func("/office-view/control/round-trip", test_control_round_trip);
+    g_test_add_func("/office-view/control/partial", test_control_partial);
+    g_test_add_func("/office-view/control/refused", test_control_refused);
+    g_test_add_func("/office-view/control/dead-child-broken-pipe",
+                    test_control_to_dead_child_is_an_error);
+
+    return g_test_run();
+}

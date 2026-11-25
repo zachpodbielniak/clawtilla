@@ -164,6 +164,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/office/clawt-office-director.h \
 	$(SRCDIR)/office/clawt-office-pack.h \
 	$(SRCDIR)/office/clawt-office-frames.h \
+	$(SRCDIR)/office/clawt-office-view.h \
 	$(SRCDIR)/agent/clawt-agent-confine.h \
 	$(SRCDIR)/computer/clawt-exec-result.h \
 	$(SRCDIR)/computer/clawt-sandbox.h \
@@ -431,6 +432,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/office/clawt-office-director.c \
 	$(SRCDIR)/office/clawt-office-pack.c \
 	$(SRCDIR)/office/clawt-office-frames.c \
+	$(SRCDIR)/office/clawt-office-view.c \
 	$(SRCDIR)/agent/clawt-agent-confine.c \
 	$(SRCDIR)/computer/clawt-exec-result.c \
 	$(SRCDIR)/computer/clawt-sandbox.c \

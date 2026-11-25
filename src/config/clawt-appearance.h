@@ -33,6 +33,7 @@
 #include <glib-object.h>
 
 #include "clawt-types.h"
+#include "office/clawt-office-view.h"
 
 G_BEGIN_DECLS
 
@@ -763,6 +764,51 @@ gboolean clawt_appearance_get_sidebar_collapsed(ClawtAppearance *self);
  */
 void     clawt_appearance_set_sidebar_collapsed(ClawtAppearance *self,
                                                 gboolean         collapsed);
+
+/**
+ * clawt_appearance_get_office_mode:
+ * @self: a #ClawtAppearance
+ *
+ * How clawtilla-gtk's Office page draws the office, as `office_view` in
+ * `appearance.yaml` (`2d` or `3d`).  2D by default.  The page saves it
+ * when the 2D / 3D switch is used; a world with no 3D level is drawn in
+ * 2D whatever this says, and the saved choice is kept for the next world
+ * that has one.
+ *
+ * Returns: the mode
+ */
+ClawtOfficeViewMode clawt_appearance_get_office_mode(ClawtAppearance *self);
+
+/**
+ * clawt_appearance_set_office_mode:
+ * @self: a #ClawtAppearance
+ * @mode: 2D or 3D
+ *
+ * See clawt_appearance_get_office_mode().
+ */
+void clawt_appearance_set_office_mode(ClawtAppearance     *self,
+                                      ClawtOfficeViewMode  mode);
+
+/**
+ * clawt_appearance_get_office_zoom:
+ * @self: a #ClawtAppearance
+ *
+ * How far the Office page's map is zoomed, as `office_zoom` in
+ * `appearance.yaml` (`fit`, `1x` or `2x`).  Fit by default.
+ *
+ * Returns: the zoom
+ */
+ClawtOfficeZoom clawt_appearance_get_office_zoom(ClawtAppearance *self);
+
+/**
+ * clawt_appearance_set_office_zoom:
+ * @self: a #ClawtAppearance
+ * @zoom: the zoom
+ *
+ * See clawt_appearance_get_office_zoom().
+ */
+void clawt_appearance_set_office_zoom(ClawtAppearance *self,
+                                      ClawtOfficeZoom  zoom);
 
 /**
  * clawt_appearance_get_animate_faces:

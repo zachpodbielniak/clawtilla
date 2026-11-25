@@ -229,6 +229,44 @@ otherwise.  ~clawtilla-lrg --self-test~ does not either.  An ad-hoc
 ~--host~ connection is not remembered, since it has no saved profile to
 look up.
 
+**** Which daemon ~clawtilla-office~ opens on
+:PROPERTIES:
+:CUSTOM_ID: office-follows-the-clients
+:END:
+
+~clawtilla-office~ is a viewer: run bare (=clawtilla office open=, or from a launcher), it should draw the fleet that is on screen beside it, not whatever the local socket has.  So it adds one level to the order above, in =clawt_connection_choose_following()=:
+
+1. ~--host~, ~--profile~, ~--socket~, exactly as above
+2. the daemon a *running* ~clawtilla-gtk~ or ~clawtilla-lrg~ is on right now
+3. the daemon the clients were last switched to (~last-connection~)
+4. the local daemon
+
+It says which, and why, on stderr, every time -- for example:
+
+#+begin_example
+clawtilla-office: Opening on workstation (100.72.0.41:8792), the daemon clawtilla-gtk (pid 48211) is on.
+clawtilla-office: Opening on workstation (100.72.0.41:8792), the daemon the clients were last on.
+clawtilla-office: Opening on the local daemon (this machine): no client is running, and none was last on another.
+#+end_example
+
+*How it knows what a running client is on.*  Each GTK and lrg process keeps a small file, ~$XDG_RUNTIME_DIR/clawtilla/clients/current-connection-PID~ (0600, in a directory made 0700), up to date with =clawt_connection_current_save()=: written when it starts and on every switch, and -- in GTK, where one process can have several windows on several daemons -- whenever a window is brought to the front or one of several closes.  A clean exit removes it.  =clawt_connection_current_load()= reads the newest file whose process is still alive; a file left by a client that crashed names a dead pid, and is ignored and removed.  ~clawtilla-lrg --self-test~ writes nothing.
+
+A D-Bus property on the GTK application was the alternative, and was not used: the lrg client has no =GApplication= and no bus name, a viewer would have had to ask two different things two different ways, and a file needs no session bus.
+
+*No token is in that file.*  It holds the program's name, when it was written, the connection's name, and either its socket or its host, port, TLS settings and -- when the client read its token from a file -- the *path* of that file.  The office finds the token again, in order:
+
+1. in the profile the file names, if that profile still points at the same host and port (read afresh, so a rotated token is used);
+2. in the token file the file names;
+3. in any saved profile for the same host and port.
+
+A client started with ~--host~ and ~--token~ on a daemon that is not saved has nowhere to find it, so the office does not follow it: it says so (save the daemon with ~clawtilla remote add~, or start the client with a token file) and goes on to level 3.
+
+*Tokens on the command line.*  ~clawtilla-office --token~ still works, for scripts, but prints a deprecation warning: argv is readable by every user on the machine through ~/proc/PID/cmdline~ and lands in shell history.  Use ~--token-file FILE~ with ~--host~ (read, trimmed of whitespace, and wiped from memory after it is copied into the connection; an empty file is an error), or a saved ~--profile~.  ~--token-file~ without ~--host~ is an error, since a profile keeps its own token and a socket needs none.
+
+The office the GTK window embeds is not affected: the window starts it with its own ~--socket~ or ~--profile~ (see [[file:office.org::#gtk-embed][office.org]]), which beats every other level.
+
+*Open office* is not affected either.  The GTK and lrg clients' *Open office* (a button on the Office page, and an item in the main menu with *2D* and *3D*) starts ~clawtilla-office~ as a window of its own on the client's own connection, named outright: ~--socket~ for a local daemon (the default socket spelled out), ~--profile~ for a saved one, and for one typed with ~--host~, ~--host~ and ~--daemon-port~ with its token through a pipe, ~--token-file /dev/fd/3~ -- never ~--token~.  It is not waited for, a failure is a toast, and which daemon it was handed is logged and toasted, without the token.  The web client does not offer it: it is a server, and a window it started would open on the server's display.  See [[file:office.org::#open-office][office.org]].
+
 ~daemon token~ reads the token from disk rather than asking the daemon
 for it, because nothing may write a secret's value into an IPC response.
 That also means it only works on the machine the daemon runs on, which is

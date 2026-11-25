@@ -22,11 +22,13 @@ All clients are thin: none holds state, a transport or a credential of its own; 
 | `clawtilla-gtk` | `-s/--socket`, `-p/--profile`, `-H/--host`, `--port`, `--token`, `-o/--open ROOM` (goes to the running window), `--office`, `-V`, `--license` |
 | `clawtilla-lrg` | as gtk, plus `--self-test PAGE[:TARGET]` (lay out one page headless, print JSON); `--open` always opens a new window |
 | `clawtilla-web` | `-p/--port` (8790), `-b/--bind ADDR` (repeatable, replaces defaults, must bind), `--no-tailscale`, `--office` (send `/` to the Office page), `-s/--socket`, `--profile`, `-H/--host`, `--daemon-port` (8792), `--token`, `-V`, `--license` |
-| `clawtilla-office` | `-s`, `-p`, `-H`, `--daemon-port`, `--token`, `-w/--world ID`, `--2d`, `--3d`, `--simulate`, `--screenshot FILE` (+ `--frames N`, default 90), `--embed FD`, `--width` (1280), `--height` (720), `-f/--focus ID`, `--adapter-dir DIR` |
+| `clawtilla-office` | `-s`, `-p`, `-H`, `--daemon-port`, `--token-file FILE`, `--token` (deprecated), `-w/--world ID`, `--2d`, `--3d`, `--simulate`, `--screenshot FILE` (+ `--frames N`, default 90), `--embed FD`, `--width` (1280), `--height` (720), `-f/--focus ID`, `--adapter-dir DIR` |
 
 `--open` accepts an agent id (its chat), a group room, a direct room `dm:<a>:<b>`, or `clawtilla:<room>` (what an org-mode link hands over). An unknown name is reported in the window, not opened.
 
 GTK and lrg pick the daemon in this order: `--host`, `--profile`, `--socket`, the connection last switched to in Settings (remembered in `$XDG_STATE_HOME/clawtilla/last-connection`), then the local socket.
+
+`clawtilla-office` run bare follows the clients instead: `--host`/`--profile`/`--socket` if given; else the daemon a running GTK or lrg client is on now; else the last-switched connection; else the local socket. It prints which and why on stderr. Running GTK/lrg processes publish their connection in `$XDG_RUNTIME_DIR/clawtilla/clients/current-connection-PID` (0600; removed on clean exit; a dead pid's file is ignored; newest wins). The file never holds a token: a remote daemon's token comes from the matching saved profile or the token file the client named, so a client started with `--host --token` on an unsaved daemon is not followed. `--token` on `clawtilla-office` warns (argv is world-readable); use `--token-file FILE` with `--host`, or `--profile`.
 
 ### `clawtilla-web` specifics
 
@@ -38,7 +40,7 @@ GTK and lrg pick the daemon in this order: `--host`, `--profile`, `--socket`, th
 
 ### `clawtilla-office`
 
-Needs `office.enabled: true` (`clawtilla office on`). `clawtilla office open` starts it; GTK embeds it (`--embed`); web draws its own office at `/office`. Window keys: Tab switches 2D/3D, arrows or right-drag turn the camera, wheel zooms, Escape quits. See [office.md](office.md).
+Needs `office.enabled: true` (`clawtilla office on`). `clawtilla office open` starts it; GTK embeds it (`--embed`); web draws its own office at `/office`. GTK and lrg also have **Open office** (Office page button beside 2D / 3D, and main menu -> Open office -> 2D / 3D): a separate window on the client's own connection -- `--socket`, `--profile`, or for a typed `--host` `--host`/`--daemon-port` with the token via a pipe as `--token-file /dev/fd/3`, never `--token`; not waited for; logged and toasted with the daemon (never the token). Not in the web client (a server would open it on its own display). Window keys: Tab switches 2D/3D, arrows or right-drag turn the camera, wheel zooms, Escape quits. See [office.md](office.md).
 
 ## Pages and sections (gtk, web, lrg)
 

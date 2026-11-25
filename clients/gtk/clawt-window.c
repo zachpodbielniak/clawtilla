@@ -4997,6 +4997,45 @@ forget_daemon_state(ClawtWindow *self)
     clawt_gtk_set_activity(self, NULL);
 }
 
+/*
+ * Tells the other clients on this machine which daemon this window is on
+ * (clawt_connection_current_save()), so a bare `clawtilla-office` draws
+ * the fleet on screen here rather than whatever the local socket has.
+ *
+ * One file per process, and a process may have several windows on
+ * several daemons, so it is rewritten whenever a window is created,
+ * switched or brought to the front: the file says what the window last
+ * looked at is on.  Nothing is written for a window with no connection,
+ * since that is how a window being torn down looks, and an empty save
+ * is the process leaving -- main() does that once g_application_run()
+ * returns.  A failure is a line on stderr: this is a courtesy to other
+ * programs, not something this window needs.
+ */
+static void
+publish_connection(ClawtWindow *self)
+{
+    g_autoptr(GError) error = NULL;
+
+    if (self->active_connection == NULL)
+        return;
+
+    if (!clawt_connection_current_save(NULL, self->active_connection,
+                                       &error))
+        g_warning("could not publish the connection: %s", error->message);
+}
+
+static void
+on_window_active_changed(GObject    *object,
+                         GParamSpec *pspec,
+                         gpointer    user_data)
+{
+    (void)pspec;
+    (void)user_data;
+
+    if (gtk_window_is_active(GTK_WINDOW(object)))
+        publish_connection(CLAWT_WINDOW(object));
+}
+
 static void
 switch_connection(ClawtWindow *self, ClawtConnection *connection)
 {
@@ -5077,6 +5116,7 @@ switch_connection(ClawtWindow *self, ClawtConnection *connection)
         clawt_connection_free(self->active_connection);
 
     self->active_connection = clawt_connection_copy(connection);
+    publish_connection(self);
 
     forget_daemon_state(self);
     update_connection_label(self);
@@ -6978,6 +7018,25 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
             g_action_map_add_action(G_ACTION_MAP(self), G_ACTION(resume));
         }
 
+        /*
+         * Open office: clawtilla-office in a window of its own, on this
+         * window's connection (gtk-office-view.c).  Reachable from any
+         * page, unlike the button on the Office page, so the mode is
+         * chosen here rather than taken from that page's switch.
+         */
+        {
+            g_autoptr(GSimpleAction) open_office =
+                g_simple_action_new("open-office", G_VARIANT_TYPE_STRING);
+            g_autoptr(GMenu) office_menu = g_menu_new();
+
+            g_signal_connect(open_office, "activate",
+                             G_CALLBACK(clawt_gtk_on_open_office), self);
+            g_action_map_add_action(G_ACTION_MAP(self), G_ACTION(open_office));
+            g_menu_append(office_menu, "2D", "win.open-office::2d");
+            g_menu_append(office_menu, "3D", "win.open-office::3d");
+            g_menu_append_submenu(menu, "Open office", G_MENU_MODEL(office_menu));
+        }
+
         g_menu_append(menu, "Hold the fleet", "win.pause-fleet");
         g_menu_append(menu, "Resume the fleet", "win.resume-fleet");
         g_menu_append(menu, "Settings\342\200\246", "win.settings");
@@ -7499,6 +7558,11 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     reload_connections(self);
     update_connection_label(self);
 
+    /* the newest window is the one somebody is looking at */
+    publish_connection(self);
+    g_signal_connect(self, "notify::is-active",
+                     G_CALLBACK(on_window_active_changed), NULL);
+
     clawt_gtk_refresh_agents(self);
     clawt_gtk_refresh_routines(self);
 
@@ -7509,6 +7573,26 @@ static void
 clawt_window_dispose(GObject *object)
 {
     ClawtWindow *self = CLAWT_WINDOW(object);
+    GtkApplication *app = gtk_window_get_application(GTK_WINDOW(self));
+
+    /*
+     * Closing one of several windows: the process is still on whatever
+     * the others are on, and the file may be describing this one.  The
+     * most recently focused of the rest (GTK keeps that order) speaks
+     * for the process now.  The last window leaves it to main(), which
+     * removes the file when the application exits.
+     */
+    if (app != NULL && self->active_connection != NULL) {
+        GList *windows;
+
+        for (windows = gtk_application_get_windows(app); windows != NULL;
+             windows = windows->next) {
+            if (windows->data != self && CLAWT_IS_WINDOW(windows->data)) {
+                publish_connection(CLAWT_WINDOW(windows->data));
+                break;
+            }
+        }
+    }
 
     /* the office's child dies with the window, not when GTK gets round to it */
     clawt_gtk_office_view_dispose(self);

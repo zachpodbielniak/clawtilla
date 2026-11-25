@@ -498,6 +498,20 @@ clawt_lrg_app_switch_connection(ClawtLrgApp *app, ClawtConnection *connection)
     g_clear_pointer(&app->room_id, g_free);
     app->generation++;
 
+    /*
+     * Told to the other clients now it is pointed there, connected or
+     * not yet: a bare `clawtilla-office` should draw what this window is
+     * trying to show, not what it showed a switch ago.  A failure to
+     * write is a line on stderr; the switch itself is unaffected.
+     */
+    if (app->publish_connection) {
+        g_autoptr(GError) publish_error = NULL;
+
+        if (!clawt_connection_current_save(NULL, connection, &publish_error))
+            g_warning("could not publish the connection: %s",
+                      publish_error->message);
+    }
+
     connect_signals(app);
     start_connecting(app);
     clawt_lrg_window_connection_changed(app);

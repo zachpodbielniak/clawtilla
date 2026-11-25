@@ -439,6 +439,46 @@ ClawtClient *clawt_connection_create_client(ClawtConnection *self);
 void clawt_connection_set_token(ClawtConnection *self, const gchar *token);
 
 /**
+ * clawt_connection_get_token_file:
+ * @self: a #ClawtConnection
+ *
+ * The file this connection's token was read from, when it was read from
+ * one by clawt_connection_load_token_file().
+ *
+ * Kept so that a client can tell another where its token is without
+ * telling it the token: the current-connection file
+ * (clawt_connection_current_save()) names this path and never the
+ * secret.  Not saved in `connections.yaml`, where a profile keeps its
+ * token itself.
+ *
+ * Returns: (transfer none) (nullable): the path, or %NULL
+ */
+const gchar *clawt_connection_get_token_file(ClawtConnection *self);
+
+/**
+ * clawt_connection_load_token_file:
+ * @self: a remote #ClawtConnection
+ * @path: a file holding the bearer token
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Reads the token from @path, trimmed of surrounding whitespace, sets it
+ * on @self and remembers @path (clawt_connection_get_token_file()).
+ *
+ * The `--token-file` of every client that takes one.  A token on the
+ * command line is readable by every user on the machine through
+ * `/proc/PID/cmdline` and lands in shell history; a file the person made
+ * 0600 is neither.  The buffer read is wiped before it is freed, so the
+ * connection's own copy -- itself wiped when the connection is freed --
+ * is the only one left.  An empty file is an error rather than an empty
+ * token: it is a mistake, and the daemon's refusal would not say whose.
+ *
+ * Returns: %TRUE if @self now holds the token
+ */
+gboolean clawt_connection_load_token_file(ClawtConnection  *self,
+                                          const gchar      *path,
+                                          GError          **error);
+
+/**
  * clawt_connection_pair:
  * @self: a remote #ClawtConnection, normally with no token yet
  * @code: the six digits `clawtilla device pair` printed; spaces and
@@ -645,6 +685,158 @@ ClawtConnection *clawt_connection_choose(const gchar  *host,
                                          gboolean     *from_last,
                                          gchar       **notice,
                                          GError      **error);
+
+/* ── The daemon a running client is on now ──────────────────────────── */
+
+/**
+ * clawt_connection_current_default_dir:
+ *
+ * Returns: (transfer full): `$XDG_RUNTIME_DIR/clawtilla/clients`
+ */
+gchar *clawt_connection_current_default_dir(void);
+
+/**
+ * clawt_connection_current_save:
+ * @dir: (nullable): the directory, or %NULL for the default
+ * @connection: (nullable): the connection this process is on now, or
+ *   %NULL when it is leaving
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Tells other clients on this machine which daemon this process is on,
+ * in `current-connection-PID` in @dir, written 0600 into a directory
+ * made 0700.  The graphical clients call it when they connect or switch,
+ * and with %NULL on a clean exit, which removes the file; a viewer that
+ * should follow them, like `clawtilla-office`, reads the newest with
+ * clawt_connection_current_load().
+ *
+ * One file per process rather than one shared file, so two clients on
+ * different daemons do not overwrite each other and a crashed one is
+ * recognisable afterwards by its pid.
+ *
+ * What is written identifies the daemon and nothing more: the program
+ * (g_get_prgname()), when, the connection's name, and either its socket
+ * or its host, port, TLS settings and the token *file* it was read from
+ * (clawt_connection_get_token_file()).  Never the token.  The reader
+ * finds that again in `connections.yaml` or in the named file, both of
+ * which the person controls; a copy here would outlive a rotation and be
+ * one more place for a bearer token to leak from.
+ *
+ * Returns: %TRUE if the file now says what it should
+ */
+gboolean clawt_connection_current_save(const gchar      *dir,
+                                       ClawtConnection  *connection,
+                                       GError          **error);
+
+/**
+ * clawt_connection_current_load:
+ * @dir: (nullable): the directory, or %NULL for the default
+ * @connections_path: (nullable): the connections file, or %NULL for the
+ *   default
+ * @pid: (out) (optional): the process the answer came from
+ * @client: (out) (optional) (transfer full) (nullable): its program name
+ * @notice: (out) (optional) (transfer full) (nullable): why a running
+ *   client's daemon could not be used, when it could not
+ *
+ * The daemon a running client is on right now: the most recently written
+ * file in @dir whose process is still alive.  A file whose process has
+ * gone -- a client that crashed or was killed -- is ignored, and removed.
+ *
+ * A local daemon is used as written.  A remote one needs its token, and
+ * it is looked for, in order: in the profile the file names, if that
+ * profile still points at the same host and port (read afresh, so a
+ * rotated token is honoured); in the token file the file names; in any
+ * profile for the same host and port.  When none has it -- a client
+ * started with `--host` and `--token` -- the answer is %NULL and @notice
+ * says so, rather than a connection that will be refused.
+ *
+ * Never an error: a viewer that cannot follow a running client opens as
+ * it would have without one.
+ *
+ * Returns: (transfer full) (nullable): the connection, or %NULL
+ */
+ClawtConnection *clawt_connection_current_load(const gchar  *dir,
+                                               const gchar  *connections_path,
+                                               gint         *pid,
+                                               gchar       **client,
+                                               gchar       **notice);
+
+/**
+ * ClawtConnectionSource:
+ * @CLAWT_CONNECTION_FROM_HOST: `--host`
+ * @CLAWT_CONNECTION_FROM_PROFILE: `--profile`
+ * @CLAWT_CONNECTION_FROM_SOCKET: `--socket`
+ * @CLAWT_CONNECTION_FROM_RUNNING_CLIENT: the daemon a running graphical
+ *   client is on (clawt_connection_current_load())
+ * @CLAWT_CONNECTION_FROM_LAST: the daemon the clients were last switched
+ *   to (clawt_connection_last_load())
+ * @CLAWT_CONNECTION_FROM_LOCAL: the local daemon, by default
+ *
+ * Why clawt_connection_choose_following() chose what it chose.
+ */
+typedef enum {
+    CLAWT_CONNECTION_FROM_HOST = 0,
+    CLAWT_CONNECTION_FROM_PROFILE,
+    CLAWT_CONNECTION_FROM_SOCKET,
+    CLAWT_CONNECTION_FROM_RUNNING_CLIENT,
+    CLAWT_CONNECTION_FROM_LAST,
+    CLAWT_CONNECTION_FROM_LOCAL
+} ClawtConnectionSource;
+
+/**
+ * clawt_connection_choose_following:
+ * @host: (nullable): `--host`
+ * @port: `--port`, or 0 for the default
+ * @token: (nullable): `--token`
+ * @token_file: (nullable): `--token-file`; only with @host
+ * @profile: (nullable): `--profile`
+ * @socket_path: (nullable): `--socket`
+ * @connections_path: (nullable): the connections file, or %NULL for the
+ *   default
+ * @last_path: (nullable): the remembered-connection file, or %NULL for
+ *   the default
+ * @current_dir: (nullable): the current-connection directory, or %NULL
+ *   for the default
+ * @source: (out) (optional): which of the levels decided
+ * @reason: (out) (optional) (transfer full) (nullable): one or two
+ *   sentences for stderr: why any level was passed over, then which
+ *   daemon was chosen and why; set whenever a connection is returned
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Which daemon a viewer opens on, for a program that shows what the
+ * graphical clients are showing rather than being switched itself --
+ * `clawtilla-office` run bare.  clawt_connection_choose() with one more
+ * level, in this order:
+ *
+ * 1. `--host`, `--profile`, `--socket`, exactly as there;
+ * 2. the daemon a running GTK or lrg client is on now
+ *    (clawt_connection_current_load());
+ * 3. the daemon the clients were last switched to;
+ * 4. the local daemon.
+ *
+ * Level 2 is what makes a bare `clawtilla-office` draw the fleet that is
+ * on screen beside it: a laptop whose GTK window is on the workstation
+ * would otherwise open its office on a local daemon that may not exist.
+ *
+ * @token and @token_file are both for @host and are mutually exclusive;
+ * @token_file with no @host is an error, since a profile keeps its own
+ * token and a socket needs none.
+ *
+ * Returns: (transfer full) (nullable): the connection, or %NULL with
+ *   @error set
+ */
+ClawtConnection *clawt_connection_choose_following(
+    const gchar            *host,
+    guint16                 port,
+    const gchar            *token,
+    const gchar            *token_file,
+    const gchar            *profile,
+    const gchar            *socket_path,
+    const gchar            *connections_path,
+    const gchar            *last_path,
+    const gchar            *current_dir,
+    ClawtConnectionSource  *source,
+    gchar                 **reason,
+    GError                **error);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtConnection, clawt_connection_free)
 

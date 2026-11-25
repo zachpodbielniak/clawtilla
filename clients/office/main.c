@@ -16,10 +16,17 @@
  *   - --embed FD: draw offscreen and stream the frames over the socket
  *     FD with libregnum's frame protocol, taking input back, for the GTK
  *     client, which never links libregnum.  A click on somebody is
- *     written to stdout as {"event":"open_agent","agent":"<id>"}.
+ *     written to stdout as {"event":"open_agent","agent":"<id>"}, and
+ *     what is drawn as {"event":"view","mode":"2d","has_3d":true}
+ *     whenever that changes.  Lines on stdin say how to draw:
+ *     {"mode":"3d","focus":"chief","zoom":"fit","ui_scale":2}
+ *     (clawt_office_view_control_line()), so switching needs no restart.
  *
  * It is an ordinary client of the daemon: --socket, --profile or --host,
- * as every other client takes them.
+ * as every other client takes them.  Run bare, it opens on the daemon a
+ * running GTK or lrg client is on, then the one the clients were last
+ * switched to, then the local one (clawt_connection_choose_following()),
+ * so the office drawn is the fleet on screen beside it.
  */
 
 #include "office-feed.h"
@@ -27,10 +34,13 @@
 
 #include <libregnum.h>
 #include <raylib.h>
+#include <gio/gunixinputstream.h>
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define CLAWT_OFFICE_BIN_NAME "clawtilla-office"
 #define FRAME_MS              (33)
@@ -41,6 +51,7 @@ static gchar    *opt_profile = NULL;
 static gchar    *opt_host = NULL;
 static gint      opt_port = 0;
 static gchar    *opt_token = NULL;
+static gchar    *opt_token_file = NULL;
 static gchar    *opt_world = NULL;
 static gboolean  opt_2d = FALSE;
 static gboolean  opt_3d = FALSE;
@@ -52,6 +63,8 @@ static gint      opt_width = 1280;
 static gint      opt_height = 720;
 static gchar   **opt_adapter_dirs = NULL;
 static gchar    *opt_focus = NULL;
+static gchar    *opt_zoom = NULL;
+static gint      opt_ui_scale = 1;
 static gboolean  opt_version = FALSE;
 static gboolean  opt_license = FALSE;
 
@@ -63,7 +76,11 @@ static GOptionEntry entries[] = {
     { "host", 'H', 0, G_OPTION_ARG_STRING, &opt_host,
       "A daemon at this address", "HOST" },
     { "daemon-port", 0, 0, G_OPTION_ARG_INT, &opt_port, "Port for --host", "PORT" },
-    { "token", 0, 0, G_OPTION_ARG_STRING, &opt_token, "Bearer token for --host", "TOKEN" },
+    { "token-file", 0, 0, G_OPTION_ARG_FILENAME, &opt_token_file,
+      "Read the bearer token for --host from this file", "FILE" },
+    { "token", 0, 0, G_OPTION_ARG_STRING, &opt_token,
+      "Bearer token for --host (deprecated: other users can read it; "
+      "use --token-file or --profile)", "TOKEN" },
     { "world", 'w', 0, G_OPTION_ARG_STRING, &opt_world,
       "Draw this world pack rather than the configured one", "ID" },
     { "2d", 0, 0, G_OPTION_ARG_NONE, &opt_2d, "Draw the map from above", NULL },
@@ -80,6 +97,10 @@ static GOptionEntry entries[] = {
     { "height", 0, 0, G_OPTION_ARG_INT, &opt_height, "Height in pixels (default 720)", "H" },
     { "focus", 'f', 0, G_OPTION_ARG_STRING, &opt_focus,
       "Follow this participant with the 3D camera, close up", "ID" },
+    { "zoom", 'z', 0, G_OPTION_ARG_STRING, &opt_zoom,
+      "Zoom the 2D map: fit (default), 1x or 2x", "ZOOM" },
+    { "ui-scale", 0, 0, G_OPTION_ARG_INT, &opt_ui_scale,
+      "Draw text this many times larger, for a HiDPI screen (1-4, default 1)", "N" },
     { "adapter-dir", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_adapter_dirs,
       "Look for world adapter modules here first; repeatable", "DIR" },
     { "version", 'V', 0, G_OPTION_ARG_NONE, &opt_version, "Print the version", NULL },
@@ -97,14 +118,28 @@ static const gchar description_text[] =
     "turn the 3D camera, the wheel zooms, a click on somebody prints them,\n"
     "Escape quits.\n"
     "\n"
+    "Embedded (--embed FD), a drag turns the 3D view or moves a zoomed 2D\n"
+    "map, and a line of JSON on stdin switches the view without a\n"
+    "restart: {\"mode\":\"3d\",\"focus\":\"chief\",\"zoom\":\"fit\",\"ui_scale\":2}.\n"
+    "Each member is optional.\n"
+    "\n"
+    "Which daemon: --host, --profile or --socket when given; otherwise\n"
+    "the one a running clawtilla-gtk or clawtilla-lrg is on, then the one\n"
+    "the clients were last switched to, then the local one.  It says which\n"
+    "on stderr.  A --host takes its token from --token-file; --token still\n"
+    "works but puts the token where other users can read it.\n"
+    "\n"
     "Examples:\n"
     "  clawtilla-office\n"
     "  clawtilla-office --3d --world cozy-town\n"
     "  clawtilla-office --profile workstation\n"
+    "  clawtilla-office --host 10.0.0.9 --token-file ~/.config/clawtilla/ws.token\n"
     "  clawtilla-office --simulate\n"
     "  clawtilla-office --screenshot office.png --width 1600 --height 900\n"
     "  clawtilla-office --adapter-dir ~/src/my-world/build\n"
-    "  clawtilla-office --3d --focus chief\n";
+    "  clawtilla-office --3d --focus chief\n"
+    "  clawtilla-office --zoom 2x --focus chief\n"
+    "  clawtilla-office --screenshot office@2x.png --width 3840 --height 2160 --ui-scale 2\n";
 
 static const gchar license_text[] =
     "clawtilla-office - the fleet drawn as people in a building\n"
@@ -137,7 +172,18 @@ typedef struct {
     gboolean          have_layout;
     GRand            *rng;
     gfloat            since_simulated;
+    ClawtOfficeViewMode want_mode;   /* asked for: --3d, or the last control line */
+    gint              reported_mode; /* the last "view" event: -1 before the first */
+    gint              reported_3d;
+    gboolean          press_down;    /* embed: a left press not yet released */
+    gboolean          dragged;       /* ...that moved far enough to be a drag */
+    gfloat            press_x;
+    gfloat            press_y;
+    gint              ui_scale;      /* --ui-scale, or the last control line's */
 } Office;
+
+/* how far a press may wander, in logical pixels, and still be a click */
+#define CLICK_SLOP (4.0f)
 
 static void
 on_world(const gchar *pack_dir, JsonObject *world, gpointer user_data)
@@ -217,8 +263,10 @@ load_pending(Office *office)
         office->loaded = TRUE;
         g_clear_pointer(&office->world, json_object_unref);
         office->world = json_object_ref(office->pending_world);
+        /* what was asked for, which a control line may have changed since --3d */
         clawt_office_scene_set_mode(office->scene,
-                                    opt_3d ? CLAWT_OFFICE_SCENE_3D : CLAWT_OFFICE_SCENE_2D);
+                                    office->want_mode == CLAWT_OFFICE_VIEW_3D
+                                    ? CLAWT_OFFICE_SCENE_3D : CLAWT_OFFICE_SCENE_2D);
         if (opt_simulate)
             clawt_office_scene_set_status(office->scene,
                                           "Simulation -- not what the fleet is doing");
@@ -294,6 +342,108 @@ announce_open(const gchar *id)
     line = json_generator_to_data(gen, NULL);
     fprintf(stdout, "%s\n", line);
     fflush(stdout);
+}
+
+/*
+ * {"event":"view","mode":"2d","has_3d":true}, when either changed: the
+ * host shows what is drawn, which a world without a level keeps at 2D
+ * whatever was asked.
+ */
+static void
+announce_view(Office *office)
+{
+    gint mode = clawt_office_scene_get_mode(office->scene) == CLAWT_OFFICE_SCENE_3D &&
+                clawt_office_scene_has_3d(office->scene) ? 1 : 0;
+    gint has_3d = clawt_office_scene_has_3d(office->scene) ? 1 : 0;
+
+    if (!office->loaded || (mode == office->reported_mode && has_3d == office->reported_3d))
+        return;
+    office->reported_mode = mode;
+    office->reported_3d = has_3d;
+    fprintf(stdout, "{\"event\":\"view\",\"mode\":\"%s\",\"has_3d\":%s}\n",
+            mode ? "3d" : "2d", has_3d ? "true" : "false");
+    fflush(stdout);
+}
+
+/* One control line from the host, applied whole or not at all. */
+static void
+apply_control(Office *office, const gchar *line)
+{
+    ClawtOfficeViewControl control;
+    g_autoptr(GError) error = NULL;
+
+    if (*line == '\0')
+        return;
+    if (!clawt_office_view_control_parse(line, &control, &error)) {
+        g_printerr("%s: %s\n", CLAWT_OFFICE_BIN_NAME, error->message);
+        return;
+    }
+    if (control.ui_scale > 0) {
+        office->ui_scale = control.ui_scale;
+        clawt_office_scene_set_ui_scale(office->scene, control.ui_scale);
+    }
+    if (control.has_zoom)
+        clawt_office_scene_set_zoom(office->scene, control.zoom);
+    if (control.has_focus)
+        clawt_office_scene_set_focus(office->scene, control.focus);
+    if (control.has_mode) {
+        office->want_mode = control.mode;
+        clawt_office_scene_set_mode(office->scene,
+                                    control.mode == CLAWT_OFFICE_VIEW_3D
+                                    ? CLAWT_OFFICE_SCENE_3D : CLAWT_OFFICE_SCENE_2D);
+    }
+    clawt_office_view_control_clear(&control);
+}
+
+typedef struct {
+    Office           *office;
+    GDataInputStream *in;
+} ControlReader;
+
+static void control_next(ControlReader *reader);
+
+static void
+on_control_line(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ControlReader *reader = user_data;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *line = g_data_input_stream_read_line_finish_utf8(
+        G_DATA_INPUT_STREAM(source), result, NULL, &error);
+
+    /* end of stdin (or a host that never writes): the view stays as it is */
+    if (line == NULL) {
+        if (error != NULL)
+            g_printerr("%s: stdin: %s\n", CLAWT_OFFICE_BIN_NAME, error->message);
+        g_object_unref(reader->in);
+        g_free(reader);
+        return;
+    }
+    apply_control(reader->office, line);
+    control_next(reader);
+}
+
+static void
+control_next(ControlReader *reader)
+{
+    g_data_input_stream_read_line_async(reader->in, G_PRIORITY_DEFAULT, NULL,
+                                        on_control_line, reader);
+}
+
+/*
+ * Control lines from the host on stdin, read on the context pump()
+ * drains, so a line is applied between frames.  Started before the
+ * client connects: a line written at spawn is waiting before the world
+ * is, and the world loads in the mode it asked for.
+ */
+static void
+read_control(Office *office)
+{
+    ControlReader *reader = g_new0(ControlReader, 1);
+    g_autoptr(GInputStream) raw = g_unix_input_stream_new(STDIN_FILENO, FALSE);
+
+    reader->office = office;
+    reader->in = g_data_input_stream_new(raw);
+    control_next(reader);
 }
 
 /* ── The three ways to run ──────────────────────────────────────── */
@@ -409,7 +559,24 @@ on_inject_button(LrgInputInject *in, guint button, gboolean pressed, gfloat x, g
     const gchar *under;
 
     (void)in;
-    if (button != 0 || !pressed)
+    if (button != 0)
+        return;
+    /*
+     * A click opens on release, and only if the pointer stayed put: a
+     * drag turns the view, and one that began on somebody used to open
+     * their chat and leave the Office page under the pointer.
+     */
+    if (pressed) {
+        office->press_down = TRUE;
+        office->dragged = FALSE;
+        office->press_x = x;
+        office->press_y = y;
+        return;
+    }
+    if (!office->press_down)
+        return;
+    office->press_down = FALSE;
+    if (office->dragged)
         return;
     under = clawt_office_scene_pointer(office->scene, x, y);
     if (under != NULL)
@@ -429,6 +596,8 @@ run_embed(Office *office)
     g_autoptr(GError) error = NULL;
     guint w = (guint)opt_width;
     guint h = (guint)opt_height;
+    gfloat last_x = 0.0f;
+    gfloat last_y = 0.0f;
 
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
     SetTraceLogLevel(LOG_WARNING);
@@ -456,6 +625,23 @@ run_embed(Office *office)
             lrg_frame_export_set_size(out, w, h);
         }
         lrg_input_inject_get_pointer(in, &x, &y);
+
+        /* a left drag: past the slop it is a drag, which turns 3D or moves 2D */
+        if (office->press_down && lrg_input_inject_is_button_down(in, 0)) {
+            gfloat slop = CLICK_SLOP * (gfloat)office->ui_scale;
+
+            if (!office->dragged &&
+                (fabsf(x - office->press_x) > slop || fabsf(y - office->press_y) > slop))
+                office->dragged = TRUE;
+            if (office->dragged && (x != last_x || y != last_y)) {
+                if (clawt_office_scene_get_mode(office->scene) == CLAWT_OFFICE_SCENE_3D)
+                    clawt_office_scene_orbit(office->scene, (x - last_x) * 0.01f, 0.0f);
+                else
+                    clawt_office_scene_pan(office->scene, x - last_x, y - last_y);
+            }
+        }
+        last_x = x;
+        last_y = y;
         lrg_input_inject_take_scroll(in, &sx, &sy);
         if (sy != 0.0f)
             clawt_office_scene_orbit(office->scene, 0.0f, sy);
@@ -466,6 +652,7 @@ run_embed(Office *office)
         pump(office->context, FRAME_MS);
         load_pending(office);
         simulate(office, FRAME_MS / 1000.0f);
+        announce_view(office);
         clawt_office_scene_update(office->scene, FRAME_MS / 1000.0f);
         if (lrg_frame_export_begin(out)) {
             clawt_office_scene_draw(office->scene, (gint)w, (gint)h);
@@ -512,10 +699,48 @@ main(int argc, char *argv[])
         g_printerr("%s: the size must be between 64 and 8192 pixels\n", CLAWT_OFFICE_BIN_NAME);
         return EXIT_FAILURE;
     }
+    if (opt_ui_scale < 1 || opt_ui_scale > CLAWT_OFFICE_VIEW_MAX_UI_SCALE) {
+        g_printerr("%s: --ui-scale must be between 1 and %d\n", CLAWT_OFFICE_BIN_NAME,
+                   CLAWT_OFFICE_VIEW_MAX_UI_SCALE);
+        return EXIT_FAILURE;
+    }
+    {
+        ClawtOfficeZoom zoom = CLAWT_OFFICE_ZOOM_FIT;
 
-    connection = clawt_connection_choose(opt_host, opt_port > 0 ? (guint16)opt_port : 0,
-                                         opt_token, opt_profile, opt_socket, NULL, NULL,
-                                         FALSE, NULL, &notice, &error);
+        if (opt_zoom != NULL && !clawt_office_zoom_from_nick(opt_zoom, &zoom)) {
+            g_printerr("%s: --zoom is fit, 1x or 2x, not \"%s\"\n", CLAWT_OFFICE_BIN_NAME,
+                       opt_zoom);
+            return EXIT_FAILURE;
+        }
+    }
+
+    /*
+     * Still accepted -- scripts use it -- but said: a token in argv is in
+     * /proc/PID/cmdline for every user on the machine, and in the shell's
+     * history for whoever reads that.
+     */
+    if (opt_token != NULL)
+        g_printerr("%s: --token is deprecated: other users can read it; "
+                   "use --token-file FILE or a saved --profile\n",
+                   CLAWT_OFFICE_BIN_NAME);
+
+    /*
+     * --host, --profile, --socket; else the daemon a running GTK or lrg
+     * client is on; else the one they were last switched to; else the
+     * local one -- and why, on stderr, every time: an office drawing a
+     * different fleet from the window beside it is otherwise a puzzle.
+     */
+    connection = clawt_connection_choose_following(
+        opt_host, opt_port > 0 ? (guint16)opt_port : 0, opt_token,
+        opt_token_file, opt_profile, opt_socket, NULL, NULL, NULL, NULL,
+        &notice, &error);
+
+    /* the connection has its own copy; this one is not kept about */
+    if (opt_token != NULL) {
+        memset(opt_token, 0, strlen(opt_token));
+        g_clear_pointer(&opt_token, g_free);
+    }
+
     if (connection == NULL) {
         g_printerr("%s: %s\n", CLAWT_OFFICE_BIN_NAME, error->message);
         return EXIT_FAILURE;
@@ -527,7 +752,21 @@ main(int argc, char *argv[])
     office.scene = clawt_office_scene_new();
     clawt_office_scene_set_adapter_dirs(office.scene, (const gchar *const *)opt_adapter_dirs);
     clawt_office_scene_set_focus(office.scene, opt_focus);
+    clawt_office_scene_set_ui_scale(office.scene, opt_ui_scale);
+    {
+        ClawtOfficeZoom zoom = CLAWT_OFFICE_ZOOM_FIT;
+
+        /* checked above: an unknown nick has already failed */
+        clawt_office_zoom_from_nick(opt_zoom, &zoom);
+        clawt_office_scene_set_zoom(office.scene, zoom);
+    }
+    office.want_mode = opt_3d ? CLAWT_OFFICE_VIEW_3D : CLAWT_OFFICE_VIEW_2D;
+    office.ui_scale = opt_ui_scale;
+    office.reported_mode = -1;
+    office.reported_3d = -1;
     office.rng = g_rand_new();
+    if (opt_embed >= 0)
+        read_control(&office);
     client = clawt_connection_create_client(connection);
     clawt_client_set_auto_reconnect(client, TRUE);
     if (!clawt_client_connect(client, &error)) {

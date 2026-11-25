@@ -214,7 +214,27 @@ main(int argc, char *argv[])
         g_printerr("%s: %s\n", CLAWT_LRG_BIN_NAME, notice);
         app->start_notice = g_steal_pointer(&notice);
     }
+
+    /*
+     * Which daemon this client is on, for a bare `clawtilla-office` to
+     * follow (clawt_connection_current_save()); a switch rewrites it and
+     * a clean exit removes it.  Not for the self-test.
+     */
+    app->publish_connection = opt_self_test == NULL;
+
+    if (app->publish_connection) {
+        g_autoptr(GError) publish_error = NULL;
+
+        if (!clawt_connection_current_save(NULL, connection, &publish_error))
+            g_warning("could not publish the connection: %s",
+                      publish_error->message);
+    }
+
     status = clawt_lrg_app_run(app, opt_self_test);
+
+    if (app->publish_connection)
+        (void)clawt_connection_current_save(NULL, NULL, NULL);
+
     clawt_lrg_app_free(app);
 
     return status;

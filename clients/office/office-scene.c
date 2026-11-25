@@ -221,7 +221,17 @@ struct _ClawtOfficeScene {
     gint                  last_w;
     gint                  last_h;
     gfloat                clock;
+    ClawtOfficeZoom       zoom;       /* how far the 2D map is zoomed */
+    gint                  ui_scale;   /* device pixels per logical pixel: text is this much larger */
+    gfloat                centre_x;   /* the map point a panned 2D view is centred on */
+    gfloat                centre_y;
+    gboolean              panned;     /* centre_x/y were set by a drag, not the map's middle */
 };
+
+/* name labels pushed down at most this many rows before they are left to hover */
+#define LABEL_STEPS (2)
+/* and kept this far apart, in logical pixels */
+#define LABEL_GAP   (2.0f)
 
 /* ── Colours ────────────────────────────────────────────────────── */
 
@@ -293,6 +303,7 @@ clawt_office_scene_new(void)
     self->person_scale = PERSON_SCALE;
     self->orbit = 0.65f;
     self->distance = 1.0f;
+    self->ui_scale = 1;
     self->status = g_strdup("Loading the office...");
     return self;
 }
@@ -860,6 +871,59 @@ clawt_office_scene_get_mode(ClawtOfficeScene *self)
     return self->mode;
 }
 
+gboolean
+clawt_office_scene_has_3d(ClawtOfficeScene *self)
+{
+    return self->has_3d;
+}
+
+void
+clawt_office_scene_set_zoom(ClawtOfficeScene *self, ClawtOfficeZoom zoom)
+{
+    self->zoom = zoom;
+    /* a new zoom starts from the middle (or whoever is followed), not an old drag */
+    self->panned = FALSE;
+    /* and in 3D picks the camera's distance; the wheel goes on from there */
+    switch (zoom) {
+    case CLAWT_OFFICE_ZOOM_1X: self->distance = 0.6f;  break;
+    case CLAWT_OFFICE_ZOOM_2X: self->distance = 0.35f; break;
+    case CLAWT_OFFICE_ZOOM_FIT:
+    default:                   self->distance = 1.0f;  break;
+    }
+}
+
+ClawtOfficeZoom
+clawt_office_scene_get_zoom(ClawtOfficeScene *self)
+{
+    return self->zoom;
+}
+
+void
+clawt_office_scene_set_ui_scale(ClawtOfficeScene *self, gint ui_scale)
+{
+    self->ui_scale = clawt_office_view_clamp_ui_scale(ui_scale);
+}
+
+void
+clawt_office_scene_pan(ClawtOfficeScene *self, gfloat dx, gfloat dy)
+{
+    gfloat zoom = self->camera2d.zoom > 0.0f ? self->camera2d.zoom : 1.0f;
+
+    if (self->mode == CLAWT_OFFICE_SCENE_3D && self->has_3d)
+        return;
+    if (!self->panned) {
+        self->centre_x = self->camera2d.target.x;
+        self->centre_y = self->camera2d.target.y;
+        self->panned = TRUE;
+    }
+    /* the map moves with the pointer: its centre the other way, in map pixels */
+    self->centre_x -= dx / zoom;
+    self->centre_y -= dy / zoom;
+    clawt_office_view_clamp_centre((gfloat)MAX(self->last_w, 1), (gfloat)MAX(self->last_h, 1),
+                                   self->map_w, self->map_h, zoom,
+                                   &self->centre_x, &self->centre_y);
+}
+
 void
 clawt_office_scene_set_status(ClawtOfficeScene *self, const gchar *text)
 {
@@ -875,7 +939,9 @@ clawt_office_scene_n_participants(ClawtOfficeScene *self)
 void
 clawt_office_scene_set_focus(ClawtOfficeScene *self, const gchar *id)
 {
-    replace(&self->focus, id);
+    replace(&self->focus, id != NULL && *id != '\0' ? id : NULL);
+    /* following somebody is a reason to look at them, not at an old drag */
+    self->panned = FALSE;
 }
 
 void
@@ -1429,13 +1495,10 @@ draw_billboard_3d(ClawtOfficeScene *self, Actor *a, Sheet *sheet, Vector3 feet)
     return TRUE;
 }
 
-/* The overlays over one person, at its screen position. */
+/* The plate's text: a visitor's says which fleet it is from while hovered. */
 static void
-draw_overlays(ClawtOfficeScene *self, Actor *a, Vector2 at, gfloat scale)
+sync_plate(ClawtOfficeScene *self, Actor *a)
 {
-    gfloat above = 30.0f * scale;
-
-    (void)self;
     lrg_nameplate_set_hovered(a->plate, g_strcmp0(self->hovered, a->id) == 0);
     /*
      * A visitor's plate is its name, small, as everybody's is; hovered it
@@ -1454,13 +1517,67 @@ draw_overlays(ClawtOfficeScene *self, Actor *a, Vector2 at, gfloat scale)
             lrg_nameplate_set_text(a->plate, a->name);
         }
     }
-    lrg_world_widget_draw_at(LRG_WORLD_WIDGET(a->plate), at.x, at.y + MAX(12.0f * scale, 10.0f));
-    if (lrg_world_widget_is_shown(LRG_WORLD_WIDGET(a->mark)) ||
-        lrg_world_widget_get_alpha(LRG_WORLD_WIDGET(a->mark)) > 0.01f)
-        lrg_world_widget_draw_at(LRG_WORLD_WIDGET(a->mark), at.x, at.y - above);
-    if (lrg_world_widget_get_alpha(LRG_WORLD_WIDGET(a->bubble)) > 0.01f)
-        lrg_world_widget_draw_at(LRG_WORLD_WIDGET(a->bubble), at.x,
-                                 at.y - above - 14.0f * scale);
+}
+
+/*
+ * What floats over everybody, at their screen positions (@at, one per
+ * person in @people).  @scale is how large a person is drawn, for where
+ * things go; the text itself is the device scale's size, so a 4K frame
+ * has labels as readable as a 1080p one.
+ *
+ * Name plates are placed together (clawt_office_labels_arrange()):
+ * adjacent desks used to draw their names over each other, "aye-a
+ * elephant neyguide".  The hovered and the followed are pinned where they
+ * are; everybody else keeps their place if it is free, else stacks a row
+ * or two down, else waits for a hover.  Marks and bubbles are drawn after
+ * every plate, over them: they are the louder things to say.
+ */
+static void
+draw_overlays(ClawtOfficeScene *self, GPtrArray *people, const Vector2 *at, gfloat scale,
+              gint height)
+{
+    gfloat ui = (gfloat)self->ui_scale;
+    gfloat above = 30.0f * scale;
+    gfloat below = MAX(12.0f * scale, 10.0f * ui);
+    g_autofree ClawtOfficeLabel *labels = g_new0(ClawtOfficeLabel, MAX(people->len, 1));
+    guint i;
+
+    for (i = 0; i < people->len; i++) {
+        Actor *a = g_ptr_array_index(people, i);
+        GrlRectangle box = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+        sync_plate(self, a);
+        lrg_world_widget_set_scale(LRG_WORLD_WIDGET(a->plate), ui);
+        lrg_world_widget_set_scale(LRG_WORLD_WIDGET(a->mark), ui);
+        lrg_world_widget_set_scale(LRG_WORLD_WIDGET(a->bubble), ui);
+        lrg_world_widget_get_box_at(LRG_WORLD_WIDGET(a->plate), at[i].x, at[i].y + below, &box);
+        labels[i].x = box.x;
+        labels[i].y = box.y;
+        labels[i].width = box.width;
+        labels[i].height = box.height;
+        labels[i].pinned = g_strcmp0(self->hovered, a->id) == 0 ||
+                           g_strcmp0(self->focus, a->id) == 0;
+    }
+    clawt_office_labels_arrange(labels, people->len, LABEL_GAP * ui, LABEL_STEPS,
+                                (gfloat)height);
+
+    for (i = 0; i < people->len; i++) {
+        Actor *a = g_ptr_array_index(people, i);
+
+        if (labels[i].shown)
+            lrg_world_widget_draw_at(LRG_WORLD_WIDGET(a->plate), at[i].x,
+                                     at[i].y + below + labels[i].dy);
+    }
+    for (i = 0; i < people->len; i++) {
+        Actor *a = g_ptr_array_index(people, i);
+
+        if (lrg_world_widget_is_shown(LRG_WORLD_WIDGET(a->mark)) ||
+            lrg_world_widget_get_alpha(LRG_WORLD_WIDGET(a->mark)) > 0.01f)
+            lrg_world_widget_draw_at(LRG_WORLD_WIDGET(a->mark), at[i].x, at[i].y - above);
+        if (lrg_world_widget_get_alpha(LRG_WORLD_WIDGET(a->bubble)) > 0.01f)
+            lrg_world_widget_draw_at(LRG_WORLD_WIDGET(a->bubble), at[i].x,
+                                     at[i].y - above - 14.0f * scale);
+    }
 }
 
 /*
@@ -1615,15 +1732,38 @@ static void
 draw_2d(ClawtOfficeScene *self, gint width, gint height)
 {
     g_autoptr(GPtrArray) people = sorted_actors(self);
-    gfloat zoom = MIN((gfloat)width / self->map_w, (gfloat)height / self->map_h) * 0.98f;
+    g_autofree Vector2 *at = NULL;
+    gfloat zoom = clawt_office_view_map_zoom(self->zoom, self->ui_scale, (gfloat)width,
+                                             (gfloat)height, self->map_w, self->map_h);
+    gfloat cx = self->map_w / 2.0f;
+    gfloat cy = self->map_h / 2.0f;
+    Actor *followed = self->focus != NULL ? g_hash_table_lookup(self->actors, self->focus)
+                                          : NULL;
     guint i;
 
-    self->camera2d.offset = (Vector2){ width / 2.0f, height / 2.0f };
-    self->camera2d.target = (Vector2){ self->map_w / 2.0f, self->map_h / 2.0f };
+    /*
+     * Centred on the map's middle; on whoever is followed; or where a
+     * drag left it -- and held in so a zoomed map never shows past its
+     * edge.  At Fit the whole map is in view and all three are the middle.
+     */
+    if (followed != NULL && followed->placed && !self->panned) {
+        cx = followed->x;
+        cy = followed->y;
+    } else if (self->panned) {
+        cx = self->centre_x;
+        cy = self->centre_y;
+    }
+    clawt_office_view_clamp_centre((gfloat)width, (gfloat)height, self->map_w, self->map_h,
+                                   zoom, &cx, &cy);
+    self->camera2d.offset = (Vector2){ floorf(width / 2.0f), floorf(height / 2.0f) };
+    /* whole map pixels at a whole-number zoom, so no pixel of the art is split */
+    self->camera2d.target = zoom >= 1.0f ? (Vector2){ floorf(cx), floorf(cy) }
+                                         : (Vector2){ cx, cy };
     self->camera2d.rotation = 0.0f;
     self->camera2d.zoom = zoom;
-    /* people stay legible in a small view: never under ~a 16 px head on screen */
-    self->person_scale = CLAMP(MAX(PERSON_SCALE, 0.95f / MAX(zoom, 0.01f)), PERSON_SCALE, 4.0f);
+    /* people stay legible in a small view: never under ~a 16 logical px head on screen */
+    self->person_scale = CLAMP(MAX(PERSON_SCALE, 0.95f * self->ui_scale / MAX(zoom, 0.01f)),
+                               PERSON_SCALE, 4.0f * self->ui_scale);
 
     sync_beams(self, FALSE);
     BeginMode2D(self->camera2d);
@@ -1662,15 +1802,17 @@ draw_2d(ClawtOfficeScene *self, gint width, gint height)
 
     if (self->has_board)
         draw_usage_board(self, GetWorldToScreen2D((Vector2){ self->board_x, self->board_y },
-                                                  self->camera2d), MAX(zoom * 1.4f, 0.75f));
+                                                  self->camera2d),
+                         MAX(zoom * 1.4f, 0.75f * self->ui_scale));
 
     /* text in screen space, so it stays legible at any zoom */
+    at = g_new0(Vector2, MAX(people->len, 1));
     for (i = 0; i < people->len; i++) {
         Actor *a = g_ptr_array_index(people, i);
-        Vector2 at = GetWorldToScreen2D((Vector2){ a->x, a->y }, self->camera2d);
 
-        draw_overlays(self, a, at, self->person_scale * zoom);
+        at[i] = GetWorldToScreen2D((Vector2){ a->x, a->y }, self->camera2d);
     }
+    draw_overlays(self, people, at, self->person_scale * zoom, height);
 }
 
 /* The orbiting god's-eye camera, aimed at the middle of the map. */
@@ -1707,6 +1849,7 @@ static void
 draw_3d(ClawtOfficeScene *self, gint width, gint height)
 {
     g_autoptr(GPtrArray) people = sorted_actors(self);
+    g_autofree Vector2 *at = NULL;
     gfloat k = 1.0f / self->tile;
     guint i;
 
@@ -1754,13 +1897,14 @@ draw_3d(ClawtOfficeScene *self, gint width, gint height)
     }
     EndMode3D();
 
+    at = g_new0(Vector2, MAX(people->len, 1));
     for (i = 0; i < people->len; i++) {
         Actor *a = g_ptr_array_index(people, i);
-        Vector2 at = GetWorldToScreenEx((Vector3){ a->x * k, 2.6f, a->y * k },
-                                        self->camera3d, width, height);
 
-        draw_overlays(self, a, at, 1.0f);
+        at[i] = GetWorldToScreenEx((Vector3){ a->x * k, 2.6f, a->y * k },
+                                   self->camera3d, width, height);
     }
+    draw_overlays(self, people, at, (gfloat)self->ui_scale, height);
 }
 
 /*
@@ -1773,9 +1917,10 @@ draw_3d(ClawtOfficeScene *self, gint width, gint height)
 static void
 draw_adapter(ClawtOfficeScene *self, gint width, gint height)
 {
-    GHashTableIter iter;
-    gpointer value;
+    g_autoptr(GPtrArray) people = NULL;
+    g_autofree Vector2 *at = NULL;
     LrgCamera2D *camera;
+    guint i;
 
     if (LRG_IS_TILED_WORLD(self->adapter))
         lrg_tiled_world_set_viewport(LRG_TILED_WORLD(self->adapter), width, height);
@@ -1784,18 +1929,19 @@ draw_adapter(ClawtOfficeScene *self, gint width, gint height)
         return;
 
     camera = lrg_tiled_world_get_camera(LRG_TILED_WORLD(self->adapter));
-    g_hash_table_iter_init(&iter, self->actors);
-    while (g_hash_table_iter_next(&iter, NULL, &value)) {
-        Actor *a = value;
+    people = sorted_actors(self);
+    at = g_new0(Vector2, MAX(people->len, 1));
+    for (i = 0; i < people->len; i++) {
+        Actor *a = g_ptr_array_index(people, i);
         GrlVector3 world = { a->x, a->y, 0.0f };
         GrlVector2 screen = { 0.0f, 0.0f };
 
-        if (!a->placed)
-            continue;
         lrg_camera_world_to_screen(LRG_CAMERA(camera), &world, &screen);
-        draw_overlays(self, a, (Vector2){ screen.x, screen.y },
-                      MAX(lrg_camera2d_get_zoom(camera) * PERSON_SCALE, 0.8f));
+        at[i] = (Vector2){ screen.x, screen.y };
     }
+    draw_overlays(self, people, at,
+                  MAX(lrg_camera2d_get_zoom(camera) * PERSON_SCALE, 0.8f * self->ui_scale),
+                  height);
 }
 
 void
@@ -1813,12 +1959,13 @@ clawt_office_scene_draw(ClawtOfficeScene *self, gint width, gint height)
         draw_2d(self, width, height);
 
     if (self->status != NULL) {
-        gint size = 16;
+        gint ui = self->ui_scale;
+        gint size = 16 * ui;
         gint text_w = MeasureText(self->status, size);
 
-        DrawRectangleRounded((Rectangle){ 10.0f, 10.0f, (gfloat)text_w + 20.0f, 28.0f }, 0.4f,
-                             6, (Color){ 0, 0, 0, 150 });
-        DrawText(self->status, 20, 16, size, RAYWHITE);
+        DrawRectangleRounded((Rectangle){ 10.0f * ui, 10.0f * ui, (gfloat)text_w + 20.0f * ui,
+                                          28.0f * ui }, 0.4f, 6, (Color){ 0, 0, 0, 150 });
+        DrawText(self->status, 20 * ui, 16 * ui, size, RAYWHITE);
     }
 }
 
@@ -1842,7 +1989,7 @@ clawt_office_scene_pointer(ClawtOfficeScene *self, gfloat x, gfloat y)
         if (self->mode == CLAWT_OFFICE_SCENE_3D && self->has_3d) {
             at = GetWorldToScreenEx((Vector3){ a->x / self->tile, 0.8f, a->y / self->tile },
                                     self->camera3d, MAX(self->last_w, 1), MAX(self->last_h, 1));
-            reach = 22.0f;
+            reach = 22.0f * self->ui_scale;
         } else {
             at = GetWorldToScreen2D((Vector2){ a->x, a->y - 10.0f * self->person_scale },
                                     self->camera2d);

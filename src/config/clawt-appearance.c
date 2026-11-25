@@ -74,6 +74,14 @@ struct _ClawtAppearance {
     ClawtWindowButtons window_buttons;
 
     /*
+     * How the GTK client's Office page draws the office (2D or 3D) and
+     * how far its map is zoomed.  Zero is 2D at Fit, which is what the
+     * page drew before either was remembered.
+     */
+    ClawtOfficeViewMode office_mode;
+    ClawtOfficeZoom     office_zoom;
+
+    /*
      * Set only when the chosen scheme came from a file, because a
      * palette on disk has no ClawtTheme value.  The built-in schemes go
      * on `theme` as they always did, so nothing about how a choice is
@@ -127,6 +135,8 @@ clawt_appearance_copy(ClawtAppearance *self)
     copy->sidebar_collapsed = self->sidebar_collapsed;
     copy->still_faces = self->still_faces;
     copy->window_buttons = self->window_buttons;
+    copy->office_mode = self->office_mode;
+    copy->office_zoom = self->office_zoom;
     copy->palette = g_strdup(self->palette);
     copy->lrg_motion = self->lrg_motion;
     copy->lrg_material = self->lrg_material;
@@ -658,6 +668,40 @@ clawt_appearance_set_sidebar_collapsed(ClawtAppearance *self,
     g_return_if_fail(self != NULL);
 
     self->sidebar_collapsed = collapsed ? TRUE : FALSE;
+}
+
+ClawtOfficeViewMode
+clawt_appearance_get_office_mode(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, CLAWT_OFFICE_VIEW_2D);
+
+    return self->office_mode;
+}
+
+void
+clawt_appearance_set_office_mode(ClawtAppearance *self, ClawtOfficeViewMode mode)
+{
+    g_return_if_fail(self != NULL);
+
+    self->office_mode = mode == CLAWT_OFFICE_VIEW_3D ? CLAWT_OFFICE_VIEW_3D
+                                                     : CLAWT_OFFICE_VIEW_2D;
+}
+
+ClawtOfficeZoom
+clawt_appearance_get_office_zoom(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, CLAWT_OFFICE_ZOOM_FIT);
+
+    return self->office_zoom;
+}
+
+void
+clawt_appearance_set_office_zoom(ClawtAppearance *self, ClawtOfficeZoom zoom)
+{
+    g_return_if_fail(self != NULL);
+
+    self->office_zoom = zoom == CLAWT_OFFICE_ZOOM_1X || zoom == CLAWT_OFFICE_ZOOM_2X
+                        ? zoom : CLAWT_OFFICE_ZOOM_FIT;
 }
 
 gboolean
@@ -1775,6 +1819,34 @@ clawt_appearance_parse(const gchar *text, GError **error)
     }
 
     /*
+     * The Office page's drawing.  An unknown spelling is the shipped
+     * value, said once on stderr, as for window_buttons.
+     */
+    value = member_string(mapping, "office_view");
+
+    if (value != NULL) {
+        ClawtOfficeViewMode mode = CLAWT_OFFICE_VIEW_2D;
+
+        if (!clawt_office_view_mode_from_nick(value, &mode))
+            g_warning("appearance: office_view '%s' is neither 2d nor 3d; "
+                      "using 2d", value);
+
+        clawt_appearance_set_office_mode(self, mode);
+    }
+
+    value = member_string(mapping, "office_zoom");
+
+    if (value != NULL) {
+        ClawtOfficeZoom zoom = CLAWT_OFFICE_ZOOM_FIT;
+
+        if (!clawt_office_zoom_from_nick(value, &zoom))
+            g_warning("appearance: office_zoom '%s' is not one of fit, 1x, "
+                      "2x; using fit", value);
+
+        clawt_appearance_set_office_zoom(self, zoom);
+    }
+
+    /*
      * clawtilla-lrg's keys.  A nick this build does not know is the
      * shipped value, said once on stderr: a hand-edited preference must
      * not cost somebody their client, and must not silently become a
@@ -1956,6 +2028,17 @@ clawt_appearance_to_data(ClawtAppearance *self)
         "# outright. The web client has no window of its own.\n");
     g_string_append_printf(out, "window_buttons: %s\n",
                            clawt_window_buttons_nick(self->window_buttons));
+
+    g_string_append(out,
+        "\n"
+        "# How clawtilla-gtk's Office page draws the office: 2d (the map\n"
+        "# from above) or 3d (the level, from an orbiting camera), and how\n"
+        "# far the map is zoomed: fit, 1x or 2x. The page remembers them\n"
+        "# when you switch; a world with no 3D level is drawn in 2D.\n");
+    g_string_append_printf(out, "office_view: %s\n",
+                           clawt_office_view_mode_nick(self->office_mode));
+    g_string_append_printf(out, "office_zoom: %s\n",
+                           clawt_office_zoom_nick(self->office_zoom));
 
     g_string_append(out,
         "\n"
