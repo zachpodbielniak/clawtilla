@@ -61,6 +61,7 @@ typedef struct {
     gboolean            defer;    /* hold every answer until delivered */
     const gchar        *queue;    /* what the queue holds, or NULL */
     const gchar        *broken;   /* a token whose whoami fails, or NULL */
+    gboolean            omit_token_id; /* whoami answered before token_id */
     GPtrArray          *said;     /* every g_message the bridge logged */
 } RoutingFixture;
 
@@ -81,16 +82,41 @@ reply_for(RoutingFixture *fixture, Sent *sent)
         return "{\"staged_writes\": true}";
 
     if (g_str_has_suffix(sent->url, "/api/v1/whoami")) {
+        /*
+         * whoami as an older server sent it: no token_id.  A known
+         * source is not asked again, so this is how a daemon that
+         * stayed up across the upgrade still looks.
+         */
+        if (fixture->omit_token_id) {
+            if (g_strcmp0(sent->token, ALPHA_KEY) == 0)
+                return "{\"actor\": \"API token #1\", "
+                       "\"role\": \"editor\", "
+                       "\"user\": {\"id\": 1, \"username\": \"alpha\"}}";
+
+            if (g_strcmp0(sent->token, BETA_KEY) == 0)
+                return "{\"actor\": \"API token #2\", "
+                       "\"role\": \"editor\", "
+                       "\"user\": {\"id\": 2, \"username\": \"beta\"}}";
+
+            return "{\"actor\": \"API token #3\", "
+                   "\"role\": \"viewer\", "
+                   "\"user\": {\"id\": 3, \"username\": \"gamma\"}}";
+        }
+
         if (g_strcmp0(sent->token, ALPHA_KEY) == 0)
-            return "{\"actor\": \"API token #1\", \"role\": \"editor\", "
+            return "{\"actor\": \"API token #1\", \"token_id\": 10, "
+                   "\"role\": \"editor\", "
                    "\"user\": {\"id\": 1, \"username\": \"alpha\"}}";
 
         if (g_strcmp0(sent->token, BETA_KEY) == 0)
-            return "{\"actor\": \"API token #2\", \"role\": \"editor\", "
+            return "{\"actor\": \"API token #2\", \"token_id\": 20, "
+                   "\"role\": \"editor\", "
                    "\"user\": {\"id\": 2, \"username\": \"beta\"}}";
 
-        return "{\"actor\": \"API token #3\", \"role\": \"viewer\", "
+        return "{\"actor\": \"API token #3\", \"token_id\": 30, "
+               "\"role\": \"viewer\", "
                "\"user\": {\"id\": 3, \"username\": \"gamma\"}}";
+
     }
 
     return fixture->queue != NULL ? fixture->queue : "[]";
@@ -894,6 +920,78 @@ test_the_queue_is_read_with_a_known_token(void)
 }
 
 /*
+ * A card whose display name matches no actor is still filed under the
+ * connector whose whoami token id is the card origin token id.  The
+ * name "renamed" matches neither actor, so a string match would file
+ * it under nobody; the id is what places it.
+ *
+ * A second card on the same queue carries no token id and still routes
+ * by its actor, which is the fallback for an older server.
+ */
+static void
+test_a_token_id_beats_a_renamed_actor(void)
+{
+    RoutingFixture fixture = { 0 };
+    g_autofree gchar *queue =
+        fixture_body("venture-confirmations-by-token-id.json");
+    g_autofree gchar *renamed = NULL;
+    g_autofree gchar *renamed_under_beta = NULL;
+    g_autofree gchar *by_actor = NULL;
+    g_autofree gchar *by_actor_under_alpha = NULL;
+
+    routing_setup(&fixture);
+    fixture.queue = queue;
+
+    clawt_venture_bridge_poll(fixture.bridge);
+
+    renamed = agent_of(&fixture, ALPHA, "c-renamed");
+    renamed_under_beta = agent_of(&fixture, BETA, "c-renamed");
+    by_actor = agent_of(&fixture, BETA, "c-by-actor");
+    by_actor_under_alpha = agent_of(&fixture, ALPHA, "c-by-actor");
+
+    g_assert_cmpstr(renamed, ==, "alpha");
+    g_assert_null(renamed_under_beta);
+    g_assert_cmpstr(by_actor, ==, "beta");
+    g_assert_null(by_actor_under_alpha);
+    g_assert_cmpuint(open_count(&fixture), ==, 2);
+
+    routing_teardown(&fixture);
+}
+
+/*
+ * The daemon learned whoami before the server sent token ids, so each
+ * source is known with no id and is not asked again.  A card from the
+ * upgraded server carries an id and the actor string API token #1.
+ * The id matches nobody; the actor still files the card under alpha.
+ */
+static void
+test_an_id_falls_back_to_the_actor_of_a_legacy_whoami(void)
+{
+    RoutingFixture fixture = { 0 };
+    g_autofree gchar *queue =
+        fixture_body("venture-confirmations-legacy-whoami.json");
+    g_autofree gchar *upgraded = NULL;
+    g_autofree gchar *under_beta = NULL;
+
+    routing_setup(&fixture);
+    fixture.queue = queue;
+    fixture.omit_token_id = TRUE;
+
+    clawt_venture_bridge_poll(fixture.bridge);
+
+    g_assert_cmpstr(clawt_venture_bridge_get_actor(fixture.bridge, ALPHA), ==,
+                    "API token #1");
+
+    upgraded = agent_of(&fixture, ALPHA, "c-upgraded");
+    under_beta = agent_of(&fixture, BETA, "c-upgraded");
+    g_assert_cmpstr(upgraded, ==, "alpha");
+    g_assert_null(under_beta);
+    g_assert_cmpuint(open_count(&fixture), ==, 1);
+
+    routing_teardown(&fixture);
+}
+
+/*
  * whoami parses the shape VENTURE's own contract records -- the copy in
  * tests/fixtures/venture/, checked against VENTURE by
  * `make check-venture-contract`.
@@ -904,16 +1002,20 @@ test_whoami_reads_the_contract_shape(void)
     g_autofree gchar *body = fixture_body("venture/whoami.json");
     g_autofree gchar *actor = NULL;
     g_autofree gchar *username = NULL;
+    gint64 token_id = -1;
     g_autoptr(GError) error = NULL;
 
     g_assert_true(clawt_venture_whoami_parse(body, -1, &actor, &username,
-                                             &error));
+                                             &token_id, &error));
     g_assert_no_error(error);
     g_assert_cmpstr(actor, ==, "string");
     g_assert_cmpstr(username, ==, "string");
+    /* The contract sample names the type, it does not send an id. */
+    g_assert_cmpint(token_id, ==, 0);
 
     /* Not an object is not an identity. */
-    g_assert_false(clawt_venture_whoami_parse("[]", -1, NULL, NULL, NULL));
+    g_assert_false(clawt_venture_whoami_parse("[]", -1, NULL, NULL,
+                                              NULL, NULL));
 }
 
 int
@@ -941,6 +1043,11 @@ main(int argc, char **argv)
                     test_one_broken_connector_holds_up_nobody_else);
     g_test_add_func("/venture/routing/queue-read-with-known-token",
                     test_the_queue_is_read_with_a_known_token);
+    g_test_add_func("/venture/routing/token-id-beats-renamed-actor",
+                    test_a_token_id_beats_a_renamed_actor);
+    g_test_add_func("/venture/routing/id-falls-back-to-legacy-actor",
+                    test_an_id_falls_back_to_the_actor_of_a_legacy_whoami);
+
     g_test_add_func("/venture/routing/whoami-contract-shape",
                     test_whoami_reads_the_contract_shape);
 

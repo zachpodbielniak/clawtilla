@@ -13,9 +13,11 @@
  *   instance  one server, by its queue's URL.  Its queue is install-wide
  *             (every viewer sees every card), so it is read once per
  *             tick whichever source's token reads it.
- *   owner     the source that staged a card: the one whose whoami actor
- *             (or username) is the card's `origin.name`.  The decision
- *             is filed with its agent and answered with its token.
+ *   owner     the source that staged a card: the one whose whoami
+ *             token id is the card `origin.token_id`, or, when that
+ *             id matches no known source, whose actor (or username)
+ *             is the card `origin.name`.  The decision is filed with
+ *             its agent and answered with its token.
  *
  * And every request carries an id the transport hands back, so a
  * response is matched to what asked for it rather than to a URL that
@@ -84,6 +86,7 @@ typedef struct {
     IdentityState identity;
     gchar        *actor;
     gchar        *username;
+    gint64        token_id;      /* 0 when the server sent none */
     gboolean      said_identity;   /* a failed ask has been reported */
 } Source;
 
@@ -897,15 +900,55 @@ unique_match(GPtrArray *siblings, const gchar *name, gboolean by_actor)
 }
 
 /*
+ * The one identified source among @siblings whose token id is @token_id.
+ *
+ * Exactly one, or none, the same rule as unique_match().  A source that
+ * has not answered whoami has no id yet and matches nothing.  Two
+ * sources reporting the same id are one token configured twice.
+ */
+static Source *
+unique_id_match(GPtrArray *siblings, gint64 token_id)
+{
+    Source *found = NULL;
+    guint i;
+
+    for (i = 0; i < siblings->len; i++) {
+        Source *source = g_ptr_array_index(siblings, i);
+
+        if (source->identity != IDENTITY_KNOWN)
+            continue;
+
+        if (source->token_id <= 0 || source->token_id != token_id)
+            continue;
+
+        if (found != NULL)
+            return NULL;
+
+        found = source;
+    }
+
+    return found;
+}
+
+/*
  * Who staged @card, of the sources on its instance.
  *
- * By actor first: that is what VENTURE writes into `origin.name` for a
- * token -- `API token #12` -- and it names one token exactly.  So an
- * actor match is trusted even while other sources on the server have
- * not said who they are: an unidentified sibling cannot also be that
- * token.  The one way it could is the same token configured under two
- * connector names, which `clawtilla config check` already warns about;
- * until the second answers whoami, its cards go to the first.
+ * By token id first, when the card carries one.  The id is stable, and
+ * an exact match against a source that has answered whoami is trusted
+ * even while other sources on the server have not said who they are:
+ * the same rule as an exact actor match.
+ *
+ * No match by id falls through to the actor string.  That string is
+ * the fallback for an older server, which sends no id, and for sources
+ * whose whoami predates the server sending token_id: a known source is
+ * not asked again, so its token_id stays 0 while new cards carry an
+ * id.  The actor is what VENTURE writes into `origin.name` for a token
+ * -- `API token #12` -- and it names one token exactly.  An actor
+ * match is trusted even while other sources have not said who they
+ * are.  The one way two sources share an actor is the same token
+ * configured under two connector names, which `clawtilla config check`
+ * already warns about; until the second answers whoami, its cards go
+ * to the first.
  *
  * By username only after that, only when @all_known -- an unidentified
  * sibling could share the username, and the card could be its -- and
@@ -930,6 +973,13 @@ owner_for(GPtrArray *siblings, ClawtVentureConfirmation *card,
           gboolean all_known)
 {
     Source *owner;
+
+    if (card->origin_token_id > 0) {
+        owner = unique_id_match(siblings, card->origin_token_id);
+
+        if (owner != NULL)
+            return owner;
+    }
 
     if (card->origin_name == NULL || *card->origin_name == '\0')
         return NULL;
@@ -1458,6 +1508,7 @@ complete_whoami(ClawtVentureBridge *self, Pending *pending,
     g_autoptr(GError) parse_error = NULL;
     g_autofree gchar *actor = NULL;
     g_autofree gchar *username = NULL;
+    gint64 token_id = 0;
     Source *source = source_that_asked(self, pending);
 
     /* Replaced since: the new binding asks for itself. */
@@ -1466,11 +1517,12 @@ complete_whoami(ClawtVentureBridge *self, Pending *pending,
 
     if (error == NULL && body != NULL &&
         clawt_venture_whoami_parse(body, length, &actor, &username,
-                                   &parse_error)) {
+                                   &token_id, &parse_error)) {
         g_free(source->actor);
         source->actor = g_steal_pointer(&actor);
         g_free(source->username);
         source->username = g_steal_pointer(&username);
+        source->token_id = token_id;
         source->identity = IDENTITY_KNOWN;
 
         /*
@@ -1478,7 +1530,8 @@ complete_whoami(ClawtVentureBridge *self, Pending *pending,
          * not held up for it -- this source simply owns no card -- but
          * somebody should know why its agent's changes never arrive.
          */
-        if (source->actor == NULL && source->username == NULL)
+        if (source->actor == NULL && source->username == NULL &&
+            source->token_id <= 0)
             g_message("venture: '%s' answered whoami without an actor or "
                       "a username, so no staged change on it can be told "
                       "apart as its own", source->name);

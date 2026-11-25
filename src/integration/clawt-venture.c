@@ -61,6 +61,7 @@ clawt_venture_confirmation_copy(ClawtVentureConfirmation *self)
     out->origin_kind = g_strdup(self->origin_kind);
     out->origin_name = g_strdup(self->origin_name);
     out->origin_via = g_strdup(self->origin_via);
+    out->origin_token_id = self->origin_token_id;
     out->created_at = g_strdup(self->created_at);
     out->expires_at = g_strdup(self->expires_at);
     out->diff = g_strdup(self->diff);
@@ -87,6 +88,35 @@ member_string(JsonObject *object, const gchar *key)
         return NULL;
 
     return g_strdup(json_node_get_string(node));
+}
+
+/*
+ * An integer member, or 0 when it is absent or not an integer.
+ *
+ * 0 is the absent value for a token id: a server that does not send
+ * one, and a member that is a string or an object, both mean no id,
+ * so a caller can match on a value greater than 0.
+ */
+static gint64
+member_int(JsonObject *object, const gchar *key)
+{
+    JsonNode *node;
+    GType type;
+
+    if (object == NULL || !json_object_has_member(object, key))
+        return 0;
+
+    node = json_object_get_member(object, key);
+
+    if (node == NULL || !JSON_NODE_HOLDS_VALUE(node))
+        return 0;
+
+    type = json_node_get_value_type(node);
+
+    if (type != G_TYPE_INT64 && type != G_TYPE_INT)
+        return 0;
+
+    return json_node_get_int(node);
 }
 
 /*
@@ -211,6 +241,7 @@ confirmation_from_object(JsonObject *object)
             out->origin_kind = member_string(origin, "kind");
             out->origin_name = member_string(origin, "name");
             out->origin_via = member_string(origin, "via");
+            out->origin_token_id = member_int(origin, "token_id");
         }
     }
 
@@ -545,6 +576,7 @@ clawt_venture_whoami_parse(const gchar  *body,
                            gssize        length,
                            gchar       **out_actor,
                            gchar       **out_username,
+                           gint64       *out_token_id,
                            GError      **error)
 {
     g_autoptr(JsonParser) parser = json_parser_new();
@@ -559,6 +591,9 @@ clawt_venture_whoami_parse(const gchar  *body,
 
     if (out_username != NULL)
         *out_username = NULL;
+
+    if (out_token_id != NULL)
+        *out_token_id = 0;
 
     if (body == NULL ||
         !json_parser_load_from_data(parser, body, length, error))
@@ -597,6 +632,9 @@ clawt_venture_whoami_parse(const gchar  *body,
 
     if (out_username != NULL)
         *out_username = g_steal_pointer(&username);
+
+    if (out_token_id != NULL)
+        *out_token_id = member_int(object, "token_id");
 
     return TRUE;
 }

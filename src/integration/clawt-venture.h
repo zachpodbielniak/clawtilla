@@ -64,6 +64,8 @@ G_BEGIN_DECLS
  * @origin_kind: (nullable): `user`, `import`, `ai` or `system`
  * @origin_name: (nullable): who asked -- the token's name, for an agent
  * @origin_via: (nullable): how it arrived, e.g. `rest-api`
+ * @origin_token_id: the staging token id, or 0 when the server
+ *   sent none
  * @created_at: (nullable): ISO 8601, as venture wrote it
  * @expires_at: (nullable): when venture will drop it unanswered
  * @diff: (nullable): the staged fields, rendered one per line
@@ -91,6 +93,7 @@ typedef struct {
     gchar  *origin_kind;
     gchar  *origin_name;
     gchar  *origin_via;
+    gint64  origin_token_id;
     gchar  *created_at;
     gchar  *expires_at;
     gchar  *diff;
@@ -281,15 +284,19 @@ gchar *clawt_venture_whoami_url(const gchar *base);
  *   e.g. `API token #12`
  * @out_username: (out) (transfer full) (optional) (nullable): the
  *   VENTURE user the token belongs to
+ * @out_token_id: (out) (optional) (nullable): the token id of the caller, or 0 when
+ *   the answer has none
  * @error: (out) (optional): why it could not be read
  *
  * Who a token is, read from `GET /api/v1/whoami`.
  *
- * The actor is what VENTURE writes into a confirmation's `origin.name`
- * when that token stages a write, which is how the bridge tells one
- * agent's card from another's on a server they share.  Either may be
- * %NULL in an answer that parsed: VENTURE said who it is, just not in
- * a field this reads.
+ * The actor is what VENTURE writes into a confirmation `origin.name`
+ * when that token stages a write.  @out_token_id is the stable id
+ * the same answer carries, and 0 when it does not: a card that names
+ * one is matched by it, and the actor string is the fallback for a
+ * server that sent no id.  Either name may be %NULL in an answer
+ * that parsed: VENTURE said who it is, just not in a field this
+ * reads.
  *
  * Returns: %TRUE if @body was a whoami answer at all
  */
@@ -297,6 +304,7 @@ gboolean clawt_venture_whoami_parse(const gchar  *body,
                                     gssize        length,
                                     gchar       **out_actor,
                                     gchar       **out_username,
+                                    gint64       *out_token_id,
                                     GError      **error);
 
 /**
