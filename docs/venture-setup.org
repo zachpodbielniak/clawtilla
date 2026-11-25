@@ -199,7 +199,7 @@ clawtilla integration health bookkeeper
 
 - =--account= is the label for a second account on the same service; it is required, and must be unique, once there is more than one =venture= connector.
 - Because each agent holds *one* venture connector, its tools keep their plain names (=venture_list=, =venture_create=, ...).  An agent given *two* would see them prefixed with each account's label (=bookkeeper_venture_list=) so it has to say which account it means -- see [[file:connectors.org::*Several accounts on one service][Several accounts on one service]].
-- The staged-write bridge raises each connector's cards for the agent that holds it, so the decision says which agent proposed the change.
+- The staged-write bridge reads the server's queue once and files each card with the agent whose token staged it (VENTURE's ~origin.name~ against each connector's =whoami=), so the decision says which agent proposed the change and the answer goes out with that agent's token.  A change nobody in the fleet staged -- a person's, or the operator's own token's -- is not raised; answer it in VENTURE.  Details: [[file:connectors.org::*Several connectors on one server: each card goes to the agent that staged it][connectors.org]].
 
 ** One shared instance with =per_agent= token files
 

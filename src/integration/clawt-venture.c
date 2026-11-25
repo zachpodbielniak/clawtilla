@@ -535,6 +535,73 @@ clawt_venture_health_parse(const gchar  *body,
 }
 
 gchar *
+clawt_venture_whoami_url(const gchar *base)
+{
+    return join_path(base, "/api/v1/whoami");
+}
+
+gboolean
+clawt_venture_whoami_parse(const gchar  *body,
+                           gssize        length,
+                           gchar       **out_actor,
+                           gchar       **out_username,
+                           GError      **error)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    JsonNode *root;
+    JsonObject *object;
+    JsonNode *member;
+    g_autofree gchar *actor = NULL;
+    g_autofree gchar *username = NULL;
+
+    if (out_actor != NULL)
+        *out_actor = NULL;
+
+    if (out_username != NULL)
+        *out_username = NULL;
+
+    if (body == NULL ||
+        !json_parser_load_from_data(parser, body, length, error))
+        return FALSE;
+
+    root = json_parser_get_root(parser);
+
+    /* A type check is not a pointer check, as for the health answer. */
+    if (root == NULL || !JSON_NODE_HOLDS_OBJECT(root) ||
+        (object = json_node_get_object(root)) == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "VENTURE's whoami answer is not a JSON object");
+        return FALSE;
+    }
+
+    /*
+     * An empty string is no name at all.  Kept as one, it would match
+     * every card whose origin VENTURE left blank -- and that is the one
+     * card that must go to nobody.
+     */
+    actor = member_string(object, "actor");
+
+    if (actor != NULL && *actor == '\0')
+        g_clear_pointer(&actor, g_free);
+
+    member = json_object_get_member(object, "user");
+
+    if (member != NULL && JSON_NODE_HOLDS_OBJECT(member))
+        username = member_string(json_node_get_object(member), "username");
+
+    if (username != NULL && *username == '\0')
+        g_clear_pointer(&username, g_free);
+
+    if (out_actor != NULL)
+        *out_actor = g_steal_pointer(&actor);
+
+    if (out_username != NULL)
+        *out_username = g_steal_pointer(&username);
+
+    return TRUE;
+}
+
+gchar *
 clawt_venture_business_events_url(const gchar *base,
                                   gint64       organization_id,
                                   const gchar *after,

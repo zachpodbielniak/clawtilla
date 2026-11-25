@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: clawtilla docs integrations venture
 #+created: [2026-11-16]
-#+updated: [2026-11-16]
+#+updated: [2026-11-24]
 #+version: 0.50.0
 
 * What it is
@@ -210,6 +210,14 @@ And for 0.50.0 (the same VENTURE 0.10.6), 23 checks, none failing: everything ab
 
 And the plan's step 1 in full, on the same versions, with a grok-build agent in the fleet and the GTK client on Xvfb: the grok-build agent's task completed and its ticket went =done=; the chief of staff delegated to it with ~clawtilla_delegate~, and the child's ticket was a =subtask= under the parent's, assigned to the grok agent's VENTURE user; VENTURE's activity log for that ticket shows it created by the delegator's account (=API token #2=) and every later change by the assignee's (=API token #4=); a task waiting on a backlog task was ~blocked~ and so was its ticket; and the GTK client, run under Xvfb against the fleet, showed every agent and the assignment as sent.
 
+* Staged writes as decisions
+
+The mirror is one half of the connector; the other is the staged-write bridge, which turns an agent's =venture_create=, =venture_update= and =venture_delete= into decisions in the operator's inbox.  The whole of it is in [[file:connectors.org::*Staged writes land in the decision inbox][connectors.org]]; what matters on a fleet where every agent has its own connector to one server:
+
+- *Routed by requester.* Each card carries VENTURE's ~origin.name~ -- the staging token's actor, =API token #N= -- and each connector learns its own with =GET /api/v1/whoami=, as the mirror does.  A card becomes exactly one decision, filed against the agent whose token staged it, and its answer is posted with that agent's token only.
+- *One poll per instance.* Connectors that share a base URL are one server, and its queue is read once per tick, not once per connector, with the token of a connector whose whoami has answered.  A connector whose whoami fails holds up only the changes its own token staged; everybody else's are filed as usual.
+- *Unknown requester: not raised, left to VENTURE.* A person's change, the operator's own service token's (~service_token_file~), or a card whose origin matches no single connector is filed under nobody.  No token clawtilla holds may honestly answer it, so it is logged once and answered in VENTURE's own interface.
+
 * Troubleshooting
 
 | Seen | Why, and what to do |
@@ -221,6 +229,8 @@ And the plan's step 1 in full, on the same versions, with a grok-build agent in 
 | gave up: … stages its writes (a viewer?) | give the agent's VENTURE user an editor membership, mint a new token, Retry |
 | Waiting to be sent: VENTURE did not answer | VENTURE is down or unreachable; it catches up by itself |
 | "venture mirror: … has no credential yet" in the log | the connector has no token file yet: =clawtilla connector connect <connector>= |
+| "venture: confirmation … was staged by '…', which is no single connector here" | a person or a token outside the fleet staged it (or one token is configured on two connectors); answer it in VENTURE |
+| "venture: could not learn who '<connector>' is", and that agent's staged writes never reach the inbox | that connector's whoami fails (revoked token?); its own cards are held until it answers, nobody else's are: =clawtilla connector connect <connector>= or remove the connector |
 | Not mirrored: no repository … cannot see it, though the repository is there | the agent's membership is inactive (made through the API without ~"active": true~) or was added after its token was minted: =whoami= lists no organization; activate it, mint a new token |
 
 * Limits, for now

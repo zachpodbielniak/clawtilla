@@ -626,6 +626,15 @@ typedef struct {
 } BridgeFixture;
 
 /*
+ * What `whoami` says for the fixture's one token, in the shape VENTURE
+ * answers it -- and the actor venture-confirmations.json's cards carry
+ * as their origin, so they are this source's own.
+ */
+#define BOOKS_WHOAMI \
+    "{\"actor\": \"books-agent\", \"role\": \"editor\", " \
+    "\"user\": {\"id\": 7, \"username\": \"bookkeeper\"}}"
+
+/*
  * The transport, as a test provides it.
  *
  * It records what it was asked for and answers however the fixture
@@ -633,8 +642,9 @@ typedef struct {
  * unreachable" be a case rather than an outage somebody has to arrange.
  */
 static void
-record_request(ClawtVentureBridge *bridge, const gchar *method,
-               const gchar *url, const gchar *token, gpointer user_data)
+record_request(ClawtVentureBridge *bridge, guint request_id,
+               const gchar *method, const gchar *url, const gchar *token,
+               gpointer user_data)
 {
     BridgeFixture *fixture = user_data;
 
@@ -648,7 +658,7 @@ record_request(ClawtVentureBridge *bridge, const gchar *method,
 
         g_set_error_literal(&error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
                             "Connection refused");
-        clawt_venture_bridge_complete(bridge, url, NULL, 0, error);
+        clawt_venture_bridge_complete(bridge, request_id, NULL, 0, error);
         return;
     }
 
@@ -660,19 +670,26 @@ record_request(ClawtVentureBridge *bridge, const gchar *method,
     if (g_strcmp0(method, "GET") == 0 &&
         g_str_has_suffix(url, "/api/v1/health")) {
         clawt_venture_bridge_complete(
-            bridge, url,
+            bridge, request_id,
             fixture->health != NULL ? fixture->health
                                     : "{\"staged_writes\": true}",
             -1, NULL);
         return;
     }
 
-    if (g_strcmp0(method, "GET") == 0) {
-        clawt_venture_bridge_complete(bridge, url, "[]", -1, NULL);
+    if (g_strcmp0(method, "GET") == 0 &&
+        g_str_has_suffix(url, "/api/v1/whoami")) {
+        clawt_venture_bridge_complete(bridge, request_id, BOOKS_WHOAMI, -1,
+                                      NULL);
         return;
     }
 
-    clawt_venture_bridge_complete(bridge, url, "", 0, NULL);
+    if (g_strcmp0(method, "GET") == 0) {
+        clawt_venture_bridge_complete(bridge, request_id, "[]", -1, NULL);
+        return;
+    }
+
+    clawt_venture_bridge_complete(bridge, request_id, "", 0, NULL);
 }
 
 static void
@@ -697,6 +714,23 @@ bridge_fixture_setup(BridgeFixture *fixture)
                                     "bookkeeper");
 }
 
+/*
+ * One poll, so the source has said who it is.
+ *
+ * The bridge files nothing on an instance until every source there has
+ * answered whoami -- a card routed before its owner is known would land
+ * with the wrong agent -- so a test that ingests a queue first lets the
+ * fixture's one source introduce itself, then forgets what that sent.
+ */
+static void
+bridge_fixture_learn(BridgeFixture *fixture)
+{
+    clawt_venture_bridge_poll(fixture->bridge);
+    g_assert_cmpstr(clawt_venture_bridge_get_actor(fixture->bridge, "books"),
+                    ==, "books-agent");
+    g_ptr_array_set_size(fixture->sent, 0);
+}
+
 static void
 bridge_fixture_teardown(BridgeFixture *fixture)
 {
@@ -718,6 +752,7 @@ test_a_confirmation_becomes_a_decision(void)
     g_autofree gchar *id = NULL;
 
     bridge_fixture_setup(&fixture);
+    bridge_fixture_learn(&fixture);
 
     g_assert_cmpuint(clawt_venture_bridge_ingest(fixture.bridge, "books",
                                                  body, -1, &error), ==, 2);
@@ -773,6 +808,7 @@ test_polling_twice_raises_one_decision(void)
     g_autoptr(GPtrArray) open = NULL;
 
     bridge_fixture_setup(&fixture);
+    bridge_fixture_learn(&fixture);
 
     g_assert_cmpuint(clawt_venture_bridge_ingest(fixture.bridge, "books",
                                                  body, -1, NULL), ==, 2);
@@ -800,6 +836,7 @@ test_a_malformed_card_is_skipped_and_the_rest_kept(void)
     guint raised;
 
     bridge_fixture_setup(&fixture);
+    bridge_fixture_learn(&fixture);
 
     g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
                           "*could not be read and was skipped*");
@@ -826,6 +863,7 @@ test_approve_and_reject_post_the_right_endpoint(void)
     g_autofree gchar *second = NULL;
 
     bridge_fixture_setup(&fixture);
+    bridge_fixture_learn(&fixture);
     clawt_venture_bridge_ingest(fixture.bridge, "books", body, -1, NULL);
 
     first = clawt_venture_decision_id("books", "a3f9c118");
@@ -887,6 +925,7 @@ test_an_answer_that_cannot_be_delivered_is_retried(void)
     g_autofree gchar *id = NULL;
 
     bridge_fixture_setup(&fixture);
+    bridge_fixture_learn(&fixture);
     clawt_venture_bridge_ingest(fixture.bridge, "books", body, -1, NULL);
 
     id = clawt_venture_decision_id("books", "a3f9c118");
@@ -939,6 +978,7 @@ test_an_answer_lost_to_a_restart_is_re_queued_from_the_store(void)
     g_autoptr(GError) error = NULL;
 
     bridge_fixture_setup(&fixture);
+    bridge_fixture_learn(&fixture);
     clawt_venture_bridge_ingest(fixture.bridge, "books", body, -1, NULL);
 
     id = clawt_venture_decision_id("books", "a3f9c118");
@@ -1092,9 +1132,9 @@ typedef struct {
 } DaemonFixture;
 
 static void
-daemon_record_request(ClawtVentureBridge *bridge, const gchar *method,
-                      const gchar *url, const gchar *token,
-                      gpointer user_data)
+daemon_record_request(ClawtVentureBridge *bridge, guint request_id,
+                      const gchar *method, const gchar *url,
+                      const gchar *token, gpointer user_data)
 {
     DaemonFixture *fixture = user_data;
 
@@ -1103,13 +1143,19 @@ daemon_record_request(ClawtVentureBridge *bridge, const gchar *method,
     g_ptr_array_add(fixture->sent, g_strdup_printf("%s %s", method, url));
 
     if (g_str_has_suffix(url, "/api/v1/health")) {
-        clawt_venture_bridge_complete(bridge, url,
+        clawt_venture_bridge_complete(bridge, request_id,
                                       "{\"staged_writes\": true}", -1,
                                       NULL);
         return;
     }
 
-    clawt_venture_bridge_complete(bridge, url, "[]", -1, NULL);
+    if (g_str_has_suffix(url, "/api/v1/whoami")) {
+        clawt_venture_bridge_complete(bridge, request_id, BOOKS_WHOAMI, -1,
+                                      NULL);
+        return;
+    }
+
+    clawt_venture_bridge_complete(bridge, request_id, "[]", -1, NULL);
 }
 
 static void
@@ -1222,24 +1268,84 @@ test_a_configured_connector_becomes_a_source(void)
 
     /*
      * And it polls the instance the config named, not the default --
-     * asking first, once, whether that server stages writes at all.
+     * asking first, once, whether that server stages writes at all and
+     * who the connector's token is there.
      */
     clawt_venture_bridge_poll(fixture.daemon->venture);
 
-    g_assert_cmpuint(fixture.sent->len, ==, 2);
+    g_assert_cmpuint(fixture.sent->len, ==, 3);
     g_assert_cmpstr(g_ptr_array_index(fixture.sent, 0), ==,
                     "GET https://books.example/api/v1/health");
     g_assert_cmpstr(g_ptr_array_index(fixture.sent, 1), ==,
+                    "GET https://books.example/api/v1/whoami");
+    g_assert_cmpstr(g_ptr_array_index(fixture.sent, 2), ==,
                     "GET https://books.example/api/v1/confirmations");
     g_assert_cmpint(clawt_venture_bridge_get_staging(fixture.daemon->venture,
                                                      "books"),
                     ==, CLAWT_VENTURE_STAGING_SUPPORTED);
+    g_assert_cmpstr(clawt_venture_bridge_get_actor(fixture.daemon->venture,
+                                                   "books"),
+                    ==, "books-agent");
 
     /* Once: the second poll reads the queue and nothing else. */
     clawt_venture_bridge_poll(fixture.daemon->venture);
-    g_assert_cmpuint(fixture.sent->len, ==, 3);
-    g_assert_cmpstr(g_ptr_array_index(fixture.sent, 2), ==,
+    g_assert_cmpuint(fixture.sent->len, ==, 4);
+    g_assert_cmpstr(g_ptr_array_index(fixture.sent, 3), ==,
                     "GET https://books.example/api/v1/confirmations");
+
+    daemon_fixture_teardown(&fixture);
+}
+
+/*
+ * One connector entry with a token per agent (`per_agent`) is two
+ * identities on one server, so it is two sources -- or the bridge, which
+ * files each card with the source whose token staged it, would have no
+ * source for the second agent's cards and raise none of them.  Both
+ * share the server's one queue read.
+ */
+static void
+test_per_agent_tokens_are_a_source_each(void)
+{
+    DaemonFixture fixture = { 0 };
+    g_autofree gchar *sales_token = NULL;
+    g_autofree gchar *extra = NULL;
+    g_autoptr(GError) error = NULL;
+    guint polls = 0;
+    guint i;
+
+    /* The isolated HOME is named, not made. */
+    g_assert_cmpint(g_mkdir_with_parents(g_get_home_dir(), 0700), ==, 0);
+    sales_token = g_build_filename(g_get_home_dir(),
+                                   "connector-books-sales.json", NULL);
+    g_assert_true(g_file_set_contents(sales_token,
+                                      "{\"access_token\": \"vt_sales\"}", -1,
+                                      &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(g_chmod(sales_token, 0600), ==, 0);
+
+    extra = g_strdup_printf("    per_agent:\n"
+                            "      sales:\n"
+                            "        token_file: \"%s\"\n", sales_token);
+    fixture.integration_extra = extra;
+    fixture.extra_yaml = "  - id: sales\n";
+    daemon_fixture_setup(&fixture);
+
+    g_assert_cmpuint(
+        clawt_venture_bridge_source_count(fixture.daemon->venture), ==, 2);
+    g_assert_true(clawt_venture_bridge_has_source(fixture.daemon->venture,
+                                                  "books"));
+    g_assert_true(clawt_venture_bridge_has_source(fixture.daemon->venture,
+                                                  "books/sales"));
+
+    clawt_venture_bridge_poll(fixture.daemon->venture);
+
+    for (i = 0; i < fixture.sent->len; i++) {
+        if (g_strcmp0(g_ptr_array_index(fixture.sent, i),
+                      "GET https://books.example/api/v1/confirmations") == 0)
+            polls++;
+    }
+
+    g_assert_cmpuint(polls, ==, 1);
 
     daemon_fixture_teardown(&fixture);
 }
@@ -1345,6 +1451,10 @@ test_answering_a_decision_reaches_venture(void)
     g_autoptr(JsonBuilder) builder = NULL;
 
     daemon_fixture_setup(&fixture);
+
+    /* Who the connector is, first: nothing is routed until it says. */
+    clawt_venture_bridge_poll(fixture.daemon->venture);
+    g_ptr_array_set_size(fixture.sent, 0);
 
     g_assert_cmpuint(clawt_venture_bridge_ingest(fixture.daemon->venture,
                                                  "books", body, -1, NULL),
@@ -1829,6 +1939,8 @@ main(int argc, char **argv)
 
     g_test_add_func("/venture/configured-connector-becomes-a-source",
                     test_a_configured_connector_becomes_a_source);
+    g_test_add_func("/venture/per-agent-tokens-a-source-each",
+                    test_per_agent_tokens_are_a_source_each);
     g_test_add_func("/venture/answering-reaches-venture",
                     test_answering_a_decision_reaches_venture);
 

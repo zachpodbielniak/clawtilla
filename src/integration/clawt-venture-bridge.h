@@ -19,6 +19,14 @@
  * The match is on the decision *store* rather than on a set held here,
  * because a daemon that restarted still must not raise everything again.
  *
+ * Several connectors can name one server -- one per agent, each with its
+ * own token -- and VENTURE's queue is install-wide: every viewer sees
+ * every card.  So sources that share a base URL are one *instance*, its
+ * queue is read once per tick, and each card is filed with the source
+ * that staged it: the one whose `GET /api/v1/whoami` actor (or username)
+ * is the card's `origin.name`.  Its answer goes out with that source's
+ * token and no other.
+ *
  * The transport is a function the owner installs.  That is not a test
  * seam bolted on: the daemon is the only thing in the tree that holds a
  * #SoupSession on the main context, and a bridge that dialled for
@@ -49,9 +57,10 @@ G_DECLARE_FINAL_TYPE(ClawtVentureBridge, clawt_venture_bridge,
 /**
  * ClawtVentureRequestFunc:
  * @bridge: the bridge that wants it sent
+ * @request_id: which request this is, never 0
  * @method: `GET` or `POST`
  * @url: where to send it
- * @token: the bearer token for that instance
+ * @token: the bearer token for the source sending it
  * @user_data: data passed to clawt_venture_bridge_set_request_func()
  *
  * Sends one request on the bridge's behalf.
@@ -60,7 +69,13 @@ G_DECLARE_FINAL_TYPE(ClawtVentureBridge, clawt_venture_bridge,
  * context, and a synchronous HTTP call there stalls every agent's
  * messages for as long as venture takes to answer.  Whenever it
  * finishes, it calls clawt_venture_bridge_complete() with the same
- * @url.
+ * @request_id -- once, and from the bridge's context.  It may do so
+ * before it returns.
+ *
+ * The id rather than the URL, because a URL does not say who asked:
+ * fifteen connectors on one server send the same `GET` with fifteen
+ * tokens, and a response matched by URL belongs to whichever source a
+ * hash table happened to list first.
  *
  * @token is live credential material.  It must not be logged, stored,
  * or put anywhere a client can read -- it exists in this signature
@@ -68,6 +83,7 @@ G_DECLARE_FINAL_TYPE(ClawtVentureBridge, clawt_venture_bridge,
  * it, and an argv would be world-readable.
  */
 typedef void (*ClawtVentureRequestFunc)(ClawtVentureBridge *bridge,
+                                        guint               request_id,
                                         const gchar        *method,
                                         const gchar        *url,
                                         const gchar        *token,
@@ -116,12 +132,17 @@ void clawt_venture_bridge_set_request_func(ClawtVentureBridge      *self,
  * @token: (nullable): its bearer token
  * @agent_id: (nullable): who decisions from it are filed against
  *
- * Adds or replaces one venture server to poll.
+ * Adds or replaces one venture connector to poll.
  *
  * Replacing rather than adding a second entry, because the instance
  * name is what the decision ids are keyed by: two sources under one
  * name would raise one another's cards and answer to whichever was
  * asked last.
+ *
+ * Several sources may share @base_url; they are one instance, polled
+ * once, and each is asked `whoami` so the cards on it can be told
+ * apart.  A replaced source is asked again, because a new token can be
+ * somebody else.
  */
 void clawt_venture_bridge_set_source(ClawtVentureBridge *self,
                                      const gchar        *name,
@@ -189,8 +210,9 @@ void clawt_venture_bridge_stop(ClawtVentureBridge *self);
  * clawt_venture_bridge_poll:
  * @self: a #ClawtVentureBridge
  *
- * Asks every source for its queue now, and retries any answer that has
- * not landed yet.
+ * Asks every instance for its queue now -- once per server, however
+ * many connectors share it -- asks any source not yet identified who it
+ * is, and retries any answer that has not landed yet.
  *
  * Public so the timer is not the only way in -- a reload wants a poll
  * without waiting out the interval.
@@ -200,12 +222,27 @@ void clawt_venture_bridge_poll(ClawtVentureBridge *self);
 /**
  * clawt_venture_bridge_ingest:
  * @self: a #ClawtVentureBridge
- * @source: the instance the body came from
+ * @source: any source on the instance the body came from
  * @json: the body of `GET /api/v1/confirmations`
  * @length: how many bytes of @json, or -1 if NUL-terminated
  * @error: (out) (optional): return location for a #GError
  *
  * Turns one poll's answer into decisions.
+ *
+ * @source names the server, not the owner: the queue is install-wide,
+ * so every card is routed to the source on that instance whose `whoami`
+ * actor (or username) is the card's `origin.name`, and filed against
+ * that source's agent under that source's decision id.  A card nobody
+ * here staged -- a person's, the operator's own service token's, or one
+ * whose origin matches no source or more than one -- is not filed at
+ * all; see the comment on owner_for() in the source for why.
+ *
+ * A source that has not answered `whoami` yet holds up only its own
+ * cards: a card whose actor names an identified source is routed at
+ * once, since an actor names one token.  A card that matches nobody
+ * while any source on the instance is still unidentified is held
+ * quietly (it may be that source's), and is called nobody's only once
+ * every source has answered.
  *
  * A card whose decision is already in the store is skipped, so polling
  * is idempotent.  A card whose decision was *answered* while venture
@@ -229,7 +266,11 @@ guint clawt_venture_bridge_ingest(ClawtVentureBridge  *self,
  * @answer: what the person said
  *
  * Sends an operator's answer back to venture, if that decision was one
- * of ours.
+ * of ours -- with the token of the source that staged the card, which
+ * the last poll of its instance established.  If no poll has yet (the
+ * daemon has just started), nothing is sent now: the next poll finds
+ * the decision answered while venture still holds the card, and sends
+ * it then, with the right token.
  *
  * Queued rather than sent and forgotten: a POST that fails is retried
  * on the next poll, because an answer that vanished would leave the
@@ -245,12 +286,19 @@ gboolean clawt_venture_bridge_answer(ClawtVentureBridge *self,
 /**
  * clawt_venture_bridge_complete:
  * @self: a #ClawtVentureBridge
- * @url: the request that finished
- * @body: (nullable): what came back, for a poll
+ * @request_id: the id the #ClawtVentureRequestFunc was given
+ * @body: (nullable): what came back, for a `GET`
  * @length: how many bytes of @body, or -1 if NUL-terminated
  * @error: (nullable): why it failed, or %NULL if it did not
  *
  * The transport reporting back.
+ *
+ * The id finds what was asked and by whom, so responses may arrive in
+ * any order.  An id the bridge no longer knows -- completed twice, or
+ * never issued -- is ignored.  A source replaced or removed while its
+ * request was out is followed by name, and a `whoami` or health answer
+ * meant for the token it had before is dropped rather than credited to
+ * the new one.
  *
  * A failed poll is dropped -- the next one asks again.  A failed answer
  * stays queued.  The two are different because a poll is a question
@@ -258,7 +306,7 @@ gboolean clawt_venture_bridge_answer(ClawtVentureBridge *self,
  * once.
  */
 void clawt_venture_bridge_complete(ClawtVentureBridge *self,
-                                   const gchar        *url,
+                                   guint               request_id,
                                    const gchar        *body,
                                    gssize              length,
                                    const GError       *error);
@@ -293,5 +341,19 @@ const gchar *clawt_venture_bridge_pending_answer_url(ClawtVentureBridge *self,
  */
 ClawtVentureStaging clawt_venture_bridge_get_staging(ClawtVentureBridge *self,
                                                      const gchar        *name);
+
+/**
+ * clawt_venture_bridge_get_actor:
+ * @self: a #ClawtVentureBridge
+ * @name: the source, by connector instance name
+ *
+ * Who VENTURE says a source's token is, as `GET /api/v1/whoami` put it
+ * (e.g. `API token #12`).
+ *
+ * Returns: (transfer none) (nullable): the actor, or %NULL until whoami
+ *   has answered or if it named none
+ */
+const gchar *clawt_venture_bridge_get_actor(ClawtVentureBridge *self,
+                                            const gchar        *name);
 
 G_END_DECLS

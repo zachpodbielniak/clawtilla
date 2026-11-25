@@ -510,7 +510,7 @@ venture-books-a3f9c118  bookkeeper
 $ clawtilla decision answer venture-books-a3f9c118 approve
 #+end_src
 
-Answering posts to =/api/v1/confirmations/<id>/approve= or =/reject=.
+Answering posts to =/api/v1/confirmations/<id>/approve= or =/reject=, with the token of the connector whose agent staged the change.
 
 *** The fields are used honestly
 
@@ -558,7 +558,7 @@ VENTURE for somebody to find in its own web interface.
 
 *** Whether the server stages at all
 
-The first poll of each connector also asks =GET /api/v1/health=.  A
+The first poll of each connector also asks =GET /api/v1/health= (and =GET /api/v1/whoami=, below).  A
 VENTURE too old for =?stage=1= *ignores* the parameter and applies the
 write, answering as if all was well -- so a bridge that only read the
 queue would show an empty inbox while the books changed underneath it.
@@ -567,6 +567,19 @@ the connector's health check (the row in every client, and ~clawtilla
 integration health AGENT~) turns red with "this VENTURE server does not stage
 writes".  A probe that could not reach the server is asked again on the
 next poll rather than remembered as "does not stage".
+
+*** Several connectors on one server: each card goes to the agent that staged it
+
+The usual fleet has one VENTURE server and one venture connector per agent, each with its own token. VENTURE's queue is install-wide -- every token that can read it sees every card -- so the bridge treats connectors that share a base URL (however it is spelt, trailing slash or not) as one *instance*:
+
+- *One read per instance per poll.* The queue is fetched once, however many connectors point at the server, with the token of the first connector by name whose whoami has answered -- the first by name at all only at startup, before any has -- so a revoked token cannot leave the server unread.
+- *Each connector says who it is.* The first poll of each connector asks =GET /api/v1/whoami= -- once, and again only after a failure, like the health probe -- and keeps the =actor= (=API token #12=) and the user's =username=.
+- *Each card is routed by its requester.* A confirmation carries ~origin.name~, which for a token is that token's actor. The card is filed once, against the agent whose connector's actor matches it (or, failing that, whose username does, unless the origin is a person, =kind: user=), under that connector's decision id, =venture-<connector>-<card>=. Its answer is posted with that connector's token and no other -- one agent's token never answers another agent's card.
+- *A connector that has not said who it is holds up only its own cards.* An actor names one token, so a card whose actor matches an identified connector is filed at once, whoever else is still unidentified. (The one exception is the same token configured under two connector names, which =clawtilla integration list= already warns about.) The username fallback waits until every connector on the server has answered, since an unidentified one could share the username. A card that matches nobody while anybody is unidentified is held quietly, since it may be theirs, and filed the tick they answer. A connector whose whoami keeps failing is logged once.
+- *A card no connector here staged is not raised* -- said only once every connector on the server has answered whoami. A person's change typed into VENTURE, the operator's own service token's, a card with no origin, or one whose origin matches two connectors (one token configured twice) goes to no agent and is not put in the inbox either: every token clawtilla holds belongs to an agent that did not stage it, so an answer given here could not be delivered honestly. It is logged once and left for VENTURE's own queue.
+- *A connector with a token per agent* (one entry with =per_agent=) is one source per token: the first agent keeps the connector's name, the others are =<name>/<agent>= -- in decision ids, =venture-<name>_<agent>-<card>=.
+
+*Upgrading over decisions filed by URL.* Daemons before this change matched every response by URL, so on a shared server every card was filed under whichever connector the hash table listed first -- =venture-<that connector>-<card>=. The first poll after upgrading looks for a card's decision under every connector on its server before raising a new one: a card already answered under an old id is delivered (with the owner's token), not asked again, and one still open is not given a twin. Answering an old-id decision afterwards goes out with the owner's token too.
 
 A confirmation already raised is matched on its own id, so the same
 card polled every minute for an hour is one decision, not sixty.  The

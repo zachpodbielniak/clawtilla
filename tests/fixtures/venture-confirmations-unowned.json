@@ -1,0 +1,37 @@
+[
+  {
+    "id": "c-stranger",
+    "summary": "Delete contact \"Somebody\"",
+    "action": "delete",
+    "state": "pending",
+    "type": "contact",
+    "label": "Somebody",
+    "record_id": 3,
+    "origin": { "kind": "import", "name": "API token #9", "via": "rest-api" },
+    "created_at": "2026-11-24T10:02:00Z",
+    "expires_at": "2026-11-24T11:02:00Z"
+  },
+  {
+    "id": "c-person",
+    "summary": "Update company \"Acme\"",
+    "action": "update",
+    "state": "pending",
+    "type": "company",
+    "label": "Acme",
+    "record_id": 4,
+    "origin": { "kind": "user", "name": "alpha", "via": "web" },
+    "diff": { "notes": "typed in the web interface" },
+    "created_at": "2026-11-24T10:03:00Z",
+    "expires_at": "2026-11-24T11:03:00Z"
+  },
+  {
+    "id": "c-nobody",
+    "summary": "Create expense \"Unsigned\"",
+    "action": "create",
+    "state": "pending",
+    "type": "expense",
+    "label": "Unsigned",
+    "created_at": "2026-11-24T10:04:00Z",
+    "expires_at": "2026-11-24T11:04:00Z"
+  }
+]

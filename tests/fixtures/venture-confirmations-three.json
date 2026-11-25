@@ -1,0 +1,30 @@
+[
+  {
+    "id": "c-alpha",
+    "summary": "Create expense \"Alpha's hosting\"",
+    "action": "create",
+    "state": "pending",
+    "type": "expense",
+    "origin": { "kind": "import", "name": "API token #1", "via": "rest-api" },
+    "expires_at": "2026-11-24T11:00:00Z"
+  },
+  {
+    "id": "c-beta",
+    "summary": "Update sale \"Sale #7\"",
+    "action": "update",
+    "state": "pending",
+    "type": "sale",
+    "record_id": 7,
+    "origin": { "kind": "import", "name": "API token #2", "via": "rest-api" },
+    "expires_at": "2026-11-24T11:01:00Z"
+  },
+  {
+    "id": "c-gamma",
+    "summary": "Create contact \"Gamma's lead\"",
+    "action": "create",
+    "state": "pending",
+    "type": "contact",
+    "origin": { "kind": "import", "name": "API token #3", "via": "rest-api" },
+    "expires_at": "2026-11-24T11:02:00Z"
+  }
+]

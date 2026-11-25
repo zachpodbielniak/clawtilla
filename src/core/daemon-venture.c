@@ -48,10 +48,19 @@ typedef struct {
     SoupSession *session;     /* owned */
 } VentureTransport;
 
+/*
+ * One request in flight.
+ *
+ * It carries the bridge's id for the request and nothing about who sent
+ * it: the bridge is the one that knows which source, which token and
+ * which card an id stands for, and a transport that tried to work it
+ * out again from the URL would be the bug that filed every agent's
+ * change under one of them.
+ */
 typedef struct {
-    ClawtVentureBridge *bridge;    /* reffed: a reload can replace it */
-    SoupMessage        *message;   /* reffed: the status is read from it */
-    gchar              *url;
+    ClawtVentureBridge *bridge;      /* reffed: a reload can replace it */
+    SoupMessage        *message;     /* reffed: the status is read from it */
+    guint               request_id;  /* the bridge's, handed back as is */
 } VentureRequest;
 
 static void
@@ -74,7 +83,6 @@ venture_request_free(VentureRequest *self)
 
     g_clear_object(&self->bridge);
     g_clear_object(&self->message);
-    g_free(self->url);
     g_free(self);
 }
 
@@ -144,8 +152,8 @@ on_venture_answered(GObject *source, GAsyncResult *result, gpointer user_data)
                                            &error);
 
     if (body == NULL) {
-        clawt_venture_bridge_complete(request->bridge, request->url, NULL, 0,
-                                      error);
+        clawt_venture_bridge_complete(request->bridge, request->request_id,
+                                      NULL, 0, error);
         venture_request_free(request);
         return;
     }
@@ -160,8 +168,8 @@ on_venture_answered(GObject *source, GAsyncResult *result, gpointer user_data)
     if (!status_is_settled(soup_message_get_method(request->message),
                            soup_message_get_status(request->message),
                            &error)) {
-        clawt_venture_bridge_complete(request->bridge, request->url, NULL, 0,
-                                      error);
+        clawt_venture_bridge_complete(request->bridge, request->request_id,
+                                      NULL, 0, error);
         venture_request_free(request);
         return;
     }
@@ -170,8 +178,8 @@ on_venture_answered(GObject *source, GAsyncResult *result, gpointer user_data)
         gsize length = 0;
         const gchar *data = g_bytes_get_data(body, &length);
 
-        clawt_venture_bridge_complete(request->bridge, request->url, data,
-                                      (gssize)length, NULL);
+        clawt_venture_bridge_complete(request->bridge, request->request_id,
+                                      data, (gssize)length, NULL);
     }
 
     venture_request_free(request);
@@ -189,8 +197,9 @@ on_venture_answered(GObject *source, GAsyncResult *result, gpointer user_data)
  * sent and never lands.
  */
 static void
-venture_send(ClawtVentureBridge *bridge, const gchar *method,
-             const gchar *url, const gchar *token, gpointer user_data)
+venture_send(ClawtVentureBridge *bridge, guint request_id,
+             const gchar *method, const gchar *url, const gchar *token,
+             gpointer user_data)
 {
     VentureTransport *transport = user_data;
     g_autoptr(SoupMessage) message = NULL;
@@ -205,7 +214,7 @@ venture_send(ClawtVentureBridge *bridge, const gchar *method,
 
         g_set_error(&error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
                     "'%s' is not a URL clawtilla can dial", url);
-        clawt_venture_bridge_complete(bridge, url, NULL, 0, error);
+        clawt_venture_bridge_complete(bridge, request_id, NULL, 0, error);
         return;
     }
 
@@ -225,7 +234,7 @@ venture_send(ClawtVentureBridge *bridge, const gchar *method,
     request = g_new0(VentureRequest, 1);
     request->bridge = g_object_ref(bridge);
     request->message = g_object_ref(message);
-    request->url = g_strdup(url);
+    request->request_id = request_id;
 
     context = transport->daemon->main_context;
 
@@ -266,11 +275,25 @@ clawt_daemon_venture_token_for(ClawtIntegrationBinding *binding)
     return g_strdup(token->access_token);
 }
 
+/* A token copy, wiped before it is freed. */
+static void
+venture_token_free(gpointer data)
+{
+    gchar *token = data;
+
+    if (token == NULL)
+        return;
+
+    memset((void *volatile)token, 0, strlen(token));
+    g_free(token);
+}
+
 void
 clawt_daemon_venture_sync(ClawtDaemon *self)
 {
     GPtrArray *agents;
     g_autoptr(GPtrArray) catalog = NULL;
+    g_autoptr(GHashTable) bound = NULL;
     g_autofree gchar *overlay_dir = NULL;
     guint interval = 0;
     guint i;
@@ -291,6 +314,10 @@ clawt_daemon_venture_sync(ClawtDaemon *self)
     catalog = clawt_connector_catalog_load(overlay_dir, NULL);
     agents = clawt_config_get_agents(self->config);
 
+    /* Connector name -> the token its first source was bound with. */
+    bound = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                  venture_token_free);
+
     for (i = 0; agents != NULL && i < agents->len; i++) {
         ClawtAgentConfig *agent = g_ptr_array_index(agents, i);
         g_autoptr(GPtrArray) bindings =
@@ -301,6 +328,8 @@ clawt_daemon_venture_sync(ClawtDaemon *self)
             ClawtIntegrationBinding *binding = g_ptr_array_index(bindings, b);
             const ClawtConnectorInfo *info;
             const gchar *name;
+            const gchar *first;
+            g_autofree gchar *source_name = NULL;
             g_autofree gchar *base = NULL;
             g_autofree gchar *token = NULL;
             gint64 seconds;
@@ -336,18 +365,6 @@ clawt_daemon_venture_sync(ClawtDaemon *self)
 
             name = clawt_integration_binding_get_name(binding);
 
-            /*
-             * The first agent that has it wins, in fleet order.  A
-             * shared instance covering several agents is already a
-             * warning -- venture audits by actor and the connector
-             * declares `token_file` as an identity key -- and there is
-             * genuinely no way to tell from a card which of them staged
-             * it, since they are one actor to venture.  Deterministic
-             * beats arbitrary: whichever agent the file lists first.
-             */
-            if (clawt_venture_bridge_has_source(self->venture, name))
-                continue;
-
             base = clawt_connector_resolve_url(
                 info, "",
                 clawt_integration_binding_get_string(binding, "instance"));
@@ -369,9 +386,54 @@ clawt_daemon_venture_sync(ClawtDaemon *self)
                 continue;
             }
 
+            /*
+             * One connector name covering several agents is one of two
+             * things, and the token says which.
+             *
+             * The same token for all of them (`scope: all`, no
+             * `per_agent`) is one actor to venture -- already a warning,
+             * since the connector declares `token_file` as an identity
+             * key -- and there is genuinely no way to tell from a card
+             * which of them staged it.  The first agent that has it
+             * wins, in fleet order: deterministic beats arbitrary.
+             *
+             * A token each (`per_agent`) is several identities that
+             * share a config entry, and each must be a source of its
+             * own -- or the bridge, routing every card by who staged
+             * it, would find no source for the second agent's cards
+             * and raise none of them.  The first keeps the plain name,
+             * so its decision ids are what they always were; the rest
+             * are `<name>/<agent>`.
+             *
+             * Several connector *names* on one server, one per agent,
+             * need none of this: each is its own source already, and
+             * the bridge reads that server's queue once and files each
+             * card with the source whose token staged it.
+             */
+            first = g_hash_table_lookup(bound, name);
+
+            if (first == NULL) {
+                source_name = g_strdup(name);
+                g_hash_table_insert(bound, g_strdup(name), g_strdup(token));
+            } else if (g_strcmp0(first, token) == 0) {
+                memset((void *volatile)token, 0, strlen(token));
+                continue;
+            } else {
+                source_name = g_strdup_printf(
+                    "%s/%s", name,
+                    clawt_integration_binding_get_agent_id(binding));
+            }
+
+            if (clawt_venture_bridge_has_source(self->venture, source_name)) {
+                memset((void *volatile)token, 0, strlen(token));
+                continue;
+            }
+
             clawt_venture_bridge_set_source(
-                self->venture, name, base, token,
+                self->venture, source_name, base, token,
                 clawt_integration_binding_get_agent_id(binding));
+
+            memset((void *volatile)token, 0, strlen(token));
 
             seconds = clawt_integration_binding_get_int(binding,
                                                         "poll_seconds");

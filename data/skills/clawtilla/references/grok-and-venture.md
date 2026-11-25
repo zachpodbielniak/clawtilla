@@ -1,6 +1,6 @@
 # Grok bots and the VENTURE mirror
 
-Two bridges to systems outside the fleet. A Grok bot is someone agents hand work to; the VENTURE mirror copies the fleet's tasks into VENTURE tickets. The VENTURE *connector* (an agent's `venture_*` tools, staged writes as decisions) is in [connectors.md](connectors.md). Keys: [config-keys.md](config-keys.md) (`grok.*`, `integrations.*`, `projects.venture_*`).
+Two bridges to systems outside the fleet. A Grok bot is someone agents hand work to; the VENTURE mirror copies the fleet's tasks into VENTURE tickets. The VENTURE *connector* (an agent's `venture_*` tools, staged writes as decisions) is in [connectors.md](connectors.md); on a shared VENTURE server each staged-write decision lands with the agent that staged it (matched by `whoami` actor against the card's `origin.name`), never with whichever connector polled. Keys: [config-keys.md](config-keys.md) (`grok.*`, `integrations.*`, `projects.venture_*`).
 
 Source docs: docs/grok.org, docs/venture.org, docs/venture-setup.org. Code: src/integration/clawt-grok*.c, src/integration/clawt-venture-mirror.c.
 

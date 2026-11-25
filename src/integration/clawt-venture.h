@@ -266,6 +266,40 @@ ClawtVentureStaging clawt_venture_health_parse(const gchar  *body,
                                                GError      **error);
 
 /**
+ * clawt_venture_whoami_url:
+ * @base: the instance
+ *
+ * Returns: (transfer full) (nullable): where a token learns who it is
+ */
+gchar *clawt_venture_whoami_url(const gchar *base);
+
+/**
+ * clawt_venture_whoami_parse:
+ * @body: (array length=length): the answer
+ * @length: its length, or -1 if NUL-terminated
+ * @out_actor: (out) (transfer full) (optional) (nullable): the actor,
+ *   e.g. `API token #12`
+ * @out_username: (out) (transfer full) (optional) (nullable): the
+ *   VENTURE user the token belongs to
+ * @error: (out) (optional): why it could not be read
+ *
+ * Who a token is, read from `GET /api/v1/whoami`.
+ *
+ * The actor is what VENTURE writes into a confirmation's `origin.name`
+ * when that token stages a write, which is how the bridge tells one
+ * agent's card from another's on a server they share.  Either may be
+ * %NULL in an answer that parsed: VENTURE said who it is, just not in
+ * a field this reads.
+ *
+ * Returns: %TRUE if @body was a whoami answer at all
+ */
+gboolean clawt_venture_whoami_parse(const gchar  *body,
+                                    gssize        length,
+                                    gchar       **out_actor,
+                                    gchar       **out_username,
+                                    GError      **error);
+
+/**
  * clawt_venture_business_events_url:
  * @base: the instance
  * @organization_id: which organization, or 0 to name none
