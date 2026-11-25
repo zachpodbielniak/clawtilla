@@ -1333,6 +1333,139 @@ test_session_timeout_minutes_render_replaces_zero_and_below_negative_one(void)
 }
 
 /*
+ * session.max_sessions reaches libreclaw: render, write, and read the
+ * number back through libreclaw's own parser -- the number its session
+ * manager is built with, not a string in a file.
+ *
+ * clawtilla had no such key, so every agent ran on libreclaw's default
+ * of ten whatever its operator wanted, and a chief of staff that speaks
+ * in more rooms than that could not be given room for them.
+ */
+static void
+test_session_max_sessions_reaches_libreclaw(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-cfg-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "rendered.yaml", NULL);
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: busy\n"
+        "    session:\n"
+        "      max_sessions: 25\n", &error);
+    g_autoptr(LcConfig) parsed = lc_config_new();
+    GPtrArray *agents;
+    g_autofree gchar *rendered = NULL;
+
+    g_assert_no_error(error);
+    g_assert_true(clawt_config_validate(config, &error));
+    g_assert_no_error(error);
+    agents = clawt_config_get_agents(config);
+
+    rendered = clawt_config_render_agent(
+        config, g_ptr_array_index(agents, 0),
+        "/tmp/s.sock", "/tmp/state", &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(rendered);
+
+    g_assert_true(g_file_set_contents(path, rendered, -1, &error));
+    g_assert_no_error(error);
+    g_assert_true(lc_config_load_from_path(parsed, path, &error));
+    g_assert_no_error(error);
+
+    g_assert_cmpint(lc_config_get_max_sessions(parsed), ==, 25);
+
+    clawt_test_remove_tree(dir);
+}
+
+/* Unset, the default is stated rather than left to libreclaw. */
+static void
+test_session_max_sessions_unset_renders_the_default(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n  - id: plain\n", &error);
+    GPtrArray *agents;
+    g_autofree gchar *rendered = NULL;
+
+    g_assert_no_error(error);
+    agents = clawt_config_get_agents(config);
+
+    rendered = clawt_config_render_agent(
+        config, g_ptr_array_index(agents, 0),
+        "/tmp/s.sock", "/tmp/state", NULL);
+
+    g_assert_nonnull(strstr(rendered, "\n  max_sessions: 10\n"));
+}
+
+/*
+ * libreclaw's session manager takes only a positive count
+ * (g_return_val_if_fail(max_sessions > 0) in lc_session_manager_new()),
+ * into a gint.
+ */
+static void
+test_session_max_sessions_validate_rejects_impossible_counts(void)
+{
+    static const gchar *const values[] = { "0", "-3", "2147483648" };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(values); i++) {
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *yaml = g_strdup_printf(
+            "agents:\n"
+            "  - id: impossible\n"
+            "    session:\n"
+            "      max_sessions: %s\n", values[i]);
+        g_autoptr(ClawtConfig) config =
+            clawt_config_load_from_string(yaml, &error);
+
+        g_assert_no_error(error);
+        g_assert_false(clawt_config_validate(config, &error));
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID);
+        g_assert_nonnull(strstr(error->message, "session.max_sessions"));
+    }
+}
+
+/*
+ * The daemon does not validate on load or reload, so the render is what
+ * every path to config.yaml runs -- and, like session.timeout_minutes,
+ * it reports an impossible count and states the default instead of
+ * refusing the agent.
+ */
+static void
+test_session_max_sessions_render_replaces_impossible_counts(void)
+{
+    static const gchar *const values[] = { "0", "-3" };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(values); i++) {
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *yaml = g_strdup_printf(
+            "agents:\n"
+            "  - id: impossible\n"
+            "    session:\n"
+            "      max_sessions: %s\n", values[i]);
+        g_autoptr(ClawtConfig) config =
+            clawt_config_load_from_string(yaml, &error);
+        GPtrArray *agents;
+        g_autofree gchar *rendered = NULL;
+
+        g_assert_no_error(error);
+        agents = clawt_config_get_agents(config);
+
+        g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+                              "*session.max_sessions*");
+        rendered = clawt_config_render_agent(
+            config, g_ptr_array_index(agents, 0),
+            "/tmp/s.sock", "/tmp/state", &error);
+        g_test_assert_expected_messages();
+
+        g_assert_no_error(error);
+        g_assert_nonnull(rendered);
+        g_assert_nonnull(strstr(rendered, "\n  max_sessions: 10\n"));
+    }
+}
+
+/*
  * The routing mode reaches the agent's own config.yaml, and libreclaw
  * understands every value clawtilla can render.
  *
@@ -2969,6 +3102,18 @@ main(int argc, char *argv[])
     g_test_add_func(
         "/config/session-timeout-minutes/render-replaces-zero-and-below-negative-one",
         test_session_timeout_minutes_render_replaces_zero_and_below_negative_one);
+    g_test_add_func(
+        "/config/session-max-sessions/reaches-libreclaw",
+        test_session_max_sessions_reaches_libreclaw);
+    g_test_add_func(
+        "/config/session-max-sessions/unset-renders-the-default",
+        test_session_max_sessions_unset_renders_the_default);
+    g_test_add_func(
+        "/config/session-max-sessions/validate-rejects-impossible-counts",
+        test_session_max_sessions_validate_rejects_impossible_counts);
+    g_test_add_func(
+        "/config/session-max-sessions/render-replaces-impossible-counts",
+        test_session_max_sessions_render_replaces_impossible_counts);
     g_test_add_func(
         "/config/routing-mode-survives-the-render-parse-round-trip",
         test_routing_mode_survives_the_render_parse_round_trip);

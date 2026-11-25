@@ -3759,6 +3759,30 @@ static const ClawtSchemaEntry schema[] = {
   "This is libreclaw's own value (its session.timeout_minutes); the\n"
   "daemon renders this straight through.", "0.7.5" },
 
+{ "agents.session.max_sessions", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "10", NULL,
+  "How many sessions this agent keeps live at once.\n"
+  "\n"
+  "Every conversation the routing mode tells apart is a session -- each\n"
+  "room under room, each (room, sender) pair under sender-room -- and\n"
+  "with timeout_minutes: -1 a session is never reaped, so an agent that\n"
+  "speaks in many rooms fills this quickly: the operator's room, each\n"
+  "peer, each task room, each linked fleet. Past the limit libreclaw\n"
+  "parks the least recently used idle session to make room, and resumes\n"
+  "its conversation when that room speaks again; a message that finds\n"
+  "every session mid-turn waits for one to finish. Raise this for an\n"
+  "agent that should keep more conversations warm at once -- each live\n"
+  "session can run a turn, so it is also how many turns this agent may\n"
+  "have running together.\n"
+  "\n"
+  "A positive whole number. `clawtilla config validate` rejects 0, a\n"
+  "negative number or one too large for libreclaw, and if one reaches\n"
+  "the daemon anyway it is reported with a warning and replaced with 10\n"
+  "in the rendered config.\n"
+  "\n"
+  "This is libreclaw's own value (its session.max_sessions); the daemon\n"
+  "renders this straight through.", "0.77.2" },
+
 { "agents.runtime", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "How this agent's libreclaw instance is hosted.", "0.1.0" },
 

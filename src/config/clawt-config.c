@@ -4413,6 +4413,22 @@ validate_session_timeout_minutes(gint64 value, const gchar *key, GError **error)
 	return FALSE;
 }
 
+/*
+ * libreclaw's session manager takes only a positive count of sessions,
+ * into a gint (g_return_val_if_fail(max_sessions > 0) in
+ * lc_session_manager_new()).
+ */
+static gboolean
+validate_session_max_sessions(gint64 value, const gchar *key, GError **error)
+{
+	if (value > 0 && value <= G_MAXINT)
+		return TRUE;
+	g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+		"%s must be a positive number of sessions no greater than %d; "
+		"got %" G_GINT64_FORMAT, key, G_MAXINT, value);
+	return FALSE;
+}
+
 /* Thresholds must have one exact value; reject signs, fractions and overflow. */
 static gboolean
 validate_daily_limit(const gchar *value, const gchar *key, GError **error)
@@ -4492,11 +4508,17 @@ clawt_config_validate(ClawtConfig *self, GError **error)
 		g_autofree gchar *timeout_key = g_strdup_printf(
 			"agent %s session.timeout_minutes",
 			clawt_agent_config_get_id(agent));
+		g_autofree gchar *max_sessions_key = g_strdup_printf(
+			"agent %s session.max_sessions",
+			clawt_agent_config_get_id(agent));
 		if (!validate_daily_limit(clawt_agent_config_get_string(agent,
 			"daily_agent_budget_micros"), budget_key, error))
 			return FALSE;
 		if (!validate_session_timeout_minutes(clawt_agent_config_get_int(agent,
 			"session.timeout_minutes"), timeout_key, error))
+			return FALSE;
+		if (!validate_session_max_sessions(clawt_agent_config_get_int(agent,
+			"session.max_sessions"), max_sessions_key, error))
 			return FALSE;
 	}
 

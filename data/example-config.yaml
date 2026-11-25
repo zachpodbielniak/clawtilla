@@ -3472,6 +3472,29 @@ agents:
       # daemon renders this straight through.
       timeout_minutes: 30
 
+      # How many sessions this agent keeps live at once.
+      #
+      # Every conversation the routing mode tells apart is a session -- each
+      # room under room, each (room, sender) pair under sender-room -- and
+      # with timeout_minutes: -1 a session is never reaped, so an agent that
+      # speaks in many rooms fills this quickly: the operator's room, each
+      # peer, each task room, each linked fleet. Past the limit libreclaw
+      # parks the least recently used idle session to make room, and resumes
+      # its conversation when that room speaks again; a message that finds
+      # every session mid-turn waits for one to finish. Raise this for an
+      # agent that should keep more conversations warm at once -- each live
+      # session can run a turn, so it is also how many turns this agent may
+      # have running together.
+      #
+      # A positive whole number. `clawtilla config validate` rejects 0, a
+      # negative number or one too large for libreclaw, and if one reaches
+      # the daemon anyway it is reported with a warning and replaced with 10
+      # in the rendered config.
+      #
+      # This is libreclaw's own value (its session.max_sessions); the daemon
+      # renders this straight through.
+      max_sessions: 10
+
     # How this agent's libreclaw instance is hosted.
     runtime:
 

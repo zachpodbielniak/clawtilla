@@ -315,6 +315,7 @@ agents:
     session:
       routing_mode: sender-room
       timeout_minutes: 60
+      max_sessions: 10
 
     runtime:
       type: process          # process | embedded
@@ -504,6 +505,27 @@ over a setting.
 Set it as a first-class agent key, *not* through the ~libreclaw:~
 passthrough below -- ~session:~ is one of the sections clawtilla renders
 itself, and a passthrough that redeclares it is refused (see below).
+
+*** How many sessions an agent keeps
+
+~session.max_sessions~ is libreclaw's own limit on live sessions, rendered
+straight through into ~session.max_sessions~ in the agent's
+~config.yaml~.  The default is ~10~, libreclaw's own.
+
+Every conversation the routing mode tells apart is a session, and with
+~timeout_minutes: -1~ none is ever reaped -- so an agent that speaks in
+many rooms (its operator, each peer, each task room, each linked fleet)
+reaches the limit.  At the limit libreclaw parks the least recently used
+idle session and resumes its conversation when that room speaks again; a
+message that finds every session mid-turn waits for one to finish.  Each
+live session can run a turn, so the limit is also how many turns the
+agent may have running at once.
+
+~clawtilla config validate~ rejects ~0~, a negative count, or one larger
+than libreclaw's session manager takes.  If one reaches the daemon anyway
+it is reported with a warning and replaced with ~10~ in the rendered
+config.  As with the timeout, set it as an agent key, not through the
+passthrough.
 
 *** The libreclaw passthrough
 

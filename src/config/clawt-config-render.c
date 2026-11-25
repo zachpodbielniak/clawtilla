@@ -22,6 +22,13 @@
  */
 #define CLAWT_SESSION_TIMEOUT_MINUTES_DEFAULT (30)
 
+/*
+ * libreclaw's own default for session.max_sessions
+ * (lc_config_get_max_sessions()), used when the configured count is one
+ * its session manager would refuse.
+ */
+#define CLAWT_SESSION_MAX_SESSIONS_DEFAULT (10)
+
 gchar *
 clawt_config_agent_state_dir(ClawtConfig *config, const gchar *agent_id)
 {
@@ -1428,6 +1435,35 @@ clawt_config_render_agent(ClawtConfig       *config,
             }
 
             append_key_int(out, 2, "timeout_minutes", timeout_minutes);
+        }
+
+        /*
+         * How many sessions libreclaw keeps live, rendered from
+         * `agents.session.max_sessions` -- written at the default too,
+         * for the reason the two above are.
+         *
+         * lc_session_manager_new() takes only a positive count, into a
+         * gint, and libreclaw's own getter turns anything else into its
+         * default without a word; reported and replaced here instead,
+         * for the reason session.timeout_minutes is: validate is not run
+         * on load or reload, and refusing would take the agent out of
+         * the fleet over a setting.
+         */
+        {
+            gint64 max_sessions = clawt_agent_config_get_int(
+                agent, "session.max_sessions");
+
+            if (max_sessions <= 0 || max_sessions > G_MAXINT) {
+                g_warning("agent %s: session.max_sessions: %"
+                          G_GINT64_FORMAT " is not a positive number of "
+                          "sessions libreclaw's session manager can take. "
+                          "Using %d instead; fix it in the config to "
+                          "silence this.", clawt_agent_config_get_id(agent),
+                          max_sessions, CLAWT_SESSION_MAX_SESSIONS_DEFAULT);
+                max_sessions = CLAWT_SESSION_MAX_SESSIONS_DEFAULT;
+            }
+
+            append_key_int(out, 2, "max_sessions", max_sessions);
         }
 
         g_string_append(out, "\n");

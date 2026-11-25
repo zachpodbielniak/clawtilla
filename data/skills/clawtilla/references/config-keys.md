@@ -538,6 +538,7 @@ see security.md).
 | `agents.session` | section |  |  | How this agent's conversations map to AI sessions. |
 | `agents.session.routing_mode` | enum | `sender-room` |  | How many context windows this agent is. |
 | `agents.session.timeout_minutes` | integer | `30` |  | Minutes of inactivity before libreclaw drops this agent's session. |
+| `agents.session.max_sessions` | integer | `10` |  | How many sessions this agent keeps live at once. |
 | `agents.runtime` | section |  |  | How this agent's libreclaw instance is hosted. |
 | `agents.runtime.type` | enum | `process` |  | process or embedded. |
 | `agents.runtime.confine` | enum |  |  | Run this agent's own CLI inside a bubblewrap sandbox: none or bwrap. Defaults to defaults.confine. |
