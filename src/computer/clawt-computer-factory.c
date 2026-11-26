@@ -611,6 +611,16 @@ create_for(ClawtAgentConfig  *agent_config,
                                            "computer.container.keep"));
 
         /*
+         * podman's init as PID 1, so orphans are reaped (on by default).
+         * The config refused anything but a boolean already, so the
+         * lenient read cannot turn a typo into "off".
+         */
+        clawt_container_computer_set_init(
+            CLAWT_CONTAINER_COMPUTER(computer),
+            clawt_agent_config_get_boolean(agent_config,
+                                           CLAWT_CONTAINER_INIT_KEY));
+
+        /*
          * The SELinux level, decided when the object is built because
          * that is the only moment it can matter: podman takes it at
          * create and never again.  A team pair is allocated here the

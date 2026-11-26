@@ -4385,6 +4385,27 @@ static const ClawtSchemaEntry schema[] = {
   "`config validate` warns when two containers share a writable folder\n"
   "at different levels.", "0.78.0" },
 
+{ "agents.computer.container.init", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_NONE, "true", NULL,
+  "Run podman's init (catatonit) as the container's PID 1.\n"
+  "\n"
+  "Without it PID 1 is the container's command -- sleep infinity by\n"
+  "default -- which never waits for anything, so every process orphaned\n"
+  "when a process tree is killed (an interrupted build, a cancelled\n"
+  "turn) stays a zombie until the container stops. With it, catatonit\n"
+  "is PID 1, runs the command as its child and reaps whatever is\n"
+  "re-parented to it.\n"
+  "\n"
+  "On by default. It needs catatonit on the host: Fedora's catatonit\n"
+  "package, which podman pulls in (/usr/libexec/podman/catatonit).\n"
+  "\n"
+  "Applied when the container is created. A kept container whose setting\n"
+  "differs -- every one made before this key existed -- is recreated by\n"
+  "its next start, once, with the reason in the log and on the Fleet\n"
+  "page; anything installed inside it is lost. A value that is not a\n"
+  "boolean disables the agent with the reason rather than reading as\n"
+  "false.", "0.78.0" },
+
 /* ── agents.computer.ssh ─────────────────────────────────────────── */
 { "agents.computer.ssh", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,

@@ -2434,6 +2434,124 @@ test_selinux_level_at_load(void)
     }
 }
 
+/* ── computer.container.init ────────────────────────────────────── */
+
+/* One container agent with init: @value (unquoted YAML), as a whole config. */
+static ClawtConfig *
+init_config(const gchar *value)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *yaml = g_strdup_printf(
+        "agents:\n"
+        "  - id: alpha\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      container:\n"
+        "        init: %s\n", value);
+    ClawtConfig *config = clawt_config_load_from_string(yaml, &error);
+
+    g_assert_no_error(error);
+    return config;
+}
+
+/*
+ * On unless turned off; any spelling of a boolean is read; anything else
+ * disables that agent with the reason, and validation calls it an error,
+ * rather than the lenient boolean reading it as false -- which would
+ * recreate a kept container for a typo.  A shared machine's entry is
+ * checked too, and its value reaches the agents on it.
+ */
+static void
+test_container_init_key(void)
+{
+    static const gchar *const on[] = { "true", "yes", "on", "1", NULL };
+    static const gchar *const off[] = { "false", "no", "off", "0", NULL };
+    static const gchar *const bad[] = { "ture", "maybe", "\"2\"", NULL };
+    guint i;
+
+    /* Unset is the documented default: on. */
+    {
+        g_autoptr(GError) error = NULL;
+        g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+            "agents:\n  - id: alpha\n", &error);
+
+        g_assert_no_error(error);
+        g_assert_true(clawt_agent_config_get_boolean(
+            clawt_config_get_agent(config, "alpha"), CLAWT_CONTAINER_INIT_KEY));
+    }
+
+    for (i = 0; on[i] != NULL; i++) {
+        g_autoptr(ClawtConfig) config = init_config(on[i]);
+        g_autoptr(GError) error = NULL;
+        ClawtAgentConfig *agent = clawt_config_get_agent(config, "alpha");
+
+        g_assert_false(clawt_agent_config_is_shadow(agent));
+        g_assert_true(clawt_agent_config_get_boolean(agent, CLAWT_CONTAINER_INIT_KEY));
+        g_assert_true(clawt_config_validate(config, &error));
+        g_assert_no_error(error);
+    }
+
+    for (i = 0; off[i] != NULL; i++) {
+        g_autoptr(ClawtConfig) config = init_config(off[i]);
+        g_autoptr(GError) error = NULL;
+        ClawtAgentConfig *agent = clawt_config_get_agent(config, "alpha");
+
+        g_assert_false(clawt_agent_config_is_shadow(agent));
+        g_assert_false(clawt_agent_config_get_boolean(agent, CLAWT_CONTAINER_INIT_KEY));
+        g_assert_true(clawt_config_validate(config, &error));
+        g_assert_no_error(error);
+    }
+
+    for (i = 0; bad[i] != NULL; i++) {
+        g_autoptr(ClawtConfig) config = init_config(bad[i]);
+        g_autoptr(GError) error = NULL;
+        ClawtAgentConfig *agent = clawt_config_get_agent(config, "alpha");
+
+        g_assert_true(clawt_agent_config_is_shadow(agent));
+        g_assert_nonnull(strstr(clawt_agent_config_get_shadow_reason(agent),
+                                CLAWT_CONTAINER_INIT_KEY));
+        g_assert_false(clawt_config_validate(config, &error));
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID);
+        g_assert_nonnull(strstr(error->message, "agent alpha"));
+    }
+
+    /* A shared machine's entry is checked even with nobody on it. */
+    {
+        g_autoptr(GError) error = NULL;
+        g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+            "computers:\n"
+            "  - id: build\n"
+            "    type: container\n"
+            "    container:\n"
+            "      init: maybe\n", &error);
+
+        g_assert_no_error(error);
+        g_assert_false(clawt_config_validate(config, &error));
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID);
+        g_assert_nonnull(strstr(error->message, "computer build"));
+        g_assert_nonnull(strstr(error->message, "container.init"));
+    }
+
+    /* And an agent on a shared machine reads the machine's value. */
+    {
+        g_autoptr(GError) error = NULL;
+        g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+            "computers:\n"
+            "  - id: build\n"
+            "    type: container\n"
+            "    container:\n"
+            "      init: false\n"
+            "agents:\n"
+            "  - id: alpha\n"
+            "    computer:\n"
+            "      use: build\n", &error);
+
+        g_assert_no_error(error);
+        g_assert_false(clawt_agent_config_get_boolean(
+            clawt_config_get_agent(config, "alpha"), CLAWT_CONTAINER_INIT_KEY));
+    }
+}
+
 /* The SELinux warnings among @config's, in order. */
 static GPtrArray *
 selinux_warnings_of(ClawtConfig *config)
@@ -2722,6 +2840,7 @@ main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/config/container-init", test_container_init_key);
     g_test_add_func("/config/selinux-level/at-load",
                     test_selinux_level_at_load);
     g_test_add_func("/config/selinux-level/shared-folder-warns",

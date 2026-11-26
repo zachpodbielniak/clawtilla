@@ -1026,6 +1026,231 @@ out:
 	clawt_test_remove_tree(dir);
 }
 
+/* ── podman's init as PID 1 (VENTURE #20) ──────────────────────────── */
+
+/*
+ * @json, a container as inspect_json() prints it, with a HostConfig.
+ *
+ * @init is HostConfig.Init's JSON: "true" for a container made with
+ * podman's init, or anything else written there.  "" is the HostConfig
+ * podman really prints for a container made *without* one: no Init member
+ * at all, since libpod declares it `json:"Init,omitempty"` and omits it
+ * when false.  NULL leaves HostConfig out altogether.
+ */
+static gchar *
+with_init(
+	const gchar *json,
+	const gchar *init
+){
+	g_auto(GStrv) halves = NULL;
+	g_autofree gchar *member = NULL;
+
+	if (init == NULL)
+		return g_strdup(json);
+
+	halves = g_strsplit(json, "\"State\":", 2);
+	g_assert_cmpuint(g_strv_length(halves), ==, 2);
+	member = (*init == '\0')
+	         ? g_strdup("\"HostConfig\":{\"NetworkMode\":\"none\"},\"State\":")
+	         : g_strdup_printf("\"HostConfig\":{\"NetworkMode\":\"none\","
+	                           "\"Init\":%s},\"State\":", init);
+
+	return g_strconcat(halves[0], member, halves[1], NULL);
+}
+
+/* A container agent's computer, built by the factory from @yaml's alpha. */
+static ClawtComputer *
+factory_container(
+	ClawtPodBridge *bridge,
+	const gchar    *yaml
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(ClawtConfig) config = clawt_config_load_from_string(yaml, &error);
+	ClawtComputer *computer;
+
+	g_assert_no_error(error);
+	computer = clawt_computer_factory_create(clawt_config_get_agent(config, "alpha"),
+	                                         NULL, bridge, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(computer);
+	g_assert_true(CLAWT_IS_CONTAINER_COMPUTER(computer));
+
+	return computer;
+}
+
+/*
+ * The create request says init, both ways: true with the key unset --
+ * the default -- and false when the config turns it off.  Asserted on
+ * the parameters podomation is handed, since what a module older than
+ * podomation v1.0.5 does with them (it ignores the key) is not ours.
+ */
+static void
+test_init_in_create_params(
+	void
+){
+	g_autoptr(ClawtPodBridge) bridge = clawt_pod_bridge_new(NULL);
+	g_autoptr(ClawtComputer) by_default = NULL;
+	g_autoptr(ClawtComputer) turned_off = NULL;
+	g_autoptr(ClawtComputer) bare = NULL;
+	g_autoptr(GHashTable) params = NULL;
+
+	by_default = factory_container(bridge,
+		"agents:\n"
+		"  - id: alpha\n"
+		"    computer:\n"
+		"      type: container\n");
+	g_assert_true(clawt_container_computer_get_init(
+		CLAWT_CONTAINER_COMPUTER(by_default)));
+	params = clawt_container_computer_build_create_params(
+		CLAWT_CONTAINER_COMPUTER(by_default));
+	g_assert_cmpstr(g_hash_table_lookup(params, "init"), ==, "true");
+	g_clear_pointer(&params, g_hash_table_unref);
+
+	turned_off = factory_container(bridge,
+		"agents:\n"
+		"  - id: alpha\n"
+		"    computer:\n"
+		"      type: container\n"
+		"      container:\n"
+		"        init: false\n");
+	g_assert_false(clawt_container_computer_get_init(
+		CLAWT_CONTAINER_COMPUTER(turned_off)));
+	params = clawt_container_computer_build_create_params(
+		CLAWT_CONTAINER_COMPUTER(turned_off));
+	g_assert_cmpstr(g_hash_table_lookup(params, "init"), ==, "false");
+	g_clear_pointer(&params, g_hash_table_unref);
+
+	/*
+	 * An object nobody configured -- the broker's -- is off: its images
+	 * run their own entrypoints, and the key is an agent's.
+	 */
+	bare = clawt_container_computer_new("keeper", bridge, "example:1");
+	params = clawt_container_computer_build_create_params(
+		CLAWT_CONTAINER_COMPUTER(bare));
+	g_assert_cmpstr(g_hash_table_lookup(params, "init"), ==, "false");
+}
+
+/*
+ * HostConfig.Init against the wanted setting: a difference either way
+ * is a recreate, saying which way; the same is not.  A HostConfig with no
+ * Init is podman's spelling of false (the upgrade case: every container
+ * made before the setting); no HostConfig, or an Init that is not a
+ * boolean, cannot be compared and is not a reason.
+ */
+static void
+test_compare_init(
+	void
+){
+	g_autoptr(ClawtPodBridge) bridge = clawt_pod_bridge_new(NULL);
+	g_autoptr(ClawtComputer) computer = NULL;
+	g_autofree gchar *dir = g_dir_make_tmp("clawt-keep-XXXXXX", NULL);
+	g_autofree gchar *base = NULL;
+	g_autofree gchar *reason = NULL;
+	struct {
+		gboolean     wanted;
+		const gchar *have;
+		const gchar *reason;
+	} cases[] = {
+		{ TRUE,  "",      "init changed (now on)" },   /* podman's real "off" */
+		{ TRUE,  "true",  NULL },
+		{ FALSE, "",      NULL },
+		{ FALSE, "true",  "init changed (now off)" },
+		{ TRUE,  "false", "init changed (now on)" },   /* said outright */
+		{ FALSE, "false", NULL },
+		{ TRUE,  NULL,    NULL },      /* no HostConfig: cannot tell */
+		{ FALSE, NULL,    NULL },
+		{ TRUE,  "null",  NULL },      /* not a boolean: cannot tell */
+	};
+	gsize i;
+
+	computer = keeper_new(bridge, dir);
+	base = inspect_json("registry.fedoraproject.org/fedora:44", "", dir,
+	                    "/data/source", TRUE);
+
+	for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+		g_autofree gchar *inspected = with_init(base, cases[i].have);
+
+		clawt_container_computer_set_init(CLAWT_CONTAINER_COMPUTER(computer),
+		                                  cases[i].wanted);
+		reason = reason_for(computer, inspected);
+		g_assert_cmpstr(reason, ==, cases[i].reason);
+		g_clear_pointer(&reason, g_free);
+	}
+
+	clawt_test_remove_tree(dir);
+}
+
+/*
+ * The upgrade: a kept container made without the init -- inspected as
+ * podman prints it, a HostConfig with no Init -- adopted by a daemon that
+ * wants it.  Exactly one remove and one create, the reason logged and kept
+ * for the Fleet page -- and a container that already has it is kept.
+ */
+static void
+test_recreate_when_init_changed(
+	void
+){
+	const gchar *have[] = { "", "true" };
+	gsize i;
+
+	for (i = 0; i < G_N_ELEMENTS(have); i++) {
+		g_autoptr(ClawtPodBridge) bridge = NULL;
+		g_autoptr(ClawtComputer) computer = NULL;
+		g_autoptr(GError) error = NULL;
+		g_autoptr(GPtrArray) seen = g_ptr_array_new_with_free_func(g_free);
+		g_autofree gchar *dir = g_dir_make_tmp("clawt-keep-XXXXXX", NULL);
+		g_autofree gchar *base = NULL;
+		g_autofree gchar *inspected = NULL;
+		gboolean upgrade = (*have[i] == '\0');
+		Podman *podman = podman_start();
+		guint handler;
+
+		podman->exists = TRUE;
+		base = inspect_json("registry.fedoraproject.org/fedora:44", "", dir,
+		                    "/data/source", TRUE);
+		inspected = with_init(base, have[i]);
+		podman_cli_says(podman, inspected);
+
+		computer = fresh_keeper(podman, &bridge, dir);
+		if (computer == NULL) {
+			podman_stop(podman);
+			clawt_test_remove_tree(dir);
+			return;
+		}
+		clawt_container_computer_set_init(CLAWT_CONTAINER_COMPUTER(computer), TRUE);
+
+		handler = g_log_set_handler(G_LOG_DOMAIN, G_LOG_LEVEL_MESSAGE,
+		                            capture_messages, seen);
+		g_assert_true(clawt_computer_start(computer, &error));
+		g_log_remove_handler(G_LOG_DOMAIN, handler);
+		g_assert_no_error(error);
+
+		g_assert_cmpuint(podman->removes, ==, upgrade ? 1 : 0);
+		g_assert_cmpuint(podman->creates, ==, upgrade ? 1 : 0);
+		g_assert_cmpint(clawt_computer_get_state(computer), ==,
+		                CLAWT_COMPUTER_STATE_RUNNING);
+
+		if (upgrade) {
+			g_assert_cmpuint(messages_matching(
+			                     seen, "recreating clawt-keeper: init changed "
+			                           "(now on)"), ==, 1);
+			g_assert_true(g_pattern_match_simple(
+				"recreated clawt-keeper at *: init changed (now on)",
+				clawt_container_computer_get_last_recreate(
+					CLAWT_CONTAINER_COMPUTER(computer))));
+		} else {
+			g_assert_cmpuint(messages_matching(seen, "recreating *"), ==, 0);
+			g_assert_cmpuint(messages_matching(seen, "*adopted the existing*"),
+			                 ==, 1);
+			g_assert_null(clawt_container_computer_get_last_recreate(
+				CLAWT_CONTAINER_COMPUTER(computer)));
+		}
+
+		podman_stop(podman);
+		clawt_test_remove_tree(dir);
+	}
+}
+
 /* What a label says its level is. */
 static void
 test_level_of_label(
@@ -1089,6 +1314,11 @@ main(
 	                test_name_taken_is_not_destroyed);
 	g_test_add_func("/container-keep/unreadable-inspect-keeps",
 	                test_unreadable_inspect_keeps);
+	g_test_add_func("/container-keep/init/create-params",
+	                test_init_in_create_params);
+	g_test_add_func("/container-keep/init/compare", test_compare_init);
+	g_test_add_func("/container-keep/init/recreate-once",
+	                test_recreate_when_init_changed);
 	g_test_add_func("/container-keep/nothing-there-is-created",
 	                test_nothing_there_is_created);
 

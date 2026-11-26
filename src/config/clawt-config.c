@@ -199,6 +199,29 @@ string_to_boolean(const gchar *value, gboolean fallback)
     return FALSE;
 }
 
+/*
+ * Whether @value is one of the words string_to_boolean() reads -- or one
+ * of their negatives.  For a key where reading a typo as false is not
+ * harmless; see computer.container.init.
+ */
+static gboolean
+string_is_boolean(const gchar *value)
+{
+    static const gchar *const words[] = {
+        "true", "false", "yes", "no", "on", "off", "1", "0", NULL
+    };
+    guint i;
+
+    if (value == NULL)
+        return FALSE;
+
+    for (i = 0; words[i] != NULL; i++)
+        if (g_ascii_strcasecmp(value, words[i]) == 0)
+            return TRUE;
+
+    return FALSE;
+}
+
 /* ── Agent configuration ─────────────────────────────────────────── */
 
 static ClawtAgentConfig *
@@ -377,6 +400,26 @@ agent_validate(ClawtAgentConfig *self)
                 clawt_agent_config_get_string(self, CLAWT_SELINUX_LEVEL_KEY),
                 NULL, &why)) {
             agent_mark_shadow(self, "%s", why->message);
+            return;
+        }
+    }
+
+    /*
+     * Whether podman's init runs as PID 1.  A boolean is read as false
+     * for any word but true, so a typo here would quietly turn the init
+     * off -- and the next start would recreate a kept container to match,
+     * losing what was installed in it for a spelling mistake.  So a value
+     * that is not a boolean is a shadow with the reason, as the SELinux
+     * level's is.
+     */
+    {
+        const gchar *init =
+            clawt_agent_config_get_string(self, CLAWT_CONTAINER_INIT_KEY);
+
+        if (init != NULL && !string_is_boolean(init)) {
+            agent_mark_shadow(self,
+                              "%s: '%s' is not true or false",
+                              CLAWT_CONTAINER_INIT_KEY, init);
             return;
         }
     }
@@ -4380,6 +4423,20 @@ clawt_config_validate(ClawtConfig *self, GError **error)
 				            why->message);
 				return FALSE;
 			}
+
+			/* computer.container.init: see agent_validate() for why */
+			{
+				const gchar *init = clawt_agent_config_get_string(
+					agent, CLAWT_CONTAINER_INIT_KEY);
+
+				if (init != NULL && !string_is_boolean(init)) {
+					g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+					            "agent %s: %s: '%s' is not true or false",
+					            clawt_agent_config_get_id(agent),
+					            CLAWT_CONTAINER_INIT_KEY, init);
+					return FALSE;
+				}
+			}
 		}
 
 		for (i = 0; i < computers->len; i++) {
@@ -4391,6 +4448,18 @@ clawt_config_validate(ClawtConfig *self, GError **error)
 				g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
 				            "computer %s: %s", id, why->message);
 				return FALSE;
+			}
+
+			{
+				const gchar *init = clawt_config_get_computer_string(
+					self, id, "container.init");
+
+				if (init != NULL && !string_is_boolean(init)) {
+					g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+					            "computer %s: container.init: '%s' is not "
+					            "true or false", id, init);
+					return FALSE;
+				}
 			}
 		}
 	}

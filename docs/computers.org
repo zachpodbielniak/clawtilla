@@ -537,6 +537,59 @@ for a reason that makes no sense.
 Set it when the image has an entrypoint worth running.  A JSON array is
 used as written; anything else is split on spaces.
 
+*** PID 1: podman's init reaps orphans
+:PROPERTIES:
+:CUSTOM_ID: container-init
+:END:
+
+#+begin_src yaml
+computer:
+  type: container
+  container:
+    init: true                    # the default
+#+end_src
+
+*Why.*  PID 1 in a container is the process every orphan is handed to,
+and the one that has to ~wait()~ for it.  Without an init, PID 1 is the
+container's command -- ~sleep infinity~ by default -- which never waits for
+anything.  So every process left behind when a process tree is killed --
+an interrupted build, a cancelled turn, a timed-out ~computer_exec~ --
+stays a zombie (state =Z= in ~ps~) until the container stops.  The
+symptom is a slowly growing list of =<defunct>= entries, and tests that
+kill a tree and then look for survivors (clawtilla's
+=/interrupt/kills-the-tree-and-keeps-the-agent=, libreclaw's
+=/subagent/reap-terminal-jobs=) fail inside an agent's container for
+exactly that reason.
+
+*What it does.*  With ~computer.container.init~ on -- the default -- the
+container is created with podman's ~--init~: catatonit runs as PID 1,
+starts the command as its child, forwards signals to it, and reaps every
+process that is re-parented to it.  clawtilla sends ~init~ to podomation's
+container ~create~ (podomation v1.0.5 and later write ~"init": true~ into
+the libpod spec; an older module ignores the parameter and the container
+gets no init).  It applies to a shared machine's ~container.init~ the same
+way.  A value that is not a boolean disables the agent with the reason,
+rather than being read as false.
+
+*It needs catatonit on the host*, where podman runs: =/usr/libexec/podman/catatonit=,
+from Fedora's ~catatonit~ package, which ~podman~ pulls in.  Without it
+podman refuses the create, and the agent's start fails saying so.  Turn
+the key off for an image whose own entrypoint is already an init (tini,
+dumb-init, systemd).
+
+*The first start after upgrading recreates each kept container once.*
+podman sets the init when it creates a container and cannot add one
+afterwards, so a container made before this key existed has none -- its
+~podman container inspect~ has no ~Init~ in ~HostConfig~ at all, which is
+how podman says false (libpod omits the field when it is false) -- and
+when the daemon adopts it ([[#container-restarts][Across daemon restarts]]),
+the difference is a recreate: one line in the log, =recreating
+clawt-<agent>: init changed (now on)=, the same on the Fleet page, and
+anything installed inside the container is lost.  It happens once per
+container; the new one has the init, and later starts adopt it.  Turning
+the key off later recreates it once the other way (=init changed (now
+off)=).
+
 *** Sharing folders
 
 #+begin_src bash
@@ -702,6 +755,7 @@ create now.  Only what podman cannot change in place counts:
 | bind mounts | by destination: added, removed, or a different source or read-only/read-write | ~mounts changed (+/data/foo, -/old, ~/data/source)~ |
 | SELinux level | the level in podman's ProcessLabel against the [[*SELinux levels: one folder, several containers][level the config wants]] | ~SELinux level changed (s0:c7,c9, the config wants s0:c1,c2)~ |
 | command | ~computer.container.command~ against podman's Cmd | ~command changed (the config wants …)~ |
+| init | ~computer.container.init~ against podman's HostConfig.Init ([[#container-init][PID 1]]); podman leaves Init out when it is false, so a HostConfig without it is off; no HostConfig at all is unchanged | ~init changed (now on)~ / ~init changed (now off)~ |
 
 Several reasons are joined with ~; ~.  Anything else is *not* a reason:
 

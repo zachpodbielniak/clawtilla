@@ -23,6 +23,14 @@
 
 G_BEGIN_DECLS
 
+/**
+ * CLAWT_CONTAINER_INIT_KEY:
+ *
+ * The agent configuration key that says whether podman's init runs as
+ * the container's PID 1; see clawt_container_computer_set_init().
+ */
+#define CLAWT_CONTAINER_INIT_KEY "computer.container.init"
+
 #define CLAWT_TYPE_CONTAINER_COMPUTER (clawt_container_computer_get_type())
 
 G_DECLARE_FINAL_TYPE(ClawtContainerComputer, clawt_container_computer,
@@ -171,11 +179,14 @@ void clawt_container_computer_set_reuse(ClawtContainerComputer *self,
  * create, judged only on what podman cannot change in place: the image
  * (by name, so a re-pulled tag is the same image), the bind mounts
  * (added, removed, or with a different source or mode), the SELinux
- * level when one is wanted, and the command.  Limits are not compared --
+ * level when one is wanted, the command, and whether podman's init is
+ * PID 1 (HostConfig.Init; podman omits it when false, so a HostConfig
+ * without it reads as no init).  Limits are not compared --
  * they are applied in place at every start.
  *
  * @reason reads "image changed (…)", "mounts changed (+/added, -/gone,
- * ~/different)", "SELinux level changed (…)" or "command changed (…)",
+ * ~/different)", "SELinux level changed (…)", "command changed (…)",
+ * or "init changed (now on)" / "init changed (now off)",
  * joined with "; " when several hold.  Anything @inspected does not say
  * counts as unchanged.
  *
@@ -291,12 +302,43 @@ const gchar *
 clawt_container_computer_get_selinux_level(ClawtContainerComputer *self);
 
 /**
+ * clawt_container_computer_set_init:
+ * @self: a #ClawtContainerComputer
+ * @init: whether podman's init (catatonit) runs as the container's PID 1
+ *
+ * With it, PID 1 is podman's init, which runs the command as its child
+ * and wait()s for every process that ends up re-parented to it.  Without
+ * it, PID 1 is the command itself -- `sleep infinity` by default -- which
+ * never wait()s, so every process orphaned by a killed process tree stays
+ * a zombie for the life of the container.
+ *
+ * Sent to podomation's create as `init`; it takes effect when the
+ * container is created, and an existing container whose setting differs
+ * is recreated by its next start (see clawt_container_computer_compare()).
+ * Off on a new object; the computer factory sets it from
+ * %CLAWT_CONTAINER_INIT_KEY, which is on by default.  It needs catatonit
+ * on the host (Fedora: the catatonit package, which podman pulls in).
+ */
+void clawt_container_computer_set_init(ClawtContainerComputer *self,
+                                       gboolean                init);
+
+/**
+ * clawt_container_computer_get_init:
+ * @self: a #ClawtContainerComputer
+ *
+ * Returns: whether the container is, or will be, created with podman's
+ *   init as PID 1
+ */
+gboolean clawt_container_computer_get_init(ClawtContainerComputer *self);
+
+/**
  * clawt_container_computer_build_create_params:
  * @self: a #ClawtContainerComputer
  *
  * The parameters podomation's container `create` is called with: image,
- * name, mounts, command, and -- only when one is set -- selinux_level,
- * plus env and ports for the broker's containers.
+ * name, mounts, command, init ("true" or "false", always), and -- only
+ * when one is set -- selinux_level, plus env and ports for the broker's
+ * containers.
  *
  * Exposed so what reaches podman can be asserted without podman: a level
  * that silently goes missing gives the container a random pair, and the

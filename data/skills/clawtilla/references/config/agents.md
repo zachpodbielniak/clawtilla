@@ -1404,6 +1404,31 @@ made: stop the agent and start it, or run `computer rebuild`.
 `config validate` warns when two containers share a writable folder
 at different levels.
 
+### `agents.computer.container.init`
+
+- Type: boolean
+- Default: `true`
+- Since: 0.78.0
+
+Run podman's init (catatonit) as the container's PID 1.
+
+Without it PID 1 is the container's command -- sleep infinity by
+default -- which never waits for anything, so every process orphaned
+when a process tree is killed (an interrupted build, a cancelled
+turn) stays a zombie until the container stops. With it, catatonit
+is PID 1, runs the command as its child and reaps whatever is
+re-parented to it.
+
+On by default. It needs catatonit on the host: Fedora's catatonit
+package, which podman pulls in (/usr/libexec/podman/catatonit).
+
+Applied when the container is created. A kept container whose setting
+differs -- every one made before this key existed -- is recreated by
+its next start, once, with the reason in the log and on the Fleet
+page; anything installed inside it is lost. A value that is not a
+boolean disables the agent with the reason rather than reading as
+false.
+
 ## `agents.computer.ssh`
 
 A machine reached over ssh.

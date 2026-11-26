@@ -590,6 +590,25 @@ exposure is specifically the shared objects -- and an updater reaching
 for a plain copy looks correct in testing and takes the daemon down in
 the field.
 
+*** A kept container may be recreated once after an upgrade
+
+An agent's container keeps what was installed in it across daemon
+restarts ([[file:computers.org::#container-restarts][computers.org]]), and
+is recreated only when it no longer matches its config in something
+podman cannot change in place.  A release that adds such a setting
+recreates each kept container once, at the first start after the
+upgrade, with the reason in the log and on the Fleet page.
+
+The release that added ~computer.container.init~ (on by default; podman's
+init as PID 1, so orphaned processes are reaped -- see
+[[file:computers.org::#container-init][computers.org]]) is one: every kept
+container made before it is recreated once, logged as =recreating
+clawt-<agent>: init changed (now on)=, and anything installed inside it
+is lost.  Reinstall from the agent's notes, or set ~init: false~ on an
+agent whose container must not be recreated yet and turn it on when
+convenient.  It also needs ~catatonit~ on the host (Fedora: the
+~catatonit~ package, pulled in by ~podman~).
+
 ** Upgrading libreclaw
 
 ~deps/libreclaw~ is clawtilla's only submodule, and it brings five of its

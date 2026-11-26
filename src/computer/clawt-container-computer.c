@@ -40,6 +40,9 @@ struct _ClawtContainerComputer {
     /* NULL for podman's random pair; see ..._set_selinux_level(). */
     gchar          *selinux_level;
 
+    /* podman's init as PID 1; see clawt_container_computer_set_init(). */
+    gboolean        init;
+
     /* NULL for none; see clawt_container_computer_set_limits(). */
     ClawtContainerLimits *limits;
 
@@ -403,6 +406,23 @@ clawt_container_computer_get_selinux_level(ClawtContainerComputer *self)
     return self->selinux_level;
 }
 
+void
+clawt_container_computer_set_init(ClawtContainerComputer *self,
+                                  gboolean                init)
+{
+    g_return_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self));
+
+    self->init = init;
+}
+
+gboolean
+clawt_container_computer_get_init(ClawtContainerComputer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), FALSE);
+
+    return self->init;
+}
+
 GHashTable *
 clawt_container_computer_build_create_params(ClawtContainerComputer *self)
 {
@@ -433,6 +453,18 @@ clawt_container_computer_build_create_params(ClawtContainerComputer *self)
     if (self->selinux_level != NULL)
         g_hash_table_insert(params, g_strdup("selinux_level"),
                             g_strdup(self->selinux_level));
+
+    /*
+     * Always said, either way, so what was asked for is in the request
+     * rather than inferred from a key's absence.  podomation reads the
+     * string as a boolean (v1.0.5: true writes "init": true into the
+     * libpod spec, false leaves it out), and an older module, which does
+     * not know the parameter, ignores it -- a container without an init,
+     * as before, which the next adoption reports as a recreate reason
+     * once the module does.
+     */
+    g_hash_table_insert(params, g_strdup("init"),
+                        g_strdup(self->init ? "true" : "false"));
 
     /*
      * Only the broker's containers carry these.  An agent's computer has
@@ -825,10 +857,39 @@ clawt_container_computer_compare(ClawtContainerComputer  *self,
                                         "%s)", self->command));
 
     /*
-     * Hook for #20: "init setting differs" is one more reason here,
-     * read from the same inspect (HostConfig.Init) -- a reason podman
-     * cannot fix in place.
+     * Whether podman's init runs as PID 1 (HostConfig.Init), which is
+     * fixed at create like the rest.  Without it PID 1 is the command --
+     * `sleep infinity` -- which never wait()s, so every orphan left by a
+     * killed process tree stays a zombie for the life of the container.
+     *
+     * podman leaves Init out when it is false: libpod declares it
+     * `json:"Init,omitempty"`, so a container made without an init -- every
+     * one made before this setting -- has a HostConfig with no Init in it
+     * at all.  So a readable HostConfig without Init *is* an answer: off.
+     * Reading it as unknown would adopt every such container unchanged and
+     * the init would never reach them.  Only a missing or unreadable
+     * HostConfig, or an Init that is not a boolean, cannot be compared and
+     * counts as unchanged, like every other unknown here.
      */
+    if (json_object_has_member(object, "HostConfig") &&
+        JSON_NODE_HOLDS_OBJECT(json_object_get_member(object, "HostConfig"))) {
+        JsonObject *host = json_object_get_object_member(object, "HostConfig");
+        JsonNode *member = json_object_has_member(host, "Init")
+                           ? json_object_get_member(host, "Init") : NULL;
+        gboolean known = TRUE;
+        gboolean have = FALSE;
+
+        if (member != NULL) {
+            known = JSON_NODE_HOLDS_VALUE(member) &&
+                    json_node_get_value_type(member) == G_TYPE_BOOLEAN;
+            have = known && json_node_get_boolean(member);
+        }
+
+        if (known && have != self->init)
+            g_ptr_array_add(reasons,
+                            g_strdup(self->init ? "init changed (now on)"
+                                                : "init changed (now off)"));
+    }
 
     if (reasons->len > 0) {
         g_ptr_array_add(reasons, NULL);
