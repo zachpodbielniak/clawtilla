@@ -53,10 +53,11 @@ Two cases are refused rather than guessed at:
   differ.  Answering "fedora" would start a ~dnf~ run that fails halfway.
 
 The mapping lives in one table in ~tools/clawt-install-deps.sh~.
-~tests/test-install-deps.sh~ fails when a ~PKG_DEPS~ list in ~config.mk~
-or a bundled dependency names something that table does not map, and
-when the table can install a package this page does not name -- so adding
-a dependency means adding a row there and a row here.
+~tests/test-install-deps.sh~ fails when a ~PKG_DEPS~ list, or any module
+name passed to ~pkg-config~ in a ~config.mk~, ~Makefile~ or ~*.mk~ under
+this tree (including ~deps/~, every nesting level), has no row in that
+table, and when the table can install a package this page does not name
+-- so adding a dependency means adding a row there and a row here.
 
 *** Build packages
 
@@ -77,12 +78,19 @@ a dependency means adding a row there and a row here.
 | ~gstreamer1-plugins-base-devel~ | ~libgstreamer-plugins-base1.0-dev~ | ~gst-plugins-base-libs~ | ai-glib's voice sessions (~gstreamer-app-1.0~) |
 | ~libyaml-devel~ | ~libyaml-dev~ | ~libyaml~ | yaml-glib |
 | ~libgudev-devel~ | ~libgudev-1.0-dev~ | ~libgudev~ | podomation |
+| ~readline-devel~ | ~libreadline-dev~ | ~readline~ | crispy's REPL and bacon; both fail to build without it |
+| ~libssh2-devel~ | ~libssh2-1-dev~ | ~libssh2~ | podomation's ssh module (linked with ~-lssh2~) |
+| ~systemd-devel~ | ~libudev-dev~ ~libsystemd-dev~ | ~systemd-libs~ | podomation's udev module (~libudev.h~). ~libsystemd~ is the same Fedora package; no makefile asks pkg-config for it |
 | ~libvirt-devel~ | ~libvirt-dev~ | ~libvirt~ | podomation's ~vm_virtmanager~ module |
 | ~gobject-introspection-devel~ | ~libgirepository1.0-dev~ ~gobject-introspection~ | ~gobject-introspection~ | the ~.gir~ / ~.typelib~ step |
 | ~gtk4-devel~ | ~libgtk-4-dev~ | ~gtk4~ | the GTK client |
 | ~libadwaita-devel~ | ~libadwaita-1-dev~ | ~libadwaita~ | the GTK client |
 | ~qrencode-devel~ | ~libqrencode-dev~ | ~qrencode~ | QR codes for pairing a phone (optional) |
 | ~poppler-glib-devel~ | ~libpoppler-glib-dev~ | ~poppler-glib~ | the first page of a PDF as a thumbnail in the Files gallery (optional; brings cairo) |
+| ~cairo-devel~ | ~libcairo2-dev~ | ~cairo~ | that thumbnail, and ~make office-worlds~ (optional; a normal build does not link cairo) |
+| ~libedit-devel~ | ~libedit-dev~ | ~libedit~ | bacon's fallback when readline's pkg-config file is absent (optional) |
+| ~gnutls-devel~ | ~libgnutls28-dev~ | ~gnutls~ | podomation's discord module (optional; the module builds without it) |
+| ~ncurses-devel~ | ~libncurses-dev~ | ~ncurses~ | ai-glib's ~ai-tui~ (optional; the library still builds without it) |
 
 Every one of those is needed to *build*, whether or not you will use what
 it is for: a package missing from ~PKG_DEPS~ makes ~pkg-config~ fail for
@@ -96,7 +104,7 @@ optional too, and detected rather than requested: without it
 builds, and every client shows the pairing link as text where it would
 have drawn a QR code (~QRENCODE=0~ turns it off on a host that has it).
 At runtime the library is ~qrencode-libs~ on Fedora.
-poppler-glib is optional in the same way: without it ~config.mk~ leaves ~CLAWT_HAVE_POPPLER~ undefined, everything still builds, ~attachment.thumbnail~ answers "no PDF renderer in this build" for a PDF, and the Files gallery shows the file's kind where it would have drawn its first page (~POPPLER=0~ turns it off on a host that has it).  Fedora: ~poppler-glib-devel~ to build, ~poppler-glib~ at runtime; cairo comes in with it.
+poppler-glib is optional in the same way: without it ~config.mk~ leaves ~CLAWT_HAVE_POPPLER~ undefined, everything still builds, ~attachment.thumbnail~ answers "no PDF renderer in this build" for a PDF, and the Files gallery shows the file's kind where it would have drawn its first page (~POPPLER=0~ turns it off on a host that has it).  Fedora: ~poppler-glib-devel~ to build, ~poppler-glib~ at runtime; cairo comes in with it.  cairo, libedit, gnutls and ncurses are optional too: ~make office-worlds~ and that thumbnail, bacon's editline fallback, the discord module's TLS and ~ai-tui~ are what they add, and a normal build still finishes when they are absent.
 
 Arch has no ~libpq~ package of its own; ~postgresql-libs~ carries it.
 

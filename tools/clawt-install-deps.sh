@@ -10,7 +10,8 @@
 #
 # The table below is the one place a pkg-config name or a command is
 # mapped to a package.  tests/test-install-deps.sh fails when a name in
-# any PKG_DEPS list has no row here, and when a package this script would
+# any PKG_DEPS list, or passed to pkg-config in a makefile, has no row
+# here, and when a package this script would
 # install is missing from docs/getting-started.org -- a hand-written list
 # of packages is exactly the kind that drifts, so it is checked rather
 # than trusted.
@@ -41,7 +42,10 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.'
 #
 # key   a pkg-config module for build rows, a command for runtime rows
 # kind  toolchain | build | optional (the build skips it with a message
-#       when absent) | runtime | runtime-x86_64 | runtime-aarch64
+#       when absent) | probe (named so the drift check has a row, and
+#       not installed: the package is missing from a supported release,
+#       or it is only a fallback the build does not need) | runtime |
+#       runtime-x86_64 | runtime-aarch64
 #
 # A cell may hold several packages separated by spaces.  Every name was
 # checked against the distribution's own metadata (Fedora 45, Ubuntu
@@ -74,6 +78,16 @@ libadwaita-1,optional,libadwaita-devel,libadwaita-1-dev,libadwaita
 gobject-introspection-1.0,optional,gobject-introspection-devel,libgirepository1.0-dev gobject-introspection,gobject-introspection
 libqrencode,optional,qrencode-devel,libqrencode-dev,qrencode
 poppler-glib,optional,poppler-glib-devel,libpoppler-glib-dev,poppler-glib
+readline,build,readline-devel,libreadline-dev,readline
+libssh2,build,libssh2-devel,libssh2-1-dev,libssh2
+libudev,build,systemd-devel,libudev-dev,systemd-libs
+libsystemd,build,systemd-devel,libsystemd-dev,systemd-libs
+cairo,optional,cairo-devel,libcairo2-dev,cairo
+editline,optional,libedit-devel,libedit-dev,libedit
+gnutls,optional,gnutls-devel,libgnutls28-dev,gnutls
+ncursesw,optional,ncurses-devel,libncurses-dev,ncurses
+girepository-2.0,optional,glib2-devel,libglib2.0-dev,glib2
+libonnxruntime,probe,onnxruntime-devel,libonnxruntime-dev,onnxruntime-cpu
 podman,runtime,podman,podman,podman
 distrobox,runtime,distrobox,distrobox,distrobox
 bwrap,runtime,bubblewrap,bubblewrap,bubblewrap
