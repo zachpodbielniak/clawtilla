@@ -24,6 +24,7 @@
 
 #include "clawt-lrg.h"
 #include "clawt-lrg-settings-model.h"
+#include "clawt-lrg-fleet-model.h"
 
 /* Fourteen days: two weeks of shape without the strip outgrowing a row. */
 #define STRIP_DAYS (14)
@@ -39,6 +40,8 @@ static struct {
     LrgWidget   *list;
     LrgWidget   *stop_idle;
     LrgWidget   *limits;        /* the allowance cards */
+    LrgWidget   *warnings;      /* the daemon's fleet warnings, one row each */
+    guint        warnings_generation;
     guint        limits_generation;
     GPtrArray   *stoppable;     /* agent ids Stop the idle ones would stop */
     guint        generation;
@@ -323,6 +326,49 @@ request_limits(ClawtLrgApp *app, gboolean ask)
                       GUINT_TO_POINTER(fleet.limits_generation), NULL);
 }
 
+/*
+ * The daemon's fleet warnings, as the web Fleet page and the GTK one
+ * draw them: above the fleet list, one row each, nothing at all when
+ * there are none.  They ride on team.list.  A stale reply is dropped by
+ * its generation; a failed one keeps what was drawn.
+ */
+static void
+on_warnings(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+            gpointer user_data)
+{
+    g_autoptr(GPtrArray) texts = NULL;
+    guint i;
+
+    if (GPOINTER_TO_UINT(user_data) != fleet.warnings_generation ||
+        fleet.warnings == NULL || reply == NULL ||
+        clawt_ipc_reply_object(reply) == NULL)
+        return;
+
+    texts = clawt_lrg_fleet_warnings(reply);
+    clawt_lrg_clear(fleet.warnings);
+
+    for (i = 0; i < texts->len; i++) {
+        LrgWidget *row = clawt_lrg_row("Worth fixing",
+                                       g_ptr_array_index(texts, i));
+
+        clawt_lrg_row_add_prefix(row, clawt_lrg_badge("!", "warn"));
+        clawt_lrg_take(fleet.warnings, row);
+    }
+
+    clawt_lrg_app_wake(app);
+}
+
+static void
+request_warnings(ClawtLrgApp *app)
+{
+    if (fleet.warnings == NULL)
+        return;
+
+    fleet.warnings_generation++;
+    clawt_lrg_request(app, "team.list", NULL, CLAWT_LRG_QUIET, on_warnings,
+                      GUINT_TO_POINTER(fleet.warnings_generation), NULL);
+}
+
 static void
 request_fleet(ClawtLrgApp *app)
 {
@@ -341,6 +387,8 @@ request_fleet(ClawtLrgApp *app)
     chosen = clawt_lrg_combo_id(fleet.period);
     if (chosen != NULL)
         index = (guint)g_ascii_strtoull(chosen, NULL, 10);
+
+    request_warnings(app);
 
     fleet.in_flight = TRUE;
     fleet.generation++;
@@ -420,6 +468,11 @@ build(ClawtLrgApp *app)
     g_object_unref(fleet.limits);
 
     clawt_lrg_take(clawt_lrg_page_body(fleet.page), clawt_lrg_card(top));
+
+    /* the daemon's warnings sit above the fleet list; empty draws nothing */
+    fleet.warnings = clawt_lrg_vbox(6.0f);
+    clawt_lrg_add(clawt_lrg_page_body(fleet.page), fleet.warnings);
+    g_object_unref(fleet.warnings);
 
     fleet.list = clawt_lrg_vbox(6.0f);
     clawt_lrg_add(clawt_lrg_page_body(fleet.page), fleet.list);

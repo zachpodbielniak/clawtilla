@@ -1687,3 +1687,24 @@ clawt_lrg_agent_memories(JsonNode *reply, const gchar *scope, gint64 now_us)
 
     return out;
 }
+
+GPtrArray *
+clawt_lrg_fleet_warnings(JsonNode *reply)
+{
+    GPtrArray *out = g_ptr_array_new_with_free_func(g_free);
+    JsonArray *warnings = array_member(clawt_ipc_reply_object(reply),
+                                       "warnings");
+    guint i;
+
+    for (i = 0; warnings != NULL && i < json_array_get_length(warnings);
+         i++) {
+        JsonNode *element = json_array_get_element(warnings, i);
+
+        if (json_node_get_value_type(element) != G_TYPE_STRING)
+            continue;
+
+        g_ptr_array_add(out, g_strdup(json_node_get_string(element)));
+    }
+
+    return out;
+}

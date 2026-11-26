@@ -330,6 +330,23 @@ refresh_fleet_once(ClawtWindow *self)
 
     clawt_gtk_clear_list(self->fleet_list);
 
+    /*
+     * The daemon's fleet warnings ride on team.list, as on the settings
+     * Teams page.  Cleared first so they do not pile up; the list hides
+     * itself when empty so no empty box is drawn.  A failed team.list
+     * only leaves the warnings off -- the figures below are the page.
+     */
+    {
+        g_autoptr(JsonNode) teams = NULL;
+
+        clawt_gtk_clear_list(self->fleet_warnings);
+        teams = clawt_window_request(self, "team.list", NULL);
+        if (teams != NULL)
+            clawt_gtk_append_warning_rows(self->fleet_warnings, teams);
+        gtk_widget_set_visible(GTK_WIDGET(self->fleet_warnings),
+            gtk_widget_get_first_child(GTK_WIDGET(self->fleet_warnings)) != NULL);
+    }
+
     reply = clawt_window_request(self, "usage.summary",
         clawt_usage_fleet_payload(clawt_usage_period_since(period, now), STRIP_DAYS));
     if (reply == NULL) {
@@ -466,6 +483,13 @@ clawt_gtk_build_fleet_page(ClawtWindow *self)
     gtk_widget_set_halign(self->fleet_stop_idle, GTK_ALIGN_START);
     g_signal_connect(self->fleet_stop_idle, "clicked", G_CALLBACK(on_stop_idle), self);
     gtk_box_append(GTK_BOX(box), self->fleet_stop_idle);
+
+    /* the daemon's warnings, above the list; shown only when there are some */
+    self->fleet_warnings = GTK_LIST_BOX(gtk_list_box_new());
+    gtk_list_box_set_selection_mode(self->fleet_warnings, GTK_SELECTION_NONE);
+    gtk_widget_add_css_class(GTK_WIDGET(self->fleet_warnings), "boxed-list");
+    gtk_widget_set_visible(GTK_WIDGET(self->fleet_warnings), FALSE);
+    gtk_box_append(GTK_BOX(box), GTK_WIDGET(self->fleet_warnings));
 
     self->fleet_list = GTK_LIST_BOX(gtk_list_box_new());
     gtk_list_box_set_selection_mode(self->fleet_list, GTK_SELECTION_NONE);

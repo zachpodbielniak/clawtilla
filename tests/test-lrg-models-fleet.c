@@ -798,6 +798,28 @@ test_agent_memories(void)
                                              "query"), ==, "tea");
 }
 
+/* ── Fleet: the daemon's warnings ─────────────────────────────────── */
+
+static void
+test_fleet_warnings(void)
+{
+    g_autoptr(JsonNode) two = parse(
+        "{\"teams\":[],\"warnings\":["
+        "\"two containers share a writable mount at different SELinux levels\","
+        "\"second warning\"]}");
+    g_autoptr(JsonNode) none = parse("{\"teams\":[]}");
+    g_autoptr(GPtrArray) got = clawt_lrg_fleet_warnings(two);
+    g_autoptr(GPtrArray) empty = clawt_lrg_fleet_warnings(none);
+    g_autoptr(GPtrArray) null_reply = clawt_lrg_fleet_warnings(NULL);
+
+    g_assert_cmpuint(got->len, ==, 2);
+    g_assert_cmpstr(g_ptr_array_index(got, 0), ==,
+                    "two containers share a writable mount at different SELinux levels");
+    g_assert_cmpstr(g_ptr_array_index(got, 1), ==, "second warning");
+    g_assert_cmpuint(empty->len, ==, 0);
+    g_assert_cmpuint(null_reply->len, ==, 0);
+}
+
 gint
 main(gint argc, gchar **argv)
 {
@@ -829,6 +851,7 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg/fleet/memory/recall", test_recall);
     g_test_add_func("/lrg/fleet/memory/operator", test_operator);
     g_test_add_func("/lrg/fleet/memory/agent", test_agent_memories);
+    g_test_add_func("/lrg/fleet/warnings", test_fleet_warnings);
 
     return g_test_run();
 }

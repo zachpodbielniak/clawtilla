@@ -818,4 +818,20 @@ GPtrArray *clawt_lrg_agent_memories(JsonNode    *reply,
                                     const gchar *scope,
                                     gint64       now_us);
 
+/* ── Fleet: the daemon's warnings ─────────────────────────────────── */
+
+/**
+ * clawt_lrg_fleet_warnings:
+ * @reply: (nullable): a `team.list` reply
+ *
+ * The fleet-level warnings the daemon attaches to team.list -- a mistake
+ * only the whole fleet can see, such as two containers sharing a writable
+ * mount at different SELinux levels -- in the order it sent them.  Only
+ * string elements are kept.
+ *
+ * Returns: (transfer container) (element-type utf8): the warnings, empty
+ *   when there are none or @reply has no `warnings` member
+ */
+GPtrArray *clawt_lrg_fleet_warnings(JsonNode *reply);
+
 G_END_DECLS

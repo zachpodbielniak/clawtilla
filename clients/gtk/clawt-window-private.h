@@ -656,6 +656,7 @@ struct _ClawtWindow {
     GtkListBox        *activity_list;
 
     /* The Fleet page (gtk-fleet.c). */
+    GtkListBox        *fleet_warnings; /* the daemon's fleet warnings */
     GtkListBox        *fleet_list;
     GtkWidget         *fleet_period;
     GtkWidget         *fleet_summary;
