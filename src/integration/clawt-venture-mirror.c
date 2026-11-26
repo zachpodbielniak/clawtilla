@@ -602,6 +602,48 @@ step_create(Job *job)
     job_send(job, job->creator, "POST", "/api/v1/ticket", key, node);
 }
 
+/*
+ * Documented in clawt-venture-mirror.h (see its entry for this function).
+ *
+ * VENTURE keeps its page scope in a cookie that `GET /entity/<org>?back=`
+ * sets and then redirects to `back`, so with an organization the link
+ * switches the browser to the record's organization first.
+ */
+gchar *
+clawt_venture_record_url(const gchar *base,
+                         const gchar *type,
+                         gint64       id,
+                         gint64       organization_id)
+{
+    g_autofree gchar *root = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *back = NULL;
+    gsize len;
+    const gchar *c;
+
+    g_return_val_if_fail(base != NULL, NULL);
+    g_return_val_if_fail(type != NULL && type[0] != '\0', NULL);
+
+    for (c = type; *c != '\0'; c++)
+        g_return_val_if_fail((*c >= 'a' && *c <= 'z') || *c == '_', NULL);
+
+    root = g_strdup(base);
+    len = strlen(root);
+
+    if (len > 0 && root[len - 1] == '/')
+        root[len - 1] = '\0';
+
+    path = g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, type, id);
+
+    if (organization_id <= 0)
+        return g_strconcat(root, path, NULL);
+
+    back = g_uri_escape_string(path, NULL, FALSE);
+
+    return g_strdup_printf("%s/entity/%" G_GINT64_FORMAT "?back=%s",
+                           root, organization_id, back);
+}
+
 /* The receipt: what was written, so a later change is told from it. */
 static void
 remember(Job *job, gint64 ticket, gint64 version, JsonObject *written,
@@ -612,6 +654,7 @@ remember(Job *job, gint64 ticket, gint64 version, JsonObject *written,
     ClawtVentureRef ref = { 0 };
     g_autofree gchar *text = NULL;
     g_autofree gchar *url = NULL;
+    gint64 organization_id;
 
     snap = (job->ref != NULL && job->ref->snapshot != NULL)
         ? json_from_string(job->ref->snapshot, NULL) : NULL;
@@ -647,12 +690,30 @@ remember(Job *job, gint64 ticket, gint64 version, JsonObject *written,
     }
 
     text = json_to_string(snap, FALSE);
-    url = g_strdup_printf("%s/tickets/%" G_GINT64_FORMAT,
-                          job->writer->base, ticket);
+
+    /*
+     * The ticket's organization, for a link that opens in the right
+     * VENTURE scope: what VENTURE's own answer says, else what the ref
+     * already held (the ticket's own organization, from intake or an
+     * earlier write), else the repository's.
+     */
+    organization_id = (created != NULL)
+        ? json_object_get_int_member_with_default(created,
+                                                  "organization_id", 0) : 0;
+
+    if (organization_id <= 0 && job->ref != NULL)
+        organization_id = job->ref->organization_id;
+
+    if (organization_id <= 0)
+        organization_id = job->organization_id;
+
+    url = clawt_venture_record_url(job->writer->base, "ticket", ticket,
+                                   organization_id);
 
     ref.task_id = job->row->task_id;
     ref.instance = job->writer->instance;
     ref.ticket_id = ticket;
+    ref.organization_id = organization_id;
     ref.version = version;
     ref.snapshot = text;
     ref.state = (gchar *)"synced";
@@ -2165,8 +2226,10 @@ intake_one(PollJob *poll, JsonObject *t, const gchar *from_agent)
     ClawtVentureMirror *self = poll->mirror;
     gint64 ticket = json_object_get_int_member_with_default(t, "id", 0);
     g_autofree gchar *task_id = NULL;
-    g_autofree gchar *url = g_strdup_printf("%s/tickets/%" G_GINT64_FORMAT,
-                                            poll->account->base, ticket);
+    gint64 organization_id = json_object_get_int_member_with_default(
+        t, "organization_id", 0);
+    g_autofree gchar *url = clawt_venture_record_url(
+        poll->account->base, "ticket", ticket, organization_id);
 
     task_id = self->inbound.intake(
         self->inbound_data, poll->account->agent_id, ticket,
@@ -2199,6 +2262,7 @@ intake_one(PollJob *poll, JsonObject *t, const gchar *from_agent)
         ref.task_id = task_id;
         ref.instance = poll->account->instance;
         ref.ticket_id = ticket;
+        ref.organization_id = organization_id;
         ref.version = json_object_get_int_member_with_default(t, "version", 1);
         ref.snapshot = text;
         ref.state = (gchar *)"synced";

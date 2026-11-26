@@ -133,7 +133,7 @@ clawtilla task show task-01m0k6          # venture: #12 (synced) https://...
 clawtilla task venture-retry task-01m0k6
 ```
 
-`task.show` answers a `venture` object (`state`: `synced|queued|skipped|dead`, `ticket`, `url`, `instance`, `reason`).
+`task.show` answers a `venture` object (`state`: `synced|queued|skipped|dead`, `ticket`, `url`, `instance`, `reason`). `url` (and "Open in VENTURE") is `<base>/entity/<organization_id>?back=%2Fe%2Fticket%2F<id>`: VENTURE is multi-organization, so the link switches the browser's VENTURE organization first (VENTURE remembers it for a year), then opens the ticket's page `/e/ticket/<id>`. Organization unknown -> the bare `<base>/e/ticket/<id>`. Built by `clawt_venture_record_url()`; `/tickets/<id>` is VENTURE's board, not a record.
 
 ### What the agent is told
 

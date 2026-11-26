@@ -269,6 +269,84 @@ test_title_from_prompt(void)
 
 /* ── The store ───────────────────────────────────────────────────── */
 
+
+/* A ref's organization survives a save and a reopen. */
+static void
+test_venture_ref_organization(
+	StoreFixture  *fixture,
+	gconstpointer  data
+){
+	ClawtVentureRef ref = { 0 };
+	g_autoptr(ClawtVentureRef) back = NULL;
+	g_autoptr(GError) error = NULL;
+
+	(void)data;
+
+	ref.task_id = (gchar *)"task-org";
+	ref.ticket_id = 12;
+	ref.organization_id = 2;
+	ref.state = (gchar *)"synced";
+	ref.url = (gchar *)"https://v.example/entity/2?back=%2Fe%2Fticket%2F12";
+	g_assert_true(clawt_task_store_put_venture_ref(fixture->store, &ref,
+	                                               &error));
+	g_assert_no_error(error);
+
+	reopen(fixture);
+
+	back = clawt_task_store_venture_ref(fixture->store, "task-org");
+	g_assert_nonnull(back);
+	g_assert_cmpint(back->organization_id, ==, 2);
+	g_assert_cmpstr(back->url, ==, ref.url);
+}
+
+/* Links stored as <base>/tickets/<id> are rewritten once, on open. */
+static void
+test_venture_ref_old_url_rewritten(
+	StoreFixture  *fixture,
+	gconstpointer  data
+){
+	ClawtVentureRef old = { 0 };
+	ClawtVentureRef other = { 0 };
+	g_autoptr(ClawtVentureRef) back = NULL;
+	g_autoptr(ClawtVentureRef) kept = NULL;
+	g_autoptr(GError) error = NULL;
+
+	(void)data;
+
+	old.task_id = (gchar *)"task-old";
+	old.ticket_id = 12;
+	old.state = (gchar *)"synced";
+	old.url = (gchar *)"https://v.example/tickets/12";
+	g_assert_true(clawt_task_store_put_venture_ref(fixture->store, &old,
+	                                               &error));
+	g_assert_no_error(error);
+
+	/* a link that is not the old shape is left alone */
+	other.task_id = (gchar *)"task-new";
+	other.ticket_id = 13;
+	other.organization_id = 2;
+	other.state = (gchar *)"synced";
+	other.url = (gchar *)"https://v.example/entity/2?back=%2Fe%2Fticket%2F13";
+	g_assert_true(clawt_task_store_put_venture_ref(fixture->store, &other,
+	                                               &error));
+	g_assert_no_error(error);
+
+	reopen(fixture);
+	back = clawt_task_store_venture_ref(fixture->store, "task-old");
+	g_assert_nonnull(back);
+	g_assert_cmpstr(back->url, ==, "https://v.example/e/ticket/12");
+	g_assert_cmpint(back->organization_id, ==, 0);
+
+	/* and again: unchanged */
+	g_clear_pointer(&back, clawt_venture_ref_free);
+	reopen(fixture);
+	back = clawt_task_store_venture_ref(fixture->store, "task-old");
+	g_assert_cmpstr(back->url, ==, "https://v.example/e/ticket/12");
+
+	kept = clawt_task_store_venture_ref(fixture->store, "task-new");
+	g_assert_cmpstr(kept->url, ==, other.url);
+}
+
 /* Saved, closed, reopened: the same task comes back. */
 static void
 test_store_survives_a_reopen(
@@ -2908,6 +2986,11 @@ main(
 
 	g_test_add("/task-store/store/reopen", StoreFixture, NULL, store_setup,
 	           test_store_survives_a_reopen, store_teardown);
+	g_test_add("/task-store/venture-ref/organization", StoreFixture, NULL,
+	           store_setup, test_venture_ref_organization, store_teardown);
+	g_test_add("/task-store/venture-ref/old-url-rewritten", StoreFixture,
+	           NULL, store_setup, test_venture_ref_old_url_rewritten,
+	           store_teardown);
 	g_test_add("/task-store/store/journal", StoreFixture, NULL, store_setup,
 	           test_journal_records_what_happened, store_teardown);
 	g_test_add("/task-store/store/live-and-prune", StoreFixture, NULL,

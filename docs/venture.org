@@ -111,9 +111,11 @@ A row given up on is kept, with its reason, and the task's later rows wait behin
 
 A task's details show a *VENTURE* section in every client: the ticket and *Open in VENTURE* when it is kept current; "Waiting to be sent" with the last error while a retry is pending; "Not mirrored" with the reason when it was skipped; "The mirror gave up" with the reason when it did -- and *Retry* for those two.
 
+*The link* (=url=, *Open in VENTURE*) is built by =clawt_venture_record_url()=.  VENTURE is multi-organization and keeps the page scope in a cookie, set by =GET /entity/<organization_id>?back=<path>=, so the link is =<base>/entity/<organization_id>?back=%2Fe%2Fticket%2F<id>=: opening it switches the browser's VENTURE organization to the ticket's (VENTURE remembers the selection, for a year) and lands on the ticket's page, =/e/ticket/<id>=.  When the organization is not known it is the bare page, =<base>/e/ticket/<id>=, which opens in whatever organization the browser last chose.  The organization comes from VENTURE's answer to the create, or from the ticket on intake, else the repository's, and is kept with the ref.  Links stored before this change pointed at the board (=/tickets/<id>=); the store rewrites them to the bare page once, when it opens.  The same link is the URL in an intake task's text.
+
 #+begin_src sh
 clawtilla task show task-01m0k6
-# venture:  #12 (synced)  https://venture.example/tickets/12
+# venture:  #12 (synced)  https://venture.example/entity/2?back=%2Fe%2Fticket%2F12
 clawtilla task venture-retry task-01m0k6
 #+end_src
 

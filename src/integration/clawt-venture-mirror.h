@@ -466,4 +466,25 @@ const gchar *clawt_venture_mirror_ticket_status(gint state);
 JsonNode *clawt_venture_mirror_describe(ClawtTaskStore *store,
                                         const gchar    *task_id);
 
+/**
+ * clawt_venture_record_url:
+ * @base: the VENTURE instance's base URL; one trailing "/" is dropped
+ * @type: the record type, a plain identifier (`[a-z_]+`) such as "ticket"
+ * @id: the record's id
+ * @organization_id: the organization the record is in, or 0 (or less)
+ *   when it is not known
+ *
+ * The page a person opens for one VENTURE record: with an organization,
+ * `<base>/entity/<org>?back=%2Fe%2F<type>%2F<id>` (VENTURE switches the
+ * browser's organization, then redirects to the record); without one,
+ * the bare page `<base>/e/<type>/<id>`.
+ *
+ * Returns: (transfer full) (nullable): the URL, or %NULL when @type is
+ *   not a plain identifier or @base is %NULL
+ */
+gchar *clawt_venture_record_url(const gchar *base,
+                                const gchar *type,
+                                gint64       id,
+                                gint64       organization_id);
+
 G_END_DECLS

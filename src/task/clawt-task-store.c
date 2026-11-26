@@ -97,6 +97,7 @@ static const gchar *SCHEMA_SQL =
     "  task_id TEXT PRIMARY KEY,"
     "  instance TEXT,"
     "  ticket_id INTEGER NOT NULL DEFAULT 0,"
+    "  organization_id INTEGER NOT NULL DEFAULT 0,"
     "  version INTEGER NOT NULL DEFAULT 0,"
     "  snapshot TEXT,"
     "  state TEXT NOT NULL,"
@@ -248,6 +249,37 @@ clawt_task_store_new(const gchar *path, GError **error)
         set_sqlite_error(error, self->db, "adding tasks.project");
         return NULL;
     }
+
+    /*
+     * venture_refs.organization_id: which VENTURE organization a ticket
+     * is in, so its link can switch the browser to it.  Old rows get 0
+     * (not known).
+     */
+    if (!has_column(self, "venture_refs", "organization_id") &&
+        sqlite3_exec(self->db,
+                     "ALTER TABLE venture_refs ADD COLUMN organization_id "
+                     "INTEGER NOT NULL DEFAULT 0;",
+                     NULL, NULL, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, self->db, "adding venture_refs.organization_id");
+        return NULL;
+    }
+
+    /*
+     * Links stored before VENTURE's record pages were known point at the
+     * board, <base>/tickets/<id>; the record is <base>/e/ticket/<id>.
+     * Rewritten in place, keeping whatever base the row held.  Idempotent:
+     * a rewritten url no longer ends in /tickets/<id>.  The organization
+     * of an old row is not known, so it gets the bare page.
+     */
+    sqlite3_exec(self->db,
+                 "UPDATE venture_refs SET url = "
+                 "  substr(url, 1, length(url) - length('/tickets/' || ticket_id)) "
+                 "  || '/e/ticket/' || ticket_id "
+                 "WHERE ticket_id > 0 AND url IS NOT NULL "
+                 "  AND length(url) > length('/tickets/' || ticket_id) "
+                 "  AND substr(url, -length('/tickets/' || ticket_id)) "
+                 "      = '/tickets/' || ticket_id;",
+                 NULL, NULL, NULL);
 
     sqlite3_exec(self->db,
                  "CREATE INDEX IF NOT EXISTS tasks_project "
@@ -1363,7 +1395,8 @@ clawt_task_store_venture_ref(ClawtTaskStore *self, const gchar *task_id)
 
     if (sqlite3_prepare_v2(self->db,
             "SELECT instance, ticket_id, version, snapshot, state, reason, "
-            "  url, updated_at FROM venture_refs WHERE task_id = ?",
+            "  url, updated_at, organization_id FROM venture_refs "
+            "WHERE task_id = ?",
             -1, &stmt, NULL) != SQLITE_OK)
         return NULL;
 
@@ -1380,6 +1413,7 @@ clawt_task_store_venture_ref(ClawtTaskStore *self, const gchar *task_id)
         ref->reason = g_strdup((const gchar *)sqlite3_column_text(stmt, 5));
         ref->url = g_strdup((const gchar *)sqlite3_column_text(stmt, 6));
         ref->updated_at = sqlite3_column_int64(stmt, 7);
+        ref->organization_id = sqlite3_column_int64(stmt, 8);
     }
 
     sqlite3_finalize(stmt);
@@ -1400,8 +1434,9 @@ clawt_task_store_put_venture_ref(ClawtTaskStore        *self,
 
     if (sqlite3_prepare_v2(self->db,
             "INSERT OR REPLACE INTO venture_refs (task_id, instance, "
-            "  ticket_id, version, snapshot, state, reason, url, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL)
+            "  ticket_id, version, snapshot, state, reason, url, updated_at, "
+            "  organization_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL)
         != SQLITE_OK) {
         set_sqlite_error(error, self->db, "preparing a VENTURE ref");
         return FALSE;
@@ -1416,6 +1451,7 @@ clawt_task_store_put_venture_ref(ClawtTaskStore        *self,
     sqlite3_bind_text(stmt, 7, ref->reason, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 8, ref->url, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 9, now_seconds());
+    sqlite3_bind_int64(stmt, 10, ref->organization_id);
 
     ok = sqlite3_step(stmt) == SQLITE_DONE;
 

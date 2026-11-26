@@ -450,6 +450,8 @@ void clawt_venture_outbox_row_free(ClawtVentureOutboxRow *row);
  * @task_id: the task
  * @instance: (nullable): the connector the ticket is on
  * @ticket_id: the VENTURE ticket, or 0 when there is none
+ * @organization_id: the VENTURE organization the ticket is in, or 0 when
+ *   not known -- what the link switches the browser's scope to
  * @version: the ticket's version after the mirror's last write
  * @snapshot: (nullable): the mirror-owned fields as the mirror last
  *   wrote them, a JSON object -- its write receipt
@@ -465,6 +467,7 @@ typedef struct {
     gchar  *task_id;
     gchar  *instance;
     gint64  ticket_id;
+    gint64  organization_id;
     gint64  version;
     gchar  *snapshot;
     gchar  *state;

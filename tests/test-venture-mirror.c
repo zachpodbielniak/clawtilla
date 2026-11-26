@@ -60,6 +60,9 @@ typedef struct {
     gchar          *assigned;           /* GET ticket?assignee=scout-bot */
     GPtrArray      *inbound;            /* "cancel <task>", ... */
     gboolean        budget_refuses;     /* POST runs/external answers 409 */
+    gint64          create_org;         /* organization_id in a created ticket */
+    gchar          *intake_url;         /* the url intake was handed */
+    gchar          *intake_task;        /* and the task it made */
 } Fixture;
 
 typedef struct {
@@ -139,7 +142,9 @@ fake_send(ClawtVentureMirror     *mirror,
             answer->status = 201;
             answer->body = g_strdup_printf(
                 "{\"id\":%" G_GINT64_FORMAT ",\"version\":1,"
-                "\"issue_type\":\"task\"}", ++fixture->next_ticket);
+                "\"issue_type\":\"task\",\"organization_id\":%"
+                G_GINT64_FORMAT "}", ++fixture->next_ticket,
+                fixture->create_org);
         }
     } else if (g_strcmp0(path, "/api/v1/activity/ticket/30") == 0) {
         answer->body = g_strdup(
@@ -265,6 +270,8 @@ fixture_teardown(Fixture *fixture, gconstpointer data)
     g_free(fixture->changed);
     g_free(fixture->comments);
     g_free(fixture->assigned);
+    g_free(fixture->intake_url);
+    g_free(fixture->intake_task);
     clawt_test_remove_tree(fixture->dir);
     g_free(fixture->dir);
 }
@@ -454,7 +461,10 @@ test_files_then_updates_as_each_agent(Fixture *fixture, gconstpointer data)
                                        clawt_task_get_id(task));
     g_assert_cmpstr(ref->state, ==, "synced");
     g_assert_cmpint(ref->ticket_id, ==, 1);
-    g_assert_cmpstr(ref->url, ==, "http://v.test/tickets/1");
+    /* the repository's organization (3) is what the link switches to */
+    g_assert_cmpint(ref->organization_id, ==, 3);
+    g_assert_cmpstr(ref->url, ==,
+                    "http://v.test/entity/3?back=%2Fe%2Fticket%2F1");
 
     /* running: one PATCH, by the assignee, with only the status */
     clawt_task_set_state(task, CLAWT_TASK_RUNNING);
@@ -819,7 +829,10 @@ rec_intake(gpointer data, const gchar *agent_id, gint64 ticket,
                                           CLAWT_TASK_PENDING);
 
     (void)description;
-    (void)url;
+    g_free(fixture->intake_url);
+    fixture->intake_url = g_strdup(url);
+    g_free(fixture->intake_task);
+    fixture->intake_task = g_strdup(clawt_task_get_id(task));
     g_ptr_array_add(fixture->inbound, g_strdup_printf(
         "intake %" G_GINT64_FORMAT " %s %s%s%s", ticket, agent_id, title,
         from_agent != NULL ? " from " : "",
@@ -1474,6 +1487,73 @@ test_review_is_written_by_the_reviewer(Fixture *fixture, gconstpointer data)
     g_assert_cmpstr(sent->token, ==, "t-lead");
 }
 
+/* The record link: the organization switch, the bare page, the base. */
+static void
+test_record_url(void)
+{
+    g_autofree gchar *a = clawt_venture_record_url("https://v.example",
+                                                   "ticket", 12, 2);
+    g_autofree gchar *b = clawt_venture_record_url("https://v.example",
+                                                   "ticket", 12, 0);
+    g_autofree gchar *c = clawt_venture_record_url("https://v.example/",
+                                                   "ticket", 12, 2);
+    g_autofree gchar *d = clawt_venture_record_url("https://v.example/",
+                                                   "ticket", 12, -1);
+
+    g_assert_cmpstr(a, ==,
+                    "https://v.example/entity/2?back=%2Fe%2Fticket%2F12");
+    g_assert_cmpstr(b, ==, "https://v.example/e/ticket/12");
+    g_assert_cmpstr(c, ==, a);
+    g_assert_cmpstr(d, ==, b);
+}
+
+/* A created ticket in another organization: the link carries it. */
+static void
+test_created_ticket_link_carries_its_organization(Fixture *fixture,
+                                                  gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_PENDING);
+    g_autoptr(ClawtVentureRef) ref = NULL;
+
+    (void)data;
+    fixture->create_org = 2;
+    drain(fixture);
+
+    ref = clawt_task_store_venture_ref(fixture->store,
+                                       clawt_task_get_id(task));
+    g_assert_nonnull(ref);
+    g_assert_cmpint(ref->organization_id, ==, 2);
+    g_assert_cmpstr(ref->url, ==,
+                    "http://v.test/entity/2?back=%2Fe%2Fticket%2F1");
+}
+
+/* An intake ticket in organization 2: stored ref and body url agree. */
+static void
+test_intake_link_carries_the_organization(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtVentureRef) ref = NULL;
+
+    (void)data;
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     TRUE);
+    clawt_venture_mirror_set_account_intake(fixture->mirror, "scout", TRUE);
+    fixture->assigned = g_strdup(
+        "[{\"id\":40,\"version\":1,\"title\":\"Other org\","
+        "  \"organization_id\":2,\"status\":\"todo\"}]");
+
+    poll(fixture);
+    g_assert_cmpstr(fixture->intake_url, ==,
+                    "http://v.test/entity/2?back=%2Fe%2Fticket%2F40");
+
+    /* and it holds after the outbox has written the ticket back */
+    drain(fixture);
+    ref = clawt_task_store_venture_ref(fixture->store, fixture->intake_task);
+    g_assert_nonnull(ref);
+    g_assert_cmpint(ref->organization_id, ==, 2);
+    g_assert_cmpstr(ref->url, ==, fixture->intake_url);
+}
+
 #define ADD(name, fn) \
     g_test_add("/venture-mirror/" name, Fixture, NULL, fixture_setup, fn, \
                fixture_teardown)
@@ -1519,6 +1599,11 @@ main(int argc, char *argv[])
     ADD("review-is-written-by-the-reviewer",
         test_review_is_written_by_the_reviewer);
     ADD("account-learned-once", test_account_learned_once);
+    g_test_add_func("/venture-mirror/record-url", test_record_url);
+    ADD("created-link-carries-organization",
+        test_created_ticket_link_carries_its_organization);
+    ADD("intake-link-carries-organization",
+        test_intake_link_carries_the_organization);
     g_test_add_func("/venture-mirror/finds-pull-requests",
                     test_finds_pull_requests);
 
