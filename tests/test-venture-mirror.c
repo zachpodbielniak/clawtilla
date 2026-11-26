@@ -2379,6 +2379,53 @@ test_team_tickets_are_paged(Fixture *fixture, gconstpointer data)
         "&kind=internal&id__gt=409&order=id&limit=10"));
 }
 
+/*
+ * Tickets already linked to tasks are not read again from the start of
+ * the list on every pass: a hundred whose assignee never got written
+ * would otherwise fill every page ahead of newer ones.  The next pass
+ * starts after the last of them -- and only that far: the ones the cap
+ * held back are read again.
+ */
+static void
+test_team_linked_tickets_are_not_reread(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(GString) rows = g_string_new("[");
+    guint i;
+
+    (void)data;
+    team_setup(fixture);
+    g_free(fixture->team_members);
+    fixture->team_members = g_strdup(
+        "[{\"id\":5,\"team_id\":7,\"user_id\":13,\"active\":true}]");
+    for (i = 0; i < 12; i++)
+        g_string_append_printf(rows,
+            "%s{\"id\":%u,\"version\":1,\"title\":\"L%u\","
+            "\"status\":\"todo\",\"team_id\":7,\"assignee\":null}",
+            i > 0 ? "," : "", 500 + i, i);
+    g_string_append(rows, "]");
+    g_free(fixture->team_tickets);
+    fixture->team_tickets = g_string_free(g_steal_pointer(&rows), FALSE);
+
+    /* ten taken (the cap), two held back */
+    poll(fixture);
+    g_assert_cmpuint(fixture->inbound->len, ==, 10);
+
+    /*
+     * VENTURE still lists all twelve.  The next pass reads from the start
+     * and finds the ten linked; the one after that starts after #509.
+     */
+    poll(fixture);
+    poll(fixture);
+    g_assert_cmpuint(count_sent(fixture, "GET",
+        "/api/v1/ticket?team_id__in=7&assignee=&external_ref=&status=todo"
+        "&kind=internal&id__gt=0&"), ==, 2);
+    /* page two of the first two passes, and the start of the third */
+    g_assert_cmpuint(count_sent(fixture, "GET",
+        "/api/v1/ticket?team_id__in=7&assignee=&external_ref=&status=todo"
+        "&kind=internal&id__gt=509&"), ==, 3);
+    g_assert_cmpuint(fixture->inbound->len, ==, 10);
+}
+
 #define ADD(name, fn) \
     g_test_add("/venture-mirror/" name, Fixture, NULL, fixture_setup, fn, \
                fixture_teardown)
@@ -2463,6 +2510,8 @@ main(int argc, char *argv[])
     ADD("team-ticket-somebody-has", test_team_ticket_somebody_has);
     ADD("team-given-to-its-own-team", test_team_given_to_its_own_team);
     ADD("team-tickets-are-paged", test_team_tickets_are_paged);
+    ADD("team-linked-tickets-are-not-reread",
+        test_team_linked_tickets_are_not_reread);
     g_test_add_func("/venture-mirror/finds-pull-requests",
                     test_finds_pull_requests);
 

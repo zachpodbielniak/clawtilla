@@ -5404,7 +5404,7 @@ test_an_agent_reports_its_team(void)
 
 /*
  * How an agent stands for a VENTURE team's ticket: its open tasks --
- * waiting ones too, finished ones not -- and whether it leads a team.
+ * ones not yet started too, finished ones not -- and whether it leads.
  * Somebody who is no fleet agent stands nowhere.
  */
 static void

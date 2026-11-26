@@ -128,6 +128,7 @@ struct _ClawtVentureMirror {
     gboolean                  poll_wanted;
     GSource                  *poll_timer;
     GHashTable               *intake_times;  /* agent -> GArray of gint64 */
+    GHashTable               *team_cursors;  /* "base#org#teams" -> gint64* */
 };
 
 G_DEFINE_FINAL_TYPE(ClawtVentureMirror, clawt_venture_mirror, G_TYPE_OBJECT)
@@ -1890,6 +1891,9 @@ typedef struct {
     const gchar        *team_agent;  /* who takes team->pdata[0]; in teams */
     gchar              *team_ids;    /* "7,9": the agents' teams, this org */
     guint               team_pages;  /* pages of their tickets read */
+    gchar              *team_cursor; /* its key in mirror->team_cursors */
+    gint64              team_after;  /* every ticket to here is linked */
+    gboolean            team_linked; /* and so far, still every one */
     gboolean            asking;      /* first, every unknown account's whoami */
     gboolean            context_changed;
 } PollJob;
@@ -1918,6 +1922,7 @@ poll_free(PollJob *poll)
         g_ptr_array_unref(poll->team);
     g_hash_table_unref(poll->teams);
     g_free(poll->team_ids);
+    g_free(poll->team_cursor);
     g_object_unref(poll->mirror);
     g_free(poll);
 }
@@ -2896,13 +2901,39 @@ on_poll_team_members(PollJob *poll, guint status, const gchar *body)
     poll->team = g_ptr_array_new_with_free_func(
         (GDestroyNotify)json_node_unref);
 
-    poll_team_tickets(poll, 0);
+    /*
+     * From where the last pass found every ticket before it linked to a
+     * task -- for this set of teams: an agent joining another team reads
+     * that team's from the start.
+     */
+    g_free(poll->team_cursor);
+    poll->team_cursor = g_strdup_printf("%s#%" G_GINT64_FORMAT "#%s",
+                                        poll->account->base,
+                                        poll_organization(poll),
+                                        poll->team_ids);
+    {
+        gint64 *after = g_hash_table_lookup(self->team_cursors,
+                                            poll->team_cursor);
+
+        poll->team_after = (after != NULL) ? *after : 0;
+    }
+    poll->team_linked = TRUE;
+
+    poll_team_tickets(poll, poll->team_after);
 }
 
 /*
  * A page of the teams' tickets: those no task has yet are queued; a
  * full page asks for the next, up to a bound -- the hourly cap is what
  * decides how many are taken, not where the first page ends.
+ *
+ * A ticket linked to a task stays in this list until the outbox has
+ * written its assignee, and for ever if that write is refused.  So the
+ * run of linked tickets at the head of the list is remembered, and the
+ * next pass starts after it: a hundred of them cannot fill every page.
+ * The run ends at the first ticket that is anything else -- queued, or
+ * held back by the cap -- which is read again next time.  It is kept in
+ * memory only: a restart reads from the start once.
  */
 static void
 on_poll_team(PollJob *poll, guint status, const gchar *body)
@@ -2934,14 +2965,20 @@ on_poll_team(PollJob *poll, guint status, const gchar *body)
 
         if (ticket <= 0 || (ext != NULL && *ext != '\0') ||
             json_object_get_int_member_with_default(t, "team_id", 0) <= 0 ||
-            !ticket_is_unassigned(t))
+            !ticket_is_unassigned(t)) {
+            poll->team_linked = FALSE;
             continue;
+        }
 
         known = clawt_task_store_venture_task_for_ticket(self->store, ticket);
 
-        if (known != NULL)
+        if (known != NULL) {
+            if (poll->team_linked)
+                poll->team_after = ticket;
             continue;
+        }
 
+        poll->team_linked = FALSE;
         g_ptr_array_add(poll->team, json_node_copy(
             json_array_get_element(rows, i)));
     }
@@ -2952,6 +2989,13 @@ on_poll_team(PollJob *poll, guint status, const gchar *body)
         return;
     }
 
+    {
+        gint64 *after = g_new(gint64, 1);
+
+        *after = poll->team_after;
+        g_hash_table_insert(self->team_cursors, g_strdup(poll->team_cursor),
+                            after);
+    }
     poll_team_next(poll);
 }
 
@@ -3852,6 +3896,7 @@ clawt_venture_mirror_finalize(GObject *object)
     g_hash_table_unref(self->accounts);
     g_hash_table_unref(self->last_progress);
     g_hash_table_unref(self->intake_times);
+    g_hash_table_unref(self->team_cursors);
     g_clear_object(&self->store);
     g_clear_pointer(&self->context, g_main_context_unref);
 
@@ -3901,6 +3946,8 @@ clawt_venture_mirror_init(ClawtVentureMirror *self)
     self->context_milestones = g_array_new(FALSE, FALSE, sizeof(gint64));
     self->started = iso_seconds_ago(0);
     self->context_goals = g_array_new(FALSE, FALSE, sizeof(gint64));
+    self->team_cursors = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                               g_free, g_free);
     self->intake_times = g_hash_table_new_full(g_str_hash, g_str_equal,
                                                g_free,
                                                (GDestroyNotify)g_array_unref);

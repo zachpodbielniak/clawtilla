@@ -367,9 +367,9 @@ inbound_intake(gpointer data, const gchar *agent_id, gint64 ticket,
 
 /*
  * How an agent stands for a ticket given to a VENTURE team it is in: the
- * tasks it has open -- everything assigned to it and not finished,
- * waiting ones included, so a ticket taken this pass counts against the
- * next -- and whether it leads a clawtilla team.  Not a fleet agent: -1.
+ * tasks it has open -- everything assigned to it and not finished, ones
+ * not yet started included, so a ticket taken this pass counts against
+ * the next -- and whether it leads a clawtilla team.  Not a fleet agent: -1.
  */
 gint
 clawt_daemon_venture_mirror_standing(ClawtDaemon *self, const gchar *agent_id,
