@@ -152,11 +152,46 @@ LIBRECLAW_CFLAGS = -I$(LIBRECLAW_DIR)/src -I$(LIBRECLAW_OUTDIR) \
 # way.  The cost is that ld re-scans the group until it settles, which
 # for six archives is not measurable.
 #
-LIBRECLAW_LIBS = -Wl,--start-group \
+# podomation is linked --whole-archive, because every one of our binaries
+# is a podomation *host*.  The modules in CLAWT_POD_MODULE_DIR are
+# dlopen'd (clawt-pod-bridge.c) and resolve their pod_* calls against the
+# executable, which exports its symbols dynamically.  Out of a plain
+# archive, though, an executable only carries the podomation objects its
+# own code happened to reference, so what a module may call depended on
+# what else was in the binary: podomation 1.0.5's container module calls
+# pod_params_get_boolean, the daemon defined it by accident, and
+# test-container-keep did not and died with "symbol lookup error" the
+# first time the module ran.  --whole-archive makes the executable carry
+# all of libpodomation, the API a module is built against, the same way
+# podomation links its own CLI and REPL.  `make test` checks it, with
+# tests/test-pod-module-symbols.sh.
+#
+# It is not libpodomation.so: a second copy of podomation in the process
+# would register every Pod* GType twice.  --whole-archive pulls the one
+# archive's objects in, so there is still exactly one copy.
+#
+# The whole archive includes pod-config-compiler.o, which nothing of ours
+# calls and which needs crispy, so crispy's archive goes into the group
+# too -- the one podomation itself vendors and links.  Plain, not whole:
+# only the members podomation reaches are pulled.  The lrg link drops it
+# for libregnum's merged copy (LRG_LIBRECLAW_LIBS), as it does yaml-glib.
+#
+# --export-dynamic is spelled out here rather than left to gmodule-2.0's
+# pkg-config --libs, which happens to carry it: without it the executable
+# exports nothing and no module can load at all.
+#
+LR_CRISPY_DIR    = $(if $(CRISPY_DIR),$(CRISPY_DIR),$(LR_PODOMATION_DIR)/deps/crispy)
+LR_CRISPY_STATIC = $(LR_CRISPY_DIR)/build/release/libcrispy.a
+
+LIBRECLAW_LIBS = -Wl,--export-dynamic \
+                 -Wl,--start-group \
                  $(LIBRECLAW_STATIC) \
                  $(LR_AI_GLIB_DIR)/build/release/libai-glib-1.0.a \
                  $(LR_YAML_GLIB_DIR)/build/release/libyaml-glib-1.0.a \
+                 -Wl,--whole-archive \
                  $(LR_PODOMATION_DIR)/build/release/libpodomation-1.0.a \
+                 -Wl,--no-whole-archive \
+                 $(LR_CRISPY_STATIC) \
                  $(LR_MCP_GLIB_DIR)/build/libmcp-glib-1.0.a \
                  $(LR_HTMX_GLIB_DIR)/build/release/libhtmx-glib-1.0.a \
                  -Wl,--end-group \
@@ -258,8 +293,16 @@ LRG_SYS_LIBS = $(shell pkg-config --libs $(LRG_PKG_DEPS) 2>/dev/null) \
                $(if $(filter 1,$(OFFICE)),$(shell pkg-config --libs girepository-2.0 2>/dev/null) \
                $(shell pkg-config --libs gjs-1.0 2>/dev/null))
 
-# libreclaw's group without its yaml-glib (see above).
-LRG_LIBRECLAW_LIBS = $(filter-out $(LR_YAML_GLIB_DIR)/build/release/libyaml-glib-1.0.a,$(LIBRECLAW_LIBS))
+# libreclaw's group without its yaml-glib (see above), and without the
+# crispy archive podomation's pod-config-compiler.o needs (see
+# LIBRECLAW_LIBS) whenever libregnum merges its own crispy -- which it
+# does by default exactly when its vendored checkout is there, the test
+# LRG_HAS_CRISPY above makes.  With both, the group's copy would answer
+# first and libregnum's scripting would run on a crispy it was not built
+# against -- or ld would pull members from both and stop on duplicates.
+LRG_LIBRECLAW_LIBS = $(filter-out $(LR_YAML_GLIB_DIR)/build/release/libyaml-glib-1.0.a \
+                                  $(if $(wildcard $(LRG_DIR)/deps/crispy/src/crispy.h),$(LR_CRISPY_STATIC)), \
+                                  $(LIBRECLAW_LIBS))
 
 LRG_LDFLAGS = $(LDFLAGS_SAN) $(LRG_LIBRECLAW_LIBS) $(LRG_LIB) $(PKG_LIBS) $(QRENCODE_LIBS) $(POPPLER_LIBS) $(LRG_SYS_LIBS) \
               $(shell pkg-config --libs yaml-0.1)

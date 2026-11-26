@@ -328,6 +328,18 @@ daemon:
 That replaces the whole search path with the one directory, so a typo
 fails loudly rather than silently loading an older set from elsewhere.
 
+*** "symbol lookup error: … libpod-module-…so: undefined symbol: pod_…"
+
+The process dies outright, the first time the module calls the function, not when it is loaded: modules are opened lazily.  A module resolves its =pod_*= calls against the executable that loaded it, so that executable has to carry all of podomation, and clawtilla links ~libpodomation-1.0.a~ with ~--whole-archive~ for that reason (see the comment above ~LIBRECLAW_LIBS~ in =config.mk=).  From a plain archive a binary carries only what its own code references, which is how podomation 1.0.5's container module came to need ~pod_params_get_boolean~ from a test that did not have it.
+
+Seen with a binary built from this tree, it means the binary predates that link or a module was rebuilt against a newer podomation than the one linked in.  Rebuild, and run the check that guards it:
+
+#+begin_src bash
+bash tests/test-pod-module-symbols.sh
+#+end_src
+
+It names each binary, symbol and module that would fail, and runs as part of ~make test~.
+
 *** "container create failed: Could not connect: …"
 
 The module loaded and podman refused.  Almost always the rootless socket

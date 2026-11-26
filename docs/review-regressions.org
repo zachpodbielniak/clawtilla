@@ -3,7 +3,7 @@
 #+authors: Clawtilla contributors
 #+categories: development testing
 #+created: 2026-09-09T00:00:00-04:00
-#+updated: 2026-09-09T00:00:00-04:00
+#+updated: 2026-11-26T00:00:00-05:00
 #+version: 1
 
 * Attachment names
@@ -37,3 +37,9 @@ The daemon establishes each loaded agent's usage watermark before timers, listen
 A missing database establishes an empty baseline without creating a database file. When the agent later creates the file, its first recorded turn is chargeable. Existing history is excluded using row ids as well as timestamps, so old and new turns recorded in the same second remain distinguishable. Read failures remain errors instead of successful empty baselines.
 
 =tests/test-usage.c= covers empty databases, historical baselines and repeated priming. =tests/test-daemon.c= drives reply events for new and existing agents, including reconnects, and verifies both the recorded task spend and the budget refusal after the first paid turn.
+
+* Podomation module hosts
+
+Every executable that can load a podomation module defines every =pod_*= symbol the built modules leave undefined. Modules are dlopen'd lazily and resolve those calls against the executable, so a missing one is a =symbol lookup error= that kills the process when the call is first reached. podomation is linked =--whole-archive= (=config.mk=, ~LIBRECLAW_LIBS~), with crispy's archive alongside for =pod-config-compiler.o=; the lrg and office clients take libregnum's merged crispy instead.
+
+=tests/test-pod-module-symbols.sh= collects the undefined =pod_*= references of each =libpod-module-*.so= and, for each binary in the build tree and its =tests/= that contains a module loader (=clawt_pod_bridge_load_module_for= or =pod_module_manager_load_module=), checks that every one is exported. It names the binary, the symbol and the module that would fail.
