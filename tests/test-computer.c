@@ -5761,6 +5761,366 @@ test_a_relabel_of_anothers_files_is_refused_up_front(void)
     clawt_test_remove_tree(own_dir);
 }
 
+/* ── computer.container.selinux_level ────────────────────────────── */
+
+/*
+ * The three forms the key takes, and every way to get it wrong.  The
+ * invalid list is podomation's own (tests/test-container-module.c), so
+ * a level this side accepts is never one the module refuses at create.
+ */
+static void
+test_selinux_level_parse(void)
+{
+    static const gchar *const good[] = {
+        "s0:c100,c200", "s0:c5", "s0:c0", "s0:c0,c1023", NULL
+    };
+    static const gchar *const bad[] = {
+        "s0", "s0:c200,c100", "s0:c1024", "s0:c01", "s1:c1,c2",
+        "s0:c1,c2,c3", "level:s0:c1,c2", "s0:c5,c5", "s0:c", "s0:c1,",
+        "s0:c1,c", "type:foo_t", "s0:c-1", "AUTO", " auto", "randomly",
+        NULL
+    };
+    static const gchar *const disabled[] = {
+        "disable", "label=disable", "label:disable", "DISABLE", NULL
+    };
+    ClawtSelinuxLevelMode mode = CLAWT_SELINUX_LEVEL_RANDOM;
+    guint i;
+
+    /* Unset and empty are auto, the documented default. */
+    g_assert_true(clawt_selinux_level_parse(NULL, &mode, NULL));
+    g_assert_cmpint(mode, ==, CLAWT_SELINUX_LEVEL_AUTO);
+    mode = CLAWT_SELINUX_LEVEL_RANDOM;
+    g_assert_true(clawt_selinux_level_parse("", &mode, NULL));
+    g_assert_cmpint(mode, ==, CLAWT_SELINUX_LEVEL_AUTO);
+    g_assert_true(clawt_selinux_level_parse("auto", &mode, NULL));
+    g_assert_cmpint(mode, ==, CLAWT_SELINUX_LEVEL_AUTO);
+    g_assert_true(clawt_selinux_level_parse("random", &mode, NULL));
+    g_assert_cmpint(mode, ==, CLAWT_SELINUX_LEVEL_RANDOM);
+
+    for (i = 0; good[i] != NULL; i++) {
+        g_autoptr(GError) error = NULL;
+
+        mode = CLAWT_SELINUX_LEVEL_AUTO;
+        g_assert_true(clawt_selinux_level_parse(good[i], &mode, &error));
+        g_assert_no_error(error);
+        g_assert_cmpint(mode, ==, CLAWT_SELINUX_LEVEL_EXPLICIT);
+        g_assert_true(clawt_selinux_level_is_valid(good[i]));
+    }
+
+    for (i = 0; bad[i] != NULL; i++) {
+        g_autoptr(GError) error = NULL;
+
+        g_assert_false(clawt_selinux_level_is_valid(bad[i]));
+        g_assert_false(clawt_selinux_level_parse(bad[i], NULL, &error));
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID);
+        g_assert_nonnull(strstr(error->message, CLAWT_SELINUX_LEVEL_KEY));
+        g_assert_nonnull(strstr(error->message, "s0:c100,c200"));
+    }
+
+    /* "disable" is refused by name, saying what it would really do. */
+    for (i = 0; disabled[i] != NULL; i++) {
+        g_autoptr(GError) error = NULL;
+
+        g_assert_false(clawt_selinux_level_parse(disabled[i], NULL, &error));
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID);
+        g_assert_nonnull(strstr(error->message, "confinement off"));
+    }
+}
+
+/* Whether the valid level @level holds category @c. */
+static gboolean
+level_has_category(const gchar *level, gint c)
+{
+    g_auto(GStrv) cats = g_strsplit(level + strlen("s0:"), ",", -1);
+    guint i;
+
+    for (i = 0; cats[i] != NULL; i++) {
+        if (g_ascii_strtoll(cats[i] + 1, NULL, 10) == c)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * A new team pair: two distinct categories, never one already in use,
+ * and never a pair that holds a single-category level's category -- such
+ * a pair could read that level's files.
+ */
+static void
+test_selinux_level_allocate(void)
+{
+    g_autoptr(GRand) rand = g_rand_new_with_seed(42);
+    g_autoptr(GPtrArray) taken = g_ptr_array_new_with_free_func(g_free);
+    guint i;
+
+    g_ptr_array_add(taken, g_strdup("s0:c5"));
+    g_ptr_array_add(taken, g_strdup("s0:c100,c200"));
+    g_ptr_array_add(taken, g_strdup("not a level"));
+
+    for (i = 0; i < 64; i++) {
+        g_autofree gchar *level = NULL;
+        guint j;
+
+        g_ptr_array_add(taken, NULL);
+        level = clawt_selinux_level_allocate(
+            (const gchar * const *)taken->pdata, rand);
+        g_ptr_array_remove_index(taken, taken->len - 1);
+
+        g_assert_nonnull(level);
+        g_assert_true(clawt_selinux_level_is_valid(level));
+        g_assert_nonnull(strchr(level, ','));
+        g_assert_false(level_has_category(level, 5));
+
+        for (j = 0; j < taken->len; j++)
+            g_assert_cmpstr(level, !=, g_ptr_array_index(taken, j));
+
+        g_ptr_array_add(taken, g_steal_pointer(&level));
+    }
+
+    /*
+     * Every category but two blocked: the one pair left is found by the
+     * walk however the random draws go, and once it is taken there is
+     * none -- NULL, not a loop.
+     */
+    {
+        g_autoptr(GPtrArray) singles = g_ptr_array_new_with_free_func(g_free);
+        g_autofree gchar *last = NULL;
+        g_autofree gchar *none = NULL;
+        gint c;
+
+        for (c = 0; c < CLAWT_SELINUX_CATEGORY_MAX - 1; c++)
+            g_ptr_array_add(singles, g_strdup_printf("s0:c%d", c));
+        g_ptr_array_add(singles, NULL);
+
+        last = clawt_selinux_level_allocate(
+            (const gchar * const *)singles->pdata, rand);
+        g_assert_cmpstr(last, ==, "s0:c1022,c1023");
+
+        g_ptr_array_remove_index(singles, singles->len - 1);
+        g_ptr_array_add(singles, g_strdup(last));
+        g_ptr_array_add(singles, NULL);
+
+        none = clawt_selinux_level_allocate(
+            (const gchar * const *)singles->pdata, rand);
+        g_assert_null(none);
+    }
+
+    /* No generator given: one of its own, and still a valid pair. */
+    {
+        g_autofree gchar *level = clawt_selinux_level_allocate(NULL, NULL);
+
+        g_assert_true(clawt_selinux_level_is_valid(level));
+    }
+}
+
+/* A stand-in for the daemon's store: team "forge" has one pair. */
+static guint selinux_team_calls = 0;
+
+static gchar *
+fake_team_level(const gchar *team, gpointer user_data, GError **error)
+{
+    selinux_team_calls++;
+
+    g_assert_true(user_data == &selinux_team_calls);
+
+    if (g_strcmp0(team, "forge") == 0)
+        return g_strdup("s0:c7,c9");
+
+    g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED, "no store here");
+    return NULL;
+}
+
+/* The params one agent's container would be created with. */
+static GHashTable *
+selinux_create_params(const gchar *yaml)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(ClawtPodBridge) bridge = clawt_pod_bridge_new(NULL);
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent = agent_from_yaml(&config, yaml);
+
+    computer = clawt_computer_factory_create(agent, NULL, bridge, &error);
+    g_assert_no_error(error);
+    g_assert_true(CLAWT_IS_CONTAINER_COMPUTER(computer));
+
+    return clawt_container_computer_build_create_params(
+        CLAWT_CONTAINER_COMPUTER(computer));
+}
+
+/*
+ * What reaches podomation's create: selinux_level for an agent on a team
+ * (the team's pair) or with an explicit level, and no selinux_level at
+ * all for random or for an agent on no team -- absent, so podman picks
+ * its random pair exactly as before the key existed.
+ */
+static void
+test_selinux_level_create_params(void)
+{
+    clawt_selinux_level_set_team_func(fake_team_level, &selinux_team_calls);
+    selinux_team_calls = 0;
+
+    {
+        g_autoptr(GHashTable) params = selinux_create_params(
+            "agents:\n"
+            "  - id: chief\n"
+            "    team: forge\n"
+            "    computer:\n"
+            "      type: container\n");
+
+        g_assert_cmpstr(g_hash_table_lookup(params, "selinux_level"), ==,
+                        "s0:c7,c9");
+        g_assert_cmpstr(g_hash_table_lookup(params, "name"), ==,
+                        "clawt-chief");
+        g_assert_nonnull(g_hash_table_lookup(params, "mounts"));
+        g_assert_cmpuint(selinux_team_calls, ==, 1);
+    }
+
+    {
+        g_autoptr(GHashTable) params = selinux_create_params(
+            "agents:\n"
+            "  - id: chief\n"
+            "    team: forge\n"
+            "    computer:\n"
+            "      type: container\n"
+            "      container:\n"
+            "        selinux_level: random\n");
+
+        g_assert_false(g_hash_table_contains(params, "selinux_level"));
+    }
+
+    {
+        g_autoptr(GHashTable) params = selinux_create_params(
+            "agents:\n"
+            "  - id: chief\n"
+            "    computer:\n"
+            "      type: container\n");
+
+        g_assert_false(g_hash_table_contains(params, "selinux_level"));
+    }
+
+    {
+        g_autoptr(GHashTable) params = selinux_create_params(
+            "agents:\n"
+            "  - id: chief\n"
+            "    team: forge\n"
+            "    computer:\n"
+            "      type: container\n"
+            "      container:\n"
+            "        selinux_level: s0:c3,c4\n");
+
+        g_assert_cmpstr(g_hash_table_lookup(params, "selinux_level"), ==,
+                        "s0:c3,c4");
+    }
+
+    /*
+     * A team the store cannot give a level: podman's random pair and a
+     * warning, not a container that will not start.
+     */
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+                          "*team elsewhere has no usable SELinux level*");
+    {
+        g_autoptr(GHashTable) params = selinux_create_params(
+            "agents:\n"
+            "  - id: chief\n"
+            "    team: elsewhere\n"
+            "    computer:\n"
+            "      type: container\n");
+
+        g_assert_false(g_hash_table_contains(params, "selinux_level"));
+    }
+    g_test_assert_expected_messages();
+
+    /* Cleared only by whoever registered it. */
+    clawt_selinux_level_clear_team_func(NULL);
+    {
+        g_autoptr(GHashTable) params = selinux_create_params(
+            "agents:\n"
+            "  - id: chief\n"
+            "    team: forge\n"
+            "    computer:\n"
+            "      type: container\n");
+
+        g_assert_cmpstr(g_hash_table_lookup(params, "selinux_level"), ==,
+                        "s0:c7,c9");
+    }
+
+    /* With nothing registered, auto is podman's random pair. */
+    clawt_selinux_level_clear_team_func(&selinux_team_calls);
+    {
+        g_autoptr(GHashTable) params = selinux_create_params(
+            "agents:\n"
+            "  - id: chief\n"
+            "    team: forge\n"
+            "    computer:\n"
+            "      type: container\n");
+
+        g_assert_false(g_hash_table_contains(params, "selinux_level"));
+    }
+}
+
+/*
+ * A shared machine under auto takes its agents' team only when they are
+ * all on it; one level cannot be two teams'.
+ */
+static void
+test_selinux_level_machine_team(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) users = g_ptr_array_new();
+    ClawtAgentConfig *a;
+    ClawtAgentConfig *b;
+    ClawtAgentConfig *c;
+
+    config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: a\n"
+        "    team: forge\n"
+        "  - id: b\n"
+        "    team: forge\n"
+        "  - id: c\n"
+        "    team: other\n", &error);
+    g_assert_no_error(error);
+
+    a = clawt_config_get_agent(config, "a");
+    b = clawt_config_get_agent(config, "b");
+    c = clawt_config_get_agent(config, "c");
+
+    g_assert_cmpstr(clawt_selinux_level_machine_team(a, NULL), ==, "forge");
+
+    g_ptr_array_add(users, a);
+    g_ptr_array_add(users, b);
+    g_assert_cmpstr(clawt_selinux_level_machine_team(a, users), ==, "forge");
+
+    g_ptr_array_add(users, c);
+    g_assert_null(clawt_selinux_level_machine_team(a, users));
+}
+
+/*
+ * A setter handed something podman would refuse gives the container the
+ * random pair and says so, rather than a create that fails later.
+ */
+static void
+test_selinux_level_setter_refuses_garbage(void)
+{
+    g_autoptr(ClawtPodBridge) bridge = clawt_pod_bridge_new(NULL);
+    g_autoptr(ClawtComputer) computer =
+        clawt_container_computer_new("agent", bridge, "fedora:latest");
+    ClawtContainerComputer *container = CLAWT_CONTAINER_COMPUTER(computer);
+
+    clawt_container_computer_set_selinux_level(container, "s0:c1,c2");
+    g_assert_cmpstr(clawt_container_computer_get_selinux_level(container),
+                    ==, "s0:c1,c2");
+
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+                          "*not an SELinux MCS level*");
+    clawt_container_computer_set_selinux_level(container, "disable");
+    g_test_assert_expected_messages();
+    g_assert_null(clawt_container_computer_get_selinux_level(container));
+}
+
 
 int
 main(int argc, char *argv[])
@@ -5833,6 +6193,16 @@ main(int argc, char *argv[])
     g_test_add_func("/computer/mounts/none-says-so",
                     test_a_computer_with_no_shares_says_so);
     g_test_add_func("/computer/container/mount-json", test_container_mount_json);
+    g_test_add_func("/computer/selinux-level/parse",
+                    test_selinux_level_parse);
+    g_test_add_func("/computer/selinux-level/allocate",
+                    test_selinux_level_allocate);
+    g_test_add_func("/computer/selinux-level/create-params",
+                    test_selinux_level_create_params);
+    g_test_add_func("/computer/selinux-level/machine-team",
+                    test_selinux_level_machine_team);
+    g_test_add_func("/computer/selinux-level/setter-refuses-garbage",
+                    test_selinux_level_setter_refuses_garbage);
     g_test_add_func("/computer/container/no-mounts",
                     test_container_mount_json_handles_no_mounts);
 

@@ -633,6 +633,46 @@ void clawt_task_store_put_venture_cursor(ClawtTaskStore *self,
                                          const gchar    *value);
 
 /**
+ * clawt_task_store_team_selinux_levels:
+ * @self: a #ClawtTaskStore
+ *
+ * Every team's stored SELinux MCS level; see
+ * computer.container.selinux_level.
+ *
+ * Returns: (transfer full) (element-type utf8 utf8): team id to level,
+ *   empty when no team has one yet
+ */
+GHashTable *clawt_task_store_team_selinux_levels(ClawtTaskStore *self);
+
+/**
+ * clawt_task_store_team_selinux_level:
+ * @self: a #ClawtTaskStore
+ * @team: the team
+ *
+ * Returns: (transfer full) (nullable): the team's stored level, or %NULL
+ *   when it has none yet
+ */
+gchar *clawt_task_store_team_selinux_level(ClawtTaskStore *self,
+                                           const gchar    *team);
+
+/**
+ * clawt_task_store_add_team_selinux_level:
+ * @self: a #ClawtTaskStore
+ * @team: the team
+ * @level: its newly allocated level
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Stores a team's level once.  Refused when the team already has one or
+ * another team holds @level, so a level is never silently replaced.
+ *
+ * Returns: %TRUE when written
+ */
+gboolean clawt_task_store_add_team_selinux_level(ClawtTaskStore  *self,
+                                                 const gchar     *team,
+                                                 const gchar     *level,
+                                                 GError         **error);
+
+/**
  * clawt_task_store_venture_live_tickets:
  * @self: a #ClawtTaskStore
  *

@@ -2455,6 +2455,21 @@ cmd_agent(int argc, char *argv[])
          * resumed session is never handed a system prompt at all and
          * only clearing it applies an identity change.
          */
+        /*
+         * A container's SELinux level is the one setting a restart of the
+         * session does not apply: only a new container does, and the
+         * daemon says what that takes.
+         */
+        {
+            const gchar *recreate = member_or(json_node_get_object(reply),
+                                              "recreate", NULL);
+
+            if (recreate != NULL) {
+                g_print("note: %s\n", recreate);
+                return EXIT_SUCCESS;
+            }
+        }
+
         if (member_flag(json_node_get_object(reply), "restart_required",
                         FALSE)) {
             if (g_str_has_prefix(argv[4], "persona."))
@@ -8295,10 +8310,26 @@ cmd_computer(int argc, char *argv[])
 static gint
 report_reload(JsonNode *reply)
 {
+    g_auto(GStrv) recreate = NULL;
+    guint i;
+
     if (report_refusals(reply))
         return EXIT_FAILURE;
 
     g_print("Reloaded.\n");
+
+    /*
+     * Containers whose SELinux level moved: in force in the config and
+     * not yet in the container, which only a recreate changes.  Said
+     * here, beside "Reloaded.", because that word alone reads as done.
+     */
+    if (reply != NULL && JSON_NODE_HOLDS_OBJECT(reply))
+        recreate = string_array_member(json_node_get_object(reply),
+                                       "recreate");
+
+    for (i = 0; recreate != NULL && recreate[i] != NULL; i++)
+        g_print("note: %s\n", recreate[i]);
+
     return EXIT_SUCCESS;
 }
 

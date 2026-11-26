@@ -1748,7 +1748,11 @@ static const ClawtSchemaEntry schema[] = {
   "/mnt/clawtilla/workspaces/<agent>, and its own exchange folder. The\n"
   "machine stops when its last running agent stops, and is rebuilt only\n"
   "when every agent on it is stopped. A desktop is one screen, driven by\n"
-  "one agent at a time.", "0.5.0" },
+  "one agent at a time.\n"
+  "\n"
+  "A shared container's container.selinux_level under auto is its\n"
+  "agents' team's level when they are all on one team, and podman's\n"
+  "random pair when they are not.", "0.5.0" },
 
 { "computers.id", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
   "Identifier, and what agents.computer.use names. The machine is called\n"
@@ -4352,6 +4356,34 @@ static const ClawtSchemaEntry schema[] = {
   "again as memory. It needs memory to be set and must not be smaller\n"
   "than it; both are refused when they arrive rather than when podman\n"
   "reads them.", "0.19.0" },
+
+{ "agents.computer.container.selinux_level", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_NONE, "auto", NULL,
+  "The SELinux MCS level the container is created at.\n"
+  "\n"
+  "podman gives every container a random pair of categories, and a file\n"
+  "created inside a container is labelled with that pair. On a folder\n"
+  "several containers share -- ~/source, mounted rw with relabel: shared\n"
+  "-- a file one agent writes from inside its container is then\n"
+  "unreadable inside every other one, even at mode 0644. It reads as a\n"
+  "permissions bug and is a labelling one. Files written on the host\n"
+  "(an agent's own tools run there) are not affected.\n"
+  "\n"
+  "auto (the default) puts an agent on a team at its team's level: a\n"
+  "pair clawtilla picks the first time the team needs one, distinct\n"
+  "from every other team's and from every explicit level in the config,\n"
+  "and keeps in tasks.db under the state directory, so it survives a\n"
+  "daemon restart and a rebuild. An agent on no team gets podman's\n"
+  "random pair. random always gets podman's random pair. A level such as\n"
+  "s0:c100,c200 (or one category, s0:c5) is used as written: categories\n"
+  "c0..c1023, ascending, no leading zeros. disable is refused -- it\n"
+  "would switch SELinux off for the container, not choose its level.\n"
+  "\n"
+  "Applied only when the container is created. Changing it, or the\n"
+  "agent's team under auto, takes effect when the container is next\n"
+  "made: stop the agent and start it, or run `computer rebuild`.\n"
+  "`config validate` warns when two containers share a writable folder\n"
+  "at different levels.", "0.78.0" },
 
 /* ── agents.computer.ssh ─────────────────────────────────────────── */
 { "agents.computer.ssh", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,

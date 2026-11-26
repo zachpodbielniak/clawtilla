@@ -22,6 +22,10 @@ machine stops when its last running agent stops, and is rebuilt only
 when every agent on it is stopped. A desktop is one screen, driven by
 one agent at a time.
 
+A shared container's container.selinux_level under auto is its
+agents' team's level when they are all on one team, and podman's
+random pair when they are not.
+
 ### `computers.id`
 
 - Type: string

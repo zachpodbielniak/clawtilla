@@ -2336,10 +2336,400 @@ test_the_notice_retention_round_trips(void)
     g_assert_cmpint(clawt_config_get_int(reread, "notices.keep"), ==, 500);
 }
 
+/* ── computer.container.selinux_level ────────────────────────────── */
+
+/* One container agent with @level, as a whole config. */
+static ClawtConfig *
+selinux_config(const gchar *level)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *yaml = g_strdup_printf(
+        "agents:\n"
+        "  - id: alpha\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      container:\n"
+        "        selinux_level: \"%s\"\n", level);
+    ClawtConfig *config = clawt_config_load_from_string(yaml, &error);
+
+    g_assert_no_error(error);
+    return config;
+}
+
+/*
+ * The key at load: auto, random and a level leave the agent usable; any
+ * other value disables just that agent with the reason, and validation
+ * -- somebody asking whether the file is right -- calls it an error.
+ */
+static void
+test_selinux_level_at_load(void)
+{
+    static const gchar *const good[] = {
+        "auto", "random", "s0:c100,c200", "s0:c5", NULL
+    };
+    static const gchar *const bad[] = {
+        "s0:c200,c100", "s0:c1024", "s0:c01", "s0:c1,c2,c3", "teams", NULL
+    };
+    guint i;
+
+    for (i = 0; good[i] != NULL; i++) {
+        g_autoptr(ClawtConfig) config = selinux_config(good[i]);
+        g_autoptr(GError) error = NULL;
+        ClawtAgentConfig *agent = clawt_config_get_agent(config, "alpha");
+
+        g_assert_false(clawt_agent_config_is_shadow(agent));
+        g_assert_true(clawt_config_validate(config, &error));
+        g_assert_no_error(error);
+    }
+
+    for (i = 0; bad[i] != NULL; i++) {
+        g_autoptr(ClawtConfig) config = selinux_config(bad[i]);
+        g_autoptr(GError) error = NULL;
+        ClawtAgentConfig *agent = clawt_config_get_agent(config, "alpha");
+
+        g_assert_true(clawt_agent_config_is_shadow(agent));
+        g_assert_nonnull(strstr(clawt_agent_config_get_shadow_reason(agent),
+                                "selinux_level"));
+        g_assert_false(clawt_config_validate(config, &error));
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID);
+        g_assert_nonnull(strstr(error->message, "agent alpha"));
+    }
+
+    /* disable is refused by name, and says what it would have done. */
+    {
+        g_autoptr(ClawtConfig) config = selinux_config("disable");
+        ClawtAgentConfig *agent = clawt_config_get_agent(config, "alpha");
+
+        g_assert_true(clawt_agent_config_is_shadow(agent));
+        g_assert_nonnull(strstr(clawt_agent_config_get_shadow_reason(agent),
+                                "confinement off"));
+    }
+
+    /* Unset is the documented default. */
+    {
+        g_autoptr(GError) error = NULL;
+        g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+            "agents:\n  - id: alpha\n", &error);
+
+        g_assert_no_error(error);
+        g_assert_cmpstr(clawt_agent_config_get_string(
+                            clawt_config_get_agent(config, "alpha"),
+                            CLAWT_SELINUX_LEVEL_KEY), ==, "auto");
+    }
+
+    /* A shared machine's entry is checked even with nobody on it. */
+    {
+        g_autoptr(GError) error = NULL;
+        g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+            "computers:\n"
+            "  - id: build\n"
+            "    type: container\n"
+            "    container:\n"
+            "      selinux_level: label=disable\n", &error);
+
+        g_assert_no_error(error);
+        g_assert_false(clawt_config_validate(config, &error));
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID);
+        g_assert_nonnull(strstr(error->message, "computer build"));
+    }
+}
+
+/* The SELinux warnings among @config's, in order. */
+static GPtrArray *
+selinux_warnings_of(ClawtConfig *config)
+{
+    GPtrArray *all = clawt_config_get_warnings(config);
+    GPtrArray *out = g_ptr_array_new();
+    guint i;
+
+    for (i = 0; all != NULL && i < all->len; i++) {
+        const gchar *text = g_ptr_array_index(all, i);
+
+        if (g_str_has_prefix(text, "SELinux labelling:"))
+            g_ptr_array_add(out, (gpointer)text);
+    }
+
+    return out;
+}
+
+/* A config, loaded, with no error. */
+static ClawtConfig *
+config_from(const gchar *yaml)
+{
+    g_autoptr(GError) error = NULL;
+    ClawtConfig *config = clawt_config_load_from_string(yaml, &error);
+
+    g_assert_no_error(error);
+    return config;
+}
+
+/*
+ * Two containers on one writable folder at different levels is the
+ * trap: a warning naming the folder and both agents, at load (which is
+ * what `config validate` prints) and through the function the Fleet page
+ * reads.  A warning, not an error: the file is still valid.
+ */
+static void
+test_selinux_shared_folder_warns(void)
+{
+    g_autoptr(ClawtConfig) config = config_from(
+        "agents:\n"
+        "  - id: alpha\n"
+        "    team: red\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      mounts:\n"
+        "        - source: /tmp/clawt-selinux-src\n"
+        "          target: /data/source\n"
+        "          required: false\n"
+        "          mode: rw\n"
+        "  - id: beta\n"
+        "    team: blue\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      mounts:\n"
+        "        - source: /tmp/clawt-selinux-src\n"
+        "          target: /work\n"
+        "          required: false\n"
+        "          mode: rw\n");
+    g_autoptr(GPtrArray) warnings = selinux_warnings_of(config);
+    g_autoptr(GError) error = NULL;
+    const gchar *text;
+
+    g_assert_cmpuint(warnings->len, ==, 1);
+    text = g_ptr_array_index(warnings, 0);
+    g_assert_nonnull(strstr(text, "/tmp/clawt-selinux-src"));
+    g_assert_nonnull(strstr(text, "alpha at team red's level"));
+    g_assert_nonnull(strstr(text, "beta at team blue's level"));
+    g_assert_nonnull(strstr(text, "labelling problem"));
+
+    g_assert_true(clawt_config_validate(config, &error));
+    g_assert_no_error(error);
+
+    /*
+     * With the stored pairs the comparison is of pairs: a team and an
+     * explicit level that are the same pair do not warn.
+     */
+    {
+        g_autoptr(ClawtConfig) same = config_from(
+            "agents:\n"
+            "  - id: alpha\n"
+            "    team: red\n"
+            "    computer:\n"
+            "      type: container\n"
+            "      mounts:\n"
+            "        - source: /tmp/clawt-selinux-src\n"
+            "          target: /data/source\n"
+            "          required: false\n"
+            "          mode: rw\n"
+            "  - id: beta\n"
+            "    computer:\n"
+            "      type: container\n"
+            "      container:\n"
+            "        selinux_level: s0:c1,c2\n"
+            "      mounts:\n"
+            "        - source: /tmp/clawt-selinux-src\n"
+            "          target: /data/source\n"
+            "          required: false\n"
+            "          mode: rw\n");
+        g_autoptr(GHashTable) stored = g_hash_table_new(g_str_hash,
+                                                        g_str_equal);
+        g_auto(GStrv) by_name = NULL;
+        g_auto(GStrv) by_pair = NULL;
+
+        g_hash_table_insert(stored, (gpointer)"red", (gpointer)"s0:c1,c2");
+
+        by_name = clawt_selinux_level_shared_mount_warnings(same, NULL);
+        g_assert_nonnull(by_name);
+        g_assert_nonnull(strstr(by_name[0], "beta at s0:c1,c2"));
+
+        by_pair = clawt_selinux_level_shared_mount_warnings(same, stored);
+        g_assert_null(by_pair);
+    }
+}
+
+/*
+ * The cases that must stay quiet: one team under auto (one level), both
+ * read-only (nobody writes anything to be unreadable), a shared machine
+ * (one container), and agents with only clawtilla's own workspace and
+ * exchange -- which this warning leaves to the documentation.
+ */
+static void
+test_selinux_shared_folder_quiet(void)
+{
+    static const gchar *const yamls[] = {
+        /* one team, auto */
+        "agents:\n"
+        "  - id: alpha\n"
+        "    team: forge\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      mounts:\n"
+        "        - source: /tmp/clawt-selinux-src\n"
+        "          target: /data/source\n"
+        "          required: false\n"
+        "          mode: rw\n"
+        "  - id: beta\n"
+        "    team: forge\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      mounts:\n"
+        "        - source: /tmp/clawt-selinux-src\n"
+        "          target: /data/source\n"
+        "          required: false\n"
+        "          mode: rw\n",
+
+        /* both read-only, at random pairs */
+        "agents:\n"
+        "  - id: alpha\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      mounts:\n"
+        "        - source: /tmp/clawt-selinux-src\n"
+        "          target: /data/source\n"
+        "          required: false\n"
+        "          mode: ro\n"
+        "  - id: beta\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      mounts:\n"
+        "        - source: /tmp/clawt-selinux-src\n"
+        "          target: /data/source\n"
+        "          required: false\n"
+        "          mode: ro\n",
+
+        /* one shared machine: one container, whatever its level */
+        "computers:\n"
+        "  - id: build\n"
+        "    type: container\n"
+        "    mounts:\n"
+        "      - source: /tmp/clawt-selinux-src\n"
+        "        target: /data/source\n"
+        "        required: false\n"
+        "        mode: rw\n"
+        "agents:\n"
+        "  - id: alpha\n"
+        "    computer:\n"
+        "      use: build\n"
+        "  - id: beta\n"
+        "    computer:\n"
+        "      use: build\n",
+
+        /* only the built-in workspace and exchange: never compared */
+        "defaults:\n"
+        "  exchange_dir: /tmp/clawt-selinux-exchange\n"
+        "agents:\n"
+        "  - id: alpha\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      container:\n"
+        "        selinux_level: random\n"
+        "  - id: beta\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      container:\n"
+        "        selinux_level: random\n",
+
+        /* a host agent writing the same folder is not a container */
+        "agents:\n"
+        "  - id: alpha\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      mounts:\n"
+        "        - source: /tmp/clawt-selinux-src\n"
+        "          target: /data/source\n"
+        "          required: false\n"
+        "          mode: rw\n"
+        "  - id: beta\n"
+        "    computer:\n"
+        "      type: none\n"
+        "      mounts:\n"
+        "        - source: /tmp/clawt-selinux-src\n"
+        "          target: /data/source\n"
+        "          required: false\n"
+        "          mode: rw\n",
+        NULL
+    };
+    guint i;
+
+    for (i = 0; yamls[i] != NULL; i++) {
+        g_autoptr(ClawtConfig) config = config_from(yamls[i]);
+        g_autoptr(GPtrArray) warnings = selinux_warnings_of(config);
+
+        if (warnings->len != 0)
+            g_test_message("case %u warned: %s", i,
+                           (const gchar *)g_ptr_array_index(warnings, 0));
+        g_assert_cmpuint(warnings->len, ==, 0);
+    }
+}
+
+/*
+ * Random against random warns -- podman's two random pairs are never
+ * the same -- and so do nested sources and a reader at another level
+ * than the writer: ~/source rw in one container and ~/source/project ro
+ * in another is still a folder the reader cannot read.  A fleet-wide
+ * shared folder reaches both without either naming it.
+ */
+static void
+test_selinux_shared_folder_nested_and_random(void)
+{
+    g_autoptr(ClawtConfig) config = config_from(
+        "defaults:\n"
+        "  mounts:\n"
+        "    - source: /tmp/clawt-selinux-src\n"
+        "      target: /data/source\n"
+        "      required: false\n"
+        "      mode: rw\n"
+        "agents:\n"
+        "  - id: alpha\n"
+        "    computer:\n"
+        "      type: container\n"
+        "  - id: beta\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      default_mounts: false\n"
+        "      mounts:\n"
+        "        - source: /tmp/clawt-selinux-src/project\n"
+        "          target: /work\n"
+        "          required: false\n"
+        "          mode: ro\n"
+        "  - id: gamma\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      default_mounts: false\n"
+        "      mounts:\n"
+        "        - source: /tmp/clawt-selinux-srcother\n"
+        "          target: /work\n"
+        "          required: false\n"
+        "          mode: rw\n");
+    g_autoptr(GPtrArray) warnings = selinux_warnings_of(config);
+    const gchar *text;
+
+    g_assert_cmpuint(warnings->len, ==, 1);
+    text = g_ptr_array_index(warnings, 0);
+
+    /* Named by the outer folder, with both agents at the random pair. */
+    g_assert_nonnull(strstr(text, "/tmp/clawt-selinux-src is"));
+    g_assert_nonnull(strstr(text, "alpha at podman's random pair"));
+    g_assert_nonnull(strstr(text, "beta at podman's random pair"));
+
+    /* A sibling sharing only a prefix of the name is not inside it. */
+    g_assert_null(strstr(text, "gamma"));
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
+
+    g_test_add_func("/config/selinux-level/at-load",
+                    test_selinux_level_at_load);
+    g_test_add_func("/config/selinux-level/shared-folder-warns",
+                    test_selinux_shared_folder_warns);
+    g_test_add_func("/config/selinux-level/shared-folder-quiet",
+                    test_selinux_shared_folder_quiet);
+    g_test_add_func("/config/selinux-level/shared-folder-nested-and-random",
+                    test_selinux_shared_folder_nested_and_random);
 
     g_test_add_func("/config/reads-configured", test_reads_configured_values);
     g_test_add_func("/config/agent-enum-typo-warns",

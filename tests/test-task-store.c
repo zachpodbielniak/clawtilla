@@ -2969,6 +2969,158 @@ test_fleet_pack_round_trip(void)
 	clawt_test_remove_tree(pack_root);
 }
 
+/* ── Each team's SELinux level ───────────────────────────────────── */
+
+/*
+ * A team's level is written once and read back after a reopen; a second
+ * level for the team, or a level another team holds, is refused rather
+ * than replacing anything.
+ */
+static void
+test_team_selinux_level_store(
+	StoreFixture  *fixture,
+	gconstpointer  data
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GHashTable) all = NULL;
+	g_autofree gchar *forge = NULL;
+	g_autofree gchar *none = NULL;
+
+	(void)data;
+
+	none = clawt_task_store_team_selinux_level(fixture->store, "forge");
+	g_assert_null(none);
+
+	g_assert_true(clawt_task_store_add_team_selinux_level(
+		fixture->store, "forge", "s0:c1,c2", &error));
+	g_assert_no_error(error);
+
+	/* The team again, and the pair for another team: both refused. */
+	g_assert_false(clawt_task_store_add_team_selinux_level(
+		fixture->store, "forge", "s0:c3,c4", &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	g_assert_false(clawt_task_store_add_team_selinux_level(
+		fixture->store, "other", "s0:c1,c2", &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+
+	reopen(fixture);
+
+	forge = clawt_task_store_team_selinux_level(fixture->store, "forge");
+	g_assert_cmpstr(forge, ==, "s0:c1,c2");
+
+	all = clawt_task_store_team_selinux_levels(fixture->store);
+	g_assert_cmpuint(g_hash_table_size(all), ==, 1);
+	g_assert_cmpstr(g_hash_table_lookup(all, "forge"), ==, "s0:c1,c2");
+}
+
+/*
+ * The allocation the daemon's team function makes: a team keeps its
+ * pair across calls and across a reopen (a daemon restart), two teams
+ * get different pairs, and a level the configuration names explicitly
+ * is never handed to a team -- here every category but two is taken by
+ * shared machines nobody uses yet, so the one pair left is the answer,
+ * and after it there is none.
+ */
+static void
+test_team_selinux_level_allocation(
+	StoreFixture  *fixture,
+	gconstpointer  data
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GString) yaml = g_string_new("computers:\n");
+	g_autoptr(ClawtConfig) crowded = NULL;
+	g_autofree gchar *red = NULL;
+	g_autofree gchar *red_again = NULL;
+	g_autofree gchar *blue = NULL;
+	g_autofree gchar *red_after = NULL;
+	g_autofree gchar *last = NULL;
+	g_autofree gchar *none = NULL;
+	gint c;
+
+	(void)data;
+
+	red = clawt_daemon_selinux_team_level_from(fixture->store, NULL, "red",
+	                                           &error);
+	g_assert_no_error(error);
+	g_assert_true(clawt_selinux_level_is_valid(red));
+
+	red_again = clawt_daemon_selinux_team_level_from(fixture->store, NULL,
+	                                                 "red", &error);
+	g_assert_no_error(error);
+	g_assert_cmpstr(red_again, ==, red);
+
+	blue = clawt_daemon_selinux_team_level_from(fixture->store, NULL, "blue",
+	                                            &error);
+	g_assert_no_error(error);
+	g_assert_true(clawt_selinux_level_is_valid(blue));
+	g_assert_cmpstr(blue, !=, red);
+
+	reopen(fixture);
+
+	red_after = clawt_daemon_selinux_team_level_from(fixture->store, NULL,
+	                                                 "red", &error);
+	g_assert_no_error(error);
+	g_assert_cmpstr(red_after, ==, red);
+
+	/*
+	 * A fresh store, so the two pairs above do not block the last one;
+	 * then a config whose explicit levels leave exactly one pair.
+	 */
+	g_clear_object(&fixture->store);
+	g_assert_cmpint(g_remove(fixture->path), ==, 0);
+	reopen(fixture);
+
+	for (c = 0; c < CLAWT_SELINUX_CATEGORY_MAX - 1; c++)
+		g_string_append_printf(yaml,
+		                       "  - id: m%d\n"
+		                       "    type: container\n"
+		                       "    container:\n"
+		                       "      selinux_level: s0:c%d\n", c, c);
+
+	crowded = clawt_config_load_from_string(yaml->str, &error);
+	g_assert_no_error(error);
+
+	last = clawt_daemon_selinux_team_level_from(fixture->store, crowded,
+	                                            "forge", &error);
+	g_assert_no_error(error);
+	g_assert_cmpstr(last, ==, "s0:c1022,c1023");
+
+	none = clawt_daemon_selinux_team_level_from(fixture->store, crowded,
+	                                            "other", &error);
+	g_assert_null(none);
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED);
+}
+
+/*
+ * What a reload or agent.set tells the operator when a container's level
+ * moves: nothing when it did not, or when either side had no container;
+ * otherwise both levels, readably, and the two ways to recreate it.
+ */
+static void
+test_team_selinux_level_change_note(void)
+{
+	g_autofree gchar *moved = NULL;
+	g_autofree gchar *to_random = NULL;
+
+	g_assert_null(clawt_daemon_selinux_change_note("a", "", ""));
+	g_assert_null(clawt_daemon_selinux_change_note("a", "s0:c1,c2",
+	                                               "s0:c1,c2"));
+	g_assert_null(clawt_daemon_selinux_change_note("a", NULL, "s0:c1,c2"));
+	g_assert_null(clawt_daemon_selinux_change_note("a", "s0:c1,c2", NULL));
+
+	moved = clawt_daemon_selinux_change_note("scout", "team:forge",
+	                                         "s0:c3,c4");
+	g_assert_nonnull(moved);
+	g_assert_nonnull(strstr(moved, "from team forge's level to s0:c3,c4"));
+	g_assert_nonnull(strstr(moved, "computer rebuild scout"));
+	g_assert_nonnull(strstr(moved, "recreated"));
+
+	to_random = clawt_daemon_selinux_change_note("scout", "s0:c3,c4", "");
+	g_assert_nonnull(strstr(to_random, "to podman's random pair"));
+}
+
 int
 main(
 	int   argc,
@@ -2991,6 +3143,13 @@ main(
 	g_test_add("/task-store/venture-ref/old-url-rewritten", StoreFixture,
 	           NULL, store_setup, test_venture_ref_old_url_rewritten,
 	           store_teardown);
+	g_test_add("/task-store/selinux-level/store", StoreFixture, NULL,
+	           store_setup, test_team_selinux_level_store, store_teardown);
+	g_test_add("/task-store/selinux-level/allocation", StoreFixture, NULL,
+	           store_setup, test_team_selinux_level_allocation,
+	           store_teardown);
+	g_test_add_func("/task-store/selinux-level/change-note",
+	                test_team_selinux_level_change_note);
 	g_test_add("/task-store/store/journal", StoreFixture, NULL, store_setup,
 	           test_journal_records_what_happened, store_teardown);
 	g_test_add("/task-store/store/live-and-prune", StoreFixture, NULL,

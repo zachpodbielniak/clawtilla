@@ -120,8 +120,8 @@ agent was rendered.
 
 | Kind | Also carries |
 |------+--------------|
-| ~control.reload~ | |
-| ~agent.set~ | ~agent~, ~restart_required~ |
+| ~control.reload~ | ~restart_required~, ~recreate~ |
+| ~agent.set~ | ~agent~, ~restart_required~, ~recreate~ (when it applies) |
 | ~agent.mount.add~ / ~agent.mount.remove~ | ~target~ |
 | ~defaults.mount.add~ / ~defaults.mount.remove~ | ~target~, ~restart_required~ |
 | ~team.set~ | |
@@ -134,6 +134,8 @@ renders itself -- and that agent goes on running against the
 ~config.yaml~ it already had.  Reporting it as a plain success made an
 edit that was *rejected* look like an edit that was *ignored*, with the
 reason only in the daemon's journal.
+
+~recreate~ (0.78.0) is about a container's SELinux level, which podman sets when it creates a container and never after: when a call moved an agent's effective ~computer.container.selinux_level~ -- the key itself, or its ~team~ or ~computer.use~ under ~auto~ -- it says which agent, from which level to which, and how to recreate the container.  ~control.reload~ always carries it, as an array of those sentences (empty when nothing moved), with ~restart_required~ true when it is not empty; ~agent.set~ carries it as one string only when the level moved, and then sets ~restart_required~ for a running agent.  See [[file:computers.org::#selinux-level][computers.org]].
 
 It is not an error reply: the call did what it was asked, and every other
 agent is on the new configuration.  The array is always present so a
@@ -417,7 +419,11 @@ several agents at once.
 ~team.list~ answers with each team's members, its lead, and how many are
 running -- counted in the daemon, because three clients counting the same
 thing is three chances to disagree about what "active" means -- plus
-~warnings~ for what only the whole fleet shows. ~team.set~ refuses ~id~:
+~warnings~ for what only the whole fleet shows -- since 0.78.0 including
+container computers that share a writable folder at different SELinux
+levels, compared with the teams' stored pairs (see
+[[file:computers.org::#selinux-level][computers.org]]); the web Fleet page
+shows these. ~team.set~ refuses ~id~:
 everything refers to a team by it. ~team.remove~ answers with
 ~orphaned~, the number of agents still naming it.
 

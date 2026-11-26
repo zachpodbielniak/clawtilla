@@ -75,6 +75,7 @@
 #include "computer/clawt-container-computer.h"
 #include "computer/clawt-distrobox-computer.h"
 #include "computer/clawt-container-limits.h"
+#include "computer/clawt-selinux-level.h"
 #include "computer/clawt-wake.h"
 #include "computer/clawt-ssh-computer.h"
 #include "computer/clawt-cloud-init.h"

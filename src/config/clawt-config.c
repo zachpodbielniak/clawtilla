@@ -364,6 +364,24 @@ agent_validate(ClawtAgentConfig *self)
     }
 
     /*
+     * The container's SELinux level.  A value that is not auto, random or
+     * an MCS level is a shadow with the reason, never a container made at
+     * podman's random pair instead: the operator chose a level so that a
+     * shared folder would work, and quietly not honouring it is the
+     * failure the key exists to prevent.  "disable" is refused by name.
+     */
+    {
+        g_autoptr(GError) why = NULL;
+
+        if (!clawt_selinux_level_parse(
+                clawt_agent_config_get_string(self, CLAWT_SELINUX_LEVEL_KEY),
+                NULL, &why)) {
+            agent_mark_shadow(self, "%s", why->message);
+            return;
+        }
+    }
+
+    /*
      * The agent's own confinement, decided here so every surface that
      * shows a shadow shows why.  Both refusals are the never-downgrade
      * rule: an agent somebody asked to have confined that would run
@@ -4054,6 +4072,24 @@ warn_about_triggers(ClawtConfig *self)
 	}
 }
 
+/*
+ * Container computers sharing a writable folder at different SELinux
+ * levels: a warning, because the config is valid and the agents start --
+ * they just cannot read each other's files in there.  Teams are compared
+ * by name here; the daemon, which holds the stored pairs, compares the
+ * pairs themselves on the Fleet page.
+ */
+static void
+warn_about_selinux_levels(ClawtConfig *self)
+{
+    g_auto(GStrv) warnings =
+        clawt_selinux_level_shared_mount_warnings(self, NULL);
+    guint i;
+
+    for (i = 0; warnings != NULL && warnings[i] != NULL; i++)
+        g_ptr_array_add(self->warnings, g_strdup(warnings[i]));
+}
+
 static ClawtConfig *
 config_from_parser(YamlParser *parser, const gchar *path, GError **error)
 {
@@ -4089,6 +4125,7 @@ config_from_parser(YamlParser *parser, const gchar *path, GError **error)
     warn_about_rooms(self);
     warn_about_egress(self);
     reload_agents(self);
+    warn_about_selinux_levels(self);
     reload_integrations(self);
     reload_routines(self);
     reload_triggers(self);
@@ -4319,6 +4356,43 @@ clawt_config_validate(ClawtConfig *self, GError **error)
 		if (!validate_session_timeout_minutes(clawt_agent_config_get_int(agent,
 			"session.timeout_minutes"), timeout_key, error))
 			return FALSE;
+	}
+
+	/*
+	 * An unusable SELinux level shadows its agent at load, so the rest
+	 * of the fleet starts.  Asked here, where somebody wants to know
+	 * whether the file is right, it is an error: a level the daemon
+	 * will refuse is not a file that is right.  The shared machines'
+	 * entries too, since one nobody has joined yet has no agent to
+	 * shadow.
+	 */
+	{
+		g_autoptr(GPtrArray) computers = clawt_config_get_computer_ids(self);
+
+		for (i = 0; i < self->agents->len; i++) {
+			ClawtAgentConfig *agent = g_ptr_array_index(self->agents, i);
+			g_autoptr(GError) why = NULL;
+
+			if (!clawt_selinux_level_parse(clawt_agent_config_get_string(
+					agent, CLAWT_SELINUX_LEVEL_KEY), NULL, &why)) {
+				g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+				            "agent %s: %s", clawt_agent_config_get_id(agent),
+				            why->message);
+				return FALSE;
+			}
+		}
+
+		for (i = 0; i < computers->len; i++) {
+			const gchar *id = g_ptr_array_index(computers, i);
+			g_autoptr(GError) why = NULL;
+
+			if (!clawt_selinux_level_parse(clawt_config_get_computer_string(
+					self, id, "container.selinux_level"), NULL, &why)) {
+				g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+				            "computer %s: %s", id, why->message);
+				return FALSE;
+			}
+		}
 	}
 
 	/*

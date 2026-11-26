@@ -123,6 +123,20 @@ clawt_daemon_handle_team(
         for (i = 0; warnings != NULL && warnings[i] != NULL; i++)
             json_builder_add_string_value(builder, warnings[i]);
 
+        /*
+         * And the SELinux trap, which is a fleet-shaped problem too: two
+         * containers on one shared folder at different levels.  Here
+         * because this is the list the Fleet page shows, and with the
+         * stored team pairs, so a team and an explicit level that turn
+         * out to be the same pair are not reported as different.
+         */
+        {
+            g_auto(GStrv) labelling = clawt_daemon_selinux_warnings(self);
+
+            for (i = 0; labelling != NULL && labelling[i] != NULL; i++)
+                json_builder_add_string_value(builder, labelling[i]);
+        }
+
         json_builder_end_array(builder);
         json_builder_end_object(builder);
 

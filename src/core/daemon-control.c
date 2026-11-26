@@ -155,9 +155,21 @@ clawt_daemon_handle_control(
 
     if (g_strcmp0(kind, "control.reload") == 0) {
         g_autoptr(GPtrArray) refusals = clawt_daemon_render_refusals_new();
+        g_autoptr(GHashTable) levels_before =
+            clawt_daemon_selinux_snapshot(self);
+        g_autoptr(GPtrArray) recreate = NULL;
+        guint i;
 
         if (!clawt_daemon_reload_internal(self, refusals, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
+
+        /*
+         * Containers whose SELinux level the new config moved.  The level
+         * is fixed when a container is created, so these need their
+         * containers recreated -- said in the answer to the person who
+         * reloaded, the same way a mount change says restart_required.
+         */
+        recreate = clawt_daemon_selinux_changes(self, levels_before);
 
         /*
          * A response and not an error: the configuration was reloaded and
@@ -172,6 +184,16 @@ clawt_daemon_handle_control(
          */
         json_builder_begin_object(builder);
         clawt_daemon_add_render_refusals(builder, refusals);
+
+        json_builder_set_member_name(builder, "restart_required");
+        json_builder_add_boolean_value(builder, recreate->len > 0);
+        json_builder_set_member_name(builder, "recreate");
+        json_builder_begin_array(builder);
+        for (i = 0; i < recreate->len; i++)
+            json_builder_add_string_value(builder,
+                                          g_ptr_array_index(recreate, i));
+        json_builder_end_array(builder);
+
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request,

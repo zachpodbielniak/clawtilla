@@ -164,6 +164,25 @@ clawtilla cp ~/notes.org researcher:/mnt/clawtilla/exchange/researcher/   # one 
 - Validation does not stop a source inside `daemon.state_dir` or `secrets.dir`: check by hand.
 - Every computer that shares host paths gets `/mnt/clawtilla/workspace` (rw; off with `computer.workspace: false`) and `/mnt/clawtilla/exchange` (off with `computer.exchange: false`): `shared/` rw for all, `<agent-id>/` rw for its owner and ro for others. Host side is `defaults.exchange_dir`; `exchange_max_bytes` is never enforced (empty it yourself). On a shared machine workspaces are `/mnt/clawtilla/workspaces/<agent>`.
 
+## SELinux levels on shared folders
+
+The trap: podman gives each container a random MCS pair (`s0:c827,c890`), and a file **created inside** a container gets that pair. On a folder several containers share rw (`~/source` with `relabel: shared`), a file one agent writes from inside its container is `Permission denied` inside every other one -- at mode 0644. It looks like permissions; it is labelling. Host-side writes (the agent's own Read/Write/Edit tools) come out as plain `s0` and are fine.
+
+```yaml
+computer:
+  container:
+    selinux_level: auto        # default: the team's stored pair; no team = podman's random pair
+    # selinux_level: random    # podman's random pair, always (the old behaviour)
+    # selinux_level: s0:c100,c200   # explicit: one or two categories c0..c1023, ascending, no leading zeros
+```
+
+- `disable` / `label=disable` is refused: it would turn SELinux off for the container. Any other bad value disables the agent at load; `config validate` errors.
+- A team's pair is picked the first time its container is created -- distinct from every other team's and from every explicit level in the config -- and kept in `tasks.db` (`team_selinux_levels`) under the state dir: it survives restarts and rebuilds. A shared machine under `auto` takes its agents' team if they share one, else random.
+- Set only at container **create**. Changing the key, an agent's `team` under auto, or `computer.use` needs the container recreated: `agent set` and `config reload` say so (`recreate`); a stopped agent's next start recreates it; a running one needs stop + start, or stop + `clawtilla computer rebuild AGENT`. Nothing is removed silently; the log names current and wanted level.
+- `config validate`, the daemon log and the web Fleet page warn when two containers share a folder (same source, or nested) at different levels with at least one rw. random vs random always warns. Same team under auto, ro-only, and one shared machine don't.
+- Old files written inside containers keep their old pair: on the host, `chcon -R -l s0 PATH` (`ls -Z` shows which).
+- Limitation: `exchange/shared` is rw for all agents; a file written into it from **inside** a container is readable only at the same level. Write to the exchange from the host instead. Not covered by the warning.
+
 ## Shared computers
 
 ```yaml

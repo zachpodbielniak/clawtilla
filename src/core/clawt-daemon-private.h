@@ -1971,6 +1971,58 @@ clawt_daemon_handle_task(
     gboolean     *handled
 );
 
+/* ── Defined in daemon-selinux.c: each team's SELinux level ───────── */
+
+/*
+ * Registers the daemon as where a team's stored level comes from; after
+ * clawt_daemon_tasks_setup(), whose store holds the levels.
+ */
+void clawt_daemon_selinux_setup(ClawtDaemon *self);
+
+/* Unregisters it, if it is still this daemon's. */
+void clawt_daemon_selinux_teardown(ClawtDaemon *self);
+
+/*
+ * @team's level in @store, allocated and kept there the first time:
+ * clear of every other team's stored pair and of every explicit level in
+ * @config (nullable).  What the registered team function does, without a
+ * daemon, so the allocation can be tested against a store alone.
+ */
+gchar *clawt_daemon_selinux_team_level_from(ClawtTaskStore  *store,
+                                            ClawtConfig     *config,
+                                            const gchar     *team,
+                                            GError         **error);
+
+/* Team id to stored level; empty, never NULL, without a store. */
+GHashTable *clawt_daemon_team_selinux_levels(ClawtDaemon *self);
+
+/* clawt_selinux_level_shared_mount_warnings() with the stored pairs. */
+GStrv clawt_daemon_selinux_warnings(ClawtDaemon *self);
+
+/*
+ * An agent's effective level in @config: the level or "team:<id>", ""
+ * for podman's random pair, NULL when it has no container at all.
+ */
+gchar *clawt_daemon_selinux_agent_level(ClawtDaemon *self,
+                                        ClawtConfig *config,
+                                        const gchar *agent_id,
+                                        GHashTable  *team_levels);
+
+/* Agent id to clawt_daemon_selinux_agent_level(), container agents only. */
+GHashTable *clawt_daemon_selinux_snapshot(ClawtDaemon *self);
+
+/*
+ * What to tell the operator when an agent's level moved from @before to
+ * @after: NULL when it did not, or when either side had no container.
+ */
+gchar *clawt_daemon_selinux_change_note(const gchar *agent_id,
+                                        const gchar *before,
+                                        const gchar *after);
+
+/* One note per agent whose level differs from @before's snapshot. */
+GPtrArray *clawt_daemon_selinux_changes(ClawtDaemon *self,
+                                        GHashTable  *before);
+
 /* ── Defined in daemon-task.c: the task store ─────────────────────── */
 
 /*

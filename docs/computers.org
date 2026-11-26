@@ -571,6 +571,46 @@ The mount list is the same for a VM, where the entries become virtiofs
 devices rather than bind mounts.  You write source, target and mode; the
 right kind is filled in from the backend.
 
+*** SELinux levels: one folder, several containers
+:PROPERTIES:
+:CUSTOM_ID: selinux-level
+:END:
+
+*The trap.*  podman gives every container a random pair of SELinux MCS categories -- one agent's container runs at ~s0:c827,c890~, the next at ~s0:c339,c342~.  ~relabel: shared~ (~:z~) labels a folder so every container may use it, but a file *created inside* a container is labelled with that container's own pair.  So on a folder several containers share read-write -- =~/source= mounted into every forge agent's machine -- a file one agent writes from inside its container cannot be read from inside any other: ~Permission denied~ on a file that is mode ~0644~ and owned by the right user.  It reads exactly like a permissions bug and is a labelling one.  ~ls -Z~ on the host shows it: the unreadable file carries the writer's categories.
+
+*What is not affected.*  Files written on the host -- which is where every agent's own tools run (Read, Write, Edit and the rest) -- come out at plain ~s0~ and are readable from every container.  Only files created by commands run *inside* a container, through ~clawtilla_computer_exec~, carry a container's pair.
+
+*The setting.*  ~computer.container.selinux_level~ (=agents.computer.container.selinux_level=) takes three forms:
+
+| Value | The container is created at |
+|-------+-----------------------------|
+| ~auto~ (default) | the agent's team's level; podman's random pair for an agent on no team |
+| ~random~ | podman's random pair, always -- the behaviour before this setting existed |
+| ~s0:c100,c200~ or ~s0:c5~ | that level, as written |
+
+An explicit level is one or two categories in ~c0~..~c1023~, the second larger than the first, with no leading zeros (~c0~ is the only zero) -- the rule podomation's container module applies, so nothing clawtilla accepts is refused at create.  Anything else disables the agent at load, with the reason; ~clawtilla config validate~ calls it an error.  ~disable~ (and ~label=disable~) is refused by name: it would switch SELinux confinement off for the whole container, which is not choosing a level.  On a shared machine (~computers:~) the key is the machine's, ~container.selinux_level~, and under ~auto~ it takes its agents' team when they are all on one team and podman's random pair when they are not.
+
+*Where a team's level lives.*  The first time a team's container is created, clawtilla picks a pair of two distinct categories at random -- different from every other team's pair, and never one that equals or holds every category of an explicit level in the config, which would let it read that level's files -- and stores it in the ~team_selinux_levels~ table of ~tasks.db~ under the state directory.  It is the team's for good: a daemon restart, a reload and a container rebuild all find the same pair.  The daemon log says which pair a team was given (~team forge: SELinux level s0:c…~).  Deleting the row is the only way to give a team a new one.
+
+*Changing it needs the container recreated.*  podman sets a container's level when it creates it and has no way to change it afterwards -- there is no ~podman update~ for it, as there is for the [[#container-limits][limits]].  So a change to the key, to an agent's ~team~ under ~auto~, or to its ~computer.use~ takes effect when the container is next made:
+
+- ~clawtilla agent set~ and ~clawtilla config reload~ say so, naming the agent and the old and new levels (the ~recreate~ field of ~agent.set~ and ~control.reload~; ~restart_required~ is set for a running agent).
+- A stopped agent's next start makes its container afresh -- removing the one it had, and with it anything installed inside, which is what every start after a settings change already does to a kept container.
+- A running agent keeps the container it has.  Stop the agent and start it again, or stop it and run ~clawtilla computer rebuild <agent>~.  Until then the daemon logs, at each start of the existing container, that it was created at one level and the config wants another; nothing is removed behind your back.
+
+*The warning.*  Two container computers that bind the same host folder -- or one folder inside the other -- at different levels, with at least one of them mounting it read-write, is reported as a warning, not an error: by ~clawtilla config validate~, in the daemon log at start, and on the Fleet page of the web client (it rides ~team.list~'s ~warnings~).  It names the folder and each agent with its level.  podman's random pair always counts as different, even from another random pair.  Two agents on one team under ~auto~ never warn, and nor do two agents on one shared machine -- they are one container.  clawtilla's own mounts (the per-agent workspace and the exchange) are not compared; see below.
+
+*Containers created before this setting.*  Existing containers are at random pairs, and files already written from inside them keep those labels when the containers are recreated.  Reset them from the host, where the daemon runs:
+
+#+begin_src bash
+# make files a container wrote readable from every container again
+chcon -R -l s0 ~/source/some-project
+#+end_src
+
+~chcon -l~ changes only the MCS level and leaves the type (~container_file_t~) alone.  ~ls -Z~ shows which files need it: anything ending in a category pair rather than plain ~s0~.
+
+*The exchange is a known limitation.*  ~/mnt/clawtilla/exchange/shared~ is read-write for every agent, whatever team it is on.  A file written into it from *inside* a container is readable only by containers at the same level -- teammates under ~auto~, but not agents on other teams or at random pairs.  Writing to the exchange from the host (an agent's own Write tool, at the host path) avoids it.  The warning above does not report it, because every container fleet would see it.
+
 *** Process and memory limits
 :PROPERTIES:
 :CUSTOM_ID: container-limits

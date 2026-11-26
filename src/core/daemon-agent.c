@@ -1641,6 +1641,8 @@ clawt_daemon_handle_agent(
         const gchar *key = clawt_ipc_payload_string(payload, "key");
         const gchar *value = clawt_ipc_payload_string(payload, "value");
         ClawtAgentConfig *config;
+        g_autofree gchar *level_before = NULL;
+        g_autofree gchar *recreate = NULL;
 
         if (agent_id == NULL || key == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
@@ -1763,6 +1765,20 @@ clawt_daemon_handle_agent(
             }
 
             if (!clawt_container_limits_validate(limits, &why))
+                return clawt_ipc_error_new(request,
+                                           CLAWT_ERROR_INVALID_ARGUMENT,
+                                           why->message);
+        }
+
+        /*
+         * The SELinux level is checked where it arrives, by the parser
+         * the loader uses: accepted, a bad one would be saved, echoed,
+         * and turn the agent into a shadow at the next revalidation.
+         */
+        if (g_strcmp0(key, CLAWT_SELINUX_LEVEL_KEY) == 0) {
+            g_autoptr(GError) why = NULL;
+
+            if (!clawt_selinux_level_parse(value, NULL, &why))
                 return clawt_ipc_error_new(request,
                                            CLAWT_ERROR_INVALID_ARGUMENT,
                                            why->message);
@@ -2044,6 +2060,20 @@ clawt_daemon_handle_agent(
                                         value, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
 
+        /*
+         * The container's SELinux level before the write, so a change to
+         * it -- or to the team or computer that decides it under auto --
+         * can be reported below.  Asked for every key, since which keys
+         * move it is a question about the level's rules, not this one's.
+         */
+        {
+            g_autoptr(GHashTable) levels =
+                clawt_daemon_team_selinux_levels(self);
+
+            level_before = clawt_daemon_selinux_agent_level(
+                self, self->config, agent_id, levels);
+        }
+
         clawt_agent_config_set_from_string(config, key, value);
 
         if (!clawt_config_save(self->config, &error))
@@ -2144,12 +2174,35 @@ clawt_daemon_handle_agent(
          * fresh session anyway and telling it to restart would be advice
          * about nothing.
          */
+        /*
+         * And a container whose SELinux level just moved: podman fixes a
+         * level at create, so the new one reaches nothing until the
+         * container is made again.  A stopped agent's next start does
+         * that by itself; a running one has to be stopped first.
+         */
+        {
+            g_autoptr(GHashTable) levels =
+                clawt_daemon_team_selinux_levels(self);
+            g_autofree gchar *level_after = clawt_daemon_selinux_agent_level(
+                self, self->config, agent_id, levels);
+
+            recreate = clawt_daemon_selinux_change_note(agent_id,
+                                                        level_before,
+                                                        level_after);
+        }
+
         json_builder_set_member_name(builder, "restart_required");
         json_builder_add_boolean_value(
-            builder, clawt_daemon_setting_needs_a_new_session(key) &&
+            builder, (clawt_daemon_setting_needs_a_new_session(key) ||
+                      recreate != NULL) &&
                      clawt_agent_get_state(
                          clawt_agent_manager_get(self->agents, agent_id)) ==
                      CLAWT_AGENT_STATE_RUNNING);
+
+        if (recreate != NULL) {
+            json_builder_set_member_name(builder, "recreate");
+            json_builder_add_string_value(builder, recreate);
+        }
 
         json_builder_end_object(builder);
 

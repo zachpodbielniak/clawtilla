@@ -192,6 +192,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/computer/clawt-container-computer.h \
 	$(SRCDIR)/computer/clawt-distrobox-computer.h \
 	$(SRCDIR)/computer/clawt-container-limits.h \
+	$(SRCDIR)/computer/clawt-selinux-level.h \
 	$(SRCDIR)/computer/clawt-wake.h \
 	$(SRCDIR)/computer/clawt-cloud-init.h \
 	$(SRCDIR)/computer/clawt-vm-image.h \
@@ -311,6 +312,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-rescue.c \
 	$(SRCDIR)/core/daemon-steps.c \
 	$(SRCDIR)/core/daemon-mount.c \
+	$(SRCDIR)/core/daemon-selinux.c \
 	$(SRCDIR)/core/daemon-egress.c \
 	$(SRCDIR)/core/daemon-broker.c \
 	$(SRCDIR)/core/daemon-image.c \
@@ -465,6 +467,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/computer/clawt-container-computer.c \
 	$(SRCDIR)/computer/clawt-distrobox-computer.c \
 	$(SRCDIR)/computer/clawt-container-limits.c \
+	$(SRCDIR)/computer/clawt-selinux-level.c \
 	$(SRCDIR)/computer/clawt-wake.c \
 	$(SRCDIR)/computer/clawt-ssh-computer.c \
 	$(SRCDIR)/computer/clawt-cloud-init.c \

@@ -599,6 +599,7 @@ see security.md).
 | `agents.computer.container.pids_limit` | integer | `0` |  | Most processes and threads the machine may hold at once. |
 | `agents.computer.container.memory` | string |  |  | Most memory the machine may use, e.g. |
 | `agents.computer.container.memory_swap` | string |  |  | Memory and swap together, e.g. |
+| `agents.computer.container.selinux_level` | string | `auto` |  | The SELinux MCS level the container is created at. |
 | `agents.computer.ssh` | section |  |  | A machine reached over ssh. |
 | `agents.computer.ssh.host` | string |  |  | The ssh config alias to connect to. |
 | `agents.computer.ssh.workspace` | path |  |  | Where the agent works on that machine. |

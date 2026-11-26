@@ -29,6 +29,9 @@ struct _ClawtContainerComputer {
     gchar          *ports;
     gboolean        keep;
 
+    /* NULL for podman's random pair; see ..._set_selinux_level(). */
+    gchar          *selinux_level;
+
     /* NULL for none; see clawt_container_computer_set_limits(). */
     ClawtContainerLimits *limits;
 };
@@ -327,13 +330,89 @@ clawt_container_computer_build_mount_json(GPtrArray *mounts)
     return json_generator_to_data(generator, NULL);
 }
 
+void
+clawt_container_computer_set_selinux_level(ClawtContainerComputer *self,
+                                           const gchar            *level)
+{
+    g_return_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self));
+
+    /*
+     * Checked here as well as in the config: podomation refuses a
+     * malformed level at create, as an HTTP-shaped error a long way from
+     * the key, and a container that will not be created is worse than
+     * one with podman's random pair and a warning saying why.
+     */
+    if (level != NULL && !clawt_selinux_level_is_valid(level)) {
+        g_warning("container %s: '%s' is not an SELinux MCS level; it is "
+                  "created with podman's random pair instead",
+                  self->name, level);
+        level = NULL;
+    }
+
+    g_free(self->selinux_level);
+    self->selinux_level = g_strdup(level);
+}
+
+const gchar *
+clawt_container_computer_get_selinux_level(ClawtContainerComputer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), NULL);
+
+    return self->selinux_level;
+}
+
+GHashTable *
+clawt_container_computer_build_create_params(ClawtContainerComputer *self)
+{
+    GHashTable *params;
+    g_autofree gchar *mounts_json = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), NULL);
+
+    params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    g_hash_table_insert(params, g_strdup("target"), g_strdup(self->image));
+    g_hash_table_insert(params, g_strdup("image"), g_strdup(self->image));
+    g_hash_table_insert(params, g_strdup("name"), g_strdup(self->name));
+
+    mounts_json = clawt_container_computer_build_mount_json(
+        clawt_computer_get_mounts(CLAWT_COMPUTER(self)));
+    g_hash_table_insert(params, g_strdup("mounts"),
+                        g_steal_pointer(&mounts_json));
+
+    if (self->command != NULL)
+        g_hash_table_insert(params, g_strdup("command"),
+                            g_strdup(self->command));
+
+    /*
+     * Absent rather than empty for podman's random pair: an older
+     * podomation does not know the parameter at all, and one that does
+     * reads its absence as "leave it to podman", which is the meaning.
+     */
+    if (self->selinux_level != NULL)
+        g_hash_table_insert(params, g_strdup("selinux_level"),
+                            g_strdup(self->selinux_level));
+
+    /*
+     * Only the broker's containers carry these.  An agent's computer has
+     * neither: what it needs arrives by mount, and a published port on
+     * an agent's machine would be a door nobody asked for.
+     */
+    if (self->env != NULL)
+        g_hash_table_insert(params, g_strdup("env"), g_strdup(self->env));
+
+    if (self->ports != NULL)
+        g_hash_table_insert(params, g_strdup("ports"),
+                            g_strdup(self->ports));
+
+    return params;
+}
+
 static gboolean
 container_provision(ClawtComputer *computer, GError **error)
 {
     ClawtContainerComputer *self = CLAWT_CONTAINER_COMPUTER(computer);
     g_autoptr(GHashTable) params = NULL;
     g_autoptr(GHashTable) result = NULL;
-    g_autofree gchar *mounts_json = NULL;
     const gchar *identifier;
 
     /*
@@ -352,31 +431,12 @@ container_provision(ClawtComputer *computer, GError **error)
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_PROVISIONING,
                              NULL);
 
-    params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
-    g_hash_table_insert(params, g_strdup("target"), g_strdup(self->image));
-    g_hash_table_insert(params, g_strdup("image"), g_strdup(self->image));
-    g_hash_table_insert(params, g_strdup("name"), g_strdup(self->name));
+    /* Built where it can be tested; see ..._build_create_params(). */
+    params = clawt_container_computer_build_create_params(self);
 
-    mounts_json = clawt_container_computer_build_mount_json(
-        clawt_computer_get_mounts(computer));
-    g_hash_table_insert(params, g_strdup("mounts"),
-                        g_steal_pointer(&mounts_json));
-
-    if (self->command != NULL)
-        g_hash_table_insert(params, g_strdup("command"),
-                            g_strdup(self->command));
-
-    /*
-     * Only the broker's containers carry these.  An agent's computer has
-     * neither: what it needs arrives by mount, and a published port on
-     * an agent's machine would be a door nobody asked for.
-     */
-    if (self->env != NULL)
-        g_hash_table_insert(params, g_strdup("env"), g_strdup(self->env));
-
-    if (self->ports != NULL)
-        g_hash_table_insert(params, g_strdup("ports"),
-                            g_strdup(self->ports));
+    if (self->selinux_level != NULL)
+        g_message("container %s: creating it at SELinux level %s",
+                  self->name, self->selinux_level);
 
     result = clawt_pod_bridge_call_for(self->bridge, "container",
                                        self->connection, "create",
@@ -930,6 +990,7 @@ clawt_container_computer_finalize(GObject *object)
     g_clear_pointer(&self->command, g_free);
     g_clear_pointer(&self->env, g_free);
     g_clear_pointer(&self->ports, g_free);
+    g_clear_pointer(&self->selinux_level, g_free);
     g_clear_pointer(&self->limits, clawt_container_limits_free);
 
     G_OBJECT_CLASS(clawt_container_computer_parent_class)->finalize(object);

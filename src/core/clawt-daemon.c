@@ -6026,6 +6026,9 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->task_sources);
     g_clear_object(&self->tasks);
     clawt_daemon_revisions_teardown(self);
+
+    /* Before the store goes: the factory must not reach a freed daemon. */
+    clawt_daemon_selinux_teardown(self);
     g_clear_object(&self->task_store);
     g_clear_pointer(&self->project_spend, g_hash_table_unref);
     g_clear_pointer(&self->project_warned, g_hash_table_unref);
@@ -7888,6 +7891,12 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      * reported, settled or raised a second time.
      */
     clawt_daemon_tasks_setup(self);
+
+    /*
+     * Before any agent starts: a team's first container asks the store
+     * for the team's SELinux level, and the store is tasks.db.
+     */
+    clawt_daemon_selinux_setup(self);
     clawt_daemon_revisions_setup(self);
 	{
 		GPtrArray *loaded = clawt_agent_manager_list(self->agents);
@@ -8682,6 +8691,7 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
                              GError **error)
 {
     g_autoptr(ClawtConfig) reloaded = NULL;
+    g_autoptr(GHashTable) levels_before = NULL;
 
     g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
 
@@ -8694,6 +8704,14 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
 
     if (reloaded == NULL)
         return FALSE;
+
+    /*
+     * Every container's SELinux level as the old config has it, so a
+     * reload that moves one can say the container must be recreated --
+     * the level is podman's to set at create and nobody's to change
+     * after, so without this the edit would look applied and not be.
+     */
+    levels_before = clawt_daemon_selinux_snapshot(self);
 
     /*
      * The file as it is being taken up: a hand edit made outside the
@@ -8745,6 +8763,17 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
     /* office.enabled may have changed */
     clawt_daemon_office_reconfigure(self);
     clawt_agent_manager_load(self->agents, NULL);
+
+    {
+        g_autoptr(GPtrArray) moved =
+            clawt_daemon_selinux_changes(self, levels_before);
+        guint i;
+
+        /* Said, not raised: the reload itself succeeded. */
+        for (i = 0; i < moved->len; i++)
+            g_message("config: %s",
+                      (const gchar *)g_ptr_array_index(moved, i));
+    }
 
     clawt_room_manager_load(self->rooms, self->config);
     clawt_room_manager_load_direct(self->rooms);

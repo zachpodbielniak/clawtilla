@@ -609,6 +609,30 @@ create_for(ClawtAgentConfig  *agent_config,
             CLAWT_CONTAINER_COMPUTER(computer),
             clawt_agent_config_get_boolean(agent_config,
                                            "computer.container.keep"));
+
+        /*
+         * The SELinux level, decided when the object is built because
+         * that is the only moment it can matter: podman takes it at
+         * create and never again.  A team pair is allocated here the
+         * first time a team needs one, through whatever the daemon
+         * registered; a malformed key is refused like an ssh host is,
+         * since the config validator can be bypassed by an agent
+         * constructed some other way.
+         */
+        {
+            g_autoptr(GError) refused = NULL;
+            g_autofree gchar *level =
+                clawt_selinux_level_wanted(agent_config, users, &refused);
+
+            if (refused != NULL) {
+                g_propagate_error(error, g_steal_pointer(&refused));
+                g_object_unref(computer);
+                return NULL;
+            }
+
+            clawt_container_computer_set_selinux_level(
+                CLAWT_CONTAINER_COMPUTER(computer), level);
+        }
         break;
     }
 
@@ -924,6 +948,41 @@ clawt_computer_factory_refresh(ClawtAgentConfig  *agent_config,
         else
             clawt_distrobox_computer_set_limits(
                 CLAWT_DISTROBOX_COMPUTER(computer), limits);
+    }
+
+    /*
+     * The SELinux level is *not* retaken: unlike a limit there is no
+     * `podman update` for it, and an existing container keeps the level
+     * it was created with.  What a refresh can do is say so, so a
+     * changed level does not look applied when it is not.  A shared
+     * machine is skipped -- its level is the users' common team, which a
+     * single agent's config cannot answer -- and is rebuilt with the
+     * others' consent anyway.  Nor is a container that has not been
+     * created: it has no level to disagree with yet, and the object's own
+     * level is the one it will be created at.
+     */
+    if (type == CLAWT_COMPUTER_CONTAINER &&
+        !clawt_computer_is_shared(computer) &&
+        clawt_computer_get_state(computer) != CLAWT_COMPUTER_STATE_ABSENT) {
+        ClawtContainerComputer *container = CLAWT_CONTAINER_COMPUTER(computer);
+        g_autoptr(GError) refused = NULL;
+        g_autofree gchar *wanted =
+            clawt_selinux_level_wanted(agent_config, NULL, &refused);
+        const gchar *have =
+            clawt_container_computer_get_selinux_level(container);
+
+        if (refused == NULL && g_strcmp0(wanted, have) != 0)
+            g_warning("agent %s: its container was created at SELinux level "
+                      "%s and the config now wants %s. A level is set only "
+                      "when a container is created, so it keeps %s until it "
+                      "is recreated: stop the agent and start it again, or "
+                      "stop it and run `clawtilla computer rebuild %s`. "
+                      "Nothing was removed.",
+                      clawt_agent_config_get_id(agent_config),
+                      have != NULL ? have : "podman's random pair",
+                      wanted != NULL ? wanted : "podman's random pair",
+                      have != NULL ? have : "the random pair",
+                      clawt_agent_config_get_id(agent_config));
     }
 
     if (type == CLAWT_COMPUTER_SSH) {

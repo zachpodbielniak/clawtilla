@@ -114,6 +114,18 @@ static const gchar *SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS venture_cursors ("
     "  key TEXT PRIMARY KEY,"
     "  value TEXT NOT NULL"
+    ");"
+    /*
+     * Each team's SELinux MCS level (0.78.0): picked once, the first time
+     * one of the team's containers is created, and kept for good so the
+     * team's containers can always read what each of them writes into a
+     * shared folder.  UNIQUE on the level, so two teams can never be
+     * handed one pair however the allocation is raced.
+     */
+    "CREATE TABLE IF NOT EXISTS team_selinux_levels ("
+    "  team TEXT PRIMARY KEY,"
+    "  level TEXT NOT NULL UNIQUE,"
+    "  created_at INTEGER NOT NULL"
     ");";
 
 struct _ClawtTaskStore {
@@ -1501,6 +1513,91 @@ clawt_task_store_put_venture_cursor(ClawtTaskStore *self, const gchar *key,
     sqlite3_bind_text(stmt, 2, value, -1, SQLITE_TRANSIENT);
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
+}
+
+GHashTable *
+clawt_task_store_team_selinux_levels(ClawtTaskStore *self)
+{
+    sqlite3_stmt *stmt = NULL;
+    GHashTable *levels;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), NULL);
+
+    levels = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+    if (sqlite3_prepare_v2(self->db,
+            "SELECT team, level FROM team_selinux_levels",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return levels;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+        g_hash_table_insert(
+            levels, g_strdup((const gchar *)sqlite3_column_text(stmt, 0)),
+            g_strdup((const gchar *)sqlite3_column_text(stmt, 1)));
+
+    sqlite3_finalize(stmt);
+    return levels;
+}
+
+gchar *
+clawt_task_store_team_selinux_level(ClawtTaskStore *self, const gchar *team)
+{
+    sqlite3_stmt *stmt = NULL;
+    gchar *level = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), NULL);
+    g_return_val_if_fail(team != NULL, NULL);
+
+    if (sqlite3_prepare_v2(self->db,
+            "SELECT level FROM team_selinux_levels WHERE team = ?",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return NULL;
+
+    sqlite3_bind_text(stmt, 1, team, -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        level = g_strdup((const gchar *)sqlite3_column_text(stmt, 0));
+
+    sqlite3_finalize(stmt);
+    return level;
+}
+
+gboolean
+clawt_task_store_add_team_selinux_level(ClawtTaskStore  *self,
+                                        const gchar     *team,
+                                        const gchar     *level,
+                                        GError         **error)
+{
+    sqlite3_stmt *stmt = NULL;
+    gboolean ok;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), FALSE);
+    g_return_val_if_fail(team != NULL, FALSE);
+    g_return_val_if_fail(level != NULL, FALSE);
+
+    /*
+     * A plain INSERT, never OR REPLACE: a team's level is not changed by
+     * allocating again, and a level some other team already holds is a
+     * conflict to report rather than a row to overwrite.
+     */
+    if (sqlite3_prepare_v2(self->db,
+            "INSERT INTO team_selinux_levels (team, level, created_at) "
+            "VALUES (?, ?, ?)", -1, &stmt, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, self->db, "storing a team's SELinux level");
+        return FALSE;
+    }
+
+    sqlite3_bind_text(stmt, 1, team, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, level, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, g_get_real_time() / G_USEC_PER_SEC);
+
+    ok = sqlite3_step(stmt) == SQLITE_DONE;
+
+    if (!ok)
+        set_sqlite_error(error, self->db, "storing a team's SELinux level");
+
+    sqlite3_finalize(stmt);
+    return ok;
 }
 
 GHashTable *

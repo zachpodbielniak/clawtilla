@@ -1598,6 +1598,10 @@ teams:
 # machine stops when its last running agent stops, and is rebuilt only
 # when every agent on it is stopped. A desktop is one screen, driven by
 # one agent at a time.
+#
+# A shared container's container.selinux_level under auto is its
+# agents' team's level when they are all on one team, and podman's
+# random pair when they are not.
 computers:
 
     # Identifier, and what agents.computer.use names. The machine is called
@@ -4012,6 +4016,33 @@ agents:
         # than it; both are refused when they arrive rather than when podman
         # reads them.
         memory_swap: null
+
+        # The SELinux MCS level the container is created at.
+        #
+        # podman gives every container a random pair of categories, and a file
+        # created inside a container is labelled with that pair. On a folder
+        # several containers share -- ~/source, mounted rw with relabel: shared
+        # -- a file one agent writes from inside its container is then
+        # unreadable inside every other one, even at mode 0644. It reads as a
+        # permissions bug and is a labelling one. Files written on the host
+        # (an agent's own tools run there) are not affected.
+        #
+        # auto (the default) puts an agent on a team at its team's level: a
+        # pair clawtilla picks the first time the team needs one, distinct
+        # from every other team's and from every explicit level in the config,
+        # and keeps in tasks.db under the state directory, so it survives a
+        # daemon restart and a rebuild. An agent on no team gets podman's
+        # random pair. random always gets podman's random pair. A level such as
+        # s0:c100,c200 (or one category, s0:c5) is used as written: categories
+        # c0..c1023, ascending, no leading zeros. disable is refused -- it
+        # would switch SELinux off for the container, not choose its level.
+        #
+        # Applied only when the container is created. Changing it, or the
+        # agent's team under auto, takes effect when the container is next
+        # made: stop the agent and start it, or run `computer rebuild`.
+        # `config validate` warns when two containers share a writable folder
+        # at different levels.
+        selinux_level: "auto"
 
       # A machine reached over ssh.
       #

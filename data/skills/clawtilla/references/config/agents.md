@@ -1372,6 +1372,38 @@ again as memory. It needs memory to be set and must not be smaller
 than it; both are refused when they arrive rather than when podman
 reads them.
 
+### `agents.computer.container.selinux_level`
+
+- Type: string
+- Default: `auto`
+- Since: 0.78.0
+
+The SELinux MCS level the container is created at.
+
+podman gives every container a random pair of categories, and a file
+created inside a container is labelled with that pair. On a folder
+several containers share -- ~/source, mounted rw with relabel: shared
+-- a file one agent writes from inside its container is then
+unreadable inside every other one, even at mode 0644. It reads as a
+permissions bug and is a labelling one. Files written on the host
+(an agent's own tools run there) are not affected.
+
+auto (the default) puts an agent on a team at its team's level: a
+pair clawtilla picks the first time the team needs one, distinct
+from every other team's and from every explicit level in the config,
+and keeps in tasks.db under the state directory, so it survives a
+daemon restart and a rebuild. An agent on no team gets podman's
+random pair. random always gets podman's random pair. A level such as
+s0:c100,c200 (or one category, s0:c5) is used as written: categories
+c0..c1023, ascending, no leading zeros. disable is refused -- it
+would switch SELinux off for the container, not choose its level.
+
+Applied only when the container is created. Changing it, or the
+agent's team under auto, takes effect when the container is next
+made: stop the agent and start it, or run `computer rebuild`.
+`config validate` warns when two containers share a writable folder
+at different levels.
+
 ## `agents.computer.ssh`
 
 A machine reached over ssh.

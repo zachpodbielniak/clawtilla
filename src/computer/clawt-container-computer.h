@@ -199,4 +199,46 @@ const gchar *clawt_container_computer_get_name(ClawtContainerComputer *self);
  */
 gchar *clawt_container_computer_build_mount_json(GPtrArray *mounts);
 
+/**
+ * clawt_container_computer_set_selinux_level:
+ * @self: a #ClawtContainerComputer
+ * @level: (nullable): the MCS level, such as "s0:c100,c200", or %NULL for
+ *   podman's random pair
+ *
+ * The level the container is created at.  It only takes effect when the
+ * container is created: an existing container keeps the level it was
+ * made with until it is recreated.  A level that is not a valid MCS level
+ * is ignored with a warning rather than passed on, so podman is never
+ * asked for something it will refuse at create time.
+ */
+void clawt_container_computer_set_selinux_level(ClawtContainerComputer *self,
+                                                const gchar            *level);
+
+/**
+ * clawt_container_computer_get_selinux_level:
+ * @self: a #ClawtContainerComputer
+ *
+ * Returns: (transfer none) (nullable): the level the container is, or
+ *   will be, created at; %NULL for podman's random pair
+ */
+const gchar *
+clawt_container_computer_get_selinux_level(ClawtContainerComputer *self);
+
+/**
+ * clawt_container_computer_build_create_params:
+ * @self: a #ClawtContainerComputer
+ *
+ * The parameters podomation's container `create` is called with: image,
+ * name, mounts, command, and -- only when one is set -- selinux_level,
+ * plus env and ports for the broker's containers.
+ *
+ * Exposed so what reaches podman can be asserted without podman: a level
+ * that silently goes missing gives the container a random pair, and the
+ * first sign is a teammate unable to read a file.
+ *
+ * Returns: (transfer full) (element-type utf8 utf8): the parameters
+ */
+GHashTable *
+clawt_container_computer_build_create_params(ClawtContainerComputer *self);
+
 G_END_DECLS
