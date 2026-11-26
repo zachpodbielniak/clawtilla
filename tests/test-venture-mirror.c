@@ -2378,7 +2378,11 @@ test_team_ticket_somebody_has(Fixture *fixture, gconstpointer data)
     g_assert_null(find_sent(fixture, "PATCH", "/api/v1/ticket/53"));
 }
 
-/* An agent that gave the ticket to its own team and took it: no hand-over. */
+/*
+ * An agent that gave the ticket to its own team and was chosen to take
+ * it: still a hand-over from that agent, held to the loop limits -- never
+ * operator work, which would start a fresh chain with its own budget.
+ */
 static void
 test_team_given_to_its_own_team(Fixture *fixture, gconstpointer data)
 {
@@ -2391,7 +2395,8 @@ test_team_given_to_its_own_team(Fixture *fixture, gconstpointer data)
     fixture->leads = g_strdup("scout");   /* scout set the team, and leads */
 
     poll(fixture);
-    g_assert_true(inbound_has(fixture, "intake 51 scout Passed on"));
+    g_assert_true(inbound_has(fixture, "intake 51 scout Passed on from scout"));
+    g_assert_false(inbound_has(fixture, "intake 51 scout Passed on"));
     g_assert_cmpuint(fixture->inbound->len, ==, 1);
 }
 

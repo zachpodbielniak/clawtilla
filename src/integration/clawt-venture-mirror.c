@@ -3111,8 +3111,12 @@ poll_team_next(PollJob *poll)
 /*
  * Taken in by the agent chosen.  An agent that put the ticket in the
  * team with its own VENTURE account handed it over, as an assignment
- * would be; one that gave it to its own team and then took it handed
- * nothing to anybody, and it is the operator's.
+ * would be -- and that holds when it is the one chosen to take it: work
+ * an agent gives its own team is still agent work, from that agent,
+ * under the loop limits, exactly as when it assigns a ticket to its own
+ * VENTURE user.  Were it the operator's, a lead (who always wins the
+ * choice) could mint operator tasks for itself, each starting a fresh
+ * chain with a budget of its own.
  */
 static void
 on_poll_team_who(PollJob *poll, guint status, const gchar *body)
@@ -3125,9 +3129,6 @@ on_poll_team_who(PollJob *poll, guint status, const gchar *body)
         json_object_get_int_member_with_default(t, "team_id", 0));
     const gchar *from = (status == 200)
         ? assigning_agent(poll, body, "team_id", team) : NULL;
-
-    if (g_strcmp0(from, poll->team_agent) == 0)
-        from = NULL;
 
     poll->team_agent = NULL;
 
