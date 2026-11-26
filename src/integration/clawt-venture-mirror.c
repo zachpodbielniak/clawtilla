@@ -44,6 +44,15 @@ typedef struct {
     gchar   *actor;    /* whoami's actor, e.g. "API token #12" */
     gboolean known;
     gboolean intake;   /* its new tickets start tasks (0.45.0) */
+
+    /*
+     * The organizations whoami lists for the token (gint64), each read on
+     * its own: VENTURE answers a list that names no organization_id from
+     * the token's default organization alone.  Empty when whoami lists
+     * none -- an older VENTURE -- and then each list is asked once, without
+     * an organization, as before.
+     */
+    GArray  *organizations;
 } Account;
 
 static void
@@ -67,6 +76,8 @@ account_free(gpointer data)
 
     g_free(account->user);
     g_free(account->actor);
+    if (account->organizations != NULL)
+        g_array_unref(account->organizations);
     g_free(account);
 }
 
@@ -1224,6 +1235,58 @@ on_run_finished(Job *job, guint status, const gchar *body)
 /* ── Answers ─────────────────────────────────────────────────────── */
 
 /*
+ * The organizations whoami's memberships name, once each, in the order
+ * VENTURE gave them.  Replaced on every answer: a rotated token may reach
+ * different ones.
+ */
+static void
+account_learn_organizations(Account *account, JsonObject *o)
+{
+    JsonNode *node = (o != NULL) ? json_object_get_member(o, "memberships")
+                                 : NULL;
+    JsonArray *memberships = (node != NULL && JSON_NODE_HOLDS_ARRAY(node))
+        ? json_node_get_array(node) : NULL;
+    guint i;
+
+    if (account->organizations == NULL)
+        account->organizations = g_array_new(FALSE, FALSE, sizeof(gint64));
+
+    g_array_set_size(account->organizations, 0);
+
+    for (i = 0; memberships != NULL &&
+                i < json_array_get_length(memberships); i++) {
+        JsonNode *m = json_array_get_element(memberships, i);
+        gint64 id = (m != NULL && JSON_NODE_HOLDS_OBJECT(m))
+            ? json_object_get_int_member_with_default(
+                  json_node_get_object(m), "organization_id", 0)
+            : 0;
+        gboolean held = FALSE;
+        guint j;
+
+        for (j = 0; j < account->organizations->len; j++)
+            held = held || g_array_index(account->organizations, gint64, j) == id;
+
+        if (id > 0 && !held)
+            g_array_append_val(account->organizations, id);
+    }
+}
+
+/*
+ * The query parameter that names @organization_id, as "&organization_id=N",
+ * or "" for none -- where VENTURE then answers from the token's default
+ * organization.
+ */
+static gchar *
+organization_param(gint64 organization_id)
+{
+    if (organization_id <= 0)
+        return g_strdup("");
+
+    return g_strdup_printf("&organization_id=%" G_GINT64_FORMAT,
+                           organization_id);
+}
+
+/*
  * What whoami said about an account: its actor and username.  A
  * username that differs from the one held -- the first answer, or a
  * rotated token that belongs to somebody else -- is announced, so the
@@ -1247,6 +1310,8 @@ account_learn(ClawtVentureMirror *self, Account *account, JsonObject *o)
     g_free(account->user);
     account->user = g_strdup(username);
     account->known = TRUE;
+
+    account_learn_organizations(account, o);
 
     if (changed && self != NULL)
         g_signal_emit(self, mirror_signals[SIGNAL_ACCOUNT_LEARNED], 0,
@@ -1316,11 +1381,16 @@ on_created(Job *job, guint status, const gchar *body)
     JsonObject *o;
 
     if (status == 409) {
-        /* Made by an earlier attempt: find it by its reference. */
+        /*
+         * Made by an earlier attempt: find it by its reference, in the
+         * organization it was filed in -- VENTURE reads a list without one
+         * in the token's default organization only.
+         */
         g_autofree gchar *ref = task_ref_text(job->row->task_id);
         g_autofree gchar *escaped = g_uri_escape_string(ref, NULL, FALSE);
+        g_autofree gchar *scope = organization_param(job->organization_id);
         g_autofree gchar *path = g_strdup_printf(
-            "/api/v1/ticket?external_ref=%s", escaped);
+            "/api/v1/ticket?external_ref=%s%s", escaped, scope);
 
         job->step = STEP_ADOPT;
         job_send(job, job->creator, "GET", path, NULL, NULL);
@@ -1471,10 +1541,13 @@ on_commented(Job *job, guint status, const gchar *body)
     JsonObject *o;
 
     if (status == 409 && job->step == STEP_COMMENT) {
+        /* a comment is filed in its ticket's organization */
         g_autofree gchar *ref = note_ref_text(job->row->note_id);
         g_autofree gchar *escaped = g_uri_escape_string(ref, NULL, FALSE);
+        g_autofree gchar *scope = organization_param(
+            job->ref->organization_id);
         g_autofree gchar *path = g_strdup_printf(
-            "/api/v1/ticket_comment?external_ref=%s", escaped);
+            "/api/v1/ticket_comment?external_ref=%s%s", escaped, scope);
 
         job->step = STEP_COMMENT_ADOPT;
         job_send(job, job->writer, "GET", path, NULL, NULL);
@@ -1789,16 +1862,17 @@ typedef enum {
 } PollStep;
 
 /*
- * One pass over every account: what changed on its mirrored tickets,
- * the comments on those still going, and its new tickets.  Accounts on
- * the same server see the same tickets, so each (server, ticket,
- * version) is acted on once a pass.
+ * One pass over every account and, in each, every organization its token
+ * reaches: what changed on its mirrored tickets, the comments on those
+ * still going, and its new tickets.  Accounts on the same server see the
+ * same tickets, so each (server, ticket, version) is acted on once a pass.
  */
 typedef struct {
     ClawtVentureMirror *mirror;      /* reffed */
     GPtrArray          *agents;      /* agent ids still to read */
     guint               index;
     Account            *account;     /* not owned */
+    guint               organization; /* index into account->organizations */
     PollStep            step;
     gchar              *started;     /* ISO time this pass began */
     GHashTable         *seen;        /* "base#id#version" acted on */
@@ -1810,6 +1884,7 @@ typedef struct {
 } PollJob;
 
 static void poll_next_account(PollJob *poll);
+static void poll_next_organization(PollJob *poll);
 static void poll_next_step(PollJob *poll);
 static void poll_context_next(PollJob *poll);
 static void on_poll_context(PollJob *poll, guint status, const gchar *body);
@@ -1859,6 +1934,60 @@ cursor_key(Account *account, const gchar *what)
     return g_strdup_printf("%s|%s|%s", account->base, account->agent_id, what);
 }
 
+/* The organization being read for the account, or 0 for none named. */
+static gint64
+poll_organization(PollJob *poll)
+{
+    GArray *orgs = poll->account->organizations;
+
+    if (orgs == NULL || poll->organization >= orgs->len)
+        return 0;
+
+    return g_array_index(orgs, gint64, poll->organization);
+}
+
+/* The account's cursor for @what in the organization being read. */
+static gchar *
+poll_cursor_key(PollJob *poll, const gchar *what)
+{
+    gint64 org = poll_organization(poll);
+
+    if (org <= 0)
+        return cursor_key(poll->account, what);
+
+    return g_strdup_printf("%s|%s|%s|%" G_GINT64_FORMAT, poll->account->base,
+                           poll->account->agent_id, what, org);
+}
+
+/*
+ * The cursor's value.  An organization not read on its own yet carries
+ * on from the account's cursor from before each was read on its own:
+ * what is after it was never read there, so starting afresh would skip
+ * it -- a comment made since, a status a person set.
+ */
+static gchar *
+poll_cursor(PollJob *poll, const gchar *what)
+{
+    g_autofree gchar *key = poll_cursor_key(poll, what);
+    gchar *value = clawt_task_store_venture_cursor(poll->mirror->store, key);
+
+    if (value == NULL && poll_organization(poll) > 0) {
+        g_autofree gchar *legacy = cursor_key(poll->account, what);
+
+        value = clawt_task_store_venture_cursor(poll->mirror->store, legacy);
+    }
+
+    return value;
+}
+
+static void
+poll_put_cursor(PollJob *poll, const gchar *what, const gchar *value)
+{
+    g_autofree gchar *key = poll_cursor_key(poll, what);
+
+    clawt_task_store_put_venture_cursor(poll->mirror->store, key, value);
+}
+
 /* The records of a list answer, or NULL. */
 static JsonArray *
 answer_array(const gchar *body, JsonNode **holder)
@@ -1902,9 +2031,8 @@ poll_send(PollJob *poll, const gchar *path)
 static void
 poll_changes(PollJob *poll)
 {
-    g_autofree gchar *key = cursor_key(poll->account, "changes");
-    g_autofree gchar *since = clawt_task_store_venture_cursor(
-        poll->mirror->store, key);
+    g_autofree gchar *since = poll_cursor(poll, "changes");
+    g_autofree gchar *scope = organization_param(poll_organization(poll));
     g_autofree gchar *like = g_strdup_printf("clawtilla:%s:%%",
                                              g_get_host_name());
     g_autofree gchar *like_q = g_uri_escape_string(like, NULL, FALSE);
@@ -1917,8 +2045,9 @@ poll_changes(PollJob *poll)
 
     since_q = g_uri_escape_string(since, NULL, FALSE);
     path = g_strdup_printf("/api/v1/ticket?external_ref__like=%s"
-                           "&updated_at__gte=%s&order=updated_at&limit=%d",
-                           like_q, since_q, CLAWT_VENTURE_MIRROR_POLL_LIMIT);
+                           "&updated_at__gte=%s&order=updated_at&limit=%d%s",
+                           like_q, since_q, CLAWT_VENTURE_MIRROR_POLL_LIMIT,
+                           scope);
 
     poll->step = POLL_CHANGES;
     poll_send(poll, path);
@@ -2017,12 +2146,11 @@ on_poll_changes(PollJob *poll, guint status, const gchar *body)
 {
     g_autoptr(JsonNode) holder = NULL;
     JsonArray *rows;
-    g_autofree gchar *key = cursor_key(poll->account, "changes");
     const gchar *last = NULL;
     guint i;
 
     if (status != 200) {
-        poll_next_account(poll);
+        poll_next_organization(poll);
         return;
     }
 
@@ -2043,10 +2171,9 @@ on_poll_changes(PollJob *poll, guint status, const gchar *body)
      */
     if (rows != NULL && json_array_get_length(rows) >=
                         CLAWT_VENTURE_MIRROR_POLL_LIMIT && last != NULL)
-        clawt_task_store_put_venture_cursor(poll->mirror->store, key, last);
+        poll_put_cursor(poll, "changes", last);
     else
-        clawt_task_store_put_venture_cursor(poll->mirror->store, key,
-                                            poll->started);
+        poll_put_cursor(poll, "changes", poll->started);
 
     poll->step = POLL_COMMENTS;
     poll_next_step(poll);
@@ -2056,9 +2183,8 @@ on_poll_changes(PollJob *poll, guint status, const gchar *body)
 static void
 poll_comments(PollJob *poll)
 {
-    g_autofree gchar *key = cursor_key(poll->account, "comments");
-    g_autofree gchar *cursor = clawt_task_store_venture_cursor(
-        poll->mirror->store, key);
+    g_autofree gchar *cursor = poll_cursor(poll, "comments");
+    g_autofree gchar *scope = organization_param(poll_organization(poll));
     g_autoptr(GString) ids = g_string_new(NULL);
     g_autofree gchar *path = NULL;
     GHashTableIter it;
@@ -2075,8 +2201,8 @@ poll_comments(PollJob *poll)
         g_autofree gchar *before = g_uri_escape_string(
             poll->mirror->started, NULL, FALSE);
         g_autofree gchar *baseline = g_strdup_printf(
-            "/api/v1/ticket_comment?created_at__lt=%s&order=-id&limit=1",
-            before);
+            "/api/v1/ticket_comment?created_at__lt=%s&order=-id&limit=1%s",
+            before, scope);
 
         poll->step = POLL_COMMENT_BASELINE;
         poll_send(poll, baseline);
@@ -2095,8 +2221,8 @@ poll_comments(PollJob *poll)
     }
 
     path = g_strdup_printf("/api/v1/ticket_comment?ticket_id__in=%s"
-                           "&id__gt=%s&order=id&limit=%d", ids->str, cursor,
-                           CLAWT_VENTURE_MIRROR_POLL_LIMIT);
+                           "&id__gt=%s&order=id&limit=%d%s", ids->str, cursor,
+                           CLAWT_VENTURE_MIRROR_POLL_LIMIT, scope);
     poll->step = POLL_COMMENTS;
     poll_send(poll, path);
 }
@@ -2105,12 +2231,11 @@ static void
 on_poll_comment_baseline(PollJob *poll, guint status, const gchar *body)
 {
     g_autoptr(JsonNode) holder = NULL;
-    g_autofree gchar *key = cursor_key(poll->account, "comments");
     JsonArray *rows;
     gint64 newest = 0;
 
     if (status != 200) {
-        poll_next_account(poll);
+        poll_next_organization(poll);
         return;
     }
 
@@ -2123,7 +2248,7 @@ on_poll_comment_baseline(PollJob *poll, guint status, const gchar *body)
     {
         g_autofree gchar *value = g_strdup_printf("%" G_GINT64_FORMAT, newest);
 
-        clawt_task_store_put_venture_cursor(poll->mirror->store, key, value);
+        poll_put_cursor(poll, "comments", value);
     }
 
     poll->step = POLL_INTAKE;
@@ -2157,13 +2282,12 @@ on_poll_comments(PollJob *poll, guint status, const gchar *body)
 {
     ClawtVentureMirror *self = poll->mirror;
     g_autoptr(JsonNode) holder = NULL;
-    g_autofree gchar *key = cursor_key(poll->account, "comments");
     JsonArray *rows;
     gint64 newest = 0;
     guint i;
 
     if (status != 200) {
-        poll_next_account(poll);
+        poll_next_organization(poll);
         return;
     }
 
@@ -2203,14 +2327,17 @@ on_poll_comments(PollJob *poll, guint status, const gchar *body)
     if (newest > 0) {
         g_autofree gchar *value = g_strdup_printf("%" G_GINT64_FORMAT, newest);
 
-        clawt_task_store_put_venture_cursor(self->store, key, value);
+        poll_put_cursor(poll, "comments", value);
     }
 
     poll->step = POLL_INTAKE;
     poll_next_step(poll);
 }
 
-/* Whether @agent_id may take one more ticket this hour. */
+/*
+ * Whether @agent_id may take one more ticket this hour.  The count is the
+ * agent's, whichever organization each ticket came from.
+ */
 static gboolean
 intake_allowed(ClawtVentureMirror *self, const gchar *agent_id)
 {
@@ -2242,18 +2369,20 @@ static void
 poll_intake(PollJob *poll)
 {
     g_autofree gchar *user = NULL;
+    g_autofree gchar *scope = NULL;
     g_autofree gchar *path = NULL;
 
     if (!poll->mirror->intake || !poll->account->intake ||
         !poll->mirror->inbound_on ||
         poll->mirror->inbound.intake == NULL || poll->account->user == NULL) {
-        poll_next_account(poll);
+        poll_next_organization(poll);
         return;
     }
 
     user = g_uri_escape_string(poll->account->user, NULL, FALSE);
+    scope = organization_param(poll_organization(poll));
     path = g_strdup_printf("/api/v1/ticket?assignee=%s&status=todo"
-                           "&kind=internal&order=id&limit=10", user);
+                           "&kind=internal&order=id&limit=10%s", user, scope);
     poll->step = POLL_INTAKE;
     poll_send(poll, path);
 }
@@ -2379,7 +2508,7 @@ poll_intake_next(PollJob *poll)
     g_autofree gchar *path = NULL;
 
     if (poll->intake == NULL || poll->intake->len == 0) {
-        poll_next_account(poll);
+        poll_next_organization(poll);
         return;
     }
 
@@ -2413,11 +2542,13 @@ on_poll_intake(PollJob *poll, guint status, const gchar *body)
     guint i;
 
     if (status != 200) {
-        poll_next_account(poll);
+        poll_next_organization(poll);
         return;
     }
 
     rows = answer_array(body, &holder);
+    if (poll->intake != NULL)
+        g_ptr_array_unref(poll->intake);
     poll->intake = g_ptr_array_new_with_free_func(
         (GDestroyNotify)json_node_unref);
 
@@ -2425,11 +2556,18 @@ on_poll_intake(PollJob *poll, guint status, const gchar *body)
         JsonObject *t = json_array_get_object_element(rows, i);
         gint64 ticket = json_object_get_int_member_with_default(t, "id", 0);
         g_autofree gchar *known = NULL;
+        g_autofree gchar *seen = NULL;
         const gchar *ext = json_object_get_string_member_with_default(
             t, "external_ref", "");
 
         /* From another system, or already ours: not intake. */
         if (ticket <= 0 || (ext != NULL && *ext != '\0'))
+            continue;
+
+        /* Listed by two of its organizations: queued, and counted, once. */
+        seen = g_strdup_printf("%s#intake#%" G_GINT64_FORMAT,
+                               poll->account->base, ticket);
+        if (!g_hash_table_add(poll->seen, g_steal_pointer(&seen)))
             continue;
 
         known = clawt_task_store_venture_task_for_ticket(self->store, ticket);
@@ -2531,6 +2669,25 @@ poll_next_step(PollJob *poll)
     }
 }
 
+/*
+ * The account's next organization, from what changed there; after its
+ * last (or its only, when whoami named none), the next account.
+ */
+static void
+poll_next_organization(PollJob *poll)
+{
+    GArray *orgs = poll->account->organizations;
+
+    if (orgs != NULL && poll->organization + 1 < orgs->len) {
+        poll->organization++;
+        poll->step = POLL_CHANGES;
+        poll_next_step(poll);
+        return;
+    }
+
+    poll_next_account(poll);
+}
+
 /* The next account with a known user, or the end of the pass. */
 static void
 poll_next_account(PollJob *poll)
@@ -2568,6 +2725,7 @@ poll_next_account(PollJob *poll)
         if (poll->account == NULL || !poll->account->known)
             continue;
 
+        poll->organization = 0;
         poll->step = POLL_CHANGES;
         poll_next_step(poll);
         return;

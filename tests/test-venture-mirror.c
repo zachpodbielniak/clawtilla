@@ -64,6 +64,18 @@ typedef struct {
     gchar          *intake_url;         /* the url intake was handed */
     gchar          *intake_task;        /* and the task it made */
     gboolean        name_intake;        /* intake names its task "#N title" */
+
+    /*
+     * Organizations.  VENTURE answers a list that names no organization_id
+     * from the token's default organization only; these are what it
+     * answers for organization_id=2, a second one the account is in.
+     */
+    gchar          *memberships;        /* whoami's, as JSON; NULL: none */
+    gchar          *changed_2;
+    gchar          *comments_2;
+    gchar          *assigned_2;
+    gint64          adopt_org;          /* adoption finds only with this id */
+    guint           comment_conflicts;  /* answer this many POST comment 409 */
 } Fixture;
 
 typedef struct {
@@ -99,6 +111,12 @@ fake_send(ClawtVentureMirror     *mirror,
     Sent *sent = g_new0(Sent, 1);
     Answer *answer = g_new0(Answer, 1);
     const gchar *path = url + strlen("http://v.test");
+    /* organization_id=2 is the second organization; none is the default */
+    gboolean in_second = (strstr(path, "organization_id=2") != NULL);
+    g_autofree gchar *adopt_scope = g_strdup_printf(
+        "organization_id=%" G_GINT64_FORMAT, fixture->adopt_org);
+    gboolean adoptable = (fixture->adopt_org == 0 ||
+                          strstr(path, adopt_scope) != NULL);
 
     (void)mirror;
 
@@ -121,8 +139,10 @@ fake_send(ClawtVentureMirror     *mirror,
             answer->status = 401;
         } else {
             answer->body = g_strdup_printf(
-                "{\"actor\":\"API token #%s\",\"user\":{\"username\":\"%s-bot\"}}",
-                token, token + 2);
+                "{\"actor\":\"API token #%s\",\"user\":{\"username\":\"%s-bot\"}"
+                "%s%s}", token, token + 2,
+                fixture->memberships != NULL ? ",\"memberships\":" : "",
+                fixture->memberships != NULL ? fixture->memberships : "");
         }
     } else if (g_str_has_prefix(path, "/api/v1/forge_repo/resolve")) {
         if (strstr(path, "known") != NULL)
@@ -179,21 +199,29 @@ fake_send(ClawtVentureMirror     *mirror,
     } else if (g_str_has_prefix(path, "/api/v1/runs/external/")) {
         answer->body = g_strdup("{\"id\":70}");
     } else if (g_str_has_prefix(path, "/api/v1/ticket?external_ref__like=")) {
-        answer->body = g_strdup(fixture->changed != NULL ? fixture->changed
-                                                         : "[]");
+        const gchar *rows = in_second ? fixture->changed_2 : fixture->changed;
+
+        answer->body = g_strdup(rows != NULL ? rows : "[]");
     } else if (g_str_has_prefix(path, "/api/v1/ticket_comment?created_at__lt=")) {
         answer->body = g_strdup("{\"items\":[{\"id\":5}]}");
     } else if (g_str_has_prefix(path, "/api/v1/ticket_comment?ticket_id__in=")) {
-        answer->body = g_strdup(fixture->comments != NULL ? fixture->comments
-                                                          : "[]");
+        const gchar *rows = in_second ? fixture->comments_2 : fixture->comments;
+
+        answer->body = g_strdup(rows != NULL ? rows : "[]");
     } else if (g_str_has_prefix(path, "/api/v1/ticket?assignee=")) {
+        const gchar *rows = in_second ? fixture->assigned_2 : fixture->assigned;
+
         answer->body = g_strdup(strstr(path, "assignee=scout-bot") != NULL &&
-                                fixture->assigned != NULL
-                                    ? fixture->assigned : "[]");
+                                rows != NULL ? rows : "[]");
     } else if (g_strcmp0(method, "GET") == 0 &&
                g_str_has_prefix(path, "/api/v1/ticket?external_ref=")) {
-        answer->body = g_strdup("{\"items\":[{\"id\":42,\"version\":5,"
-                                "\"issue_type\":\"task\"}]}");
+        answer->body = g_strdup(adoptable
+            ? "{\"items\":[{\"id\":42,\"version\":5,\"issue_type\":\"task\"}]}"
+            : "{\"items\":[]}");
+    } else if (g_strcmp0(method, "GET") == 0 &&
+               g_str_has_prefix(path, "/api/v1/ticket_comment?external_ref=")) {
+        answer->body = g_strdup(adoptable ? "{\"items\":[{\"id\":77}]}"
+                                          : "{\"items\":[]}");
     } else if (g_strcmp0(method, "PATCH") == 0) {
         if (fixture->patch_conflicts > 0) {
             fixture->patch_conflicts--;
@@ -204,6 +232,10 @@ fake_send(ClawtVentureMirror     *mirror,
     } else if (g_strcmp0(method, "GET") == 0 &&
                g_str_has_prefix(path, "/api/v1/ticket/")) {
         answer->body = g_strdup("{\"version\":8}");
+    } else if (g_strcmp0(path, "/api/v1/ticket_comment") == 0 &&
+               fixture->comment_conflicts > 0) {
+        fixture->comment_conflicts--;
+        answer->status = 409;
     } else if (g_strcmp0(path, "/api/v1/ticket_comment") == 0) {
         answer->status = 201;
         answer->body = g_strdup_printf("{\"id\":%" G_GINT64_FORMAT "}",
@@ -271,6 +303,10 @@ fixture_teardown(Fixture *fixture, gconstpointer data)
     g_free(fixture->changed);
     g_free(fixture->comments);
     g_free(fixture->assigned);
+    g_free(fixture->memberships);
+    g_free(fixture->changed_2);
+    g_free(fixture->comments_2);
+    g_free(fixture->assigned_2);
     g_free(fixture->intake_url);
     g_free(fixture->intake_task);
     clawt_test_remove_tree(fixture->dir);
@@ -1690,6 +1726,236 @@ test_old_intake_ref_is_recognised(Fixture *fixture, gconstpointer data)
                     "in_progress");
 }
 
+/* ── Every organization the token reaches ────────────────────────── */
+
+/*
+ * VENTURE answers a list without organization_id from the token's
+ * default organization only, so whoami's memberships are what the
+ * reverse poll and adoption have to name.  The fake answers the same way.
+ */
+#define TWO_ORGANIZATIONS \
+    "[{\"organization_id\":1,\"organization\":\"Anyware\",\"role\":\"editor\"}," \
+    " {\"organization_id\":2,\"organization\":\"Personal\",\"role\":\"editor\"}]"
+
+/* A todo ticket in each organization the account is in becomes a task. */
+static void
+test_intake_reads_every_organization(Fixture *fixture, gconstpointer data)
+{
+    (void)data;
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     TRUE);
+    clawt_venture_mirror_set_account_intake(fixture->mirror, "scout", TRUE);
+    fixture->memberships = g_strdup(TWO_ORGANIZATIONS);
+    fixture->assigned = g_strdup(
+        "[{\"id\":30,\"version\":1,\"title\":\"Do X\",\"status\":\"todo\","
+        "  \"organization_id\":1}]");
+    fixture->assigned_2 = g_strdup(
+        "[{\"id\":40,\"version\":1,\"title\":\"At home\",\"status\":\"todo\","
+        "  \"organization_id\":2}]");
+
+    poll(fixture);
+
+    g_assert_true(inbound_has(fixture, "intake 30 scout Do X from lead"));
+    g_assert_true(inbound_has(fixture, "intake 40 scout At home"));
+    g_assert_cmpuint(fixture->inbound->len, ==, 2);
+    g_assert_nonnull(find_sent(fixture, "GET",
+        "/api/v1/ticket?assignee=scout-bot&status=todo&kind=internal"
+        "&order=id&limit=10&organization_id=2"));
+
+    /* taken in once, whichever organization it came from */
+    poll(fixture);
+    g_assert_cmpuint(fixture->inbound->len, ==, 2);
+}
+
+/* Without memberships in whoami, the one list is asked as it always was. */
+static void
+test_intake_without_memberships_asks_once(Fixture *fixture,
+                                          gconstpointer data)
+{
+    (void)data;
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     TRUE);
+    clawt_venture_mirror_set_account_intake(fixture->mirror, "scout", TRUE);
+    fixture->assigned = g_strdup(
+        "[{\"id\":30,\"version\":1,\"title\":\"Do X\",\"status\":\"todo\"}]");
+
+    poll(fixture);
+
+    g_assert_true(inbound_has(fixture, "intake 30 scout Do X from lead"));
+    g_assert_cmpuint(count_sent(fixture, "GET",
+        "/api/v1/ticket?assignee=scout-bot"), ==, 1);
+    g_assert_null(strstr(find_sent(fixture, "GET",
+        "/api/v1/ticket?assignee=scout-bot")->url, "organization_id"));
+}
+
+/* Ten an hour is the agent's, not ten an hour in each organization. */
+static void
+test_intake_cap_spans_organizations(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(GString) first = g_string_new("[");
+    guint i;
+
+    (void)data;
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     TRUE);
+    clawt_venture_mirror_set_account_intake(fixture->mirror, "scout", TRUE);
+    fixture->memberships = g_strdup(TWO_ORGANIZATIONS);
+
+    /* nine in the first, two in the second: the eleventh waits */
+    for (i = 0; i < 9; i++)
+        g_string_append_printf(first,
+            "%s{\"id\":%u,\"version\":1,\"title\":\"T%u\",\"status\":\"todo\"}",
+            i > 0 ? "," : "", 100 + i, i);
+    g_string_append(first, "]");
+    fixture->assigned = g_string_free(g_steal_pointer(&first), FALSE);
+    fixture->assigned_2 = g_strdup(
+        "[{\"id\":200,\"version\":1,\"title\":\"H0\",\"status\":\"todo\"},"
+        " {\"id\":201,\"version\":1,\"title\":\"H1\",\"status\":\"todo\"}]");
+
+    poll(fixture);
+
+    g_assert_cmpuint(fixture->inbound->len, ==, 10);
+    g_assert_true(inbound_has(fixture, "intake 200 scout H0"));
+    g_assert_false(inbound_has(fixture, "intake 201 scout H1"));
+}
+
+/* A person cancelling a ticket in the second organization is heard. */
+static void
+test_changes_read_in_every_organization(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_RUNNING);
+    g_autofree gchar *line = g_strdup_printf("cancel %s",
+                                             clawt_task_get_id(task));
+
+    (void)data;
+    fixture->create_org = 2;
+    fixture->memberships = g_strdup(TWO_ORGANIZATIONS);
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     FALSE);
+    drain(fixture);
+
+    fixture->changed_2 = changed_ticket(clawt_task_get_id(task), 2,
+                                        "cancelled");
+    poll(fixture);
+
+    g_assert_true(inbound_has(fixture, line));
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+}
+
+/* A person's comment on a ticket in the second organization is heard. */
+static void
+test_comments_read_in_every_organization(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_RUNNING);
+    g_autofree gchar *line = g_strdup_printf("comment %s alice: why?",
+                                             clawt_task_get_id(task));
+
+    (void)data;
+    fixture->create_org = 2;
+    fixture->memberships = g_strdup(TWO_ORGANIZATIONS);
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     FALSE);
+    drain(fixture);
+
+    /* the first pass only finds where each organization is up to */
+    poll(fixture);
+    g_assert_cmpuint(fixture->inbound->len, ==, 0);
+
+    fixture->comments_2 = g_strdup(
+        "[{\"id\":6,\"ticket_id\":1,\"author\":\"alice\",\"body\":\"why?\"}]");
+    poll(fixture);
+
+    g_assert_true(inbound_has(fixture, line));
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+}
+
+/*
+ * The comment cursor from before organizations were read one by one
+ * carries on in each: a comment made since it, in an organization that
+ * was never read, is delivered rather than skipped by a new baseline.
+ */
+static void
+test_comment_cursor_carries_into_each_organization(Fixture *fixture,
+                                                   gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_RUNNING);
+    g_autofree gchar *line = g_strdup_printf("comment %s alice: why?",
+                                             clawt_task_get_id(task));
+
+    (void)data;
+    fixture->create_org = 2;
+    fixture->memberships = g_strdup(TWO_ORGANIZATIONS);
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     FALSE);
+    drain(fixture);
+
+    /* the cursor an earlier version kept, read up to comment 5 */
+    clawt_task_store_put_venture_cursor(fixture->store,
+                                        "http://v.test|scout|comments", "5");
+    fixture->comments_2 = g_strdup(
+        "[{\"id\":6,\"ticket_id\":1,\"author\":\"alice\",\"body\":\"why?\"}]");
+    poll(fixture);
+
+    g_assert_true(inbound_has(fixture, line));
+    g_assert_nonnull(find_sent(fixture, "GET",
+        "/api/v1/ticket_comment?ticket_id__in=1&id__gt=5&order=id&limit=100"
+        "&organization_id=2"));
+}
+
+/* A ticket filed in its repository's organization is adopted from there. */
+static void
+test_adoption_reads_the_tickets_organization(Fixture *fixture,
+                                             gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = NULL;
+    g_autoptr(ClawtVentureRef) ref = NULL;
+
+    (void)data;
+    fixture->create_conflicts = 1;
+    fixture->adopt_org = 3;    /* the known repository's, from resolve */
+
+    task = save_task(fixture, "lead", "scout", CLAWT_TASK_PENDING);
+    drain(fixture);
+
+    g_assert_nonnull(find_sent(fixture, "GET",
+                               "/api/v1/ticket?external_ref=clawtilla"));
+    g_assert_nonnull(strstr(find_sent(fixture, "GET",
+        "/api/v1/ticket?external_ref=clawtilla")->url, "&organization_id=3"));
+
+    ref = clawt_task_store_venture_ref(fixture->store, clawt_task_get_id(task));
+    g_assert_nonnull(ref);
+    g_assert_cmpint(ref->ticket_id, ==, 42);
+    g_assert_cmpstr(ref->state, !=, "dead");
+}
+
+/* And a comment already made is found in its ticket's organization. */
+static void
+test_comment_adoption_reads_the_tickets_organization(Fixture *fixture,
+                                                     gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_RUNNING);
+    gint64 note;
+
+    (void)data;
+    fixture->create_org = 3;
+    drain(fixture);
+
+    fixture->comment_conflicts = 1;
+    fixture->adopt_org = 3;
+    note = clawt_task_store_add_note(fixture->store, clawt_task_get_id(task),
+                                     "scout", "result", "Fixed.", NULL);
+    drain(fixture);
+
+    g_assert_nonnull(strstr(find_sent(fixture, "GET",
+        "/api/v1/ticket_comment?external_ref=")->url, "&organization_id=3"));
+    g_assert_cmpint(clawt_task_store_venture_comment(fixture->store, note),
+                    ==, 77);
+}
+
 #define ADD(name, fn) \
     g_test_add("/venture-mirror/" name, Fixture, NULL, fixture_setup, fn, \
                fixture_teardown)
@@ -1744,6 +2010,22 @@ main(int argc, char *argv[])
     ADD("outbound-title-is-still-written",
         test_outbound_title_is_still_written);
     ADD("old-intake-ref-is-recognised", test_old_intake_ref_is_recognised);
+    ADD("intake-reads-every-organization",
+        test_intake_reads_every_organization);
+    ADD("intake-without-memberships-asks-once",
+        test_intake_without_memberships_asks_once);
+    ADD("intake-cap-spans-organizations",
+        test_intake_cap_spans_organizations);
+    ADD("changes-read-in-every-organization",
+        test_changes_read_in_every_organization);
+    ADD("comments-read-in-every-organization",
+        test_comments_read_in_every_organization);
+    ADD("comment-cursor-carries-into-each-organization",
+        test_comment_cursor_carries_into_each_organization);
+    ADD("adoption-reads-the-tickets-organization",
+        test_adoption_reads_the_tickets_organization);
+    ADD("comment-adoption-reads-the-tickets-organization",
+        test_comment_adoption_reads_the_tickets_organization);
     g_test_add_func("/venture-mirror/finds-pull-requests",
                     test_finds_pull_requests);
 

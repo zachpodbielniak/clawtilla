@@ -95,6 +95,8 @@ test_the_mirror_reads_what_venture_answers(void)
     /* whoami: the account's actor and username */
     expect("whoami", "actor", "string");
     expect("whoami", "user.username", "string");
+    /* and the organizations it reaches: each is read on its own */
+    expect("whoami", "memberships.organization_id", "int");
 
     /* resolve: the repository and its organization */
     expect("forge-repo-resolve", "id", "int");
@@ -115,6 +117,7 @@ test_the_mirror_reads_what_venture_answers(void)
     expect("ticket-list", "records.updated_at", "string");
     expect("ticket-list", "records.title", "string");
     expect("ticket-list", "records.description", "string");
+    expect("ticket-list", "records.organization_id", "int");
 
     /* an update: the version after it; and a re-read after a stale one */
     expect("ticket-update", "version", "int");
