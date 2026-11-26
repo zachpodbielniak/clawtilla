@@ -197,6 +197,14 @@ struct _ClawtOfficeScene {
     LrgCamera3D          *lcamera;
     gfloat                orbit;      /* radians round the map's centre */
     gfloat                distance;   /* 3D camera distance, in tiles */
+
+    /* the 3D Fit, for the bearing and view shape it was worked out at */
+    gboolean              frame_valid;
+    gfloat                frame_orbit;
+    gfloat                frame_aspect;
+    gfloat                frame_x;
+    gfloat                frame_z;
+    gfloat                frame_reach;
     GHashTable           *actors;     /* id -> Actor */
     GHashTable           *colors;     /* id -> "#rrggbb" */
     GHashTable           *beams;      /* "a|b" -> LrgBeam */
@@ -660,6 +668,8 @@ clawt_office_scene_load_world(ClawtOfficeScene  *self,
     /* the wall the allowances are drawn on, if the pack has one */
     self->has_board = zone_anchor(world, "usage_board", &self->board_x, &self->board_y) &&
                       board_zone(world, self->tile, &self->board_rect, &self->board_3d);
+    /* a new map and board: the 3D Fit is worked out again */
+    self->frame_valid = FALSE;
     g_clear_pointer(&self->board_layout, clawt_office_board_layout_free);
     g_clear_pointer(&self->panel_layout, clawt_office_board_layout_free);
 
@@ -1870,40 +1880,48 @@ board_zone_2d(ClawtOfficeScene *self)
 }
 
 /*
- * The 3D board: a screen standing on the zone's 3D anchor, as wide as
- * the zone and facing the camera, and the screen rectangle it covers.
- * FALSE when any corner is behind the camera.
+ * The 3D board's corners for a camera looking along (@forward_x,
+ * @forward_z): a screen standing on the zone's 3D anchor, as wide as the
+ * zone, square to the camera.  The same corners the default framing
+ * keeps in view; see place_camera_3d().
+ */
+static gboolean
+board_corners_3d(ClawtOfficeScene *self, gfloat forward_x, gfloat forward_z,
+                 gfloat corners[12])
+{
+    gfloat w = self->board_rect.width / self->tile;
+    gfloat h = w * self->board_rect.height / MAX(self->board_rect.width, 1.0f);
+    gfloat anchor[3];
+
+    anchor[0] = self->board_3d.x;
+    anchor[1] = self->board_3d.y;
+    anchor[2] = self->board_3d.z;
+    return clawt_office_view_board_corners_3d(anchor, w, h, forward_x, forward_z, corners);
+}
+
+/*
+ * The 3D board on screen: the rectangle its corners cover, projected by
+ * raylib with the camera this frame was drawn with.  FALSE when any
+ * corner is behind the camera.
  */
 static gboolean
 board_zone_3d(ClawtOfficeScene *self, gint width, gint height, Rectangle *out)
 {
-    gfloat w = self->board_rect.width / self->tile;
-    gfloat h = w * self->board_rect.height / MAX(self->board_rect.width, 1.0f);
     Vector3 eye = self->camera3d.position;
     Vector3 forward = { self->camera3d.target.x - eye.x, self->camera3d.target.y - eye.y,
                         self->camera3d.target.z - eye.z };
-    Vector3 right;
-    gfloat length;
+    gfloat corners[12];
     gfloat lo_x = G_MAXFLOAT;
     gfloat lo_y = G_MAXFLOAT;
     gfloat hi_x = -G_MAXFLOAT;
     gfloat hi_y = -G_MAXFLOAT;
     gint i;
 
-    /* right = forward x up, flattened: the screen stands upright */
-    right = (Vector3){ -forward.z, 0.0f, forward.x };
-    length = sqrtf(right.x * right.x + right.z * right.z);
-    if (length < 0.0001f)
+    if (!board_corners_3d(self, forward.x, forward.z, corners))
         return FALSE;
-    right.x /= length;
-    right.z /= length;
 
     for (i = 0; i < 4; i++) {
-        gfloat sx = (i & 1) ? 0.5f : -0.5f;
-        gfloat sy = (i & 2) ? 1.0f : 0.0f;
-        Vector3 corner = { self->board_3d.x + right.x * w * sx,
-                           self->board_3d.y + 0.2f + h * sy,
-                           self->board_3d.z + right.z * w * sx };
+        Vector3 corner = { corners[i * 3 + 0], corners[i * 3 + 1], corners[i * 3 + 2] };
         Vector2 at;
 
         if ((corner.x - eye.x) * forward.x + (corner.y - eye.y) * forward.y +
@@ -2064,34 +2082,109 @@ draw_2d(ClawtOfficeScene *self, gint width, gint height)
     draw_overlays(self, people, at, self->person_scale * zoom, height);
 }
 
-/* The orbiting god's-eye camera, aimed at the middle of the map. */
+/*
+ * How high above the floor the default 3D framing keeps in view: the
+ * top of a standing figure's head, where its name label is placed.
+ */
+#define FRAME_HEAD_HEIGHT (2.6f)
+
+/*
+ * The whole office at this bearing, for the 3D view's Fit: the floor's
+ * corners, the same at head height, and the usage board's corners.
+ * Remembered for the bearing and the view's shape it was worked out for,
+ * since neither moves on most frames.
+ */
+static void
+frame_office_3d(ClawtOfficeScene *self, gfloat aspect, gfloat *cx, gfloat *cz,
+                gfloat *reach)
+{
+    gfloat points[3 * 12];
+    guint n = 0;
+    gint i;
+
+    if (self->frame_valid && self->frame_orbit == self->orbit &&
+        self->frame_aspect == aspect) {
+        *cx = self->frame_x;
+        *cz = self->frame_z;
+        *reach = self->frame_reach;
+        return;
+    }
+
+    for (i = 0; i < 8; i++) {
+        points[n * 3 + 0] = (i & 1) ? self->map_w / self->tile : 0.0f;
+        points[n * 3 + 1] = (i & 4) ? FRAME_HEAD_HEIGHT : 0.0f;
+        points[n * 3 + 2] = (i & 2) ? self->map_h / self->tile : 0.0f;
+        n++;
+    }
+
+    /*
+     * The board as it will be drawn: square to a camera at this bearing,
+     * which looks along -(cos, sin) across the floor whatever its distance.
+     */
+    if (self->has_board &&
+        board_corners_3d(self, -cosf(self->orbit), -sinf(self->orbit), points + n * 3))
+        n += 4;
+
+    if (!clawt_office_view_frame_3d(points, n, self->orbit, CLAWT_OFFICE_VIEW_3D_LIFT,
+                                    CLAWT_OFFICE_VIEW_3D_FOVY, aspect,
+                                    CLAWT_OFFICE_VIEW_3D_MARGIN, cx, cz, reach)) {
+        /* nothing to frame: the middle of the map, as it always was */
+        *cx = self->map_w / self->tile / 2.0f;
+        *cz = self->map_h / self->tile / 2.0f;
+        *reach = MAX(*cx, *cz) * 1.2f;
+    }
+
+    self->frame_valid = TRUE;
+    self->frame_orbit = self->orbit;
+    self->frame_aspect = aspect;
+    self->frame_x = *cx;
+    self->frame_z = *cz;
+    self->frame_reach = *reach;
+}
+
+/*
+ * The orbiting god's-eye camera.
+ *
+ * At Fit it frames the whole office -- every corner of the floor, the
+ * people at head height, and the usage board -- with
+ * clawt_office_view_frame_3d(); 1x and 2x and the wheel move it in from
+ * there, towards the same point.  It used to aim at the middle of the
+ * map from a fixed distance, which at this pitch left the near third of
+ * the floor below the frame: in modern-office that is where the usage
+ * board stands, so it could not be seen without moving the camera.
+ */
 static void
 place_camera_3d(ClawtOfficeScene *self, gint width, gint height)
 {
-    gfloat cx = self->map_w / self->tile / 2.0f;
-    gfloat cz = self->map_h / self->tile / 2.0f;
-    gfloat reach = MAX(cx, cz) * 1.2f * self->distance;
+    gfloat aspect = (gfloat)width / (gfloat)MAX(height, 1);
+    gfloat cx = 0.0f;
+    gfloat cz = 0.0f;
+    gfloat reach = 0.0f;
     Actor *followed = self->focus != NULL ? g_hash_table_lookup(self->actors, self->focus) : NULL;
+    Vector3 eye;
 
     /* following somebody: centred on them, close enough to see their face */
     if (followed != NULL && followed->placed) {
         cx = followed->x / self->tile;
         cz = followed->y / self->tile;
         reach = 7.0f * self->distance;
+    } else {
+        frame_office_3d(self, aspect, &cx, &cz, &reach);
+        reach *= self->distance;
     }
-    Vector3 eye = { cx + cosf(self->orbit) * reach, reach * 0.95f,
-                    cz + sinf(self->orbit) * reach };
+    eye = (Vector3){ cx + cosf(self->orbit) * reach, reach * CLAWT_OFFICE_VIEW_3D_LIFT,
+                     cz + sinf(self->orbit) * reach };
 
     self->camera3d.position = eye;
     self->camera3d.target = (Vector3){ cx, 0.0f, cz };
     self->camera3d.up = (Vector3){ 0.0f, 1.0f, 0.0f };
-    self->camera3d.fovy = 45.0f;
+    self->camera3d.fovy = CLAWT_OFFICE_VIEW_3D_FOVY;
     self->camera3d.projection = CAMERA_PERSPECTIVE;
     lrg_camera3d_set_position_xyz(self->lcamera, eye.x, eye.y, eye.z);
     lrg_camera3d_set_target_xyz(self->lcamera, cx, 0.0f, cz);
     lrg_camera3d_set_up_xyz(self->lcamera, 0.0f, 1.0f, 0.0f);
-    lrg_camera3d_set_fovy(self->lcamera, 45.0f);
-    lrg_camera3d_set_aspect(self->lcamera, (gfloat)width / (gfloat)MAX(height, 1));
+    lrg_camera3d_set_fovy(self->lcamera, CLAWT_OFFICE_VIEW_3D_FOVY);
+    lrg_camera3d_set_aspect(self->lcamera, aspect);
 }
 
 static void
@@ -2436,8 +2529,23 @@ clawt_office_scene_describe_usage(ClawtOfficeScene *self)
     json_builder_set_member_name(b, "windows");
     json_builder_add_int_value(b, self->board != NULL
                                   ? clawt_office_board_n_windows(self->board) : 0);
-    /* the zone on screen, as the 2D view places it */
-    if (self->has_board && self->mode != CLAWT_OFFICE_SCENE_3D && self->adapter == NULL) {
+    /*
+     * The zone on screen: as the 2D view places it, or the rectangle the
+     * 3D board's corners covered with the last frame's camera.
+     */
+    if (self->has_board && self->mode == CLAWT_OFFICE_SCENE_3D && self->has_3d) {
+        Rectangle zone;
+
+        if (board_zone_3d(self, self->last_w, self->last_h, &zone)) {
+            json_builder_set_member_name(b, "zone");
+            json_builder_begin_array(b);
+            json_builder_add_double_value(b, zone.x);
+            json_builder_add_double_value(b, zone.y);
+            json_builder_add_double_value(b, zone.width);
+            json_builder_add_double_value(b, zone.height);
+            json_builder_end_array(b);
+        }
+    } else if (self->has_board && self->adapter == NULL) {
         Rectangle zone = board_zone_2d(self);
 
         json_builder_set_member_name(b, "zone");

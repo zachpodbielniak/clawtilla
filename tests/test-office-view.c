@@ -16,6 +16,7 @@
 
 #include "clawtilla.h"
 
+#include <math.h>
 #include <signal.h>
 #include <string.h>
 
@@ -513,6 +514,344 @@ test_control_to_dead_child_is_an_error(void)
     signal(SIGPIPE, was);
 }
 
+/* ── The 3D camera ────────────────────────────────────────────────── */
+
+/* The 3D view's bearing when nobody has orbited it: office-scene.c's start. */
+#define DEFAULT_ORBIT (0.65f)
+
+/* The view sizes the default framing has to hold at: the window, 1080p, 4K, 4:3. */
+static const gint view_sizes[][2] = {
+    { 1280, 720 }, { 1920, 1080 }, { 3840, 2160 }, { 1024, 768 },
+};
+
+/*
+ * The projection is raylib's: straight ahead is the middle, the edge of
+ * the field of view is the edge of the view, and behind is refused.
+ */
+static void
+test_project_3d(void)
+{
+    const gfloat eye[3] = { 0.0f, 0.0f, 10.0f };
+    const gfloat target[3] = { 0.0f, 0.0f, 0.0f };
+    const gfloat ahead[3] = { 0.0f, 0.0f, 0.0f };
+    const gfloat right_edge[3] = { 2.0f, 0.0f, 9.0f };
+    const gfloat top_edge[3] = { 0.0f, 1.0f, 9.0f };
+    const gfloat behind[3] = { 0.0f, 0.0f, 11.0f };
+    gfloat x = -1.0f;
+    gfloat y = -1.0f;
+
+    /* fovy 90: one unit deep, the edge is one unit up, two across at 2:1 */
+    g_assert_true(clawt_office_view_project_3d(eye, target, 90.0f, 200.0f, 100.0f, ahead,
+                                               &x, &y));
+    g_assert_cmpfloat_with_epsilon(x, 100.0f, 0.001f);
+    g_assert_cmpfloat_with_epsilon(y, 50.0f, 0.001f);
+
+    g_assert_true(clawt_office_view_project_3d(eye, target, 90.0f, 200.0f, 100.0f,
+                                               right_edge, &x, &y));
+    g_assert_cmpfloat_with_epsilon(x, 200.0f, 0.001f);
+    g_assert_cmpfloat_with_epsilon(y, 50.0f, 0.001f);
+
+    g_assert_true(clawt_office_view_project_3d(eye, target, 90.0f, 200.0f, 100.0f,
+                                               top_edge, &x, &y));
+    g_assert_cmpfloat_with_epsilon(x, 100.0f, 0.001f);
+    g_assert_cmpfloat_with_epsilon(y, 0.0f, 0.001f);
+
+    x = y = -1.0f;
+    g_assert_false(clawt_office_view_project_3d(eye, target, 90.0f, 200.0f, 100.0f, behind,
+                                                &x, &y));
+    g_assert_cmpfloat(x, ==, -1.0f);
+}
+
+/* The board stands upright, square to the camera, on its anchor. */
+static void
+test_board_corners_3d(void)
+{
+    const gfloat anchor[3] = { 10.0f, 0.0f, 20.0f };
+    gfloat corners[12];
+
+    /* looking along -z, right is +x: the board runs along x, left to right */
+    g_assert_true(clawt_office_view_board_corners_3d(anchor, 4.0f, 3.0f, 0.0f, -1.0f,
+                                                     corners));
+    g_assert_cmpfloat_with_epsilon(corners[0], 8.0f, 0.001f);    /* bottom left */
+    g_assert_cmpfloat_with_epsilon(corners[1], 0.2f, 0.001f);
+    g_assert_cmpfloat_with_epsilon(corners[2], 20.0f, 0.001f);
+    g_assert_cmpfloat_with_epsilon(corners[3], 12.0f, 0.001f);   /* bottom right */
+    g_assert_cmpfloat_with_epsilon(corners[5], 20.0f, 0.001f);
+    g_assert_cmpfloat_with_epsilon(corners[9], 12.0f, 0.001f);   /* top right */
+    g_assert_cmpfloat_with_epsilon(corners[10], 3.2f, 0.001f);
+
+    /* straight down has nothing to face */
+    g_assert_false(clawt_office_view_board_corners_3d(anchor, 4.0f, 3.0f, 0.0f, 0.0f,
+                                                      corners));
+}
+
+/* Where clawt_office_view_frame_3d() put the camera, as eye and target. */
+static void
+frame_camera(gfloat target_x, gfloat target_z, gfloat reach, gfloat orbit, gfloat eye[3],
+             gfloat target[3])
+{
+    eye[0] = target_x + cosf(orbit) * reach;
+    eye[1] = reach * CLAWT_OFFICE_VIEW_3D_LIFT;
+    eye[2] = target_z + sinf(orbit) * reach;
+    target[0] = target_x;
+    target[1] = 0.0f;
+    target[2] = target_z;
+}
+
+/*
+ * Every point in front of the camera and inside the view; and, unless
+ * @loose, at least one of them at the margin -- the framing is the
+ * closest that holds them, not merely one that does.
+ */
+static void
+assert_framed(const gfloat *points, guint n, const gfloat eye[3], const gfloat target[3],
+              gint width, gint height, gboolean loose)
+{
+    gfloat edge = 1.0f;
+    guint i;
+
+    for (i = 0; i < n; i++) {
+        gfloat x = 0.0f;
+        gfloat y = 0.0f;
+
+        g_assert_true(clawt_office_view_project_3d(eye, target, CLAWT_OFFICE_VIEW_3D_FOVY,
+                                                   (gfloat)width, (gfloat)height,
+                                                   points + i * 3, &x, &y));
+        g_assert_cmpfloat(x, >=, 0.0f);
+        g_assert_cmpfloat(x, <=, (gfloat)width);
+        g_assert_cmpfloat(y, >=, 0.0f);
+        g_assert_cmpfloat(y, <=, (gfloat)height);
+
+        /* how near this point is to an edge, as a share of the half view */
+        edge = MIN(edge, MIN(MIN(x, (gfloat)width - x) / ((gfloat)width / 2.0f),
+                             MIN(y, (gfloat)height - y) / ((gfloat)height / 2.0f)));
+    }
+    if (!loose)
+        g_assert_cmpfloat(edge, <, CLAWT_OFFICE_VIEW_3D_MARGIN + 0.01f);
+}
+
+/* A box of floor 40 x 30 with head height, at every bearing and view shape. */
+static void
+test_frame_3d_any_bearing(void)
+{
+    gfloat points[3 * 8];
+    gint i;
+    gint k;
+
+    for (i = 0; i < 8; i++) {
+        points[i * 3 + 0] = (i & 1) ? 40.0f : 0.0f;
+        points[i * 3 + 1] = (i & 4) ? 2.6f : 0.0f;
+        points[i * 3 + 2] = (i & 2) ? 30.0f : 0.0f;
+    }
+
+    for (k = 0; k < 24; k++) {
+        gfloat orbit = (gfloat)k * (gfloat)G_PI / 12.0f;
+        gsize v;
+
+        for (v = 0; v < G_N_ELEMENTS(view_sizes); v++) {
+            gfloat tx = 0.0f;
+            gfloat tz = 0.0f;
+            gfloat reach = 0.0f;
+            gfloat eye[3];
+            gfloat target[3];
+            gfloat aspect = (gfloat)view_sizes[v][0] / (gfloat)view_sizes[v][1];
+
+            g_assert_true(clawt_office_view_frame_3d(points, 8, orbit,
+                                                     CLAWT_OFFICE_VIEW_3D_LIFT,
+                                                     CLAWT_OFFICE_VIEW_3D_FOVY, aspect,
+                                                     CLAWT_OFFICE_VIEW_3D_MARGIN, &tx, &tz,
+                                                     &reach));
+            g_assert_cmpfloat(reach, >, 0.0f);
+            frame_camera(tx, tz, reach, orbit, eye, target);
+            assert_framed(points, 8, eye, target, view_sizes[v][0], view_sizes[v][1],
+                          FALSE);
+        }
+    }
+
+    /* nothing to frame is refused, and says nothing */
+    {
+        gfloat tx = -1.0f;
+        gfloat tz = -1.0f;
+        gfloat reach = -1.0f;
+
+        g_assert_false(clawt_office_view_frame_3d(points, 0, 0.0f, 0.95f, 45.0f, 1.0f,
+                                                  0.0f, &tx, &tz, &reach));
+        g_assert_cmpfloat(reach, ==, -1.0f);
+    }
+}
+
+/*
+ * A shipped world as office-scene.c sees it for the 3D view: the map's
+ * size in tiles and the usage board's anchor and size, from office.yaml
+ * and map.tmj -- the same rules as board_zone(): rect_2d's centre unless
+ * anchors_3d gives one, as wide as rect_2d in tiles and as tall in
+ * proportion.
+ */
+typedef struct {
+    gfloat map_w;
+    gfloat map_h;
+    gfloat anchor[3];
+    gfloat board_w;
+    gfloat board_h;
+} ShippedWorld;
+
+static void
+shipped_world(const gchar *name, ShippedWorld *out)
+{
+    g_autofree gchar *dir = g_build_filename(CLAWT_TEST_FIXTURES, "..", "..", "data",
+                                             "office", "worlds", name, NULL);
+    g_autofree gchar *tmj = g_build_filename(dir, "map.tmj", NULL);
+    g_autoptr(ClawtOfficeWorld) world = NULL;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(GError) error = NULL;
+    const ClawtOfficeZone *zone;
+    JsonObject *map;
+    gfloat tile;
+
+    world = clawt_office_world_load(dir, &error);
+    g_assert_no_error(error);
+    g_assert_true(json_parser_load_from_file(parser, tmj, &error));
+    g_assert_no_error(error);
+    map = json_node_get_object(json_parser_get_root(parser));
+    tile = (gfloat)json_object_get_int_member(map, "tilewidth");
+    out->map_w = (gfloat)json_object_get_int_member(map, "width");
+    out->map_h = (gfloat)json_object_get_int_member(map, "height");
+
+    zone = clawt_office_world_find_zone(world, "usage_board", NULL, 0);
+    g_assert_nonnull(zone);
+    g_assert_true(zone->has_rect_2d);
+    out->board_w = (gfloat)zone->rect_2d[2] / tile;
+    out->board_h = out->board_w * (gfloat)(zone->rect_2d[3] / zone->rect_2d[2]);
+    out->anchor[0] = (gfloat)(zone->rect_2d[0] + zone->rect_2d[2] / 2.0) / tile;
+    out->anchor[1] = 0.0f;
+    out->anchor[2] = (gfloat)(zone->rect_2d[1] + zone->rect_2d[3] / 2.0) / tile;
+    if (zone->anchors_3d != NULL && zone->anchors_3d->len >= 3) {
+        out->anchor[0] = (gfloat)g_array_index(zone->anchors_3d, gdouble, 0);
+        out->anchor[1] = (gfloat)g_array_index(zone->anchors_3d, gdouble, 1);
+        out->anchor[2] = (gfloat)g_array_index(zone->anchors_3d, gdouble, 2);
+    }
+}
+
+/* Twelve points, as office-scene.c's frame_office_3d() gathers them. */
+static void
+office_points(const ShippedWorld *w, gfloat orbit, gfloat points[36])
+{
+    gint i;
+
+    for (i = 0; i < 8; i++) {
+        points[i * 3 + 0] = (i & 1) ? w->map_w : 0.0f;
+        points[i * 3 + 1] = (i & 4) ? 2.6f : 0.0f;
+        points[i * 3 + 2] = (i & 2) ? w->map_h : 0.0f;
+    }
+    g_assert_true(clawt_office_view_board_corners_3d(w->anchor, w->board_w, w->board_h,
+                                                     -cosf(orbit), -sinf(orbit),
+                                                     points + 24));
+}
+
+/* The screen rectangle the board's four corners cover. */
+static void
+board_on_screen(const gfloat points[36], const gfloat eye[3], const gfloat target[3],
+                gint width, gint height, gfloat rect[4])
+{
+    gfloat lo_x = G_MAXFLOAT;
+    gfloat lo_y = G_MAXFLOAT;
+    gfloat hi_x = -G_MAXFLOAT;
+    gfloat hi_y = -G_MAXFLOAT;
+    gint i;
+
+    for (i = 8; i < 12; i++) {
+        gfloat x = 0.0f;
+        gfloat y = 0.0f;
+
+        g_assert_true(clawt_office_view_project_3d(eye, target, CLAWT_OFFICE_VIEW_3D_FOVY,
+                                                   (gfloat)width, (gfloat)height,
+                                                   points + i * 3, &x, &y));
+        lo_x = MIN(lo_x, x);
+        lo_y = MIN(lo_y, y);
+        hi_x = MAX(hi_x, x);
+        hi_y = MAX(hi_y, y);
+    }
+    rect[0] = lo_x;
+    rect[1] = lo_y;
+    rect[2] = hi_x - lo_x;
+    rect[3] = hi_y - lo_y;
+}
+
+/*
+ * VENTURE #24: with the default 3D camera the modern-office usage board
+ * stood below the frame.  In both shipped worlds, at the default bearing
+ * and at the window's size, 1080p, 4K and 4:3, the default framing now
+ * has the board's projected rectangle inside the view, along with every
+ * corner of the floor at head height -- so no desk or person was pushed
+ * out to make room.
+ *
+ * And the old camera, for the record: aimed at the middle of the map
+ * from a fixed distance, it put modern-office's board below the frame.
+ * If that ever passes, this test is no longer testing the fix.
+ */
+static void
+test_frame_3d_shipped_worlds(void)
+{
+    static const gchar *const worlds[] = { "modern-office", "cozy-town" };
+    gsize n;
+
+    for (n = 0; n < G_N_ELEMENTS(worlds); n++) {
+        ShippedWorld w;
+        gfloat points[36];
+        gsize v;
+
+        shipped_world(worlds[n], &w);
+        office_points(&w, DEFAULT_ORBIT, points);
+
+        for (v = 0; v < G_N_ELEMENTS(view_sizes); v++) {
+            gint width = view_sizes[v][0];
+            gint height = view_sizes[v][1];
+            gfloat tx = 0.0f;
+            gfloat tz = 0.0f;
+            gfloat reach = 0.0f;
+            gfloat eye[3];
+            gfloat target[3];
+            gfloat rect[4];
+
+            g_assert_true(clawt_office_view_frame_3d(points, 12, DEFAULT_ORBIT,
+                                                     CLAWT_OFFICE_VIEW_3D_LIFT,
+                                                     CLAWT_OFFICE_VIEW_3D_FOVY,
+                                                     (gfloat)width / (gfloat)height,
+                                                     CLAWT_OFFICE_VIEW_3D_MARGIN, &tx, &tz,
+                                                     &reach));
+            frame_camera(tx, tz, reach, DEFAULT_ORBIT, eye, target);
+            assert_framed(points, 12, eye, target, width, height, FALSE);
+
+            board_on_screen(points, eye, target, width, height, rect);
+            g_test_message("%s at %dx%d: reach %.1f, board at %.0f,%.0f %.0fx%.0f",
+                           worlds[n], width, height, reach, rect[0], rect[1], rect[2],
+                           rect[3]);
+            g_assert_cmpfloat(rect[0], >=, 0.0f);
+            g_assert_cmpfloat(rect[1], >=, 0.0f);
+            g_assert_cmpfloat(rect[0] + rect[2], <=, (gfloat)width);
+            g_assert_cmpfloat(rect[1] + rect[3], <=, (gfloat)height);
+
+            /* big enough to be read as a board, not a speck */
+            g_assert_cmpfloat(rect[2], >=, (gfloat)width / 20.0f);
+
+            /* and the whole office costs at most a third more distance than the old camera */
+            g_assert_cmpfloat(reach, <=, MAX(w.map_w, w.map_h) / 2.0f * 1.2f * 1.34f);
+        }
+
+        /* the camera this replaced */
+        if (g_strcmp0(worlds[n], "modern-office") == 0) {
+            gfloat old = MAX(w.map_w, w.map_h) / 2.0f * 1.2f;
+            gfloat eye[3];
+            gfloat target[3];
+            gfloat rect[4];
+
+            frame_camera(w.map_w / 2.0f, w.map_h / 2.0f, old, DEFAULT_ORBIT, eye, target);
+            board_on_screen(points, eye, target, 1280, 720, rect);
+            g_assert_cmpfloat(rect[1] + rect[3], >, 720.0f);
+        }
+    }
+}
+
 gint
 main(gint argc, gchar *argv[])
 {
@@ -536,6 +875,10 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office-view/control/refused", test_control_refused);
     g_test_add_func("/office-view/control/dead-child-broken-pipe",
                     test_control_to_dead_child_is_an_error);
+    g_test_add_func("/office-view/3d/project", test_project_3d);
+    g_test_add_func("/office-view/3d/board-corners", test_board_corners_3d);
+    g_test_add_func("/office-view/3d/frame-any-bearing", test_frame_3d_any_bearing);
+    g_test_add_func("/office-view/3d/frame-shipped-worlds", test_frame_3d_shipped_worlds);
 
     return g_test_run();
 }

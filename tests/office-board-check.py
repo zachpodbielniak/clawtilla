@@ -18,6 +18,10 @@
 #   office-board-check.py panel REPORT.json
 #       the panel is inside the view, every text fits its column, and
 #       every window is listed or counted in "+N more"
+#   office-board-check.py inview REPORT.json MODE
+#       the view was drawn in MODE (2d or 3d), the board was drawn at
+#       some level of detail, and its zone -- in 3D the rectangle the
+#       board's corners cover -- and the board itself are inside the view
 
 import json
 import struct
@@ -191,14 +195,34 @@ def check_panel(report_path: str) -> None:
         fail(f"{report_path}: {panel['hidden']} rows hidden with no \"+N more\"")
 
 
+def check_inview(report_path: str, mode: str) -> None:
+    report: dict[str, Any] = json.load(open(report_path))
+    board: dict[str, Any] | None = report.get("board")
+    zone: list[float] | None = report.get("zone")
+    view: list[float] = [0.0, 0.0, float(report["view"][0]), float(report["view"][1])]
+
+    if report.get("mode") != mode:
+        fail(f"{report_path}: drawn in {report.get('mode')}, not {mode}")
+    if zone is None:
+        fail(f"{report_path}: the board's zone is not on screen")
+    if not inside(zone, view):
+        fail(f"{report_path}: the board's zone {zone} leaves the view {view}")
+    if board is None or board["detail"] == "none":
+        fail(f"{report_path}: no board was drawn")
+    if not inside(board["rect"], view):
+        fail(f"{report_path}: the board {board['rect']} leaves the view {view}")
+
+
 def main() -> None:
     if len(sys.argv) == 6 and sys.argv[1] == "board":
         check_board(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
     elif len(sys.argv) == 3 and sys.argv[1] == "panel":
         check_panel(sys.argv[2])
+    elif len(sys.argv) == 4 and sys.argv[1] == "inview":
+        check_inview(sys.argv[2], sys.argv[3])
     else:
         fail("usage: office-board-check.py board ON.png OFF.png ON.json DETAIL | "
-             "panel REPORT.json")
+             "panel REPORT.json | inview REPORT.json MODE")
 
 
 if __name__ == "__main__":

@@ -160,7 +160,7 @@ guint clawt_office_board_n_windows(ClawtOfficeBoard *self);
  * with `label`, `value`, `reset` (when known), `tone`, `kind` (`meter`
  * or `balance`) and `remaining` (when known, never for a balance).
  *
- * Returns: (transfer full): a new object
+ * Returns: (transfer full) (nullable): a new object, %NULL if @self is %NULL
  */
 JsonObject *clawt_office_board_to_json(ClawtOfficeBoard *self);
 

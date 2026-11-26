@@ -157,7 +157,7 @@ clawtilla-office --pack data/office/worlds/cozy-town \
 | ~--embed FD~ | stream frames over the socket =FD= for a host that does not link libregnum (the GTK client); see below |
 | ~--width~, ~--height~ | the size, 64 to 8192 pixels |
 | ~--focus ID~ | the 3D camera follows this participant, close up; a 2D map zoomed past the view is centred on them |
-| ~--zoom fit\|1x\|2x~ | how far the 2D map is zoomed (below); in 3D, the camera's starting distance |
+| ~--zoom fit\|1x\|2x~ | how far the 2D map is zoomed (below); in 3D, the camera's starting distance -- Fit frames the whole office (below) |
 | ~--ui-scale N~ | draw text, name plates and marks /N/ times larger (1 to 4), for a frame shown on a HiDPI screen; ~--ui-scale 2~ with a 4K ~--screenshot~ reads like 1080p |
 | ~--usage world\|corner\|off~ | where provider usage is shown (below): on the =usage_board= wall (the default), as a panel docked in the top right corner, or not at all.  In a window, *U* cycles the three |
 | ~--usage-open~ | open the usage details panel beside the board, as a click on it does -- for a screenshot of it |
@@ -167,6 +167,8 @@ clawtilla-office --pack data/office/worlds/cozy-town \
 *Which daemon, run bare.*  With no ~--socket~, ~--profile~ or ~--host~, the office opens on the daemon a running ~clawtilla-gtk~ or ~clawtilla-lrg~ is on right now, so it draws the fleet that is on screen beside it; with none running, on the one the clients were last switched to; then on the local socket.  It prints which and why on stderr.  The details -- the per-process ~current-connection-PID~ file, why it never holds a token, and where the token comes from instead -- are in [[file:clients.org::#office-follows-the-clients][clients.org]].
 
 In a window: Tab switches 2D and 3D, the arrow keys or a right-drag turn the 3D camera, the wheel zooms, Escape quits, and a click on somebody prints ~{"event":"open_agent","agent":"<id>"}~ on stdout.
+
+*The 3D camera at Fit frames the whole office.*  It looks down at a fixed pitch from its bearing round the office, and at *Fit* it stands as close as it can while every corner of the floor, the people at head height, and the usage board are in the view, with a small margin (=clawt_office_view_frame_3d()=).  It aims where that framing needs it, not at the middle of the map: seen at a slant, the near half of the floor fills more of the view than the far half, so a camera aimed at the middle had to stand twice as far back to show the near corner.  The framing is worked out again whenever the bearing or the view's shape changes, so turning the camera keeps the office in view; *1x*, *2x* and the wheel move in from there towards the same point, and ~--focus~ follows somebody close up as before.  Until this the camera aimed at the middle from a fixed distance and left the near third of the floor below the frame -- in modern-office, the usage board.
 
 The pack is fetched from the daemon file by file (~office.file~) into =$XDG_CACHE_HOME/clawtilla/office/<world>/=, so a renderer on a laptop draws the workstation's office.  The layout is read once a second and whenever ~office.presence~ says something changed; agent colours come from ~agent.list~.
 
@@ -276,6 +278,33 @@ Hovering the board opens the details panel beside it; a click pins it open; a se
 **** Tested
 
 =tests/test-office-board.c= holds the layout to its promises with a font of known widths: every item inside the zone at Fit, 1x, 2x and 4x for both shipped zones at device scales 1 and 2; no text wider than its column or smaller than the pixel font; every login counted when the wall is crowded; the panel inside views from 320 by 200 to 2560 by 1440, from a board at either edge, docked or not.  =tests/test-office-board-shots.sh= draws the fixture (=tests/fixtures/office/usage-board.json=: long login names, four windows on one login, a balance, a login with none) in both worlds at Fit and 2x with ~--pack~, and checks with each frame's ~--usage-report~ that the board stayed in its zone and the panel in the view, and with the pixels that the board changed nothing outside its zone.  The reference frames are in =tests/fixtures/office/board-shots/=.
+
+
+=tests/test-office-js.sh= runs the web client's =data/web/office.js= under =node= against stubbed browser globals (=tests/office-js-harness.js=): it feeds the script a scene with a board in the shape =clawt_office_board_to_json()= makes and a =usage_board= zone, and asserts that the script and its animation frames run without throwing and that the canvas text call receives every window's label.  It needs =node=; without it the test prints /SKIP: node not found/ and exits 77, which =make test= reports as skipped.  It does not test a real browser's layout, the details panel's DOM, or the 3D view; nothing automated draws the GTK Office page, so that is the manual check below.
+
+**** Checking the usage board by hand
+
+Needs a daemon with at least one provider login (so the board has something to show), and a pack with a =usage_board= zone (=modern-office= or =cozy-town=).  Do it after any change to the board, the Office page or ~office.js~.
+
+*GTK Office page:*
+
+1. Open the Office page.  The drawing appears with the board on the wall of the =usage_board= zone: gauges at *Fit*, rows at *2x*, each login's title or provider initial in the tone of its tightest window.  A daemon with no logins shows no board and no empty box.
+2. Switch *2D / 3D*.  In 3D the board is still drawn on the wall, in its zone, and does not float over the rest of the room.  For a world with no level, *3D* is greyed out with a tooltip.
+3. Set *Usage* to *In the corner*.  The wall is empty and the same panel is docked in the top right of the drawing.  Set it to *Off*: neither is drawn.  Set it back to *On the wall*.  Quit and reopen the window: the choice is remembered (~office_usage~ in ~appearance.yaml~).
+4. Hover the board: the details panel opens beside it, listing every login (title, status) and every window (label, meter, figure, reset).  A balance has no meter.  Click the board: the panel stays open when the pointer leaves.  Click a window row in the panel: nothing opens and nothing closes; the panel still shows the same rows.  Click elsewhere or press Escape: it closes, and that click does nothing else.
+5. Refresh: press *Refresh* on the Fleet page, which asks the daemon for a fresh read; return to the Office page.  The board's figures and /resets in .../ match the Fleet page's.  The Office page itself never asks for a fresh read.
+
+*Web office (=/office= on clawtilla-web):*
+
+1. Open the Office page.  The canvas draws the floor and people, and the board on the =usage_board= zone with each login's title and each window's label, meter and figure (rows when the zone is large enough on screen, else gauges, else one mark).  With no logins there is no board.
+2. Press the tilt button.  The floor leans back and eases in; the board stays on its wall, tilted with the floor, still readable.  Press it again to return to flat.
+3. Press the *Usage* button.  It cycles /on the wall/, /corner/ and /off/: on the wall draws the board; corner removes it and docks the panel top right; off hides both.  Reload: the choice is kept (=clawt-office-usage= in local storage).
+4. Hover the board: the details panel opens next to it, with every login and every window.  Click the board to pin it; click a window row: no navigation, panel unchanged.  Click elsewhere or press Escape: it closes.  A click on a person still opens their chat.
+5. Wait one poll (about 2.5 s) and press the Fleet page's refresh in another tab: the board's figures change after the next poll without a page reload.  Nothing on this page asks the provider for a fresh read.
+
+If a step shows something different, the board is wrong in that client; compare with =clawtilla-office --usage-file tests/fixtures/office/usage-board.json= for the reference drawing.
+
+*Seam for a GTK test.*  The board's content is decided without a display: =clawt_office_board_new()= (JSON to model) and =clawt_office_board_layout_world()= / =clawt_office_board_layout_panel()= (model to boxes and texts, with a measuring callback) are already covered by =tests/test-office-board.c=.  The GTK Office page itself hosts the =clawtilla-office= child and draws no board of its own, so the only GTK-specific code a test could reach is the *Usage* drop-down's wiring and the =office_usage= setting round trip.
 
 *** World adapters
 

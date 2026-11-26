@@ -391,6 +391,125 @@ gboolean clawt_office_view_control_parse(const gchar             *line,
  */
 void clawt_office_view_control_clear(ClawtOfficeViewControl *control);
 
+/* ── The 3D view's camera ──────────────────────────────────────────── */
+
+/**
+ * CLAWT_OFFICE_VIEW_3D_FOVY:
+ * The 3D view's vertical field of view, in degrees.
+ */
+#define CLAWT_OFFICE_VIEW_3D_FOVY (45.0f)
+
+/**
+ * CLAWT_OFFICE_VIEW_3D_LIFT:
+ * How high the 3D camera sits per unit of its horizontal distance from
+ * what it looks at: 0.95 looks down at a little under 45 degrees.
+ */
+#define CLAWT_OFFICE_VIEW_3D_LIFT (0.95f)
+
+/**
+ * CLAWT_OFFICE_VIEW_3D_MARGIN:
+ * The share of each half of the view the default 3D framing keeps clear
+ * at its edges, so nothing it frames is drawn against the border.
+ */
+#define CLAWT_OFFICE_VIEW_3D_MARGIN (0.04f)
+
+/**
+ * clawt_office_view_project_3d:
+ * @eye: (array fixed-size=3): the camera's position
+ * @target: (array fixed-size=3): what it looks at; up is +y
+ * @fovy: the vertical field of view, in degrees
+ * @view_width: the view, in pixels
+ * @view_height: likewise
+ * @point: (array fixed-size=3): a point in level units
+ * @x: (out): where @point lands, in pixels from the view's left
+ * @y: (out): and from its top
+ *
+ * A perspective projection with the arithmetic raylib's
+ * GetWorldToScreenEx() uses -- look-at from @eye to @target, up +y --
+ * without a GL context, so where something lands in the 3D view can be
+ * tested.  A point outside the view lands outside 0..@view_width or
+ * 0..@view_height.
+ *
+ * Returns: %TRUE when @point is in front of the camera; %FALSE, leaving
+ *   @x and @y alone, when it is level with or behind it
+ */
+gboolean clawt_office_view_project_3d(const gfloat  eye[3],
+                                      const gfloat  target[3],
+                                      gfloat        fovy,
+                                      gfloat        view_width,
+                                      gfloat        view_height,
+                                      const gfloat  point[3],
+                                      gfloat       *x,
+                                      gfloat       *y);
+
+/**
+ * clawt_office_view_board_corners_3d:
+ * @anchor: (array fixed-size=3): the usage board's 3D anchor, on the floor
+ * @width: the board's width, in level units
+ * @height: its height
+ * @forward_x: the camera's view direction, x
+ * @forward_z: and z; only the direction across the floor matters
+ * @corners: (out caller-allocates) (array fixed-size=12): four x,y,z
+ *   corners: bottom left, bottom right, top left, top right
+ *
+ * The 3D usage board: a screen standing upright on @anchor, a little off
+ * the floor, @width wide and turned square to the camera.  The renderer
+ * draws it over these corners and the default framing keeps them in
+ * view, so both use this.
+ *
+ * Returns: %FALSE when the camera looks straight down and the board has
+ *   no direction to face
+ */
+gboolean clawt_office_view_board_corners_3d(const gfloat anchor[3],
+                                            gfloat       width,
+                                            gfloat       height,
+                                            gfloat       forward_x,
+                                            gfloat       forward_z,
+                                            gfloat       corners[12]);
+
+/**
+ * clawt_office_view_frame_3d:
+ * @points: (array length=n_points) (element-type gfloat): x,y,z triples,
+ *   so 3 * @n_points floats, in level units
+ * @n_points: how many points
+ * @orbit: the camera's bearing round its target, radians: it stands at
+ *   (cos @orbit, sin @orbit) from the target across the floor
+ * @lift: its height per unit of distance across the floor, as
+ *   %CLAWT_OFFICE_VIEW_3D_LIFT
+ * @fovy: the vertical field of view, degrees
+ * @aspect: the view's width over its height
+ * @margin: the share of each half of the view to keep clear, 0 to 0.5
+ * @target_x: (out): where on the floor to aim, x
+ * @target_z: (out): and z
+ * @reach: (out): the camera's distance across the floor from that point;
+ *   it stands at (@target_x + cos @orbit * @reach, @lift * @reach,
+ *   @target_z + sin @orbit * @reach)
+ *
+ * The 3D view's Fit: the closest camera at this bearing and pitch that
+ * has every point in view, inside @margin.
+ *
+ * Aiming at the middle of the map and backing off does not do it well.
+ * Seen at a slant, the near half of a floor fills more of the view than
+ * the far half, so a camera aimed at the middle has to stand twice as
+ * far back before the near corner comes into view, and everything is
+ * drawn at half the size.  So the aim moves as well: towards the camera,
+ * and across, until the points are framed by the nearest camera that can
+ * frame them.  The distance needed is the largest of a few linear
+ * functions of the aim, so the search for the best aim always finds it.
+ *
+ * Returns: %FALSE, leaving the outputs alone, when there are no points
+ */
+gboolean clawt_office_view_frame_3d(const gfloat *points,
+                                    guint         n_points,
+                                    gfloat        orbit,
+                                    gfloat        lift,
+                                    gfloat        fovy,
+                                    gfloat        aspect,
+                                    gfloat        margin,
+                                    gfloat       *target_x,
+                                    gfloat       *target_z,
+                                    gfloat       *reach);
+
 G_END_DECLS
 
 #endif /* CLAWT_OFFICE_VIEW_H */

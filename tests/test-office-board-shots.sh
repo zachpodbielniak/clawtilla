@@ -20,12 +20,19 @@
 #     nowhere outside the zone -- the first board spilled over walls,
 #     servers and people;
 #   * the details panel, opened, is inside the view and lists or counts
-#     every window.
+#     every window;
+#   * in 3D, with the default camera, at the default window size and at
+#     4K with --ui-scale 2, the board is drawn and both the board and the
+#     rectangle its corners cover are inside the view (VENTURE #24: in
+#     modern-office it stood below the frame), and the board still changes
+#     the frame only inside that rectangle.
 #
 # The frames with the board are kept as references in
 # tests/fixtures/office/board-shots/ (CLAWT_BOARD_SHOTS_UPDATE=1 rewrites
 # them); they are compared by the checks above, not byte for byte, since
 # a software renderer's pixels differ between Mesa versions.
+# CLAWT_BOARD_SHOTS_OUT=DIR copies every frame and report there, to look
+# at.
 #
 # Needs an OFFICE=1 build, Xvfb and python3; skipped, saying why,
 # without any of them.
@@ -133,7 +140,35 @@ do
 		"${RUN}/${world}-panel.json"
 	shot "${world}-corner" "${world}" --usage corner || continue
 	check "${world}: the corner panel stays in view" panel "${RUN}/${world}-corner.json"
+
+	# 3D at the default camera: the window's size, and 4K at --ui-scale 2
+	for size in default 4k
+	do
+		case "${size}" in
+			default) args=(--3d) ;;
+			*)       args=(--3d --width 3840 --height 2160 --ui-scale 2) ;;
+		esac
+		name="${world}-3d-${size}"
+		shot "${name}" "${world}" "${args[@]}" || continue
+		shot "${name}-off" "${world}" "${args[@]}" --usage off || continue
+		check "${name}: the board is in the default 3D view" inview "${RUN}/${name}.json" 3d
+		# a gauge per login: at the default framing the board is ~130-470 px
+		# wide (the window to 4K), room for gauges and not for rows
+		check "${name}: the board stays in its rectangle (gauges)" board \
+			"${RUN}/${name}.png" "${RUN}/${name}-off.png" "${RUN}/${name}.json" gauges
+		if [[ "${CLAWT_BOARD_SHOTS_UPDATE:-0}" == "1" ]]
+		then
+			mkdir -p "${FIXTURES}/board-shots"
+			cp "${RUN}/${name}.png" "${FIXTURES}/board-shots/${name}.png"
+		fi
+	done
 done
+
+if [[ -n "${CLAWT_BOARD_SHOTS_OUT:-}" ]]
+then
+	mkdir -p "${CLAWT_BOARD_SHOTS_OUT}"
+	cp "${RUN}"/*.png "${RUN}"/*.json "${CLAWT_BOARD_SHOTS_OUT}/"
+fi
 
 if [[ "${fail}" -ne 0 ]]
 then

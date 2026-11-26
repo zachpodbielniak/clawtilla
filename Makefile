@@ -1273,7 +1273,9 @@ test: $(TEST_BINARIES) test-plugins plugins
 	if [ $$ran -eq 0 ]; then echo "No tests found in $(TESTDIR)/"; fi; \
 	for s in $(wildcard $(TESTDIR)/test-*.sh); do \
 		echo "  --> $$(basename $$s)"; \
-		CLAWT_BUILD_DIR=$(OUTDIR) sh "$$s" || fail=1; \
+		CLAWT_BUILD_DIR=$(OUTDIR) sh "$$s"; rc=$$?; \
+		if [ $$rc -eq 77 ]; then echo "  --> $$(basename $$s) skipped (exit 77)"; \
+		elif [ $$rc -ne 0 ]; then fail=1; fi; \
 	done; \
 	if [ $$fail -ne 0 ]; then echo "TESTS FAILED"; exit 1; fi; \
 	sh $(TOOLSDIR)/clawt-test-floor.sh $$ran || exit 1; \

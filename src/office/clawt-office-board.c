@@ -186,12 +186,16 @@ clawt_office_board_n_windows(ClawtOfficeBoard *self)
 JsonObject *
 clawt_office_board_to_json(ClawtOfficeBoard *self)
 {
-    JsonObject *board = json_object_new();
-    JsonArray *logins = json_array_new();
+    JsonObject *board;
+    JsonArray *logins;
     guint i;
     guint w;
 
-    g_return_val_if_fail(self != NULL, board);
+    /* checked before anything is allocated: a refusal must not leak */
+    g_return_val_if_fail(self != NULL, NULL);
+
+    board = json_object_new();
+    logins = json_array_new();
 
     for (i = 0; i < self->logins->len; i++) {
         ClawtOfficeBoardLogin *login = g_ptr_array_index(self->logins, i);
