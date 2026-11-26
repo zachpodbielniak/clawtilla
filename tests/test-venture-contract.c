@@ -155,6 +155,7 @@ test_the_mirror_reads_what_venture_answers(void)
     expect("ticket-team-list", "records.title", "string");
     expect("ticket-team-list", "records.description", "string");
     expect("ticket-team-list", "records.organization_id", "int");
+    expect("team-membership-list", "records.team_id", "int");
     expect("team-membership-list", "records.user_id", "int");
     expect("team-membership-list", "records.active", "bool");
 

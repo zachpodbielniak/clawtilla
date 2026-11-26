@@ -79,7 +79,7 @@ typedef struct {
 
     /*
      * Teams.  Todo tickets with a team and nobody assigned, as VENTURE
-     * lists them (team_id__in=...&assignee=, paged by id__gt), in the
+     * lists them (team_id=N&assignee=, paged by id__gt), in the
      * default organization and the second; the team memberships, as
      * the fleet's users' are asked for; and each agent's standing, as the daemon would
      * answer it: its open tasks, and whether it leads a clawtilla team.
@@ -110,9 +110,9 @@ deliver(gpointer data)
 }
 
 /*
- * A list as VENTURE pages it: the records of @rows (an array, or an
- * object with `records`) whose id is above the request's id__gt, the
- * first ten.
+ * A list as VENTURE answers it: the records of @rows (an array, or an
+ * object with `records`) in the request's team_id, above its id__gt and
+ * not in its id__not_in, the first ten.
  */
 static gchar *
 fake_page(const gchar *rows, const gchar *path)
@@ -123,7 +123,19 @@ fake_page(const gchar *rows, const gchar *path)
     JsonArray *all;
     const gchar *gt = strstr(path, "id__gt=");
     gint64 after = (gt != NULL) ? g_ascii_strtoll(gt + 7, NULL, 10) : 0;
+    const gchar *in_team = strstr(path, "team_id=");
+    gint64 team = (in_team != NULL) ? g_ascii_strtoll(in_team + 8, NULL, 10)
+                                    : 0;
+    const gchar *not_in = strstr(path, "id__not_in=");
+    g_auto(GStrv) skip = NULL;
     guint i;
+
+    if (not_in != NULL) {
+        g_autofree gchar *list = g_strndup(not_in + 11,
+                                           strcspn(not_in + 11, "&"));
+
+        skip = g_strsplit(list, ",", -1);
+    }
 
     g_assert_nonnull(node);
     all = JSON_NODE_HOLDS_ARRAY(node) ? json_node_get_array(node)
@@ -133,9 +145,17 @@ fake_page(const gchar *rows, const gchar *path)
                 json_array_get_length(page) < 10; i++) {
         JsonObject *t = json_array_get_object_element(all, i);
 
-        if (json_object_get_int_member(t, "id") > after)
-            json_array_add_element(page,
-                json_node_copy(json_array_get_element(all, i)));
+        g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT,
+            json_object_get_int_member(t, "id"));
+
+        if (json_object_get_int_member(t, "id") <= after ||
+            (team > 0 && json_object_get_int_member_with_default(
+                             t, "team_id", 0) != team) ||
+            (skip != NULL && g_strv_contains((const gchar *const *)skip, id)))
+            continue;
+
+        json_array_add_element(page,
+            json_node_copy(json_array_get_element(all, i)));
     }
 
     json_node_take_array(out, page);
@@ -268,7 +288,7 @@ fake_send(ClawtVentureMirror     *mirror,
         const gchar *rows = in_second ? fixture->comments_2 : fixture->comments;
 
         answer->body = g_strdup(rows != NULL ? rows : "[]");
-    } else if (g_str_has_prefix(path, "/api/v1/ticket?team_id__in=")) {
+    } else if (g_str_has_prefix(path, "/api/v1/ticket?team_id=")) {
         const gchar *rows = in_second ? fixture->team_tickets_2
                                       : fixture->team_tickets;
 
@@ -2129,7 +2149,7 @@ test_team_ticket_goes_to_the_lead(Fixture *fixture, gconstpointer data)
     g_assert_cmpuint(count_sent(fixture, "GET",
         "/api/v1/team_membership?user_id__in="), ==, 1);
     g_assert_cmpuint(count_sent(fixture, "GET",
-        "/api/v1/ticket?team_id__in=7&assignee=&external_ref=&status=todo"
+        "/api/v1/ticket?team_id=7&assignee=&external_ref=&status=todo"
         "&kind=internal&id__gt=0&order=id&limit=10"), ==, 1);
 }
 
@@ -2257,7 +2277,7 @@ test_team_in_the_second_organization(Fixture *fixture, gconstpointer data)
     g_assert_true(inbound_has(fixture, "intake 60 scout At home"));
     g_assert_cmpuint(fixture->inbound->len, ==, 1);
     g_assert_nonnull(find_sent(fixture, "GET",
-        "/api/v1/ticket?team_id__in=7&assignee=&external_ref=&status=todo"
+        "/api/v1/ticket?team_id=7&assignee=&external_ref=&status=todo"
         "&kind=internal&id__gt=0&order=id&limit=10&organization_id=2"));
     members = NULL;
     {
@@ -2313,7 +2333,7 @@ test_team_ticket_nobody_can_take(Fixture *fixture, gconstpointer data)
     /* the memberships were read; no team has an agent, so no tickets */
     g_assert_nonnull(find_sent(fixture, "GET",
                                "/api/v1/team_membership?user_id__in="));
-    g_assert_null(find_sent(fixture, "GET", "/api/v1/ticket?team_id__in="));
+    g_assert_null(find_sent(fixture, "GET", "/api/v1/ticket?team_id="));
     g_assert_cmpuint(fixture->inbound->len, ==, 0);
     g_assert_null(find_sent(fixture, "PATCH", "/api/v1/ticket/52"));
 }
@@ -2375,19 +2395,18 @@ test_team_tickets_are_paged(Fixture *fixture, gconstpointer data)
     poll(fixture);
     g_assert_cmpuint(fixture->inbound->len, ==, 12);
     g_assert_nonnull(find_sent(fixture, "GET",
-        "/api/v1/ticket?team_id__in=7&assignee=&external_ref=&status=todo"
+        "/api/v1/ticket?team_id=7&assignee=&external_ref=&status=todo"
         "&kind=internal&id__gt=409&order=id&limit=10"));
 }
 
 /*
- * Tickets already linked to tasks are not read again from the start of
- * the list on every pass: a hundred whose assignee never got written
- * would otherwise fill every page ahead of newer ones.  The next pass
- * starts after the last of them -- and only that far: the ones the cap
- * held back are read again.
+ * Tickets already linked to tasks are left out of the list once seen
+ * there: their assignee may never be written, and a hundred of them
+ * would otherwise fill every page ahead of the rest.  The list is still
+ * read from the start each pass.
  */
 static void
-test_team_linked_tickets_are_not_reread(Fixture *fixture, gconstpointer data)
+test_team_linked_tickets_are_left_out(Fixture *fixture, gconstpointer data)
 {
     g_autoptr(GString) rows = g_string_new("[");
     guint i;
@@ -2410,20 +2429,91 @@ test_team_linked_tickets_are_not_reread(Fixture *fixture, gconstpointer data)
     poll(fixture);
     g_assert_cmpuint(fixture->inbound->len, ==, 10);
 
-    /*
-     * VENTURE still lists all twelve.  The next pass reads from the start
-     * and finds the ten linked; the one after that starts after #509.
-     */
+    /* VENTURE still lists all twelve: seen linked, then left out */
     poll(fixture);
     poll(fixture);
     g_assert_cmpuint(count_sent(fixture, "GET",
-        "/api/v1/ticket?team_id__in=7&assignee=&external_ref=&status=todo"
-        "&kind=internal&id__gt=0&"), ==, 2);
-    /* page two of the first two passes, and the start of the third */
-    g_assert_cmpuint(count_sent(fixture, "GET",
-        "/api/v1/ticket?team_id__in=7&assignee=&external_ref=&status=todo"
-        "&kind=internal&id__gt=509&"), ==, 3);
+        "/api/v1/ticket?team_id=7&assignee=&external_ref=&status=todo"
+        "&kind=internal&id__gt=0&"), ==, 3);
+    g_assert_nonnull(find_sent(fixture, "GET",
+        "/api/v1/ticket?team_id=7&assignee=&external_ref=&status=todo"
+        "&kind=internal&id__gt=0&id__not_in=500,501,502,503,504,505,506,"
+        "507,508,509&order=id&limit=10"));
     g_assert_cmpuint(fixture->inbound->len, ==, 10);
+}
+
+/*
+ * An old ticket given to the team after newer ones were taken -- a low
+ * id behind them -- is still read and taken.
+ */
+static void
+test_team_ticket_given_late_is_taken(Fixture *fixture, gconstpointer data)
+{
+    (void)data;
+    team_setup(fixture);
+    set_open(fixture, "lead", 100);
+    set_open(fixture, "scout", 100);
+    g_free(fixture->team_tickets);
+    fixture->team_tickets = g_strdup(
+        "[{\"id\":500,\"version\":1,\"title\":\"N0\",\"status\":\"todo\","
+        "\"team_id\":7,\"assignee\":null},"
+        " {\"id\":501,\"version\":1,\"title\":\"N1\",\"status\":\"todo\","
+        "\"team_id\":7,\"assignee\":null}]");
+
+    poll(fixture);
+    poll(fixture);
+    g_assert_cmpuint(fixture->inbound->len, ==, 2);
+
+    /* a person triages an old ticket into the team; 500 and 501 linger */
+    g_free(fixture->team_tickets);
+    fixture->team_tickets = g_strdup(
+        "[{\"id\":120,\"version\":4,\"title\":\"Old one\",\"status\":\"todo\","
+        "\"team_id\":7,\"assignee\":null},"
+        " {\"id\":500,\"version\":1,\"title\":\"N0\",\"status\":\"todo\","
+        "\"team_id\":7,\"assignee\":null},"
+        " {\"id\":501,\"version\":1,\"title\":\"N1\",\"status\":\"todo\","
+        "\"team_id\":7,\"assignee\":null}]");
+    poll(fixture);
+
+    g_assert_true(inbound_has(fixture, "intake 120 helper Old one"));
+    g_assert_cmpuint(fixture->inbound->len, ==, 3);
+}
+
+/*
+ * One team's backlog held back by its agent's cap does not hold back
+ * another team: each team is read on its own, and a capped one stops.
+ */
+static void
+test_team_capped_does_not_hold_another(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(GString) rows = g_string_new("[");
+    guint i;
+
+    (void)data;
+    team_setup(fixture);
+    g_free(fixture->team_members);
+    fixture->team_members = g_strdup(
+        "[{\"id\":5,\"team_id\":7,\"user_id\":13,\"active\":true},"
+        " {\"id\":6,\"team_id\":9,\"user_id\":12,\"active\":true}]");
+
+    /* team 7: far more than the pages a pass reads; team 9: one, newer */
+    for (i = 0; i < 120; i++)
+        g_string_append_printf(rows,
+            "{\"id\":%u,\"version\":1,\"title\":\"B%u\",\"status\":\"todo\","
+            "\"team_id\":7,\"assignee\":null},", 1 + i, i);
+    g_string_append(rows,
+        "{\"id\":1000,\"version\":1,\"title\":\"Other team\","
+        "\"status\":\"todo\",\"team_id\":9,\"assignee\":null}]");
+    g_free(fixture->team_tickets);
+    fixture->team_tickets = g_string_free(g_steal_pointer(&rows), FALSE);
+
+    poll(fixture);
+
+    g_assert_true(inbound_has(fixture, "intake 1000 scout Other team"));
+    g_assert_cmpuint(fixture->inbound->len, ==, 11);
+    /* team 7 stopped at its cap: two pages, not ten */
+    g_assert_cmpuint(count_sent(fixture, "GET", "/api/v1/ticket?team_id=7&"),
+                     ==, 2);
 }
 
 #define ADD(name, fn) \
@@ -2510,8 +2600,11 @@ main(int argc, char *argv[])
     ADD("team-ticket-somebody-has", test_team_ticket_somebody_has);
     ADD("team-given-to-its-own-team", test_team_given_to_its_own_team);
     ADD("team-tickets-are-paged", test_team_tickets_are_paged);
-    ADD("team-linked-tickets-are-not-reread",
-        test_team_linked_tickets_are_not_reread);
+    ADD("team-linked-tickets-are-left-out",
+        test_team_linked_tickets_are_left_out);
+    ADD("team-ticket-given-late-is-taken", test_team_ticket_given_late_is_taken);
+    ADD("team-capped-does-not-hold-another",
+        test_team_capped_does_not_hold_another);
     g_test_add_func("/venture-mirror/finds-pull-requests",
                     test_finds_pull_requests);
 
