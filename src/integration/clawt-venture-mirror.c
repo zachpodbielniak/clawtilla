@@ -3111,12 +3111,12 @@ poll_team_next(PollJob *poll)
 /*
  * Taken in by the agent chosen.  An agent that put the ticket in the
  * team with its own VENTURE account handed it over, as an assignment
- * would be -- and that holds when it is the one chosen to take it: work
- * an agent gives its own team is still agent work, from that agent,
- * under the loop limits, exactly as when it assigns a ticket to its own
- * VENTURE user.  Were it the operator's, a lead (who always wins the
- * choice) could mint operator tasks for itself, each starting a fresh
- * chain with a budget of its own.
+ * would be -- and that holds when it is the one chosen to take it: it is
+ * passed on as from that agent, exactly as when it assigns a ticket to
+ * its own VENTURE user, and the daemon refuses a hand-over to oneself.
+ * Were it the operator's, a lead (who always wins the choice) could mint
+ * operator tasks for itself, each starting a fresh chain with a budget
+ * of its own.
  */
 static void
 on_poll_team_who(PollJob *poll, guint status, const gchar *body)

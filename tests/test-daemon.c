@@ -5548,6 +5548,50 @@ test_venture_team_standing(void)
 }
 
 /*
+ * A VENTURE ticket an agent handed to itself -- its own team, where a
+ * lead is always the one chosen, or its own user -- is neither the
+ * operator's work nor a delegation.  The operator's would start a fresh
+ * chain with its own budget; a delegation would be a message from the
+ * agent to itself, which the router delivers to nobody, leaving the task
+ * pending for ever.  It is made, linked and failed with the reason.  A
+ * hand-over from another agent is still that agent's delegation.
+ */
+static void
+test_venture_intake_handed_to_itself(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *own = NULL;
+    g_autofree gchar *passed = NULL;
+    ClawtTask *task;
+
+    fixture_setup(&fixture,
+                  "teams:\n  - id: research\n"
+                  "agents:\n"
+                  "  - id: boss\n    team: research\n    team_role: lead\n"
+                  "  - id: worker\n    team: research\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    own = clawt_daemon_venture_mirror_intake(fixture.daemon, "boss", 51,
+        "Passed on", "d", "https://venture.test/ticket/51", "boss");
+    g_assert_nonnull(own);
+    task = clawt_task_manager_get(fixture.daemon->tasks, own);
+    g_assert_nonnull(task);
+    g_assert_cmpstr(clawt_task_get_origin(task), ==, "boss");
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_FAILED);
+    g_assert_nonnull(strstr(clawt_task_get_reason(task), "to itself"));
+
+    passed = clawt_daemon_venture_mirror_intake(fixture.daemon, "boss", 52,
+        "From the worker", "d", "https://venture.test/ticket/52", "worker");
+    g_assert_nonnull(passed);
+    task = clawt_task_manager_get(fixture.daemon->tasks, passed);
+    g_assert_nonnull(task);
+    g_assert_cmpstr(clawt_task_get_origin(task), ==, "worker");
+    g_assert_cmpint(clawt_task_get_state(task), !=, CLAWT_TASK_FAILED);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * team.list counts the running agents itself. Three clients counting the
  * same thing is three chances to disagree about what "active" means.
  */
@@ -12893,6 +12937,8 @@ main(int argc, char *argv[])
                     test_an_agent_reports_its_team);
     g_test_add_func("/daemon/venture-team-standing",
                     test_venture_team_standing);
+    g_test_add_func("/daemon/venture-intake-handed-to-itself",
+                    test_venture_intake_handed_to_itself);
     g_test_add_func("/daemon/team-list-counts-and-warns",
                     test_team_list_counts_and_warns);
     g_test_add_func("/daemon/team-edits-guarded",

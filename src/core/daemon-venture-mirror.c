@@ -293,12 +293,12 @@ inbound_comment(gpointer data, const gchar *task_id, const gchar *who,
  * from the operator -- whose work it is to have let people assign the
  * fleet work there -- with the ticket's text fenced.
  */
-static gchar *
-inbound_intake(gpointer data, const gchar *agent_id, gint64 ticket,
-               const gchar *title, const gchar *description, const gchar *url,
-               const gchar *from_agent)
+gchar *
+clawt_daemon_venture_mirror_intake(ClawtDaemon *self, const gchar *agent_id,
+                                   gint64 ticket, const gchar *title,
+                                   const gchar *description, const gchar *url,
+                                   const gchar *from_agent)
 {
-    ClawtDaemon *self = data;
     g_autoptr(GError) error = NULL;
     g_autofree gchar *body = NULL;
     g_autofree gchar *named = NULL;
@@ -335,6 +335,32 @@ inbound_intake(gpointer data, const gchar *agent_id, gint64 ticket,
     clawt_task_set_title(task, named);
     clawt_task_manager_save(self->tasks, task, NULL);
 
+    /*
+     * Handed to itself: it put the ticket in its own team and was the one
+     * chosen to take it (a lead always is), or assigned it to its own
+     * VENTURE user.  Not the operator's -- that would start a fresh chain
+     * with a budget of its own, so an agent could mint operator work for
+     * itself -- and not a message either: the router never delivers a
+     * sender's message to the sender, so it would queue to nobody and the
+     * task would sit pending for ever.  Failed, saying why, and linked
+     * like any refused hand-over, so the next pass leaves it alone and
+     * the ticket shows it.
+     */
+    if (from_agent != NULL && g_strcmp0(from_agent, agent_id) == 0) {
+        g_autofree gchar *reason = g_strdup_printf(
+            "%s gave this ticket to itself through VENTURE -- to its own "
+            "team, where it was the one chosen to take it, or to its own "
+            "user. Work an agent hands itself is neither a delegation nor "
+            "the operator's, so it was not taken in; give the ticket to "
+            "somebody else, or do the work in the turn that filed it.",
+            agent_id);
+
+        clawt_task_manager_fail(self->tasks, clawt_task_get_id(task), reason);
+        g_message("venture mirror: ticket #%" G_GINT64_FORMAT ": %s", ticket,
+                  reason);
+        return g_strdup(clawt_task_get_id(task));
+    }
+
     if (from_agent != NULL) {
         g_autofree gchar *guidance = clawt_task_assignment_guidance_for(task);
         g_autofree gchar *sent = g_strconcat(clawt_task_get_prompt(task),
@@ -363,6 +389,15 @@ inbound_intake(gpointer data, const gchar *agent_id, gint64 ticket,
     g_message("venture mirror: ticket #%" G_GINT64_FORMAT " became task %s "
               "for %s", ticket, clawt_task_get_id(task), agent_id);
     return g_strdup(clawt_task_get_id(task));
+}
+
+static gchar *
+inbound_intake(gpointer data, const gchar *agent_id, gint64 ticket,
+               const gchar *title, const gchar *description, const gchar *url,
+               const gchar *from_agent)
+{
+    return clawt_daemon_venture_mirror_intake(data, agent_id, ticket, title,
+                                              description, url, from_agent);
 }
 
 /*

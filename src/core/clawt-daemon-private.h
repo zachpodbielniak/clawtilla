@@ -1295,6 +1295,20 @@ guint     clawt_daemon_venture_mirror_retry(ClawtDaemon *self,
 gint      clawt_daemon_venture_mirror_standing(ClawtDaemon *self,
                                                const gchar *agent_id,
                                                gboolean    *leads);
+/*
+ * A VENTURE ticket taken in as a task for @agent_id, from @from_agent
+ * (an agent that handed it over with its own account) or, NULL, from
+ * the operator.  Handed to itself, the task is made and failed with the
+ * reason.  Returns the task's id (transfer full), or NULL if none was
+ * made.
+ */
+gchar    *clawt_daemon_venture_mirror_intake(ClawtDaemon *self,
+                                             const gchar *agent_id,
+                                             gint64       ticket,
+                                             const gchar *title,
+                                             const gchar *description,
+                                             const gchar *url,
+                                             const gchar *from_agent);
 
 /*
  * Grok bots, in daemon-grok.c.
