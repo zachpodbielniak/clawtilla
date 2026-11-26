@@ -1515,6 +1515,82 @@ test_a_refused_set_writes_nothing(void)
 }
 
 /*
+ * Counts the max_sessions warnings, and any other warning, so a test can
+ * say how many times one was said.  g_test_expect_message() cannot: with
+ * an expectation pending, every other message -- a daemon start says
+ * several -- is fatal.
+ */
+typedef struct {
+    guint max_sessions;
+    guint other;
+} WarningCount;
+
+static void
+count_warnings(const gchar *domain, GLogLevelFlags level,
+               const gchar *message, gpointer user_data)
+{
+    WarningCount *count = user_data;
+
+    (void)domain;
+    (void)level;
+
+    if (strstr(message, "session.max_sessions") != NULL)
+        count->max_sessions++;
+    else
+        count->other++;
+}
+
+/*
+ * A value the render reports and replaces is reported once per set.
+ *
+ * `agent set` renders the agent twice before it saves -- as it was, and
+ * with the change -- only to ask whether this change is the one that
+ * breaks it, and then renders the fleet for real.  The two probes used
+ * to report too, so a bad session.max_sessions said the same warning
+ * three times for every set on that agent.
+ */
+static void
+test_a_set_reports_a_replaced_value_once(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) reply = NULL;
+    WarningCount count = { 0, 0 };
+    GLogLevelFlags was_fatal;
+    guint handler;
+
+    was_fatal = g_log_set_always_fatal(G_LOG_FATAL_MASK);
+    handler = g_log_set_handler("Clawtilla",
+                                G_LOG_LEVEL_WARNING | G_LOG_FLAG_FATAL |
+                                G_LOG_FLAG_RECURSION,
+                                count_warnings, &count);
+
+    fixture_setup(&fixture,
+        "agents:\n"
+        "  - id: chief\n"
+        "    session:\n"
+        "      max_sessions: 0\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    /* the start says it too; only the set is counted */
+    g_assert_cmpuint(count.max_sessions, >=, 1);
+    count.max_sessions = 0;
+    count.other = 0;
+
+    reply = request(&fixture, "agent.set",
+                    "{\"agent\": \"chief\", \"key\": \"model.model\","
+                    " \"value\": \"opus\"}");
+
+    g_log_remove_handler("Clawtilla", handler);
+    g_log_set_always_fatal(was_fatal);
+
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+    g_assert_cmpuint(count.max_sessions, ==, 1);
+    g_assert_cmpuint(count.other, ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * ...but a value that renders is still written, even on an agent whose
  * config already does not.
  *
@@ -13076,6 +13152,8 @@ main(int argc, char *argv[])
                     test_a_refused_set_writes_nothing);
     g_test_add_func("/daemon/agent-set/good-set-on-a-broken-agent",
                     test_a_good_set_survives_an_agent_that_already_fails_to_render);
+    g_test_add_func("/daemon/agent-set/replaced-value-reported-once",
+                    test_a_set_reports_a_replaced_value_once);
 
     g_test_add_func("/daemon/agents-talking-stays-between-them",
                     test_agents_talking_stays_out_of_the_users_chat);

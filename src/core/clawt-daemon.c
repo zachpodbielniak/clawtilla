@@ -4723,18 +4723,20 @@ clawt_daemon_agent_renders(ClawtDaemon      *self,
                            GError          **error)
 {
     g_autofree gchar *state_dir = NULL;
-    g_autofree gchar *rendered = NULL;
 
     g_return_val_if_fail(self != NULL, FALSE);
     g_return_val_if_fail(agent != NULL, FALSE);
 
+    /*
+     * Quietly: the agent is rendered for real afterwards, and that is the
+     * render that reports a value it replaces -- once, not once a probe.
+     */
     state_dir = clawt_config_agent_state_dir(self->config,
                                              clawt_agent_config_get_id(agent));
-    rendered = clawt_config_render_agent(self->config, agent,
-                                         self->link_socket, state_dir,
-                                         error);
 
-    return rendered != NULL;
+    return clawt_config_render_agent_check(self->config, agent,
+                                           self->link_socket, state_dir,
+                                           error);
 }
 
 void

@@ -78,6 +78,30 @@ gchar *clawt_config_render_agent(ClawtConfig       *config,
                                  GError           **error);
 
 /**
+ * clawt_config_render_agent_check:
+ * @config: the fleet configuration
+ * @agent: the agent to render
+ * @link_socket: the daemon's agent socket, which this agent dials
+ * @state_dir: the agent's state directory
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Asks whether @agent would render, as clawt_config_render_agent() would
+ * answer, and throws the YAML away.
+ *
+ * It is quiet: a value the render replaces rather than refuses (a bad
+ * `session.timeout_minutes`, say) is not logged, because this render is
+ * never used -- the real one that follows says it once.  A refusal is
+ * still returned in @error.
+ *
+ * Returns: %TRUE when the agent renders
+ */
+gboolean clawt_config_render_agent_check(ClawtConfig       *config,
+                                         ClawtAgentConfig  *agent,
+                                         const gchar       *link_socket,
+                                         const gchar       *state_dir,
+                                         GError           **error);
+
+/**
  * clawt_config_write_agent_files:
  * @config: the fleet configuration
  * @agent: the agent

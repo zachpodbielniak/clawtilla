@@ -995,12 +995,21 @@ render_computer_directive(ClawtAgentConfig *for_agent)
     return NULL;
 }
 
-gchar *
-clawt_config_render_agent(ClawtConfig       *config,
-                          ClawtAgentConfig  *agent,
-                          const gchar       *link_socket,
-                          const gchar       *state_dir,
-                          GError           **error)
+/*
+ * The render itself.  @report says whether a value the render replaces
+ * rather than refuses -- session.routing_mode's sender-room in a group
+ * room, a bad session.timeout_minutes or session.max_sessions -- is
+ * logged.  Only a render somebody is going to use reports: one made to
+ * ask whether the agent would render at all (agent set asks twice, then
+ * renders for real) would otherwise say the same warning three times.
+ */
+static gchar *
+render_agent(ClawtConfig       *config,
+             ClawtAgentConfig  *agent,
+             const gchar       *link_socket,
+             const gchar       *state_dir,
+             gboolean           report,
+             GError           **error)
 {
     g_autoptr(GString) out = NULL;
     g_autofree gchar *workspace = NULL;
@@ -1349,13 +1358,15 @@ clawt_config_render_agent(ClawtConfig       *config,
             if (g_strcmp0(mode, "sender-room") == 0 &&
                 clawt_config_agent_is_in_a_group_room(
                     config, clawt_agent_config_get_id(agent))) {
-                g_warning("agent %s: session.routing_mode: sender-room "
-                          "cannot be used by a member of a room with more "
-                          "than two members -- it gives one agent a "
-                          "session per speaker in the same room, which "
-                          "the daemon's per-room turn state cannot tell "
-                          "apart. Using room instead; set it explicitly "
-                          "to silence this.", clawt_agent_config_get_id(agent));
+                if (report)
+                    g_warning("agent %s: session.routing_mode: sender-room "
+                              "cannot be used by a member of a room with more "
+                              "than two members -- it gives one agent a "
+                              "session per speaker in the same room, which "
+                              "the daemon's per-room turn state cannot tell "
+                              "apart. Using room instead; set it explicitly "
+                              "to silence this.",
+                              clawt_agent_config_get_id(agent));
                 mode = "room";
             }
 
@@ -1423,14 +1434,15 @@ clawt_config_render_agent(ClawtConfig       *config,
                 agent, "session.timeout_minutes");
 
             if (timeout_minutes != -1 && timeout_minutes <= 0) {
-                g_warning("agent %s: session.timeout_minutes: %"
-                          G_GINT64_FORMAT " is not a positive number of "
-                          "minutes or -1 (never expire), which "
-                          "libreclaw's session manager refuses. Using "
-                          "%d instead; fix it in the config to silence "
-                          "this.", clawt_agent_config_get_id(agent),
-                          timeout_minutes,
-                          CLAWT_SESSION_TIMEOUT_MINUTES_DEFAULT);
+                if (report)
+                    g_warning("agent %s: session.timeout_minutes: %"
+                              G_GINT64_FORMAT " is not a positive number of "
+                              "minutes or -1 (never expire), which "
+                              "libreclaw's session manager refuses. Using "
+                              "%d instead; fix it in the config to silence "
+                              "this.", clawt_agent_config_get_id(agent),
+                              timeout_minutes,
+                              CLAWT_SESSION_TIMEOUT_MINUTES_DEFAULT);
                 timeout_minutes = CLAWT_SESSION_TIMEOUT_MINUTES_DEFAULT;
             }
 
@@ -1454,12 +1466,13 @@ clawt_config_render_agent(ClawtConfig       *config,
                 agent, "session.max_sessions");
 
             if (max_sessions <= 0 || max_sessions > G_MAXINT) {
-                g_warning("agent %s: session.max_sessions: %"
-                          G_GINT64_FORMAT " is not a positive number of "
-                          "sessions libreclaw's session manager can take. "
-                          "Using %d instead; fix it in the config to "
-                          "silence this.", clawt_agent_config_get_id(agent),
-                          max_sessions, CLAWT_SESSION_MAX_SESSIONS_DEFAULT);
+                if (report)
+                    g_warning("agent %s: session.max_sessions: %"
+                              G_GINT64_FORMAT " is not a positive number of "
+                              "sessions libreclaw's session manager can take. "
+                              "Using %d instead; fix it in the config to "
+                              "silence this.", clawt_agent_config_get_id(agent),
+                              max_sessions, CLAWT_SESSION_MAX_SESSIONS_DEFAULT);
                 max_sessions = CLAWT_SESSION_MAX_SESSIONS_DEFAULT;
             }
 
@@ -1645,6 +1658,31 @@ clawt_config_render_agent(ClawtConfig       *config,
     }
 
     return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+gchar *
+clawt_config_render_agent(ClawtConfig       *config,
+                          ClawtAgentConfig  *agent,
+                          const gchar       *link_socket,
+                          const gchar       *state_dir,
+                          GError           **error)
+{
+    return render_agent(config, agent, link_socket, state_dir, TRUE, error);
+}
+
+gboolean
+clawt_config_render_agent_check(ClawtConfig       *config,
+                                ClawtAgentConfig  *agent,
+                                const gchar       *link_socket,
+                                const gchar       *state_dir,
+                                GError           **error)
+{
+    g_autofree gchar *rendered = NULL;
+
+    rendered = render_agent(config, agent, link_socket, state_dir, FALSE,
+                            error);
+
+    return rendered != NULL;
 }
 
 gboolean
