@@ -1638,6 +1638,25 @@ test_the_reviewer_can_read_what_it_reviews(void)
 	g_assert_cmpstr(is_error ? reply : NULL, ==, NULL);
 	g_assert_nonnull(strstr(reply, "ported"));
 
+	/* ... as does the assignee, whose own result it is ... */
+	g_clear_pointer(&reply, g_free);
+	reply = call_as(&fixture, "dev", "clawtilla_task_result", args,
+	                &is_error);
+	g_assert_cmpstr(is_error ? reply : NULL, ==, NULL);
+	g_assert_nonnull(strstr(reply, "ported"));
+
+	/*
+	 * ... but the delegator, who may read the task, is not handed a
+	 * result that may yet be sent back: "no result yet", as before
+	 * review could be read at all, until it is accepted.
+	 */
+	g_clear_pointer(&reply, g_free);
+	reply = call_as(&fixture, "chief", "clawtilla_task_result", args,
+	                &is_error);
+	g_assert_cmpstr(is_error ? reply : NULL, ==, NULL);
+	g_assert_nonnull(strstr(reply, "no result yet"));
+	g_assert_null(strstr(reply, "ported"));
+
 	/* ... and nobody else outside it does: the project's reviewer is not it */
 	g_clear_pointer(&reply, g_free);
 	reply = call_as(&fixture, "lead", "clawtilla_task_status", args,
@@ -1658,6 +1677,15 @@ test_the_reviewer_can_read_what_it_reviews(void)
 	                &is_error);
 	g_assert_cmpstr(is_error ? reply : NULL, ==, NULL);
 	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
+
+	/* accepted: now the delegator has it */
+	g_clear_pointer(&reply, g_free);
+	g_clear_pointer(&args, g_free);
+	args = g_strdup_printf("{\"task_id\":\"%s\"}", id);
+	reply = call_as(&fixture, "chief", "clawtilla_task_result", args,
+	                &is_error);
+	g_assert_cmpstr(is_error ? reply : NULL, ==, NULL);
+	g_assert_nonnull(strstr(reply, "ported"));
 
 	daemon_teardown(&fixture);
 }

@@ -7326,8 +7326,17 @@ tool_task_result(ClawtMcpTools *self, const gchar *agent_id,
     /*
      * In review the result exists and is the very thing being judged:
      * "no result yet" sent a reviewer that looked for it away empty.
+     *
+     * For the reviewer, and the assignee whose own result it is -- not
+     * for everybody who may read the task.  The delegator in particular
+     * keeps being told there is no result yet, as before review could be
+     * read at all: a result still in review may be sent back, and one
+     * acted on before it is accepted makes the review pointless.  The
+     * delegator hears when it is accepted.
      */
-    if (clawt_task_get_state(task) == CLAWT_TASK_REVIEW && result != NULL) {
+    if (clawt_task_get_state(task) == CLAWT_TASK_REVIEW && result != NULL &&
+        (g_strcmp0(agent_id, clawt_task_get_reviewer(task)) == 0 ||
+         g_strcmp0(agent_id, clawt_task_get_assignee(task)) == 0)) {
         const gchar *reviewer = clawt_task_get_reviewer(task);
 
         return g_strdup_printf(
