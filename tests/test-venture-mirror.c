@@ -2379,9 +2379,10 @@ test_team_ticket_somebody_has(Fixture *fixture, gconstpointer data)
 }
 
 /*
- * An agent that gave the ticket to its own team and was chosen to take
- * it: still a hand-over from that agent, held to the loop limits -- never
- * operator work, which would start a fresh chain with its own budget.
+ * A lead that gave the ticket to its own team is left out of the choice:
+ * another member takes it, as the lead's delegation, held to the loop
+ * limits.  Without that the lead -- who always wins -- would take back
+ * every ticket it handed its team.
  */
 static void
 test_team_given_to_its_own_team(Fixture *fixture, gconstpointer data)
@@ -2395,8 +2396,49 @@ test_team_given_to_its_own_team(Fixture *fixture, gconstpointer data)
     fixture->leads = g_strdup("scout");   /* scout set the team, and leads */
 
     poll(fixture);
+    /* lead and helper remain, neither leads, both idle: helper by id */
+    g_assert_true(inbound_has(fixture, "intake 51 helper Passed on from scout"));
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+}
+
+/*
+ * ...and when it is the team's only agent member, nobody else can take
+ * it: it stays with the one that filed it, as a hand-over to itself,
+ * which the daemon makes, links and fails with the reason
+ * (/daemon/venture-intake-handed-to-itself).
+ */
+static void
+test_team_given_to_its_own_team_alone(Fixture *fixture, gconstpointer data)
+{
+    (void)data;
+    team_setup(fixture);
+    g_free(fixture->team_members);
+    fixture->team_members = g_strdup(
+        "[{\"id\":1,\"team_id\":7,\"user_id\":40,\"active\":true},"
+        " {\"id\":2,\"team_id\":7,\"user_id\":12,\"active\":true}]");
+    g_free(fixture->team_tickets);
+    fixture->team_tickets = g_strdup(
+        "[{\"id\":51,\"version\":1,\"title\":\"Passed on\","
+        "\"status\":\"todo\",\"team_id\":7,\"assignee\":\"\"}]");
+    fixture->leads = g_strdup("scout");
+
+    poll(fixture);
     g_assert_true(inbound_has(fixture, "intake 51 scout Passed on from scout"));
-    g_assert_false(inbound_has(fixture, "intake 51 scout Passed on"));
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+}
+
+/* A person gave the ticket to the team: operator work, and the lead takes it. */
+static void
+test_team_given_by_a_person_goes_to_the_lead(Fixture *fixture,
+                                             gconstpointer data)
+{
+    (void)data;
+    team_setup(fixture);
+    fixture->leads = g_strdup("scout");
+
+    poll(fixture);
+    /* ticket 50's timeline: alice made it; no agent handed it over */
+    g_assert_true(inbound_has(fixture, "intake 50 scout Team work"));
     g_assert_cmpuint(fixture->inbound->len, ==, 1);
 }
 
@@ -2646,6 +2688,10 @@ main(int argc, char *argv[])
     ADD("team-ticket-nobody-can-take", test_team_ticket_nobody_can_take);
     ADD("team-ticket-somebody-has", test_team_ticket_somebody_has);
     ADD("team-given-to-its-own-team", test_team_given_to_its_own_team);
+    ADD("team-given-to-its-own-team-alone",
+        test_team_given_to_its_own_team_alone);
+    ADD("team-given-by-a-person-goes-to-the-lead",
+        test_team_given_by_a_person_goes_to_the_lead);
     ADD("team-tickets-are-paged", test_team_tickets_are_paged);
     ADD("team-linked-tickets-are-left-out",
         test_team_linked_tickets_are_left_out);

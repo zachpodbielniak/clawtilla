@@ -336,9 +336,9 @@ clawt_daemon_venture_mirror_intake(ClawtDaemon *self, const gchar *agent_id,
     clawt_task_manager_save(self->tasks, task, NULL);
 
     /*
-     * Handed to itself: it put the ticket in its own team and was the one
-     * chosen to take it (a lead always is), or assigned it to its own
-     * VENTURE user.  Not the operator's -- that would start a fresh chain
+     * Handed to itself: it put the ticket in a team where it is the only
+     * agent member (the mirror leaves the filer out of the choice while
+     * anybody else can take it), or assigned it to its own VENTURE user.  Not the operator's -- that would start a fresh chain
      * with a budget of its own, so an agent could mint operator work for
      * itself -- and not a message either: the router never delivers a
      * sender's message to the sender, so it would queue to nobody and the
@@ -348,9 +348,9 @@ clawt_daemon_venture_mirror_intake(ClawtDaemon *self, const gchar *agent_id,
      */
     if (from_agent != NULL && g_strcmp0(from_agent, agent_id) == 0) {
         g_autofree gchar *reason = g_strdup_printf(
-            "%s gave this ticket to itself through VENTURE -- to its own "
-            "team, where it was the one chosen to take it, or to its own "
-            "user. Work an agent hands itself is neither a delegation nor "
+            "%s gave this ticket to itself through VENTURE -- to a team "
+            "in which it is the only agent member, or to its own user. "
+            "Work an agent hands itself is neither a delegation nor "
             "the operator's, so it was not taken in; give the ticket to "
             "somebody else, or do the work in the turn that filed it.",
             agent_id);

@@ -2360,11 +2360,11 @@ on_poll_comments(PollJob *poll, guint status, const gchar *body)
 }
 
 /*
- * Whether @agent_id may take one more ticket this hour.  The count is the
- * agent's, whichever organization each ticket came from.
+ * The tickets @agent_id took in the last hour, older ones dropped.  The
+ * count is the agent's, whichever organization each ticket came from.
  */
-static gboolean
-intake_allowed(ClawtVentureMirror *self, const gchar *agent_id)
+static GArray *
+intake_times_for(ClawtVentureMirror *self, const gchar *agent_id)
 {
     GArray *times = g_hash_table_lookup(self->intake_times, agent_id);
     gint64 now = now_seconds();
@@ -2381,6 +2381,24 @@ intake_allowed(ClawtVentureMirror *self, const gchar *agent_id)
         else
             i++;
     }
+
+    return times;
+}
+
+/* Whether @agent_id has room for one more ticket this hour; nothing spent. */
+static gboolean
+intake_has_room(ClawtVentureMirror *self, const gchar *agent_id)
+{
+    return intake_times_for(self, agent_id)->len <
+           CLAWT_VENTURE_MIRROR_INTAKE_PER_HOUR;
+}
+
+/* Whether @agent_id may take one more ticket this hour, spending it if so. */
+static gboolean
+intake_allowed(ClawtVentureMirror *self, const gchar *agent_id)
+{
+    GArray *times = intake_times_for(self, agent_id);
+    gint64 now = now_seconds();
 
     if (times->len >= CLAWT_VENTURE_MIRROR_INTAKE_PER_HOUR)
         return FALSE;
@@ -2645,9 +2663,12 @@ on_poll_intake(PollJob *poll, guint status, const gchar *body)
  * A ticket given to a VENTURE team and to nobody in it goes to one of
  * the team's members that is a fleet agent: one that leads a clawtilla
  * team if any does, else the one with the fewest open tasks, a tie going
- * to the first by agent id.  The members are the team's own memberships
- * in VENTURE -- there is no second list in clawtilla's configuration --
- * and an agent is one when its account's whoami named that user.
+ * to the first by agent id.  An agent that put the ticket in the team
+ * with its own account is left out of that choice: it handed the ticket
+ * over, and the member chosen takes it as that agent's delegation.  The
+ * members are the team's own memberships in VENTURE -- there is no
+ * second list in clawtilla's configuration -- and an agent is one when
+ * its account's whoami named that user.
  *
  * Each organization is read in two steps: the fleet's users' team
  * memberships, which say both which teams have an agent in them and who
@@ -2710,9 +2731,14 @@ account_for_user(ClawtVentureMirror *self, const gchar *base, gint64 user_id)
     return NULL;
 }
 
-/* Which of @agents takes the ticket, by the rule above; NULL for none. */
+/*
+ * Which of @agents takes the ticket, by the rule above, leaving out
+ * @exclude (the agent that put the ticket in the team, or %NULL); NULL
+ * for none.
+ */
 static const gchar *
-team_choose(ClawtVentureMirror *self, GPtrArray *agents)
+team_choose(ClawtVentureMirror *self, GPtrArray *agents,
+            const gchar *exclude)
 {
     const gchar *best = NULL;
     gboolean best_leads = FALSE;
@@ -2722,7 +2748,12 @@ team_choose(ClawtVentureMirror *self, GPtrArray *agents)
     for (i = 0; i < agents->len; i++) {
         const gchar *agent = g_ptr_array_index(agents, i);
         gboolean leads = FALSE;
-        gint open = self->inbound.standing(self->inbound_data, agent, &leads);
+        gint open;
+
+        if (exclude != NULL && g_strcmp0(agent, exclude) == 0)
+            continue;
+
+        open = self->inbound.standing(self->inbound_data, agent, &leads);
 
         if (open < 0)
             continue;
@@ -3041,9 +3072,10 @@ on_poll_team(PollJob *poll, guint status, const gchar *body)
 }
 
 /*
- * The current team's next queued ticket: who takes it, then who handed
- * it over.  The queue empty, the next page -- a full page means there
- * may be more, up to a bound -- and then the next team.
+ * The current team's next queued ticket: who the rule picks, then -- from
+ * its timeline -- who handed it over, which may move it to another
+ * member.  The queue empty, the next page -- a full page means there may
+ * be more, up to a bound -- and then the next team.
  */
 static void
 poll_team_next(PollJob *poll)
@@ -3068,7 +3100,7 @@ poll_team_next(PollJob *poll)
 
     t = json_node_get_object(g_ptr_array_index(poll->team, 0));
     ticket = json_object_get_int_member_with_default(t, "id", 0);
-    agent = (agents != NULL) ? team_choose(self, agents) : NULL;
+    agent = (agents != NULL) ? team_choose(self, agents, NULL) : NULL;
 
     /* Every ticket of a team has the same members: nobody for one is
      * nobody for the rest of them, this pass. */
@@ -3083,12 +3115,12 @@ poll_team_next(PollJob *poll)
      * The one chosen at its cap: this ticket, and the team's others, wait
      * for the next hour -- the next would choose the same agent.  They
      * are not passed on: ten an hour bounds what one agent is handed, and
-     * spilling the rest onto the team would make it ten per member.  A
-     * slot is spent even when the daemon then refuses the ticket, which
-     * keeps a ticket that is refused every time to ten tries an hour.
-     * The next team is read regardless.
+     * spilling the rest onto the team would make it ten per member.  The
+     * next team is read regardless.  Only looked at here, not spent: the
+     * timeline may yet move the ticket to another member, and the slot is
+     * spent on whoever takes it (on_poll_team_who).
      */
-    if (!intake_allowed(self, agent)) {
+    if (!intake_has_room(self, agent)) {
         g_message("venture mirror: %s already took %d tickets this hour; "
                   "team %" G_GINT64_FORMAT "'s tickets, from #%"
                   G_GINT64_FORMAT ", wait for the next", agent,
@@ -3097,7 +3129,7 @@ poll_team_next(PollJob *poll)
         return;
     }
 
-    /* its timeline as the taker, who as a member can always read it */
+    /* its timeline as the one chosen, who as a member can always read it */
     poll->team_agent = agent;
     path = g_strdup_printf("/api/v1/activity/ticket/%" G_GINT64_FORMAT, ticket);
     poll->step = POLL_TEAM_WHO;
@@ -3109,28 +3141,60 @@ poll_team_next(PollJob *poll)
 }
 
 /*
- * Taken in by the agent chosen.  An agent that put the ticket in the
- * team with its own VENTURE account handed it over, as an assignment
- * would be -- and that holds when it is the one chosen to take it: it is
- * passed on as from that agent, exactly as when it assigns a ticket to
- * its own VENTURE user, and the daemon refuses a hand-over to oneself.
- * Were it the operator's, a lead (who always wins the choice) could mint
- * operator tasks for itself, each starting a fresh chain with a budget
- * of its own.
+ * Taken in.  An agent that put the ticket in the team with its own
+ * VENTURE account handed it over, as an assignment would be: the task is
+ * from that agent, held to the loop limits.  And it is not a candidate
+ * for its own hand-over -- a lead would otherwise always take back what
+ * it gave its team -- so the ticket goes to another member, by the same
+ * rule.  Only when the team has no other agent member does it stay with
+ * the one that filed it, which the daemon then fails, saying why: work
+ * an agent hands itself is neither a delegation (the router delivers a
+ * sender's message to nobody) nor the operator's (a fresh chain with a
+ * budget of its own, which an agent could mint for itself).  A ticket a
+ * person gave the team is the operator's work, and the lead may take it.
  */
 static void
 on_poll_team_who(PollJob *poll, guint status, const gchar *body)
 {
+    ClawtVentureMirror *self = poll->mirror;
     g_autoptr(JsonNode) ticket = g_ptr_array_steal_index(poll->team, 0);
     JsonObject *t = json_node_get_object(ticket);
-    Account *account = g_hash_table_lookup(poll->mirror->accounts,
-                                           poll->team_agent);
-    g_autofree gchar *team = g_strdup_printf("%" G_GINT64_FORMAT,
-        json_object_get_int_member_with_default(t, "team_id", 0));
+    gint64 team_id = json_object_get_int_member_with_default(t, "team_id", 0);
+    g_autofree gchar *team = g_strdup_printf("%" G_GINT64_FORMAT, team_id);
+    g_autofree gchar *key = team_key(poll, team_id);
+    GPtrArray *agents = g_hash_table_lookup(poll->teams, key);
     const gchar *from = (status == 200)
         ? assigning_agent(poll, body, "team_id", team) : NULL;
+    const gchar *taker = poll->team_agent;
+    Account *account;
 
     poll->team_agent = NULL;
+
+    /* the filer left out; nobody else left, and it stays the filer's */
+    if (from != NULL && agents != NULL) {
+        const gchar *other = team_choose(self, agents, from);
+
+        if (other != NULL)
+            taker = other;
+    }
+
+    /*
+     * The slot spent on whoever takes it -- even when the daemon then
+     * refuses the ticket, which keeps a ticket refused every time to ten
+     * tries an hour.  Moved to another member at its cap, the ticket and
+     * the team's others wait for the next hour, as for the one chosen.
+     */
+    if (!intake_allowed(self, taker)) {
+        g_message("venture mirror: %s already took %d tickets this hour; "
+                  "team %" G_GINT64_FORMAT "'s tickets, from #%"
+                  G_GINT64_FORMAT ", wait for the next", taker,
+                  CLAWT_VENTURE_MIRROR_INTAKE_PER_HOUR, team_id,
+                  json_object_get_int_member_with_default(t, "id", 0));
+        poll_team_done(poll);
+        return;
+    }
+
+    account = g_hash_table_lookup(self->accounts, taker);
 
     if (account != NULL)
         intake_one(poll, account, t, from, TRUE);
