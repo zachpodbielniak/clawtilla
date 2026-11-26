@@ -46,6 +46,9 @@ G_BEGIN_DECLS
  * @capacity: how many fit, 0 for unlimited
  * @anchors_2d: (element-type gdouble): x,y pairs in map pixels
  * @anchors_3d: (element-type gdouble): x,y,z triples in level units
+ * @has_rect_2d: whether the pack gave the zone's area on the map
+ * @rect_2d: x, y, width and height in map pixels, when @has_rect_2d --
+ *   what a zone that draws something (the `usage_board`) is fitted to
  *
  * One place in a world.
  */
@@ -57,6 +60,8 @@ typedef struct {
     guint    capacity;
     GArray  *anchors_2d;
     GArray  *anchors_3d;
+    gboolean has_rect_2d;
+    gdouble  rect_2d[4];
 } ClawtOfficeZone;
 
 /**

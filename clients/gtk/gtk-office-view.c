@@ -41,6 +41,16 @@
  * switch shows that.  The mode and zoom are remembered in
  * appearance.yaml (office_view, office_zoom); whom to follow is not,
  * because it names an agent of one fleet.
+ *
+ * Provider usage.  The renderer draws it -- on the wall the pack tags
+ * usage_board, or as a panel docked in the view's corner, or not at
+ * all -- and the Usage drop-down says which, in the same control line,
+ * remembered as office_usage.  The corner panel is the renderer's own
+ * rather than a GTK popover, so the three clients that draw the office
+ * show one panel laid out by one piece of code.  A click on the board
+ * opens its details; Escape over the drawing is sent to the renderer to
+ * close them, and the pointer leaving the drawing is sent too, so a
+ * panel opened by hovering does not stay open after it.
  */
 
 #include "clawt-window-private.h"
@@ -192,6 +202,7 @@ struct _OfficeView {
     GtkWidget         *mode_2d;     /* GtkToggleButton, grouped with mode_3d */
     GtkWidget         *mode_3d;
     GtkWidget         *zoom_buttons[3];  /* Fit, 1x, 2x, by ClawtOfficeZoom */
+    GtkWidget         *usage;       /* GtkDropDown: on the wall, in the corner, off */
     GtkWidget         *follow;      /* GtkDropDown: nobody, then the roster */
     GtkStringList     *follow_names;
     GPtrArray         *follow_ids;  /* parallel to follow_names; "" for nobody */
@@ -214,6 +225,7 @@ struct _OfficeView {
     gboolean           prefs_read;  /* mode and zoom taken from appearance.yaml */
     ClawtOfficeViewMode mode;
     ClawtOfficeZoom    zoom;
+    ClawtOfficeUsagePlacement usage_placement;
     gchar             *focus;       /* whom the camera follows, or NULL */
     gboolean           has_3d;      /* the child's last word on it; TRUE until told */
 
@@ -522,6 +534,45 @@ on_motion(GtkEventControllerMotion *controller, gdouble x, gdouble y,
                &error);
 }
 
+/*
+ * The pointer left the drawing: say so, as a position outside the
+ * frame, or a panel opened by hovering the usage board would stay open
+ * under a pointer that is no longer there.
+ */
+static void
+on_leave(GtkEventControllerMotion *controller, gpointer user_data)
+{
+    OfficeView *view = running_view(user_data);
+    g_autoptr(GError) error = NULL;
+
+    (void)controller;
+    if (view == NULL)
+        return;
+    input_sent(view, clawt_office_frames_send_pointer_move(view->frames, -1.0f, -1.0f, &error),
+               &error);
+}
+
+/* raylib's KEY_ESCAPE, the one key the renderer listens for */
+#define FRAME_KEY_ESCAPE (256)
+
+/* Escape over the drawing closes the usage panel; other keys go on to the window. */
+static gboolean
+on_key_pressed(GtkEventControllerKey *controller, guint keyval, guint keycode,
+               GdkModifierType state, gpointer user_data)
+{
+    OfficeView *view = running_view(user_data);
+    g_autoptr(GError) error = NULL;
+
+    (void)controller;
+    (void)keycode;
+    (void)state;
+    if (view == NULL || keyval != GDK_KEY_Escape)
+        return FALSE;
+    input_sent(view, clawt_office_frames_send_key(view->frames, FRAME_KEY_ESCAPE, TRUE, 0, 0,
+                                                  &error), &error);
+    return TRUE;
+}
+
 /* GDK numbers buttons 1 left, 2 middle, 3 right; raylib 0, 2, 1. */
 static gint
 frame_button(guint gdk_button)
@@ -555,7 +606,12 @@ static void
 on_pressed(GtkGestureClick *gesture, gint n_press, gdouble x, gdouble y,
            gpointer user_data)
 {
+    OfficeView *view = running_view(user_data);
+
     (void)n_press;
+    /* the drawing takes the keyboard on a click, so Escape reaches it */
+    if (view != NULL)
+        gtk_widget_grab_focus(view->picture);
     send_click(gesture, x, y, TRUE, user_data);
 }
 
@@ -793,7 +849,8 @@ send_control(OfficeView *view)
     scale = gtk_widget_get_scale_factor(view->sizer);
     write = g_new0(ControlWrite, 1);
     write->ticket = ticket_new(view);
-    write->line = clawt_office_view_control_line(view->mode, view->focus, view->zoom, scale);
+    write->line = clawt_office_view_control_line(view->mode, view->focus, view->zoom, scale,
+                                                 view->usage_placement);
     view->writing = TRUE;
 
     g_main_context_push_thread_default(view->context);
@@ -1285,6 +1342,7 @@ reconsider(OfficeView *view)
         view->prefs_read = TRUE;
         view->mode = clawt_appearance_get_office_mode(self->appearance);
         view->zoom = clawt_appearance_get_office_zoom(self->appearance);
+        view->usage_placement = clawt_appearance_get_office_usage(self->appearance);
         sync_toolbar(view);
     }
     /* an office turned off takes its popped-out window with it */
@@ -1370,6 +1428,8 @@ sync_toolbar(OfficeView *view)
         ? "Draw the 3D level, from an orbiting camera"
         : "This world has no 3D level; it is drawn in 2D");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(view->zoom_buttons[view->zoom]), TRUE);
+    if (view->usage != NULL)
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(view->usage), (guint)view->usage_placement);
     view->syncing = FALSE;
 }
 
@@ -1383,10 +1443,12 @@ save_prefs(OfficeView *view)
     if (self == NULL || self->appearance == NULL)
         return;
     if (clawt_appearance_get_office_mode(self->appearance) == view->mode &&
-        clawt_appearance_get_office_zoom(self->appearance) == view->zoom)
+        clawt_appearance_get_office_zoom(self->appearance) == view->zoom &&
+        clawt_appearance_get_office_usage(self->appearance) == view->usage_placement)
         return;
     clawt_appearance_set_office_mode(self->appearance, view->mode);
     clawt_appearance_set_office_zoom(self->appearance, view->zoom);
+    clawt_appearance_set_office_usage(self->appearance, view->usage_placement);
     if (!clawt_appearance_save(self->appearance, NULL, &error))
         g_warning("could not save the office view: %s", error->message);
 }
@@ -1483,6 +1545,22 @@ on_zoom_toggled(GtkToggleButton *button, gpointer user_data)
         send_control(view);
         return;
     }
+}
+
+/* Where provider usage goes: the drop-down's order is ClawtOfficeUsagePlacement's. */
+static void
+on_usage_selected(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    OfficeView *view = self->office_view;
+    guint selected = gtk_drop_down_get_selected(GTK_DROP_DOWN(object));
+
+    (void)pspec;
+    if (view == NULL || view->syncing || selected > (guint)CLAWT_OFFICE_USAGE_OFF)
+        return;
+    view->usage_placement = (ClawtOfficeUsagePlacement)selected;
+    save_prefs(view);
+    send_control(view);
 }
 
 static void
@@ -1662,6 +1740,25 @@ build_toolbar(OfficeView *view)
                          view->window);
     gtk_box_append(GTK_BOX(bar), zooms);
 
+    /* where provider usage is drawn; in ClawtOfficeUsagePlacement's order */
+    {
+        static const gchar *const places[] = { "On the wall", "In the corner", "Off", NULL };
+        GtkWidget *usage_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget *usage_label = gtk_label_new("Usage");
+
+        view->usage = gtk_drop_down_new_from_strings(places);
+        gtk_widget_set_tooltip_text(view->usage,
+                                    "Where provider usage is shown: on the usage board in "
+                                    "the office (hover or click it for details), as a "
+                                    "panel in the corner, or not at all");
+        g_signal_connect(view->usage, "notify::selected", G_CALLBACK(on_usage_selected),
+                         view->window);
+        gtk_widget_add_css_class(usage_label, "dim-label");
+        gtk_box_append(GTK_BOX(usage_box), usage_label);
+        gtk_box_append(GTK_BOX(usage_box), view->usage);
+        gtk_box_append(GTK_BOX(bar), usage_box);
+    }
+
     /* whom the camera follows: nobody, then the roster, filled from each snapshot */
     view->follow_names = gtk_string_list_new(NULL);
     gtk_string_list_append(view->follow_names, "Nobody");
@@ -1725,6 +1822,7 @@ clawt_gtk_office_view_attach(ClawtWindow *self)
     OfficeView *view;
     GtkWidget *box;
     GtkEventController *motion;
+    GtkEventController *key;
     GtkGesture *click;
     GtkEventController *scroll;
 
@@ -1790,7 +1888,13 @@ clawt_gtk_office_view_attach(ClawtWindow *self)
 
     motion = gtk_event_controller_motion_new();
     g_signal_connect(motion, "motion", G_CALLBACK(on_motion), self);
+    g_signal_connect(motion, "leave", G_CALLBACK(on_leave), self);
     gtk_widget_add_controller(view->picture, motion);
+
+    gtk_widget_set_focusable(view->picture, TRUE);
+    key = gtk_event_controller_key_new();
+    g_signal_connect(key, "key-pressed", G_CALLBACK(on_key_pressed), self);
+    gtk_widget_add_controller(view->picture, key);
 
     click = gtk_gesture_click_new();
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);

@@ -12,15 +12,19 @@
  *   - a window of its own;
  *   - --screenshot FILE: draw offscreen until the office has loaded and
  *     settled, write a PNG, exit -- for the custodial team's previews,
- *     the docs and tests;
+ *     the docs and tests.  With --pack it needs no daemon at all: the
+ *     pack is read from disk and the layout and usage from files, which
+ *     is how tests/test-office-board-shots.sh draws a fixed fixture;
  *   - --embed FD: draw offscreen and stream the frames over the socket
  *     FD with libregnum's frame protocol, taking input back, for the GTK
  *     client, which never links libregnum.  A click on somebody is
  *     written to stdout as {"event":"open_agent","agent":"<id>"}, and
  *     what is drawn as {"event":"view","mode":"2d","has_3d":true}
  *     whenever that changes.  Lines on stdin say how to draw:
- *     {"mode":"3d","focus":"chief","zoom":"fit","ui_scale":2}
+ *     {"mode":"3d","focus":"chief","zoom":"fit","ui_scale":2,"usage":"world"}
  *     (clawt_office_view_control_line()), so switching needs no restart.
+ *     A click on the usage board pins its details panel open, and the
+ *     Escape key (sent over the frame socket) closes it.
  *
  * It is an ordinary client of the daemon: --socket, --profile or --host,
  * as every other client takes them.  Run bare, it opens on the daemon a
@@ -65,6 +69,12 @@ static gchar   **opt_adapter_dirs = NULL;
 static gchar    *opt_focus = NULL;
 static gchar    *opt_zoom = NULL;
 static gint      opt_ui_scale = 1;
+static gchar    *opt_usage = NULL;
+static gboolean  opt_usage_open = FALSE;
+static gchar    *opt_usage_report = NULL;
+static gchar    *opt_pack = NULL;
+static gchar    *opt_layout_file = NULL;
+static gchar    *opt_usage_file = NULL;
 static gboolean  opt_version = FALSE;
 static gboolean  opt_license = FALSE;
 
@@ -101,6 +111,22 @@ static GOptionEntry entries[] = {
       "Zoom the 2D map: fit (default), 1x or 2x", "ZOOM" },
     { "ui-scale", 0, 0, G_OPTION_ARG_INT, &opt_ui_scale,
       "Draw text this many times larger, for a HiDPI screen (1-4, default 1)", "N" },
+    { "usage", 'u', 0, G_OPTION_ARG_STRING, &opt_usage,
+      "Provider usage: world (on the usage_board wall, the default), corner or off",
+      "WHERE" },
+    { "usage-open", 0, 0, G_OPTION_ARG_NONE, &opt_usage_open,
+      "Open the usage details panel beside the board, as a click does", NULL },
+    { "usage-report", 0, 0, G_OPTION_ARG_FILENAME, &opt_usage_report,
+      "With --screenshot: also write where the usage board and panel were drawn, "
+      "as JSON", "FILE" },
+    { "pack", 0, 0, G_OPTION_ARG_FILENAME, &opt_pack,
+      "Draw the world pack in this directory, with no daemon (needs --layout-file)",
+      "DIR" },
+    { "layout-file", 0, 0, G_OPTION_ARG_FILENAME, &opt_layout_file,
+      "With --pack: who sits where, as office.layout answers it", "FILE" },
+    { "usage-file", 0, 0, G_OPTION_ARG_FILENAME, &opt_usage_file,
+      "With --pack: provider usage, as usage.providers answers it; its \"now\" is "
+      "the board's clock", "FILE" },
     { "adapter-dir", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_adapter_dirs,
       "Look for world adapter modules here first; repeatable", "DIR" },
     { "version", 'V', 0, G_OPTION_ARG_NONE, &opt_version, "Print the version", NULL },
@@ -116,11 +142,14 @@ static const gchar description_text[] =
     "\n"
     "In a window: Tab switches 2D and 3D, the arrow keys or a right-drag\n"
     "turn the 3D camera, the wheel zooms, a click on somebody prints them,\n"
-    "Escape quits.\n"
+    "U cycles where provider usage is shown (world, corner, off), a click\n"
+    "on the usage board opens its details, Escape closes them -- and quits\n"
+    "when nothing is open.\n"
     "\n"
     "Embedded (--embed FD), a drag turns the 3D view or moves a zoomed 2D\n"
     "map, and a line of JSON on stdin switches the view without a\n"
-    "restart: {\"mode\":\"3d\",\"focus\":\"chief\",\"zoom\":\"fit\",\"ui_scale\":2}.\n"
+    "restart: {\"mode\":\"3d\",\"focus\":\"chief\",\"zoom\":\"fit\",\"ui_scale\":2,\n"
+    "\"usage\":\"world\"}.\n"
     "Each member is optional.\n"
     "\n"
     "Which daemon: --host, --profile or --socket when given; otherwise\n"
@@ -139,7 +168,11 @@ static const gchar description_text[] =
     "  clawtilla-office --adapter-dir ~/src/my-world/build\n"
     "  clawtilla-office --3d --focus chief\n"
     "  clawtilla-office --zoom 2x --focus chief\n"
-    "  clawtilla-office --screenshot office@2x.png --width 3840 --height 2160 --ui-scale 2\n";
+    "  clawtilla-office --screenshot office@2x.png --width 3840 --height 2160 --ui-scale 2\n"
+    "  clawtilla-office --usage corner\n"
+    "  clawtilla-office --screenshot board.png --zoom 2x --usage-open\n"
+    "  clawtilla-office --pack data/office/worlds/cozy-town --layout-file layout.json \\\n"
+    "      --usage-file usage.json --screenshot cozy.png --usage-report cozy.json\n";
 
 static const gchar license_text[] =
     "clawtilla-office - the fleet drawn as people in a building\n"
@@ -386,6 +419,8 @@ apply_control(Office *office, const gchar *line)
         clawt_office_scene_set_zoom(office->scene, control.zoom);
     if (control.has_focus)
         clawt_office_scene_set_focus(office->scene, control.focus);
+    if (control.has_usage)
+        clawt_office_scene_set_usage_placement(office->scene, control.usage);
     if (control.has_mode) {
         office->want_mode = control.mode;
         clawt_office_scene_set_mode(office->scene,
@@ -446,6 +481,57 @@ read_control(Office *office)
     control_next(reader);
 }
 
+/* A JSON file's top-level object, or NULL with @error set. */
+static JsonObject *
+read_json_object(const gchar *path, GError **error)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    JsonNode *root;
+
+    if (!json_parser_load_from_file(parser, path, error))
+        return NULL;
+    root = json_parser_get_root(parser);
+    if (root == NULL || !JSON_NODE_HOLDS_OBJECT(root)) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                    "%s is not a JSON object", path);
+        return NULL;
+    }
+    return json_object_ref(json_node_get_object(root));
+}
+
+/*
+ * --pack: no daemon.  The pack is read from disk as the daemon would
+ * serve it (clawt_office_world_to_json()), the layout and the usage from
+ * the files given, and the board's clock is the usage file's `now`, so
+ * the same fixture draws the same frame every time.
+ */
+static gboolean
+load_offline(Office *office, GError **error)
+{
+    g_autoptr(ClawtOfficeWorld) world = clawt_office_world_load(opt_pack, error);
+    g_autoptr(JsonNode) world_json = NULL;
+    g_autoptr(JsonObject) layout = NULL;
+
+    if (world == NULL)
+        return FALSE;
+    world_json = clawt_office_world_to_json(world);
+    layout = read_json_object(opt_layout_file, error);
+    if (layout == NULL)
+        return FALSE;
+    on_world(opt_pack, json_node_get_object(world_json), office);
+    on_layout(layout, office);
+    if (opt_usage_file != NULL) {
+        g_autoptr(JsonObject) usage = read_json_object(opt_usage_file, error);
+
+        if (usage == NULL)
+            return FALSE;
+        if (json_object_has_member(usage, "now"))
+            clawt_office_scene_set_clock(office->scene, json_object_get_int_member(usage, "now"));
+        clawt_office_scene_set_usage(office->scene, usage);
+    }
+    return TRUE;
+}
+
 /* ── The three ways to run ──────────────────────────────────────── */
 
 static gint
@@ -456,7 +542,8 @@ run_window(Office *office)
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT);
     SetTraceLogLevel(LOG_WARNING);
     InitWindow(opt_width, opt_height, "clawtilla office");
-    SetExitKey(KEY_ESCAPE);
+    /* Escape closes the usage panel first, and quits only when none is open */
+    SetExitKey(KEY_NULL);
     while (!WindowShouldClose()) {
         gfloat dt = GetFrameTime();
         Vector2 mouse = GetMousePosition();
@@ -466,6 +553,12 @@ run_window(Office *office)
         load_pending(office);
         simulate(office, dt);
 
+        if (IsKeyPressed(KEY_ESCAPE) && !clawt_office_scene_dismiss(office->scene))
+            break;
+        if (IsKeyPressed(KEY_U))
+            clawt_office_scene_set_usage_placement(office->scene,
+                (ClawtOfficeUsagePlacement)((clawt_office_scene_get_usage_placement(
+                    office->scene) + 1) % 3));
         if (IsKeyPressed(KEY_TAB))
             clawt_office_scene_set_mode(office->scene,
                 clawt_office_scene_get_mode(office->scene) == CLAWT_OFFICE_SCENE_2D
@@ -481,7 +574,8 @@ run_window(Office *office)
             clawt_office_scene_orbit(office->scene, GetMouseDelta().x * 0.01f, 0.0f);
 
         under = clawt_office_scene_pointer(office->scene, mouse.x, mouse.y);
-        if (under != NULL && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+            !clawt_office_scene_click(office->scene, mouse.x, mouse.y) && under != NULL)
             announce_open(under);
 
         clawt_office_scene_update(office->scene, dt);
@@ -513,7 +607,8 @@ run_screenshot(Office *office)
     InitWindow(opt_width, opt_height, "clawtilla office");
     target = LoadRenderTexture(opt_width, opt_height);
     while (settled < opt_frames) {
-        if (g_get_monotonic_time() > deadline) {
+        /* the deadline is for loading; settling a slow software renderer may take longer */
+        if (settled == 0 && g_get_monotonic_time() > deadline) {
             g_printerr("%s: the office did not load within 30 seconds; is the daemon "
                        "running and office.enabled on?\n", CLAWT_OFFICE_BIN_NAME);
             UnloadRenderTexture(target);
@@ -535,6 +630,21 @@ run_screenshot(Office *office)
     image = LoadImageFromTexture(target.texture);
     ImageFlipVertical(&image);
     ok = ExportImage(image, opt_screenshot);
+    if (ok && opt_usage_report != NULL) {
+        g_autoptr(JsonObject) report = clawt_office_scene_describe_usage(office->scene);
+        g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
+        g_autoptr(JsonGenerator) gen = json_generator_new();
+        g_autoptr(GError) error = NULL;
+
+        json_node_set_object(node, report);
+        json_generator_set_root(gen, node);
+        json_generator_set_pretty(gen, TRUE);
+        if (!json_generator_to_file(gen, opt_usage_report, &error)) {
+            g_printerr("%s: could not write %s: %s\n", CLAWT_OFFICE_BIN_NAME,
+                       opt_usage_report, error->message);
+            ok = FALSE;
+        }
+    }
     UnloadImage(image);
     UnloadRenderTexture(target);
     CloseWindow();
@@ -578,9 +688,24 @@ on_inject_button(LrgInputInject *in, guint button, gboolean pressed, gfloat x, g
     office->press_down = FALSE;
     if (office->dragged)
         return;
+    /* the usage board takes its own clicks: open, close, or nothing */
+    if (clawt_office_scene_click(office->scene, x, y))
+        return;
     under = clawt_office_scene_pointer(office->scene, x, y);
     if (under != NULL)
         announce_open(under);
+}
+
+/* Escape from the host closes the usage panel; nothing else is a key here. */
+static void
+on_inject_key(LrgInputInject *in, guint key, gboolean pressed, guint modifiers,
+              guint codepoint, gpointer user_data)
+{
+    (void)in;
+    (void)modifiers;
+    (void)codepoint;
+    if (pressed && key == (guint)KEY_ESCAPE)
+        clawt_office_scene_dismiss(((Office *)user_data)->scene);
 }
 
 /*
@@ -605,6 +730,7 @@ run_embed(Office *office)
     out = lrg_frame_export_new(opt_embed, w, h, TRUE);
     in = lrg_input_inject_new(opt_embed);
     g_signal_connect(in, "button", G_CALLBACK(on_inject_button), office);
+    g_signal_connect(in, "key", G_CALLBACK(on_inject_key), office);
 
     for (;;) {
         gfloat x = 0.0f;
@@ -713,6 +839,29 @@ main(int argc, char *argv[])
             return EXIT_FAILURE;
         }
     }
+    {
+        ClawtOfficeUsagePlacement usage = CLAWT_OFFICE_USAGE_WORLD;
+
+        if (opt_usage != NULL && !clawt_office_usage_placement_from_nick(opt_usage, &usage)) {
+            g_printerr("%s: --usage is world, corner or off, not \"%s\"\n",
+                       CLAWT_OFFICE_BIN_NAME, opt_usage);
+            return EXIT_FAILURE;
+        }
+    }
+    if (opt_pack != NULL && (opt_layout_file == NULL || opt_embed >= 0)) {
+        g_printerr("%s: --pack needs --layout-file, and draws in a window or for "
+                   "--screenshot, never --embed\n", CLAWT_OFFICE_BIN_NAME);
+        return EXIT_FAILURE;
+    }
+    if (opt_pack == NULL && (opt_layout_file != NULL || opt_usage_file != NULL)) {
+        g_printerr("%s: --layout-file and --usage-file go with --pack\n",
+                   CLAWT_OFFICE_BIN_NAME);
+        return EXIT_FAILURE;
+    }
+    if (opt_usage_report != NULL && opt_screenshot == NULL) {
+        g_printerr("%s: --usage-report goes with --screenshot\n", CLAWT_OFFICE_BIN_NAME);
+        return EXIT_FAILURE;
+    }
 
     /*
      * Still accepted -- scripts use it -- but said: a token in argv is in
@@ -724,30 +873,6 @@ main(int argc, char *argv[])
                    "use --token-file FILE or a saved --profile\n",
                    CLAWT_OFFICE_BIN_NAME);
 
-    /*
-     * --host, --profile, --socket; else the daemon a running GTK or lrg
-     * client is on; else the one they were last switched to; else the
-     * local one -- and why, on stderr, every time: an office drawing a
-     * different fleet from the window beside it is otherwise a puzzle.
-     */
-    connection = clawt_connection_choose_following(
-        opt_host, opt_port > 0 ? (guint16)opt_port : 0, opt_token,
-        opt_token_file, opt_profile, opt_socket, NULL, NULL, NULL, NULL,
-        &notice, &error);
-
-    /* the connection has its own copy; this one is not kept about */
-    if (opt_token != NULL) {
-        memset(opt_token, 0, strlen(opt_token));
-        g_clear_pointer(&opt_token, g_free);
-    }
-
-    if (connection == NULL) {
-        g_printerr("%s: %s\n", CLAWT_OFFICE_BIN_NAME, error->message);
-        return EXIT_FAILURE;
-    }
-    if (notice != NULL)
-        g_printerr("%s: %s\n", CLAWT_OFFICE_BIN_NAME, notice);
-
     office.context = g_main_context_ref(g_main_context_default());
     office.scene = clawt_office_scene_new();
     clawt_office_scene_set_adapter_dirs(office.scene, (const gchar *const *)opt_adapter_dirs);
@@ -755,36 +880,79 @@ main(int argc, char *argv[])
     clawt_office_scene_set_ui_scale(office.scene, opt_ui_scale);
     {
         ClawtOfficeZoom zoom = CLAWT_OFFICE_ZOOM_FIT;
+        ClawtOfficeUsagePlacement usage = CLAWT_OFFICE_USAGE_WORLD;
 
         /* checked above: an unknown nick has already failed */
         clawt_office_zoom_from_nick(opt_zoom, &zoom);
         clawt_office_scene_set_zoom(office.scene, zoom);
+        clawt_office_usage_placement_from_nick(opt_usage, &usage);
+        clawt_office_scene_set_usage_placement(office.scene, usage);
+        clawt_office_scene_set_usage_open(office.scene, opt_usage_open);
     }
     office.want_mode = opt_3d ? CLAWT_OFFICE_VIEW_3D : CLAWT_OFFICE_VIEW_2D;
     office.ui_scale = opt_ui_scale;
     office.reported_mode = -1;
     office.reported_3d = -1;
     office.rng = g_rand_new();
-    if (opt_embed >= 0)
-        read_control(&office);
-    client = clawt_connection_create_client(connection);
-    clawt_client_set_auto_reconnect(client, TRUE);
-    if (!clawt_client_connect(client, &error)) {
-        g_printerr("%s: %s\n", CLAWT_OFFICE_BIN_NAME, error->message);
-        return EXIT_FAILURE;
+
+    if (opt_pack != NULL) {
+        /* no daemon: the pack, the layout and the usage from disk */
+        if (!load_offline(&office, &error)) {
+            g_printerr("%s: %s\n", CLAWT_OFFICE_BIN_NAME, error->message);
+            status = EXIT_FAILURE;
+        } else {
+            status = opt_screenshot != NULL ? run_screenshot(&office) : run_window(&office);
+        }
+    } else {
+        /*
+         * --host, --profile, --socket; else the daemon a running GTK or lrg
+         * client is on; else the one they were last switched to; else the
+         * local one -- and why, on stderr, every time: an office drawing a
+         * different fleet from the window beside it is otherwise a puzzle.
+         */
+        connection = clawt_connection_choose_following(
+            opt_host, opt_port > 0 ? (guint16)opt_port : 0, opt_token,
+            opt_token_file, opt_profile, opt_socket, NULL, NULL, NULL, NULL,
+            &notice, &error);
+
+        /* the connection has its own copy; this one is not kept about */
+        if (opt_token != NULL) {
+            memset(opt_token, 0, strlen(opt_token));
+            g_clear_pointer(&opt_token, g_free);
+        }
+
+        if (connection == NULL) {
+            g_printerr("%s: %s\n", CLAWT_OFFICE_BIN_NAME, error->message);
+            status = EXIT_FAILURE;
+            goto out;
+        }
+        if (notice != NULL)
+            g_printerr("%s: %s\n", CLAWT_OFFICE_BIN_NAME, notice);
+
+        if (opt_embed >= 0)
+            read_control(&office);
+        client = clawt_connection_create_client(connection);
+        clawt_client_set_auto_reconnect(client, TRUE);
+        if (!clawt_client_connect(client, &error)) {
+            g_printerr("%s: %s\n", CLAWT_OFFICE_BIN_NAME, error->message);
+            status = EXIT_FAILURE;
+            goto out;
+        }
+        clawt_client_subscribe_async(client, 0, NULL, NULL, NULL);
+        feed = clawt_office_feed_new(client, office.context, opt_world, &feed_funcs, &office);
+        g_signal_connect(client, "event", G_CALLBACK(on_event), feed);
+
+        if (opt_embed >= 0)
+            status = run_embed(&office);
+        else if (opt_screenshot != NULL)
+            status = run_screenshot(&office);
+        else
+            status = run_window(&office);
+
+        clawt_office_feed_free(feed);
     }
-    clawt_client_subscribe_async(client, 0, NULL, NULL, NULL);
-    feed = clawt_office_feed_new(client, office.context, opt_world, &feed_funcs, &office);
-    g_signal_connect(client, "event", G_CALLBACK(on_event), feed);
 
-    if (opt_embed >= 0)
-        status = run_embed(&office);
-    else if (opt_screenshot != NULL)
-        status = run_screenshot(&office);
-    else
-        status = run_window(&office);
-
-    clawt_office_feed_free(feed);
+out:
     clawt_office_scene_free(office.scene);
     g_clear_pointer(&office.layout, json_object_unref);
     g_clear_pointer(&office.world, json_object_unref);

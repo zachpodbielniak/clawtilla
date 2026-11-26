@@ -253,6 +253,7 @@
 #include "office/clawt-office-pack.h"
 #include "office/clawt-office-frames.h"
 #include "office/clawt-office-view.h"
+#include "office/clawt-office-board.h"
 #include "agent/clawt-agent-confine.h"
 
 #undef CLAWT_INSIDE

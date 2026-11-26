@@ -213,6 +213,18 @@ struct _ClawtOfficeScene {
     gboolean              has_board;
     gfloat                board_x;    /* the usage_board's first anchor */
     gfloat                board_y;
+    Rectangle             board_rect; /* its zone on the map (rect_2d, or round the anchor) */
+    Vector3               board_3d;   /* its 3D anchor, level units */
+    ClawtOfficeUsagePlacement usage_placement;
+    ClawtOfficeBoard     *board;      /* self->usage, worded; rebuilt as the clock moves */
+    gint64                board_built;   /* the second it was worded at; 0: stale */
+    gint64                clock_now;  /* a fixed clock for the board, 0 for the real one */
+    ClawtOfficeBoardLayout *board_layout;  /* what was drawn on the wall last frame */
+    ClawtOfficeBoardLayout *panel_layout;  /* and the details panel, if it was open */
+    gboolean              panel_pinned;  /* opened by a click: stays until Escape or a click away */
+    gboolean              hover_quiet;   /* closed while hovered: not again until the pointer leaves */
+    gboolean              board_hovered;
+    gboolean              panel_hovered;
     Camera2D              camera2d;
     RenderTexture2D       baked;      /* the map at 1:1, drawn once */
     gfloat                person_scale;
@@ -329,6 +341,9 @@ clawt_office_scene_free(ClawtOfficeScene *self)
     g_free(self->hovered);
     g_free(self->focus);
     g_clear_pointer(&self->usage, json_object_unref);
+    g_clear_pointer(&self->board, clawt_office_board_free);
+    g_clear_pointer(&self->board_layout, clawt_office_board_layout_free);
+    g_clear_pointer(&self->panel_layout, clawt_office_board_layout_free);
     g_hash_table_unref(self->handles);
     g_clear_object(&self->adapter);
     g_free(self->adapter_name);
@@ -369,6 +384,67 @@ zone_anchor(JsonObject *world, const gchar *tag, gfloat *x, gfloat *y)
         }
     }
     return FALSE;
+}
+
+/*
+ * The usage board's zone: its rect_2d on the map when the pack gives one,
+ * else five tiles square round its first anchor -- the size the shipped
+ * packs' board walls are -- and its first 3D anchor, else the middle of
+ * that rect on the floor.
+ */
+static gboolean
+board_zone(JsonObject *world, gfloat tile, Rectangle *rect, Vector3 *at_3d)
+{
+    JsonArray *zones = json_object_has_member(world, "zones")
+        ? json_object_get_array_member(world, "zones") : NULL;
+    gfloat ax = 0.0f;
+    gfloat ay = 0.0f;
+    guint i;
+    guint t;
+
+    if (!zone_anchor(world, "usage_board", &ax, &ay))
+        return FALSE;
+    *rect = (Rectangle){ ax - 2.5f * tile, ay - 2.5f * tile, 5.0f * tile, 5.0f * tile };
+    *at_3d = (Vector3){ ax / tile, 0.0f, ay / tile };
+
+    for (i = 0; zones != NULL && i < json_array_get_length(zones); i++) {
+        JsonObject *zone = json_array_get_object_element(zones, i);
+        JsonArray *tags = json_object_has_member(zone, "tags")
+            ? json_object_get_array_member(zone, "tags") : NULL;
+        gboolean match = FALSE;
+
+        for (t = 0; tags != NULL && t < json_array_get_length(tags); t++)
+            if (g_strcmp0(json_array_get_string_element(tags, t), "usage_board") == 0)
+                match = TRUE;
+        if (!match)
+            continue;
+        if (json_object_has_member(zone, "rect_2d")) {
+            JsonArray *r = json_object_get_array_member(zone, "rect_2d");
+
+            if (r != NULL && json_array_get_length(r) == 4 &&
+                json_array_get_double_element(r, 2) > 0.0 &&
+                json_array_get_double_element(r, 3) > 0.0) {
+                *rect = (Rectangle){ (gfloat)json_array_get_double_element(r, 0),
+                                     (gfloat)json_array_get_double_element(r, 1),
+                                     (gfloat)json_array_get_double_element(r, 2),
+                                     (gfloat)json_array_get_double_element(r, 3) };
+                *at_3d = (Vector3){ (rect->x + rect->width / 2.0f) / tile, 0.0f,
+                                    (rect->y + rect->height / 2.0f) / tile };
+            }
+        }
+        if (json_object_has_member(zone, "anchors_3d")) {
+            JsonArray *anchors = json_object_get_array_member(zone, "anchors_3d");
+            JsonArray *point = anchors != NULL && json_array_get_length(anchors) > 0
+                ? json_array_get_array_element(anchors, 0) : NULL;
+
+            if (point != NULL && json_array_get_length(point) == 3)
+                *at_3d = (Vector3){ (gfloat)json_array_get_double_element(point, 0),
+                                    (gfloat)json_array_get_double_element(point, 1),
+                                    (gfloat)json_array_get_double_element(point, 2) };
+        }
+        break;
+    }
+    return TRUE;
 }
 
 /* ── World adapters ─────────────────────────────────────────────── */
@@ -582,7 +658,10 @@ clawt_office_scene_load_world(ClawtOfficeScene  *self,
     }
 
     /* the wall the allowances are drawn on, if the pack has one */
-    self->has_board = zone_anchor(world, "usage_board", &self->board_x, &self->board_y);
+    self->has_board = zone_anchor(world, "usage_board", &self->board_x, &self->board_y) &&
+                      board_zone(world, self->tile, &self->board_rect, &self->board_3d);
+    g_clear_pointer(&self->board_layout, clawt_office_board_layout_free);
+    g_clear_pointer(&self->panel_layout, clawt_office_board_layout_free);
 
     /* where newcomers walk in from, and leavers walk out to */
     if (!zone_anchor(world, "entrance", &self->entrance_x, &self->entrance_y)) {
@@ -832,6 +911,56 @@ clawt_office_scene_set_usage(ClawtOfficeScene *self, JsonObject *usage)
     g_clear_pointer(&self->usage, json_object_unref);
     if (usage != NULL)
         self->usage = json_object_ref(usage);
+    /* worded again at the next frame */
+    self->board_built = 0;
+}
+
+void
+clawt_office_scene_set_usage_placement(ClawtOfficeScene *self,
+                                       ClawtOfficeUsagePlacement placement)
+{
+    if (placement != CLAWT_OFFICE_USAGE_CORNER && placement != CLAWT_OFFICE_USAGE_OFF)
+        placement = CLAWT_OFFICE_USAGE_WORLD;
+    if (placement == self->usage_placement)
+        return;
+    self->usage_placement = placement;
+    /* a panel pinned open beside the wall is not carried into the corner */
+    self->panel_pinned = FALSE;
+    self->hover_quiet = FALSE;
+}
+
+ClawtOfficeUsagePlacement
+clawt_office_scene_get_usage_placement(ClawtOfficeScene *self)
+{
+    return self->usage_placement;
+}
+
+void
+clawt_office_scene_set_usage_open(ClawtOfficeScene *self, gboolean open)
+{
+    self->panel_pinned = open;
+    self->hover_quiet = !open && (self->board_hovered || self->panel_hovered);
+}
+
+gboolean
+clawt_office_scene_get_usage_open(ClawtOfficeScene *self)
+{
+    if (self->usage_placement == CLAWT_OFFICE_USAGE_OFF)
+        return FALSE;
+    if (self->usage_placement == CLAWT_OFFICE_USAGE_CORNER)
+        return self->usage != NULL;
+    if (self->panel_pinned)
+        return TRUE;
+    /* hovered open: the board, or the panel it opened, under the pointer */
+    return !self->hover_quiet &&
+           (self->board_hovered || (self->panel_hovered && self->panel_layout != NULL));
+}
+
+void
+clawt_office_scene_set_clock(ClawtOfficeScene *self, gint64 now)
+{
+    self->clock_now = now;
+    self->board_built = 0;
 }
 
 void
@@ -1625,82 +1754,196 @@ tone_color(const gchar *tone)
     return (Color){ 120, 174, 237, 255 };
 }
 
+/* ── The usage board ────────────────────────────────────────────── */
+
 /*
- * The usage board: one block per provider login, its title and a meter
- * per window -- the same remaining, level and labels the Fleet page shows
- * (clawt_usage_*), screen space at the board's place on the map.  A login
- * that reports nothing says so rather than drawing an empty meter.
+ * The board's text width, for the layout in libclawt: raylib's default
+ * font, after the same ASCII folding the text is drawn with, so what is
+ * measured is what is drawn.
+ */
+static gfloat
+measure_for_font(const gchar *text, gfloat size, gpointer user_data)
+{
+    g_autofree gchar *ascii = ascii_for_font(text);
+
+    (void)user_data;
+    return (gfloat)MeasureText(ascii, (gint)size);
+}
+
+static Color
+ink_color(ClawtOfficeBoardInk ink)
+{
+    switch (ink) {
+    case CLAWT_OFFICE_BOARD_INK_TITLE:    return RAYWHITE;
+    case CLAWT_OFFICE_BOARD_INK_LABEL:    return (Color){ 190, 195, 210, 255 };
+    case CLAWT_OFFICE_BOARD_INK_VALUE:    return RAYWHITE;
+    case CLAWT_OFFICE_BOARD_INK_ON_BADGE: return (Color){ 18, 20, 26, 255 };
+    case CLAWT_OFFICE_BOARD_INK_MUTED:
+    default:                              return (Color){ 150, 156, 172, 255 };
+    }
+}
+
+/*
+ * A layout from libclawt, item by item.  The layout has already fitted
+ * everything -- zone, view, columns -- so this only paints.
  */
 static void
-draw_usage_board(ClawtOfficeScene *self, Vector2 at, gfloat scale)
+draw_board_layout(ClawtOfficeBoardLayout *layout, gfloat ui, guchar backing_alpha)
 {
-    JsonArray *logins = self->usage != NULL && json_object_has_member(self->usage, "logins")
-        ? json_object_get_array_member(self->usage, "logins") : NULL;
-    gfloat width = 260.0f * scale;
-    gfloat line = 13.0f * scale;
-    gfloat x = at.x - width / 2.0f;
-    gfloat y = at.y - 8.0f * scale;
-    gfloat height = 0.0f;
-    gint font = MAX(8, (gint)(10.0f * scale));
     guint i;
-    guint w;
 
-    if (logins == NULL || json_array_get_length(logins) == 0)
+    for (i = 0; layout != NULL && i < layout->items->len; i++) {
+        ClawtOfficeBoardItem *item = &g_array_index(layout->items, ClawtOfficeBoardItem, i);
+        Rectangle box = { item->x, item->y, item->width, item->height };
+
+        switch (item->kind) {
+        case CLAWT_OFFICE_BOARD_ITEM_BACKING:
+            DrawRectangleRec(box, (Color){ 18, 20, 26, backing_alpha });
+            DrawRectangleLinesEx(box, MAX(1.0f, ui), (Color){ 70, 76, 92, 255 });
+            break;
+        case CLAWT_OFFICE_BOARD_ITEM_TRACK:
+            DrawRectangleRec(box, (Color){ 60, 64, 76, 255 });
+            break;
+        case CLAWT_OFFICE_BOARD_ITEM_FILL:
+        case CLAWT_OFFICE_BOARD_ITEM_BADGE:
+            DrawRectangleRec(box, tone_color(item->tone));
+            break;
+        case CLAWT_OFFICE_BOARD_ITEM_TEXT: {
+            g_autofree gchar *ascii = ascii_for_font(item->text);
+
+            DrawText(ascii, (gint)item->x, (gint)item->y, (gint)item->size,
+                     ink_color(item->ink));
+            break;
+        }
+        default:
+            break;
+        }
+    }
+}
+
+/* usage.providers, worded by libclawt -- again whenever the clock moves on a minute */
+static ClawtOfficeBoard *
+board_model(ClawtOfficeScene *self)
+{
+    gint64 now = self->clock_now > 0 ? self->clock_now : g_get_real_time() / G_USEC_PER_SEC;
+
+    if (self->board == NULL || self->board_built == 0 || now / 60 != self->board_built / 60) {
+        g_clear_pointer(&self->board, clawt_office_board_free);
+        self->board = clawt_office_board_new(self->usage, now);
+        self->board_built = MAX(now, 1);
+    }
+    return self->board;
+}
+
+/*
+ * The board on the wall, fitted to its zone (@zone, screen pixels) by
+ * clawt_office_board_layout_world(): words where they fit, a gauge per
+ * login where they do not, one mark when even that is too much.  Drawn
+ * after the floor and before the people, so they stand in front of it.
+ */
+static void
+draw_world_board(ClawtOfficeScene *self, Rectangle zone)
+{
+    g_clear_pointer(&self->board_layout, clawt_office_board_layout_free);
+    if (!self->has_board || self->usage == NULL ||
+        self->usage_placement != CLAWT_OFFICE_USAGE_WORLD)
         return;
-    for (i = 0; i < json_array_get_length(logins) && i < 4; i++) {
-        JsonObject *login = json_array_get_object_element(logins, i);
-        JsonArray *windows = json_object_has_member(login, "windows")
-            ? json_object_get_array_member(login, "windows") : NULL;
+    self->board_layout = clawt_office_board_layout_world(board_model(self), zone.x, zone.y,
+                                                         zone.width, zone.height,
+                                                         self->ui_scale, measure_for_font,
+                                                         NULL);
+    /* a little of the wall shows through: it is a screen on it */
+    draw_board_layout(self->board_layout, (gfloat)self->ui_scale, 232);
+}
 
-        height += line * (1.0f + (gfloat)MIN(windows != NULL
-                                             ? json_array_get_length(windows) : 1, 2));
+/* The 2D map's usage_board zone, on screen. */
+static Rectangle
+board_zone_2d(ClawtOfficeScene *self)
+{
+    Vector2 a = GetWorldToScreen2D((Vector2){ self->board_rect.x, self->board_rect.y },
+                                   self->camera2d);
+    Vector2 b = GetWorldToScreen2D((Vector2){ self->board_rect.x + self->board_rect.width,
+                                              self->board_rect.y + self->board_rect.height },
+                                   self->camera2d);
+
+    return (Rectangle){ a.x, a.y, b.x - a.x, b.y - a.y };
+}
+
+/*
+ * The 3D board: a screen standing on the zone's 3D anchor, as wide as
+ * the zone and facing the camera, and the screen rectangle it covers.
+ * FALSE when any corner is behind the camera.
+ */
+static gboolean
+board_zone_3d(ClawtOfficeScene *self, gint width, gint height, Rectangle *out)
+{
+    gfloat w = self->board_rect.width / self->tile;
+    gfloat h = w * self->board_rect.height / MAX(self->board_rect.width, 1.0f);
+    Vector3 eye = self->camera3d.position;
+    Vector3 forward = { self->camera3d.target.x - eye.x, self->camera3d.target.y - eye.y,
+                        self->camera3d.target.z - eye.z };
+    Vector3 right;
+    gfloat length;
+    gfloat lo_x = G_MAXFLOAT;
+    gfloat lo_y = G_MAXFLOAT;
+    gfloat hi_x = -G_MAXFLOAT;
+    gfloat hi_y = -G_MAXFLOAT;
+    gint i;
+
+    /* right = forward x up, flattened: the screen stands upright */
+    right = (Vector3){ -forward.z, 0.0f, forward.x };
+    length = sqrtf(right.x * right.x + right.z * right.z);
+    if (length < 0.0001f)
+        return FALSE;
+    right.x /= length;
+    right.z /= length;
+
+    for (i = 0; i < 4; i++) {
+        gfloat sx = (i & 1) ? 0.5f : -0.5f;
+        gfloat sy = (i & 2) ? 1.0f : 0.0f;
+        Vector3 corner = { self->board_3d.x + right.x * w * sx,
+                           self->board_3d.y + 0.2f + h * sy,
+                           self->board_3d.z + right.z * w * sx };
+        Vector2 at;
+
+        if ((corner.x - eye.x) * forward.x + (corner.y - eye.y) * forward.y +
+            (corner.z - eye.z) * forward.z <= 0.0f)
+            return FALSE;
+        at = GetWorldToScreenEx(corner, self->camera3d, width, height);
+        lo_x = MIN(lo_x, at.x);
+        lo_y = MIN(lo_y, at.y);
+        hi_x = MAX(hi_x, at.x);
+        hi_y = MAX(hi_y, at.y);
     }
-    height += line * 0.6f;
-    /* kept on screen: a wall near the edge would push the board off it */
-    x = CLAMP(x, 4.0f, MAX(4.0f, (gfloat)self->last_w - width - 4.0f));
-    DrawRectangleRounded((Rectangle){ x, y - height, width, height }, 0.08f, 6,
-                         (Color){ 18, 20, 26, 225 });
-    y = y - height + line * 0.3f;
-    for (i = 0; i < json_array_get_length(logins) && i < 4; i++) {
-        JsonObject *login = json_array_get_object_element(logins, i);
-        JsonArray *windows = json_object_has_member(login, "windows")
-            ? json_object_get_array_member(login, "windows") : NULL;
-        g_autofree gchar *raw = clawt_usage_login_title(login);
-        g_autofree gchar *title = ascii_for_font(raw);
+    *out = (Rectangle){ lo_x, lo_y, hi_x - lo_x, hi_y - lo_y };
+    return out->width >= 1.0f && out->height >= 1.0f;
+}
 
-        DrawText(title, (gint)(x + 6.0f * scale), (gint)y, font, RAYWHITE);
-        y += line;
-        if (windows == NULL || json_array_get_length(windows) == 0) {
-            DrawText("reports no plan limits", (gint)(x + 6.0f * scale), (gint)y, font,
-                     (Color){ 170, 175, 190, 255 });
-            y += line;
-            continue;
-        }
-        for (w = 0; w < json_array_get_length(windows) && w < 2; w++) {
-            JsonObject *window = json_array_get_object_element(windows, w);
-            g_autofree gchar *raw_value = clawt_usage_window_value_label(window);
-            g_autofree gchar *value = ascii_for_font(raw_value);
-            g_autofree gchar *label = ascii_for_font(
-                json_object_get_string_member_with_default(window, "label", "window"));
-            gdouble left = 0.0;
-            gfloat bar_x = x + 96.0f * scale;
-            gfloat bar_w = width - 160.0f * scale;
-            Color fill = tone_color(clawt_allowance_level_tone(
-                clawt_usage_window_level(window)));
+/*
+ * The details panel, over everything, when it is open: beside the board
+ * on the wall, or docked in the corner.  Laid out by
+ * clawt_office_board_layout_panel(), which keeps it inside the view.
+ */
+static void
+draw_panel(ClawtOfficeScene *self, gint width, gint height)
+{
+    ClawtOfficeBoardLayout *board = self->board_layout;
+    gboolean docked = self->usage_placement == CLAWT_OFFICE_USAGE_CORNER;
+    gboolean open = clawt_office_scene_get_usage_open(self);
 
-            DrawText(label, (gint)(x + 6.0f * scale), (gint)y, font,
-                     (Color){ 190, 195, 210, 255 });
-            DrawRectangleRec((Rectangle){ bar_x, y + 2.0f * scale, bar_w, 7.0f * scale },
-                             (Color){ 60, 64, 76, 255 });
-            if (clawt_usage_window_remaining(window, &left))
-                DrawRectangleRec((Rectangle){ bar_x, y + 2.0f * scale,
-                                              bar_w * (gfloat)CLAMP(left / 100.0, 0.0, 1.0),
-                                              7.0f * scale }, fill);
-            DrawText(value != NULL ? value : "", (gint)(bar_x + bar_w + 6.0f * scale), (gint)y,
-                     font, RAYWHITE);
-            y += line;
-        }
-    }
+    g_clear_pointer(&self->panel_layout, clawt_office_board_layout_free);
+    if (self->usage == NULL || !open)
+        return;
+    /* beside the wall needs the wall drawn this frame */
+    if (!docked && (board == NULL || board->detail == CLAWT_OFFICE_BOARD_DETAIL_NONE))
+        return;
+    self->panel_layout = clawt_office_board_layout_panel(
+        board_model(self), docked,
+        board != NULL ? board->x : 0.0f, board != NULL ? board->y : 0.0f,
+        board != NULL ? board->width : 0.0f, board != NULL ? board->height : 0.0f,
+        (gfloat)width, (gfloat)height, self->ui_scale, measure_for_font, NULL);
+    /* opaque: when it has to sit over the board, the board must not show through */
+    draw_board_layout(self->panel_layout, (gfloat)self->ui_scale, 255);
 }
 
 /* People drawn top to bottom, so a nearer one stands in front. */
@@ -1775,6 +2018,17 @@ draw_2d(ClawtOfficeScene *self, gint width, gint height)
     else
         for (i = 0; i < self->tilemaps->len; i++)
             lrg_tilemap_draw(g_ptr_array_index(self->tilemaps, i));
+    EndMode2D();
+
+    /*
+     * The usage board, on its wall: in screen space so its text is the
+     * pixel font at a whole size, but between the floor and the people,
+     * so somebody standing at it is drawn in front of it.
+     */
+    if (self->has_board)
+        draw_world_board(self, board_zone_2d(self));
+
+    BeginMode2D(self->camera2d);
     {
         GHashTableIter iter;
         gpointer beam;
@@ -1799,11 +2053,6 @@ draw_2d(ClawtOfficeScene *self, gint width, gint height)
         rlPopMatrix();
     }
     EndMode2D();
-
-    if (self->has_board)
-        draw_usage_board(self, GetWorldToScreen2D((Vector2){ self->board_x, self->board_y },
-                                                  self->camera2d),
-                         MAX(zoom * 1.4f, 0.75f * self->ui_scale));
 
     /* text in screen space, so it stays legible at any zoom */
     at = g_new0(Vector2, MAX(people->len, 1));
@@ -1856,6 +2105,16 @@ draw_3d(ClawtOfficeScene *self, gint width, gint height)
     place_camera_3d(self, width, height);
     lrg_world3d_renderer_render(self->renderer, self->world3d, self->lcamera, NULL,
                                 width, height);
+
+    /* the board, as a screen standing on its anchor, before the people */
+    if (self->has_board) {
+        Rectangle zone;
+
+        if (board_zone_3d(self, width, height, &zone))
+            draw_world_board(self, zone);
+        else
+            g_clear_pointer(&self->board_layout, clawt_office_board_layout_free);
+    }
 
     sync_beams(self, TRUE);
     BeginMode3D(self->camera3d);
@@ -1929,6 +2188,24 @@ draw_adapter(ClawtOfficeScene *self, gint width, gint height)
         return;
 
     camera = lrg_tiled_world_get_camera(LRG_TILED_WORLD(self->adapter));
+
+    /*
+     * The adapter draws its people with its world, so the board can only
+     * go over both; it still never leaves its zone, and the name labels
+     * are drawn over it.
+     */
+    if (self->has_board) {
+        GrlVector3 a = { self->board_rect.x, self->board_rect.y, 0.0f };
+        GrlVector3 b = { self->board_rect.x + self->board_rect.width,
+                         self->board_rect.y + self->board_rect.height, 0.0f };
+        GrlVector2 sa = { 0.0f, 0.0f };
+        GrlVector2 sb = { 0.0f, 0.0f };
+
+        lrg_camera_world_to_screen(LRG_CAMERA(camera), &a, &sa);
+        lrg_camera_world_to_screen(LRG_CAMERA(camera), &b, &sb);
+        draw_world_board(self, (Rectangle){ sa.x, sa.y, sb.x - sa.x, sb.y - sa.y });
+    }
+
     people = sorted_actors(self);
     at = g_new0(Vector2, MAX(people->len, 1));
     for (i = 0; i < people->len; i++) {
@@ -1951,6 +2228,8 @@ clawt_office_scene_draw(ClawtOfficeScene *self, gint width, gint height)
     self->last_h = height;
     ClearBackground((Color){ 24, 26, 32, 255 });
 
+    /* the wall board is laid out afresh by whichever view draws it */
+    g_clear_pointer(&self->board_layout, clawt_office_board_layout_free);
     if (self->mode == CLAWT_OFFICE_SCENE_3D && self->has_3d)
         draw_3d(self, width, height);
     else if (self->adapter != NULL)
@@ -1967,6 +2246,18 @@ clawt_office_scene_draw(ClawtOfficeScene *self, gint width, gint height)
                                           28.0f * ui }, 0.4f, 6, (Color){ 0, 0, 0, 150 });
         DrawText(self->status, 20 * ui, 16 * ui, size, RAYWHITE);
     }
+
+    /* the details panel last: over the people, their labels and the status line */
+    draw_panel(self, width, height);
+}
+
+/* Whether @x, @y is on what @layout drew. */
+static gboolean
+on_layout(ClawtOfficeBoardLayout *layout, gfloat x, gfloat y)
+{
+    return layout != NULL && layout->detail != CLAWT_OFFICE_BOARD_DETAIL_NONE &&
+           x >= layout->x && y >= layout->y && x < layout->x + layout->width &&
+           y < layout->y + layout->height;
 }
 
 const gchar *
@@ -1976,6 +2267,21 @@ clawt_office_scene_pointer(ClawtOfficeScene *self, gfloat x, gfloat y)
     gpointer value;
     Actor *best = NULL;
     gfloat best_d = 0.0f;
+
+    /*
+     * The board and its panel first, against what was drawn last frame.
+     * A panel closed with Escape while the pointer is on the board stays
+     * closed until the pointer has left it, or it would open again at
+     * once.  Nobody is hovered through the panel.
+     */
+    self->board_hovered = on_layout(self->board_layout, x, y);
+    self->panel_hovered = on_layout(self->panel_layout, x, y);
+    if (!self->board_hovered && !self->panel_hovered)
+        self->hover_quiet = FALSE;
+    if (self->panel_hovered) {
+        replace(&self->hovered, NULL);
+        return NULL;
+    }
 
     g_hash_table_iter_init(&iter, self->actors);
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
@@ -2003,6 +2309,150 @@ clawt_office_scene_pointer(ClawtOfficeScene *self, gfloat x, gfloat y)
     }
     replace(&self->hovered, best != NULL ? best->id : NULL);
     return self->hovered;
+}
+
+gboolean
+clawt_office_scene_click(ClawtOfficeScene *self, gfloat x, gfloat y)
+{
+    gboolean on_board;
+    gboolean on_panel;
+
+    clawt_office_scene_pointer(self, x, y);
+    if (self->usage_placement == CLAWT_OFFICE_USAGE_OFF || self->usage == NULL)
+        return FALSE;
+    on_board = self->usage_placement == CLAWT_OFFICE_USAGE_WORLD && self->board_hovered;
+    on_panel = self->panel_hovered;
+
+    /* the panel's own clicks go nowhere: it is a sign, not a button */
+    if (on_panel)
+        return TRUE;
+    /* the board pins its panel open, and a second click closes it */
+    if (on_board) {
+        clawt_office_scene_set_usage_open(self, !self->panel_pinned);
+        return TRUE;
+    }
+    /* a click away from a pinned panel closes it, and does nothing else */
+    if (self->usage_placement == CLAWT_OFFICE_USAGE_WORLD && self->panel_pinned) {
+        clawt_office_scene_set_usage_open(self, FALSE);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+gboolean
+clawt_office_scene_dismiss(ClawtOfficeScene *self)
+{
+    if (self->usage_placement != CLAWT_OFFICE_USAGE_WORLD ||
+        !clawt_office_scene_get_usage_open(self))
+        return FALSE;
+    self->panel_pinned = FALSE;
+    /* and not straight back open under a pointer still on the board or panel */
+    self->hover_quiet = self->board_hovered || self->panel_hovered;
+    return TRUE;
+}
+
+/* One layout as JSON, for a test or a bug report. */
+static void
+add_layout(JsonBuilder *b, const gchar *name, ClawtOfficeBoardLayout *layout)
+{
+    static const gchar *const details[] = { "none", "mark", "gauges", "rows", "panel" };
+    static const gchar *const kinds[] = { "backing", "track", "fill", "badge", "text" };
+    guint i;
+
+    json_builder_set_member_name(b, name);
+    if (layout == NULL) {
+        json_builder_add_null_value(b);
+        return;
+    }
+    json_builder_begin_object(b);
+    json_builder_set_member_name(b, "detail");
+    json_builder_add_string_value(b, details[layout->detail]);
+    json_builder_set_member_name(b, "rect");
+    json_builder_begin_array(b);
+    json_builder_add_double_value(b, layout->x);
+    json_builder_add_double_value(b, layout->y);
+    json_builder_add_double_value(b, layout->width);
+    json_builder_add_double_value(b, layout->height);
+    json_builder_end_array(b);
+    json_builder_set_member_name(b, "hidden");
+    json_builder_add_int_value(b, layout->hidden);
+    json_builder_set_member_name(b, "items");
+    json_builder_begin_array(b);
+    for (i = 0; i < layout->items->len; i++) {
+        ClawtOfficeBoardItem *item = &g_array_index(layout->items, ClawtOfficeBoardItem, i);
+
+        json_builder_begin_object(b);
+        json_builder_set_member_name(b, "kind");
+        json_builder_add_string_value(b, kinds[item->kind]);
+        json_builder_set_member_name(b, "rect");
+        json_builder_begin_array(b);
+        json_builder_add_double_value(b, item->x);
+        json_builder_add_double_value(b, item->y);
+        json_builder_add_double_value(b, item->width);
+        json_builder_add_double_value(b, item->height);
+        json_builder_end_array(b);
+        if (item->text != NULL) {
+            static const gchar *const inks[] = { "title", "label", "value", "muted",
+                                                 "on_badge" };
+
+            json_builder_set_member_name(b, "text");
+            json_builder_add_string_value(b, item->text);
+            json_builder_set_member_name(b, "ink");
+            json_builder_add_string_value(b, inks[item->ink]);
+            json_builder_set_member_name(b, "size");
+            json_builder_add_double_value(b, item->size);
+            json_builder_set_member_name(b, "room");
+            json_builder_add_double_value(b, item->room);
+        }
+        if (item->tone != NULL) {
+            json_builder_set_member_name(b, "tone");
+            json_builder_add_string_value(b, item->tone);
+        }
+        json_builder_end_object(b);
+    }
+    json_builder_end_array(b);
+    json_builder_end_object(b);
+}
+
+JsonObject *
+clawt_office_scene_describe_usage(ClawtOfficeScene *self)
+{
+    g_autoptr(JsonBuilder) b = json_builder_new();
+    g_autoptr(JsonNode) root = NULL;
+
+    json_builder_begin_object(b);
+    json_builder_set_member_name(b, "view");
+    json_builder_begin_array(b);
+    json_builder_add_int_value(b, self->last_w);
+    json_builder_add_int_value(b, self->last_h);
+    json_builder_end_array(b);
+    json_builder_set_member_name(b, "placement");
+    json_builder_add_string_value(b, clawt_office_usage_placement_nick(self->usage_placement));
+    json_builder_set_member_name(b, "mode");
+    json_builder_add_string_value(b, self->mode == CLAWT_OFFICE_SCENE_3D && self->has_3d
+                                     ? "3d" : "2d");
+    json_builder_set_member_name(b, "logins");
+    json_builder_add_int_value(b, self->board != NULL ? self->board->logins->len : 0);
+    json_builder_set_member_name(b, "windows");
+    json_builder_add_int_value(b, self->board != NULL
+                                  ? clawt_office_board_n_windows(self->board) : 0);
+    /* the zone on screen, as the 2D view places it */
+    if (self->has_board && self->mode != CLAWT_OFFICE_SCENE_3D && self->adapter == NULL) {
+        Rectangle zone = board_zone_2d(self);
+
+        json_builder_set_member_name(b, "zone");
+        json_builder_begin_array(b);
+        json_builder_add_double_value(b, zone.x);
+        json_builder_add_double_value(b, zone.y);
+        json_builder_add_double_value(b, zone.width);
+        json_builder_add_double_value(b, zone.height);
+        json_builder_end_array(b);
+    }
+    add_layout(b, "board", self->board_layout);
+    add_layout(b, "panel", self->panel_layout);
+    json_builder_end_object(b);
+    root = json_builder_get_root(b);
+    return json_object_ref(json_node_get_object(root));
 }
 
 /* ── Simulate mode ──────────────────────────────────────────────── */

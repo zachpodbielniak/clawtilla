@@ -80,6 +80,8 @@ struct _ClawtAppearance {
      */
     ClawtOfficeViewMode office_mode;
     ClawtOfficeZoom     office_zoom;
+    /* where the provider usage board goes; zero is on the wall, as before */
+    ClawtOfficeUsagePlacement office_usage;
 
     /*
      * Set only when the chosen scheme came from a file, because a
@@ -137,6 +139,7 @@ clawt_appearance_copy(ClawtAppearance *self)
     copy->window_buttons = self->window_buttons;
     copy->office_mode = self->office_mode;
     copy->office_zoom = self->office_zoom;
+    copy->office_usage = self->office_usage;
     copy->palette = g_strdup(self->palette);
     copy->lrg_motion = self->lrg_motion;
     copy->lrg_material = self->lrg_material;
@@ -702,6 +705,23 @@ clawt_appearance_set_office_zoom(ClawtAppearance *self, ClawtOfficeZoom zoom)
 
     self->office_zoom = zoom == CLAWT_OFFICE_ZOOM_1X || zoom == CLAWT_OFFICE_ZOOM_2X
                         ? zoom : CLAWT_OFFICE_ZOOM_FIT;
+}
+
+ClawtOfficeUsagePlacement
+clawt_appearance_get_office_usage(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, CLAWT_OFFICE_USAGE_WORLD);
+
+    return self->office_usage;
+}
+
+void
+clawt_appearance_set_office_usage(ClawtAppearance *self, ClawtOfficeUsagePlacement usage)
+{
+    g_return_if_fail(self != NULL);
+
+    self->office_usage = usage == CLAWT_OFFICE_USAGE_CORNER || usage == CLAWT_OFFICE_USAGE_OFF
+                         ? usage : CLAWT_OFFICE_USAGE_WORLD;
 }
 
 gboolean
@@ -1846,6 +1866,18 @@ clawt_appearance_parse(const gchar *text, GError **error)
         clawt_appearance_set_office_zoom(self, zoom);
     }
 
+    value = member_string(mapping, "office_usage");
+
+    if (value != NULL) {
+        ClawtOfficeUsagePlacement usage = CLAWT_OFFICE_USAGE_WORLD;
+
+        if (!clawt_office_usage_placement_from_nick(value, &usage))
+            g_warning("appearance: office_usage '%s' is not one of world, corner, "
+                      "off; using world", value);
+
+        clawt_appearance_set_office_usage(self, usage);
+    }
+
     /*
      * clawtilla-lrg's keys.  A nick this build does not know is the
      * shipped value, said once on stderr: a hand-edited preference must
@@ -2034,11 +2066,16 @@ clawt_appearance_to_data(ClawtAppearance *self)
         "# How clawtilla-gtk's Office page draws the office: 2d (the map\n"
         "# from above) or 3d (the level, from an orbiting camera), and how\n"
         "# far the map is zoomed: fit, 1x or 2x. The page remembers them\n"
-        "# when you switch; a world with no 3D level is drawn in 2D.\n");
+        "# when you switch; a world with no 3D level is drawn in 2D.\n"
+        "# office_usage is where provider usage is shown: world (on the\n"
+        "# wall the pack tags usage_board), corner (a panel docked in the\n"
+        "# view's corner) or off.\n");
     g_string_append_printf(out, "office_view: %s\n",
                            clawt_office_view_mode_nick(self->office_mode));
     g_string_append_printf(out, "office_zoom: %s\n",
                            clawt_office_zoom_nick(self->office_zoom));
+    g_string_append_printf(out, "office_usage: %s\n",
+                           clawt_office_usage_placement_nick(self->office_usage));
 
     g_string_append(out,
         "\n"

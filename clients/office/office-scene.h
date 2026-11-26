@@ -134,10 +134,101 @@ void clawt_office_scene_set_character(ClawtOfficeScene *self, const gchar *id,
  * @usage: (nullable): `usage.providers`' answer, or %NULL for none
  *
  * What each provider login has left, drawn on the wall the pack tags
- * `usage_board` -- the same meters as the Fleet page, from the same
- * library calls.  A pack with no such wall draws none.
+ * `usage_board` and in the details panel -- the same words, meters and
+ * tones as the Fleet page, from the same library calls
+ * (clawt_office_board_new()).  A pack with no such wall draws no board;
+ * the corner panel needs none.
  */
 void clawt_office_scene_set_usage(ClawtOfficeScene *self, JsonObject *usage);
+
+/**
+ * clawt_office_scene_set_usage_placement:
+ * @self: a scene
+ * @placement: on the wall, docked in the corner, or off
+ *
+ * Where provider usage is drawn.  On the wall
+ * (%CLAWT_OFFICE_USAGE_WORLD) the board is fitted to the `usage_board`
+ * zone and hovering or clicking it opens the details panel beside it;
+ * in the corner the same panel is docked at the top right and always
+ * shown; off, nothing is.  A change closes a pinned panel.
+ */
+void clawt_office_scene_set_usage_placement(ClawtOfficeScene          *self,
+                                            ClawtOfficeUsagePlacement  placement);
+
+/**
+ * clawt_office_scene_get_usage_placement:
+ * @self: a scene
+ *
+ * Returns: where provider usage is drawn
+ */
+ClawtOfficeUsagePlacement clawt_office_scene_get_usage_placement(ClawtOfficeScene *self);
+
+/**
+ * clawt_office_scene_set_usage_open:
+ * @self: a scene
+ * @open: %TRUE to pin the details panel open beside the board
+ *
+ * What a click on the board does; for a screenshot of the panel.
+ */
+void clawt_office_scene_set_usage_open(ClawtOfficeScene *self, gboolean open);
+
+/**
+ * clawt_office_scene_get_usage_open:
+ * @self: a scene
+ *
+ * Returns: whether the details panel is shown: pinned, hovered, or docked
+ */
+gboolean clawt_office_scene_get_usage_open(ClawtOfficeScene *self);
+
+/**
+ * clawt_office_scene_set_clock:
+ * @self: a scene
+ * @now: Unix seconds to word the board at ("read 2m ago", "resets in
+ *   2h"), or 0 for the real clock
+ *
+ * A fixed clock, for drawing a usage fixture the same way every time.
+ */
+void clawt_office_scene_set_clock(ClawtOfficeScene *self, gint64 now);
+
+/**
+ * clawt_office_scene_click:
+ * @self: a scene
+ * @x: the pointer, in target pixels
+ * @y: likewise
+ *
+ * A click, for the usage board before anybody under it: on the board it
+ * pins the details panel open (or closes it); on the panel it does
+ * nothing more; away from a pinned panel it closes it.  A host opens the
+ * participant under the pointer only when this returns %FALSE.
+ *
+ * Returns: whether the board took the click
+ */
+gboolean clawt_office_scene_click(ClawtOfficeScene *self, gfloat x, gfloat y);
+
+/**
+ * clawt_office_scene_dismiss:
+ * @self: a scene
+ *
+ * Escape: closes the details panel beside the board, if it is open.  A
+ * docked panel is not closed this way; the placement turns it off.
+ *
+ * Returns: whether a panel was closed (the key was used)
+ */
+gboolean clawt_office_scene_dismiss(ClawtOfficeScene *self);
+
+/**
+ * clawt_office_scene_describe_usage:
+ * @self: a scene
+ *
+ * What the last frame drew of provider usage: the view's size, the
+ * placement, the `usage_board` zone on screen (2D), and the board's and
+ * panel's layouts -- their level of detail, rect, how many did not fit,
+ * and every item with its rect (and a text's size and column).  For
+ * clawtilla-office's `--usage-report` and the screenshot test.
+ *
+ * Returns: (transfer full): a new object
+ */
+JsonObject *clawt_office_scene_describe_usage(ClawtOfficeScene *self);
 
 /**
  * clawt_office_scene_set_mode:

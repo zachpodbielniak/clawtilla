@@ -811,6 +811,28 @@ void clawt_appearance_set_office_zoom(ClawtAppearance *self,
                                       ClawtOfficeZoom  zoom);
 
 /**
+ * clawt_appearance_get_office_usage:
+ * @self: a #ClawtAppearance
+ *
+ * Where the Office page shows what each provider login has left, as
+ * `office_usage` in `appearance.yaml` (`world`, `corner` or `off`).  On
+ * the wall the pack tags `usage_board` by default.
+ *
+ * Returns: the placement
+ */
+ClawtOfficeUsagePlacement clawt_appearance_get_office_usage(ClawtAppearance *self);
+
+/**
+ * clawt_appearance_set_office_usage:
+ * @self: a #ClawtAppearance
+ * @usage: the placement
+ *
+ * See clawt_appearance_get_office_usage().
+ */
+void clawt_appearance_set_office_usage(ClawtAppearance           *self,
+                                       ClawtOfficeUsagePlacement  usage);
+
+/**
  * clawt_appearance_get_animate_faces:
  * @self: a #ClawtAppearance
  *

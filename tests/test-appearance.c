@@ -1815,6 +1815,46 @@ test_office_view_round_trip(void)
     g_assert_cmpint(clawt_appearance_get_office_zoom(typo), ==, CLAWT_OFFICE_ZOOM_FIT);
 }
 
+/*
+ * Where the usage board goes: on the wall by default (where the office
+ * drew it before it could be moved), through the file and the copy, and
+ * an unknown spelling is the default, said.
+ */
+static void
+test_office_usage_round_trip(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autoptr(ClawtAppearance) back = NULL;
+    g_autoptr(ClawtAppearance) copy = NULL;
+    g_autoptr(ClawtAppearance) typo = NULL;
+    g_autofree gchar *fresh = NULL;
+    g_autofree gchar *data = NULL;
+
+    g_assert_cmpint(clawt_appearance_get_office_usage(appearance), ==,
+                    CLAWT_OFFICE_USAGE_WORLD);
+    fresh = clawt_appearance_to_data(appearance);
+    g_assert_nonnull(strstr(fresh, "office_usage: world\n"));
+
+    clawt_appearance_set_office_usage(appearance, CLAWT_OFFICE_USAGE_CORNER);
+    data = clawt_appearance_to_data(appearance);
+    g_assert_nonnull(strstr(data, "office_usage: corner\n"));
+    back = clawt_appearance_parse(data, NULL);
+    g_assert_nonnull(back);
+    g_assert_cmpint(clawt_appearance_get_office_usage(back), ==, CLAWT_OFFICE_USAGE_CORNER);
+    copy = clawt_appearance_copy(appearance);
+    g_assert_cmpint(clawt_appearance_get_office_usage(copy), ==, CLAWT_OFFICE_USAGE_CORNER);
+
+    clawt_appearance_set_office_usage(appearance, (ClawtOfficeUsagePlacement)9);
+    g_assert_cmpint(clawt_appearance_get_office_usage(appearance), ==,
+                    CLAWT_OFFICE_USAGE_WORLD);
+
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING, "*office_usage 'ceiling'*");
+    typo = clawt_appearance_parse("office_usage: ceiling\n", NULL);
+    g_test_assert_expected_messages();
+    g_assert_nonnull(typo);
+    g_assert_cmpint(clawt_appearance_get_office_usage(typo), ==, CLAWT_OFFICE_USAGE_WORLD);
+}
+
 static void
 test_lrg_unknown_nick_is_the_default(void)
 {
@@ -2270,6 +2310,7 @@ main(int argc, char *argv[])
                     test_window_buttons_shown);
 
     g_test_add_func("/appearance/office-view/round-trip", test_office_view_round_trip);
+    g_test_add_func("/appearance/office-usage/round-trip", test_office_usage_round_trip);
     g_test_add_func("/appearance/lrg/defaults", test_lrg_keys_default_to_zero);
     g_test_add_func("/appearance/lrg/round-trip", test_lrg_keys_round_trip);
     g_test_add_func("/appearance/lrg/unknown-nick-is-default",

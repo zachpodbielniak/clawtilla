@@ -281,6 +281,29 @@ anchors_member(YamlMapping *mapping, const gchar *name, guint want)
     return out;
 }
 
+/*
+ * `rect_2d: [x, y, w, h]`, map pixels, into @out.  Anything else -- the
+ * wrong count, a width or height of zero or less -- is no rect, and
+ * whoever draws in the zone falls back to its anchor.
+ */
+static gboolean
+rect_member(YamlMapping *mapping, const gchar *name, gdouble out[4])
+{
+    YamlSequence *sequence = sequence_member(mapping, name);
+    guint i;
+
+    if (sequence == NULL || yaml_sequence_get_length(sequence) != 4)
+        return FALSE;
+    for (i = 0; i < 4; i++) {
+        YamlNode *value = yaml_sequence_get_element(sequence, i);
+
+        if (value == NULL || yaml_node_get_node_type(value) != YAML_NODE_SCALAR)
+            return FALSE;
+        out[i] = yaml_node_get_double(value);
+    }
+    return out[2] > 0.0 && out[3] > 0.0;
+}
+
 ClawtOfficeWorld *
 clawt_office_world_load(const gchar *directory, GError **error)
 {
@@ -384,6 +407,7 @@ clawt_office_world_load(const gchar *directory, GError **error)
         zone->capacity = capacity != NULL ? (guint)g_ascii_strtoull(capacity, NULL, 10) : 0;
         zone->anchors_2d = anchors_member(m, "anchors_2d", 2);
         zone->anchors_3d = anchors_member(m, "anchors_3d", 3);
+        zone->has_rect_2d = rect_member(m, "rect_2d", zone->rect_2d);
 
         for (t = 0; zone->tags[t] != NULL; t++)
             if (!clawt_office_zone_tag_is_known(zone->tags[t]))
@@ -657,6 +681,15 @@ clawt_office_world_to_json(ClawtOfficeWorld *self)
         json_builder_end_array(builder);
         add_numbers(builder, "anchors_2d", zone->anchors_2d, 2);
         add_numbers(builder, "anchors_3d", zone->anchors_3d, 3);
+        if (zone->has_rect_2d) {
+            guint r;
+
+            json_builder_set_member_name(builder, "rect_2d");
+            json_builder_begin_array(builder);
+            for (r = 0; r < 4; r++)
+                json_builder_add_double_value(builder, zone->rect_2d[r]);
+            json_builder_end_array(builder);
+        }
         json_builder_end_object(builder);
     }
     json_builder_end_array(builder);

@@ -321,6 +321,21 @@ test_nicks(void)
     g_assert_cmpint(zoom, ==, CLAWT_OFFICE_ZOOM_2X);
     g_assert_false(clawt_office_zoom_from_nick("3x", &zoom));
     g_assert_cmpint(zoom, ==, CLAWT_OFFICE_ZOOM_2X);
+
+    {
+        ClawtOfficeUsagePlacement usage = CLAWT_OFFICE_USAGE_WORLD;
+
+        g_assert_cmpstr(clawt_office_usage_placement_nick(CLAWT_OFFICE_USAGE_WORLD), ==,
+                        "world");
+        g_assert_cmpstr(clawt_office_usage_placement_nick(CLAWT_OFFICE_USAGE_CORNER), ==,
+                        "corner");
+        g_assert_cmpstr(clawt_office_usage_placement_nick(CLAWT_OFFICE_USAGE_OFF), ==, "off");
+        g_assert_true(clawt_office_usage_placement_from_nick("Corner", &usage));
+        g_assert_cmpint(usage, ==, CLAWT_OFFICE_USAGE_CORNER);
+        g_assert_false(clawt_office_usage_placement_from_nick("wall", &usage));
+        g_assert_false(clawt_office_usage_placement_from_nick(NULL, &usage));
+        g_assert_cmpint(usage, ==, CLAWT_OFFICE_USAGE_CORNER);
+    }
 }
 
 /* What the host writes is exactly what the renderer reads back. */
@@ -328,15 +343,18 @@ static void
 test_control_round_trip(void)
 {
     g_autofree gchar *line = clawt_office_view_control_line(CLAWT_OFFICE_VIEW_3D, "chief",
-                                                            CLAWT_OFFICE_ZOOM_2X, 2);
+                                                            CLAWT_OFFICE_ZOOM_2X, 2,
+                                                            CLAWT_OFFICE_USAGE_CORNER);
     g_autofree gchar *nobody = clawt_office_view_control_line(CLAWT_OFFICE_VIEW_2D, NULL,
-                                                              CLAWT_OFFICE_ZOOM_FIT, 9);
+                                                              CLAWT_OFFICE_ZOOM_FIT, 9,
+                                                              CLAWT_OFFICE_USAGE_WORLD);
     g_autofree gchar *bare = NULL;
     ClawtOfficeViewControl control;
     g_autoptr(GError) error = NULL;
 
     g_assert_cmpstr(line, ==,
-                    "{\"mode\":\"3d\",\"focus\":\"chief\",\"zoom\":\"2x\",\"ui_scale\":2}\n");
+                    "{\"mode\":\"3d\",\"focus\":\"chief\",\"zoom\":\"2x\",\"ui_scale\":2,"
+                    "\"usage\":\"corner\"}\n");
     bare = g_strndup(line, strlen(line) - 1);
     g_assert_true(clawt_office_view_control_parse(bare, &control, &error));
     g_assert_no_error(error);
@@ -347,6 +365,8 @@ test_control_round_trip(void)
     g_assert_true(control.has_zoom);
     g_assert_cmpint(control.zoom, ==, CLAWT_OFFICE_ZOOM_2X);
     g_assert_cmpint(control.ui_scale, ==, 2);
+    g_assert_true(control.has_usage);
+    g_assert_cmpint(control.usage, ==, CLAWT_OFFICE_USAGE_CORNER);
     clawt_office_view_control_clear(&control);
     g_assert_null(control.focus);
 
@@ -374,6 +394,13 @@ test_control_partial(void)
     g_assert_true(control.has_zoom);
     g_assert_cmpint(control.zoom, ==, CLAWT_OFFICE_ZOOM_1X);
     g_assert_cmpint(control.ui_scale, ==, 0);
+    /* an older host says nothing of usage: the renderer keeps what it has */
+    g_assert_false(control.has_usage);
+    clawt_office_view_control_clear(&control);
+
+    g_assert_true(clawt_office_view_control_parse("{\"usage\":\"OFF\"}", &control, &error));
+    g_assert_true(control.has_usage);
+    g_assert_cmpint(control.usage, ==, CLAWT_OFFICE_USAGE_OFF);
     clawt_office_view_control_clear(&control);
 
     g_assert_true(clawt_office_view_control_parse("{\"focus\":null}", &control, &error));
@@ -396,6 +423,8 @@ test_control_refused(void)
         "{\"ui_scale\":1.5}",
         "{\"focus\":7}",
         "{\"focus\":\"chief\",\"mode\":\"sideways\"}",
+        "{\"usage\":\"ceiling\"}",
+        "{\"usage\":2}",
     };
     guint i;
 
@@ -441,7 +470,8 @@ write_to_a_dead_child(GError **error)
     g_autoptr(GSubprocess) child = NULL;
     g_autoptr(GMainLoop) loop = g_main_loop_new(NULL, FALSE);
     g_autofree gchar *line = clawt_office_view_control_line(CLAWT_OFFICE_VIEW_3D, "chief",
-                                                            CLAWT_OFFICE_ZOOM_FIT, 1);
+                                                            CLAWT_OFFICE_ZOOM_FIT, 1,
+                                                            CLAWT_OFFICE_USAGE_WORLD);
     g_autoptr(GError) spawn_error = NULL;
     Written written = { NULL, NULL, FALSE };
 

@@ -1,0 +1,67 @@
+{
+  "world": "cozy-town",
+  "placements": [
+    {
+      "id": "chief",
+      "activity": "working",
+      "pose": "type",
+      "x": 240,
+      "y": 176
+    },
+    {
+      "id": "kudu",
+      "activity": "working",
+      "pose": "type",
+      "x": 912,
+      "y": 176
+    },
+    {
+      "id": "oryx",
+      "activity": "working",
+      "pose": "type",
+      "x": 1008,
+      "y": 176
+    },
+    {
+      "id": "lynx",
+      "activity": "idle",
+      "pose": "stand",
+      "x": 848,
+      "y": 1232
+    },
+    {
+      "id": "wren",
+      "activity": "in_meeting",
+      "pose": "sit",
+      "x": 1392,
+      "y": 784
+    }
+  ],
+  "participants": [
+    {
+      "id": "chief",
+      "name": "Chief",
+      "kind": "agent"
+    },
+    {
+      "id": "kudu",
+      "name": "Kudu",
+      "kind": "agent"
+    },
+    {
+      "id": "oryx",
+      "name": "Oryx",
+      "kind": "agent"
+    },
+    {
+      "id": "lynx",
+      "name": "Lynx",
+      "kind": "agent"
+    },
+    {
+      "id": "wren",
+      "name": "Wren",
+      "kind": "agent"
+    }
+  ]
+}

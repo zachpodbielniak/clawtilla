@@ -123,7 +123,11 @@ on_pointer_move(LrgViewport *viewport, gfloat u, gfloat v, gfloat dx, gfloat dy,
         clawt_office_scene_orbit(view.scene, dx * 0.01f, 0.0f);
 }
 
-/* A click on somebody opens their conversation, as a sidebar click does. */
+/*
+ * A click on somebody opens their conversation, as a sidebar click does.
+ * The usage board takes its clicks first: on it, its details panel
+ * opens; away from an open panel, the panel closes and nothing else.
+ */
 static void
 on_pointer_press(LrgViewport *viewport, gint button, gfloat u, gfloat v, guint modifiers,
                  gpointer user_data)
@@ -134,6 +138,10 @@ on_pointer_press(LrgViewport *viewport, gint button, gfloat u, gfloat v, guint m
     (void)modifiers;
     if (button != 0)
         return;
+    if (clawt_office_scene_click(view.scene, u, v)) {
+        clawt_lrg_app_wake(user_data);
+        return;
+    }
     under = clawt_office_scene_pointer(view.scene, u, v);
     if (under != NULL) {
         g_autofree gchar *id = g_strdup(under);

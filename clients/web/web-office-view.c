@@ -41,10 +41,6 @@
 #define OFFICE_INLINE_IMAGE_MAX   (4 * 1024 * 1024)
 #define OFFICE_CHARACTER_PATH     "/office/character/"
 
-/* What the usage board has room for, as the lrg board draws it. */
-#define OFFICE_BOARD_LOGINS       (4)
-#define OFFICE_BOARD_WINDOWS      (2)
-
 /*
  * The Content-Type for a pack file, by its extension.
  *
@@ -453,14 +449,13 @@ office_characters(ClawtWebApp *app, gboolean inline_sheets)
 }
 
 /*
- * The usage board, from usage.providers' answer (@usage): per login, up
- * to four, its title and up to two windows, each with its label, how
- * much is left (absent when the source did not say), the headline figure
- * and the tone it is painted in.  Every word and level is libclawt's --
- * clawt_usage_login_title(), _window_value_label(), _window_remaining(),
- * _window_level() and clawt_allowance_level_tone(), the functions the
- * Fleet page and the lrg board draw with -- so the script holds no copy
- * of the rules, only how to paint them.
+ * The usage board, from usage.providers' answer (@usage): every login and
+ * every window, worded by libclawt (clawt_office_board_new(), which is
+ * clawt_usage_login_title(), _login_status_label(), _window_value_label(),
+ * _window_reset_label(), _window_remaining() and the level's tone -- the
+ * Fleet page's words) and sent as clawt_office_board_to_json() has them.
+ * The script holds no copy of the rules, only how to lay them out: what
+ * does not fit on the wall it counts, and the details panel lists all.
  *
  * Returns an object whose `logins` may be empty; the script then draws no
  * board, as the lrg scene does not.
@@ -468,59 +463,10 @@ office_characters(ClawtWebApp *app, gboolean inline_sheets)
 static JsonObject *
 office_usage_board(JsonObject *usage)
 {
-    JsonArray *logins = clawt_web_member_array(usage, "logins");
-    JsonObject *board = json_object_new();
-    JsonArray *out = json_array_new();
-    guint i;
-    guint w;
+    g_autoptr(ClawtOfficeBoard) board = clawt_office_board_new(
+        usage, g_get_real_time() / G_USEC_PER_SEC);
 
-    for (i = 0; logins != NULL && i < json_array_get_length(logins) &&
-                json_array_get_length(out) < OFFICE_BOARD_LOGINS; i++) {
-        JsonNode *node = json_array_get_element(logins, i);
-        JsonObject *login;
-        JsonObject *entry;
-        JsonArray *windows;
-        JsonArray *drawn;
-        g_autofree gchar *title = NULL;
-
-        if (!JSON_NODE_HOLDS_OBJECT(node))
-            continue;
-        login = json_node_get_object(node);
-        windows = clawt_web_member_array(login, "windows");
-        entry = json_object_new();
-        drawn = json_array_new();
-        title = clawt_usage_login_title(login);
-        json_object_set_string_member(entry, "title", title != NULL ? title : "");
-
-        for (w = 0; windows != NULL && w < json_array_get_length(windows) &&
-                    json_array_get_length(drawn) < OFFICE_BOARD_WINDOWS; w++) {
-            JsonNode *window_node = json_array_get_element(windows, w);
-            JsonObject *window;
-            JsonObject *meter;
-            g_autofree gchar *value = NULL;
-            gdouble left = 0.0;
-
-            if (!JSON_NODE_HOLDS_OBJECT(window_node))
-                continue;
-            window = json_node_get_object(window_node);
-            meter = json_object_new();
-            value = clawt_usage_window_value_label(window);
-            json_object_set_string_member(meter, "label",
-                                          clawt_web_member(window, "label", "window"));
-            json_object_set_string_member(meter, "value", value != NULL ? value : "");
-            if (clawt_usage_window_remaining(window, &left))
-                json_object_set_double_member(meter, "remaining", CLAMP(left, 0.0, 100.0));
-            json_object_set_string_member(meter, "tone", clawt_allowance_level_tone(
-                clawt_usage_window_level(window)));
-            json_array_add_object_element(drawn, meter);
-        }
-        if (json_array_get_length(drawn) == 0)
-            json_object_set_string_member(entry, "note", "reports no plan limits");
-        json_object_set_array_member(entry, "windows", drawn);
-        json_array_add_object_element(out, entry);
-    }
-    json_object_set_array_member(board, "logins", out);
-    return board;
+    return clawt_office_board_to_json(board);
 }
 
 /*
@@ -778,6 +724,11 @@ clawt_web_office_view_add(ClawtWebApp *app, HtmxElement *parent)
         "Tilt", "data-office-tilt", "Lean the floor back and stand everybody up"));
     clawt_web_add(controls, office_toggle(
         "Rooms", "data-office-rooms", "Name the rooms on the floor"));
+    /* where provider usage goes: on the wall, in the corner, off -- the script cycles it */
+    clawt_web_add(controls, office_toggle(
+        "Usage: on the wall", "data-office-usage",
+        "Where provider usage is shown: on the usage board in the office (hover or "
+        "click it for details), as a panel in the corner, or not at all"));
     htmx_node_add_child(HTMX_NODE(bar), HTMX_NODE(controls));
     htmx_node_add_child(HTMX_NODE(section), HTMX_NODE(bar));
 

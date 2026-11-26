@@ -78,6 +78,39 @@ clawt_office_zoom_from_nick(const gchar *nick, ClawtOfficeZoom *out)
     return FALSE;
 }
 
+const gchar *
+clawt_office_usage_placement_nick(ClawtOfficeUsagePlacement placement)
+{
+    switch (placement) {
+    case CLAWT_OFFICE_USAGE_CORNER: return "corner";
+    case CLAWT_OFFICE_USAGE_OFF:    return "off";
+    case CLAWT_OFFICE_USAGE_WORLD:
+    default:                        return "world";
+    }
+}
+
+gboolean
+clawt_office_usage_placement_from_nick(const gchar *nick, ClawtOfficeUsagePlacement *out)
+{
+    g_return_val_if_fail(out != NULL, FALSE);
+
+    if (nick == NULL)
+        return FALSE;
+    if (g_ascii_strcasecmp(nick, "world") == 0) {
+        *out = CLAWT_OFFICE_USAGE_WORLD;
+        return TRUE;
+    }
+    if (g_ascii_strcasecmp(nick, "corner") == 0) {
+        *out = CLAWT_OFFICE_USAGE_CORNER;
+        return TRUE;
+    }
+    if (g_ascii_strcasecmp(nick, "off") == 0) {
+        *out = CLAWT_OFFICE_USAGE_OFF;
+        return TRUE;
+    }
+    return FALSE;
+}
+
 /* ── Size ─────────────────────────────────────────────────────────── */
 
 gint
@@ -277,7 +310,8 @@ clawt_office_labels_arrange(ClawtOfficeLabel *labels, guint n_labels, gfloat gap
 
 gchar *
 clawt_office_view_control_line(ClawtOfficeViewMode mode, const gchar *focus,
-                               ClawtOfficeZoom zoom, gint ui_scale)
+                               ClawtOfficeZoom zoom, gint ui_scale,
+                               ClawtOfficeUsagePlacement usage)
 {
     g_autoptr(JsonBuilder) b = json_builder_new();
     g_autoptr(JsonGenerator) gen = json_generator_new();
@@ -293,6 +327,8 @@ clawt_office_view_control_line(ClawtOfficeViewMode mode, const gchar *focus,
     json_builder_add_string_value(b, clawt_office_zoom_nick(zoom));
     json_builder_set_member_name(b, "ui_scale");
     json_builder_add_int_value(b, clawt_office_view_clamp_ui_scale(ui_scale));
+    json_builder_set_member_name(b, "usage");
+    json_builder_add_string_value(b, clawt_office_usage_placement_nick(usage));
     json_builder_end_object(b);
 
     root = json_builder_get_root(b);
@@ -333,6 +369,7 @@ clawt_office_view_control_parse(const gchar *line, ClawtOfficeViewControl *out,
     const gchar *mode = NULL;
     const gchar *focus = NULL;
     const gchar *zoom = NULL;
+    const gchar *usage = NULL;
 
     g_return_val_if_fail(line != NULL, FALSE);
     g_return_val_if_fail(out != NULL, FALSE);
@@ -355,7 +392,8 @@ clawt_office_view_control_parse(const gchar *line, ClawtOfficeViewControl *out,
     /* every member checked before any is kept: refused whole, never half-applied */
     if (!string_member(object, "mode", &mode, error) ||
         !string_member(object, "focus", &focus, error) ||
-        !string_member(object, "zoom", &zoom, error))
+        !string_member(object, "zoom", &zoom, error) ||
+        !string_member(object, "usage", &usage, error))
         return FALSE;
 
     if (mode != NULL) {
@@ -373,6 +411,15 @@ clawt_office_view_control_parse(const gchar *line, ClawtOfficeViewControl *out,
             return FALSE;
         }
         out->has_zoom = TRUE;
+    }
+    if (usage != NULL) {
+        if (!clawt_office_usage_placement_from_nick(usage, &out->usage)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "the control line's usage \"%s\" is not world, corner or off",
+                        usage);
+            return FALSE;
+        }
+        out->has_usage = TRUE;
     }
     if (json_object_has_member(object, "ui_scale")) {
         JsonNode *node = json_object_get_member(object, "ui_scale");

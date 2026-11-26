@@ -666,9 +666,11 @@ test_characters_in_scene(void)
 /* ── The usage board ─────────────────────────────────────────────── */
 
 /*
- * The board's words are libclawt's, computed here: the title, each
- * window's value label, how much is left and the tone of its level.  Up
- * to four logins and two windows each; a login with none says so.
+ * The board's words are libclawt's, computed here: the title, status,
+ * each window's value, reset, how much is left and the tone of its level
+ * -- for every login and every window, where the board once stopped at
+ * four and two and dropped the rest without a word.  A balance is a
+ * figure with no share; a login with no windows carries its status.
  */
 static void
 test_usage_board(void)
@@ -677,13 +679,15 @@ test_usage_board(void)
         "{\"logins\": ["
         " {\"provider\": \"claude-code\", \"account\": \"work\", \"plan\": \"max\","
         "  \"windows\": ["
-        "   {\"label\": \"5-hour\", \"unit\": \"percent\", \"remaining_percent\": 62},"
+        "   {\"label\": \"5-hour\", \"unit\": \"percent\", \"remaining_percent\": 62,"
+        "    \"reset_text\": \"Tue 9am\"},"
         "   {\"label\": \"weekly\", \"unit\": \"percent\", \"remaining_percent\": 4},"
         "   {\"label\": \"opus weekly\", \"unit\": \"percent\", \"remaining_percent\": 90}]},"
         " {\"provider\": \"opencode\", \"state\": \"unsupported\", \"windows\": []},"
         " {\"provider\": \"cursor\", \"windows\": [{\"label\": \"tokens\", \"unit\": \"tokens\","
         "   \"used\": 1200}]},"
-        " {\"provider\": \"grok-build\"},"
+        " {\"provider\": \"grok-build\", \"windows\": [{\"label\": \"prepaid balance\","
+        "   \"kind\": \"balance\", \"unit\": \"USD\", \"remaining\": 0}]},"
         " {\"provider\": \"antigravity\"}"
         "]}";
     g_autoptr(JsonParser) parser = json_parser_new();
@@ -692,13 +696,15 @@ test_usage_board(void)
     JsonArray *in;
     JsonArray *logins;
     JsonArray *first;
+    JsonObject *balance;
     guint i;
 
     usage = parse_object(usage_json, parser);
     in = json_object_get_array_member(usage, "logins");
     board = office_usage_board(usage);
     logins = json_object_get_array_member(board, "logins");
-    g_assert_cmpuint(json_array_get_length(logins), ==, OFFICE_BOARD_LOGINS);
+    /* all five: nothing dropped */
+    g_assert_cmpuint(json_array_get_length(logins), ==, json_array_get_length(in));
 
     for (i = 0; i < json_array_get_length(logins); i++) {
         JsonObject *src = json_array_get_object_element(in, i);
@@ -707,17 +713,14 @@ test_usage_board(void)
             ? json_object_get_array_member(src, "windows") : NULL;
         JsonArray *windows = json_object_get_array_member(out, "windows");
         g_autofree gchar *title = clawt_usage_login_title(src);
+        g_autofree gchar *status = clawt_usage_login_status_label(
+            src, g_get_real_time() / G_USEC_PER_SEC);
         guint w;
 
         g_assert_cmpstr(json_object_get_string_member(out, "title"), ==, title);
+        g_assert_cmpstr(json_object_get_string_member(out, "status"), ==, status);
         g_assert_cmpuint(json_array_get_length(windows), ==,
-                         MIN(src_windows != NULL ? json_array_get_length(src_windows) : 0,
-                             OFFICE_BOARD_WINDOWS));
-        if (json_array_get_length(windows) == 0)
-            g_assert_cmpstr(json_object_get_string_member(out, "note"), ==,
-                            "reports no plan limits");
-        else
-            g_assert_false(json_object_has_member(out, "note"));
+                         src_windows != NULL ? json_array_get_length(src_windows) : 0);
 
         for (w = 0; w < json_array_get_length(windows); w++) {
             JsonObject *sw = json_array_get_object_element(src_windows, w);
@@ -730,7 +733,8 @@ test_usage_board(void)
             g_assert_cmpstr(json_object_get_string_member(ow, "value"), ==, value);
             g_assert_cmpstr(json_object_get_string_member(ow, "tone"), ==,
                             clawt_allowance_level_tone(clawt_usage_window_level(sw)));
-            if (clawt_usage_window_remaining(sw, &left))
+            if (clawt_usage_window_remaining(sw, &left) &&
+                g_strcmp0(json_object_get_string_member(ow, "kind"), "balance") != 0)
                 g_assert_cmpfloat_with_epsilon(json_object_get_double_member(ow, "remaining"),
                                                left, 1e-9);
             else
@@ -744,6 +748,18 @@ test_usage_board(void)
                                                   "tone"), !=,
                     json_object_get_string_member(json_array_get_object_element(first, 1),
                                                   "tone"));
+    g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(first, 0),
+                                                  "reset"), ==, "resets Tue 9am");
+    /* the tightest window is the shared helper's: 4% left */
+    g_assert_cmpint(json_object_get_int_member(json_array_get_object_element(logins, 0),
+                                               "tightest"), ==, 1);
+
+    /* a balance is a figure, not a meter */
+    balance = json_array_get_object_element(json_object_get_array_member(
+        json_array_get_object_element(logins, 3), "windows"), 0);
+    g_assert_cmpstr(json_object_get_string_member(balance, "kind"), ==, "balance");
+    g_assert_cmpstr(json_object_get_string_member(balance, "value"), ==, "$0.00 prepaid");
+    g_assert_false(json_object_has_member(balance, "remaining"));
 }
 
 /* The poll carries the board, from usage.providers as it stands. */

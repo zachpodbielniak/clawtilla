@@ -1,0 +1,45 @@
+{
+  "now": 1800000000,
+  "logins": [
+    {
+      "id": "claude-code:zach-podbielniak-long-work-account",
+      "provider": "claude-code",
+      "account": "zach-podbielniak-long-work-account",
+      "state": "ok",
+      "read_at": 1799999880,
+      "plan": "max",
+      "windows": [
+        { "label": "Session (5h)", "kind": "meter", "unit": "percent", "remaining_percent": 62, "reset_text": "Tue 9am" },
+        { "label": "Weekly", "kind": "meter", "unit": "percent", "remaining_percent": 21, "reset_text": "Sun 18:00" },
+        { "label": "Weekly (Opus, the much longer pool name)", "kind": "meter", "unit": "percent", "remaining_percent": 8, "reset_text": "Sun 18:00" },
+        { "label": "Weekly (Fable)", "kind": "meter", "unit": "percent", "remaining_percent": 100 }
+      ]
+    },
+    {
+      "id": "codex-cli:default",
+      "provider": "codex-cli",
+      "state": "ok",
+      "read_at": 1799999700,
+      "windows": [
+        { "label": "Usage period", "key": "USAGE_PERIOD", "kind": "meter", "unit": "percent", "remaining_percent": 45, "reset_text": "3 Dec" }
+      ]
+    },
+    {
+      "id": "grok-build:an-extraordinarily-long-account-name-for-the-ellipsis",
+      "provider": "grok-build",
+      "account": "an-extraordinarily-long-account-name-for-the-ellipsis",
+      "state": "ok",
+      "read_at": 1799999940,
+      "windows": [
+        { "label": "Prepaid balance", "kind": "balance", "unit": "USD", "remaining": 0 },
+        { "label": "Monthly credits", "kind": "meter", "unit": "percent", "remaining_percent": 90 }
+      ]
+    },
+    {
+      "id": "gemini:default",
+      "provider": "gemini",
+      "state": "unsupported",
+      "message": "the CLI has no usage panel"
+    }
+  ]
+}

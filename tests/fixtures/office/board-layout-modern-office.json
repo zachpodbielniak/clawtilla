@@ -1,0 +1,67 @@
+{
+  "world": "modern-office",
+  "placements": [
+    {
+      "id": "chief",
+      "activity": "working",
+      "pose": "type",
+      "x": 176,
+      "y": 144
+    },
+    {
+      "id": "kudu",
+      "activity": "working",
+      "pose": "type",
+      "x": 432,
+      "y": 144
+    },
+    {
+      "id": "oryx",
+      "activity": "working",
+      "pose": "type",
+      "x": 528,
+      "y": 144
+    },
+    {
+      "id": "lynx",
+      "activity": "idle",
+      "pose": "stand",
+      "x": 1296,
+      "y": 880
+    },
+    {
+      "id": "wren",
+      "activity": "in_meeting",
+      "pose": "sit",
+      "x": 1200,
+      "y": 368
+    }
+  ],
+  "participants": [
+    {
+      "id": "chief",
+      "name": "Chief",
+      "kind": "agent"
+    },
+    {
+      "id": "kudu",
+      "name": "Kudu",
+      "kind": "agent"
+    },
+    {
+      "id": "oryx",
+      "name": "Oryx",
+      "kind": "agent"
+    },
+    {
+      "id": "lynx",
+      "name": "Lynx",
+      "kind": "agent"
+    },
+    {
+      "id": "wren",
+      "name": "Wren",
+      "kind": "agent"
+    }
+  ]
+}

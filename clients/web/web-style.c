@@ -1410,6 +1410,27 @@ clawt_web_stylesheet(void)
     ".office-tip em{font-style:normal;color:var(--muted)}"
     ".office-tip small{color:var(--info-fg)}"
     ".office-simulated .office-stage{outline:2px dashed var(--warn-fg);outline-offset:3px}"
+    /*
+     * The usage details panel: dark in either theme, like the board on
+     * the wall it opens from, so the tones are the board's bright ones.
+     * Never wider or taller than the stage; past that it scrolls, and a
+     * cell too narrow for its words ends them with an ellipsis.
+     */
+    ".office-usage-panel{position:absolute;z-index:3;background:#12141a;"
+      "color:#fff;border:1px solid #464c5c;border-radius:var(--radius-sm);"
+      "padding:8px 10px;font-size:12px;line-height:1.5;overflow:auto;"
+      "box-shadow:0 8px 24px rgba(0,0,0,.35)}"
+    ".office-usage-panel[hidden]{display:none}"
+    ".office-usage-panel h3{margin:0 0 4px;font-size:12px;font-weight:700}"
+    ".office-usage-panel table{border-collapse:collapse}"
+    ".office-usage-panel th{text-align:left;font-weight:700;padding:6px 0 0}"
+    ".office-usage-panel td{padding:0 8px 0 0;white-space:nowrap;overflow:hidden;"
+      "text-overflow:ellipsis;max-width:14rem;color:#bec3d2}"
+    ".office-usage-panel td.value{color:#fff}"
+    ".office-usage-panel .status td,.office-usage-panel td.reset{color:#969cac}"
+    ".office-usage-panel .bar{display:inline-block;width:60px;height:6px;background:#3c404c;"
+      "vertical-align:middle}"
+    ".office-usage-panel .bar span{display:block;height:100%}"
 
     /* ── The drawer's memory ── */
     /*

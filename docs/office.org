@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-11-21 Sat]
-#+updated: [2026-11-21 Sat]
+#+updated: [2026-11-26 Thu]
 #+version: 0.1.0
 
 * The office
@@ -138,6 +138,12 @@ clawtilla-office --3d --world cozy-town
 clawtilla-office --profile workstation      # a daemon on another machine
 clawtilla-office --simulate                 # invented activity, labelled, never sent anywhere
 clawtilla-office --screenshot office.png --width 1600 --height 900
+clawtilla-office --usage corner             # provider usage as a panel in the corner
+# no daemon at all: a pack from disk, a layout and usage from files
+clawtilla-office --pack data/office/worlds/cozy-town \
+    --layout-file tests/fixtures/office/board-layout-cozy-town.json \
+    --usage-file tests/fixtures/office/usage-board.json \
+    --screenshot cozy.png --usage-report cozy.json --usage-open
 #+end_src
 
 | Option | Does |
@@ -153,6 +159,10 @@ clawtilla-office --screenshot office.png --width 1600 --height 900
 | ~--focus ID~ | the 3D camera follows this participant, close up; a 2D map zoomed past the view is centred on them |
 | ~--zoom fit\|1x\|2x~ | how far the 2D map is zoomed (below); in 3D, the camera's starting distance |
 | ~--ui-scale N~ | draw text, name plates and marks /N/ times larger (1 to 4), for a frame shown on a HiDPI screen; ~--ui-scale 2~ with a 4K ~--screenshot~ reads like 1080p |
+| ~--usage world\|corner\|off~ | where provider usage is shown (below): on the =usage_board= wall (the default), as a panel docked in the top right corner, or not at all.  In a window, *U* cycles the three |
+| ~--usage-open~ | open the usage details panel beside the board, as a click on it does -- for a screenshot of it |
+| ~--usage-report FILE~ | with ~--screenshot~: also write, as JSON, where the board and panel were drawn -- the zone on screen, the level of detail, every item's rect and every text's column (=clawt_office_scene_describe_usage()=) |
+| ~--pack DIR~ | draw the world pack in =DIR= with no daemon: read as the daemon would serve it, the layout from ~--layout-file~ (an ~office.layout~ answer) and usage from ~--usage-file~ (a ~usage.providers~ answer, whose ~now~ is the board's clock, so a fixture draws the same frame every run) |
 
 *Which daemon, run bare.*  With no ~--socket~, ~--profile~ or ~--host~, the office opens on the daemon a running ~clawtilla-gtk~ or ~clawtilla-lrg~ is on right now, so it draws the fleet that is on screen beside it; with none running, on the one the clients were last switched to; then on the local socket.  It prints which and why on stderr.  The details -- the per-process ~current-connection-PID~ file, why it never holds a token, and where the token comes from instead -- are in [[file:clients.org::#office-follows-the-clients][clients.org]].
 
@@ -225,11 +235,47 @@ An agent the custodial team has made a character for ([[file:office-custodial-te
 [[file:images/office/office-character.png]]
 
 *** The usage board
+:PROPERTIES:
+:CUSTOM_ID: usage-board
+:END:
 
-Each provider login's allowance -- the meters on the Fleet page, from the same library calls -- is drawn on the wall a pack tags =usage_board=.  It reads ~usage.providers~ as it stands and never asks for a fresh read: a wall display left open all day must not spawn a provider's CLI once a minute.  The Fleet page refreshes; the board shows the result.
+Each provider login's allowance -- the words, figures and tones of the Fleet page, from the same library calls -- is drawn on the wall a pack tags =usage_board=, with every login and every window in a details panel beside it.  It reads ~usage.providers~ as it stands and never asks for a fresh read: a wall display left open all day must not spawn a provider's CLI once a minute.  The Fleet page refreshes; the board shows the result.
 
-#+caption: the usage board
+**** The words: one model, every client
+
+=clawt_office_board_new()= turns ~usage.providers~ into the board's model: per login its title (=clawt_usage_login_title()=), its initial (the title's first letter, the provider's mark on the wall), its status line (=clawt_usage_login_status_label()=: /Read 2m ago/, /Reports no plan limits/), its tone (=clawt_usage_login_level()=) and which window is the tightest (=clawt_usage_login_tightest_window()=); per window its label, figure (=clawt_usage_window_value_label()=), reset (=clawt_usage_window_reset_label()=, /resets in 2h 10m/), tone, and how much is left -- never for a /balance/, which is a currency figure with no share and is drawn as text with no meter (/$0.00 prepaid/).  Every login and every window is in it; nothing is dropped there.  clawtilla-office and the lrg client draw from it, and the web client sends it to the browser as it stands (=clawt_office_board_to_json()=), so no client re-derives a label or a level.  It is worded again whenever the clock passes a minute, so /resets in .../ does not go stale on a wall left open.
+
+**** On the wall: fitted to its zone
+
+The board is drawn inside the zone -- the pack's ~rect_2d~ for it (=modern-office='s =board=, 160 by 160 map pixels; =cozy-town='s =square=, 288 by 160), or five tiles square round its anchor for a pack that gives none -- and never outside it: it is laid out by =clawt_office_board_layout_world()=, which places every box, meter and word inside the zone's rectangle on screen, and every text is ellipsized to its column (measured with the renderer's own font, through a callback).  It is drawn after the floor and before the people and their name plates, so somebody standing at the board is drawn in front of it.
+
+How much it shows follows the zone's size on screen -- which is the zoom, the view's size and the device scale together -- rather than a zoom step:
+
+| Detail | When | Shows |
+|--------+------+-------|
+| rows | every login and window fits at 20 px, or else at 10 px (times ~ui_scale~) | per login its title; per window its label, a meter and its figure; a login with no windows its status |
+| gauges | rows do not fit, but a badge at least 14 px (times ~ui_scale~) does | per login a badge in the tone of its tightest window, with the provider's initial, and a meter for that window; as many as fit, the last cell saying /+N/ for the rest |
+| mark | not even one gauge fits | one badge in the worst tone |
+
+The thresholds are the pixel font's: raylib's default font is a 10 px bitmap, crisp at 10 and 20 and unreadable below 10, so the board uses no other size.  On the shipped worlds that gives gauges at *Fit* (the 160 px zone is about 90 px at 1280 by 720) and rows at *2x* (320 px).
+
+#+caption: the usage board at 2x (rows), modern-office; at Fit it is a gauge per login (tests/fixtures/office/board-shots/)
 [[file:images/office/office-board.png]]
+
+**** Details on demand
+
+Hovering the board opens the details panel beside it; a click pins it open; a second click on the board, a click anywhere else, or Escape closes it (one panel at a time; a click that closes it does nothing else).  The panel (=clawt_office_board_layout_panel()=) lists every login -- title and status -- and every window: its label, a meter (none for a balance), its figure and when it resets.  Columns are as wide as their widest entry and shrink, the reset column first, when the panel would be wider than the view; every text is ellipsized to its column.  Rows that do not fit the view's height are counted in a last /+N more/ row, never dropped silently.  It goes right of the board, else left, else over it, and is then moved wholly inside the view.  Its text is 10 px times ~ui_scale~, so it reads the same at 1080p and at 4K with scale 2.
+
+#+caption: the details panel, opened from the board
+[[file:images/office/office-board-panel.png]]
+
+**** In the corner, or off
+
+=--usage corner= (the Office page's *Usage* drop-down, the web page's *Usage* button) draws no board on the wall and docks the same panel in the view's top right corner, always shown; =--usage off= draws neither.  The GTK client's corner panel is the renderer's, not a GTK popover: one panel, laid out by one piece of code, in all three clients.
+
+**** Tested
+
+=tests/test-office-board.c= holds the layout to its promises with a font of known widths: every item inside the zone at Fit, 1x, 2x and 4x for both shipped zones at device scales 1 and 2; no text wider than its column or smaller than the pixel font; every login counted when the wall is crowded; the panel inside views from 320 by 200 to 2560 by 1440, from a board at either edge, docked or not.  =tests/test-office-board-shots.sh= draws the fixture (=tests/fixtures/office/usage-board.json=: long login names, four windows on one login, a balance, a login with none) in both worlds at Fit and 2x with ~--pack~, and checks with each frame's ~--usage-report~ that the board stayed in its zone and the panel in the view, and with the pixels that the board changed nothing outside its zone.  The reference frames are in =tests/fixtures/office/board-shots/=.
 
 *** World adapters
 
@@ -332,6 +378,7 @@ Above the drawing:
 |---------+------|
 | *2D / 3D* | the map from above, or the 3D level from an orbiting camera.  Shows what is drawn: a world without a level is 2D, and *3D* is greyed out with a tooltip saying why.  Remembered as ~office_view~ in ~appearance.yaml~ |
 | *Fit / 1x / 2x* | the zoom.  *Fit* is the whole map at the largest whole-number scale that fits, or the fraction that fits when the map is bigger than the view; *1x* is one map pixel per logical pixel and *2x* two, each crisp on any screen.  Zoomed past the view, a drag moves the map; in 3D the three set the camera's distance and the wheel goes on from there.  Remembered as ~office_zoom~ |
+| *Usage* | where provider usage is shown: *On the wall* (the =usage_board= zone; hover or click it for every login and window), *In the corner* (the same panel, docked top right) or *Off*.  Remembered as ~office_usage~ in ~appearance.yaml~.  See [[#usage-board][The usage board]] |
 | *Follow* | nobody, or a participant from the roster: the 3D camera centres on them and comes in close; a zoomed 2D map stays centred on them; their name plate is always drawn.  Not remembered -- it names an agent of one fleet -- and reset to nobody when they leave the office |
 | *Pop out* | the drawing, toolbar and all, in a window of its own (1280 by 800 to start), for another monitor.  The page says it is out, with *Bring back*; closing the window brings it back too.  The child is not restarted for either: the drawing moves, and its new size is a RESIZE |
 | *Open office* | beside *2D / 3D*: ~clawtilla-office~ started as a separate program, in a window of its own, on this window's connection and in the mode the switch shows.  Not the embedded drawing: see [[#open-office][Open office]] |

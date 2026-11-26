@@ -103,6 +103,23 @@ typedef enum {
 } ClawtOfficeZoom;
 
 /**
+ * ClawtOfficeUsagePlacement:
+ * @CLAWT_OFFICE_USAGE_WORLD: on the wall the pack tags `usage_board`,
+ *   fitted to that zone; hovering or clicking it opens the details panel
+ *   beside it
+ * @CLAWT_OFFICE_USAGE_CORNER: no board on the wall; the details panel is
+ *   docked in a corner of the view and always shown
+ * @CLAWT_OFFICE_USAGE_OFF: no usage drawn at all
+ *
+ * Where the drawn office shows what each provider login has left.
+ */
+typedef enum {
+    CLAWT_OFFICE_USAGE_WORLD  = 0,
+    CLAWT_OFFICE_USAGE_CORNER = 1,
+    CLAWT_OFFICE_USAGE_OFF    = 2
+} ClawtOfficeUsagePlacement;
+
+/**
  * clawt_office_view_mode_nick:
  * @mode: a #ClawtOfficeViewMode
  *
@@ -137,6 +154,24 @@ const gchar *clawt_office_zoom_nick(ClawtOfficeZoom zoom);
  */
 gboolean clawt_office_zoom_from_nick(const gchar     *nick,
                                      ClawtOfficeZoom *out);
+
+/**
+ * clawt_office_usage_placement_nick:
+ * @placement: a #ClawtOfficeUsagePlacement
+ *
+ * Returns: (transfer none): "world", "corner" or "off"
+ */
+const gchar *clawt_office_usage_placement_nick(ClawtOfficeUsagePlacement placement);
+
+/**
+ * clawt_office_usage_placement_from_nick:
+ * @nick: (nullable): "world", "corner" or "off", in any case
+ * @out: (out): the placement
+ *
+ * Returns: %TRUE when @nick named a placement; @out is untouched otherwise
+ */
+gboolean clawt_office_usage_placement_from_nick(const gchar               *nick,
+                                                ClawtOfficeUsagePlacement *out);
 
 /**
  * clawt_office_view_height_for_page:
@@ -286,6 +321,8 @@ guint clawt_office_labels_arrange(ClawtOfficeLabel *labels,
  * @has_zoom: whether the line set the zoom
  * @zoom: the zoom, when @has_zoom
  * @ui_scale: the device scale, 0 when the line did not say
+ * @has_usage: whether the line said where provider usage is drawn
+ * @usage: where, when @has_usage
  *
  * One control line, parsed.  Each member is optional on the wire, so a
  * host may send only what changed.
@@ -298,6 +335,8 @@ typedef struct {
     gboolean             has_zoom;
     ClawtOfficeZoom      zoom;
     gint                 ui_scale;
+    gboolean             has_usage;
+    ClawtOfficeUsagePlacement usage;
 } ClawtOfficeViewControl;
 
 /**
@@ -307,18 +346,20 @@ typedef struct {
  *   for nobody
  * @zoom: the zoom
  * @ui_scale: device pixels per logical pixel
+ * @usage: where provider usage is drawn
  *
  * The line a host writes to an embedded renderer's stdin to say how the
  * office is to be drawn now: `{"mode":"3d","focus":"chief","zoom":"fit",
- * "ui_scale":2}` and a newline.  The whole state every time, so a line
+ * "ui_scale":2,"usage":"world"}` and a newline.  The whole state every time, so a line
  * lost to nothing in particular is corrected by the next.
  *
  * Returns: (transfer full): the line, newline included
  */
-gchar *clawt_office_view_control_line(ClawtOfficeViewMode  mode,
-                                      const gchar         *focus,
-                                      ClawtOfficeZoom      zoom,
-                                      gint                 ui_scale);
+gchar *clawt_office_view_control_line(ClawtOfficeViewMode        mode,
+                                      const gchar               *focus,
+                                      ClawtOfficeZoom            zoom,
+                                      gint                       ui_scale,
+                                      ClawtOfficeUsagePlacement  usage);
 
 /**
  * clawt_office_view_control_parse:
@@ -329,7 +370,7 @@ gchar *clawt_office_view_control_line(ClawtOfficeViewMode  mode,
  *
  * Reads a line clawt_office_view_control_line() wrote, or any JSON object
  * with some of its members.  A member of the wrong type or an unknown
- * mode or zoom is refused, naming it, rather than half-applied: a host
+ * mode, zoom or usage placement is refused, naming it, rather than half-applied: a host
  * and a renderer of different versions should disagree loudly.
  * Unknown members are ignored, for the same reason in the other
  * direction: a newer host's extra field must not stop an older renderer.

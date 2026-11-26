@@ -19,8 +19,11 @@
  * An agent the custodial team has given a character is drawn from its
  * sprite sheet (office.characters) instead of the default body, and the
  * wall the pack tags usage_board carries each provider login's allowance
- * (usage.providers as it stands, labelled and levelled by libclawt
- * server side -- this script only paints the words it is given).
+ * (usage.providers as it stands, worded and levelled by libclawt's
+ * clawt_office_board_new() server side -- this script only lays out and
+ * paints the words it is given).  The board is fitted to its zone; a
+ * hover or click opens a details panel beside it, and the Usage button
+ * docks that panel in the corner instead, or turns usage off.
  *
  * Served by clawtilla-web from its own directory like htmx.min.js; it
  * fetches nothing but its own origin's /office/*.json and, after the
@@ -50,6 +53,7 @@
 	var tip = root.querySelector('.office-tip');
 	var tilt_btn = root.querySelector('[data-office-tilt]');
 	var rooms_btn = root.querySelector('[data-office-rooms]');
+	var usage_btn = root.querySelector('[data-office-usage]');
 	var sim_label = root.querySelector('.office-sim');
 	var title_el = root.querySelector('.office-world-name');
 	var floor_ctx = floor_cv.getContext('2d');
@@ -83,6 +87,18 @@
 	var want_tilt = /(?:^|[?&])tilt=1(?:&|$)/.test(location.search.slice(1)) ||
 		pref_get('tilt', false);
 	var show_rooms = pref_get('rooms', true);
+
+	/* where provider usage goes: world, corner or off, kept like the toggles */
+	var USAGE_PLACES = ['world', 'corner', 'off'];
+	var USAGE_WORDS = { world: 'on the wall', corner: 'in the corner', off: 'off' };
+	var usage_place = (function () {
+		var v = null;
+
+		try {
+			v = window.localStorage.getItem('clawt-office-usage');
+		} catch (e) { /* private mode: the default */ }
+		return USAGE_PLACES.indexOf(v) >= 0 ? v : 'world';
+	})();
 	var tilt = want_tilt ? 1 : 0;   /* 0 flat .. 1 tilted, eased between */
 
 	/* -- The world -------------------------------------------------- */
@@ -94,6 +110,7 @@
 	var map_cache = null;         /* the map at one canvas pixel per map pixel */
 	var rooms = [];               /* {name, x, y, w, h} from the zones layer */
 	var board_at = null;          /* the usage_board's first anchor, map pixels */
+	var board_rect = null;        /* its zone, {x, y, w, h} in map pixels */
 	var board = scene.board || null;   /* {logins: [...]}, libclawt's words */
 
 	/* The zones by tag, read from the pack (meeting:10 answers meeting). */
@@ -124,6 +141,25 @@
 				return { x: a[0], y: a[1] };
 		}
 		return null;
+	}
+
+	/*
+	 * The usage board's zone: its rect_2d when the pack gives one, else
+	 * five tiles square round its anchor -- as the lrg scene decides it.
+	 */
+	function board_zone() {
+		var zones = world.zones || [], i, r;
+
+		if (!board_at)
+			return null;
+		for (i = 0; i < zones.length; i++) {
+			r = zones[i].rect_2d;
+			if ((zones[i].tags || []).indexOf('usage_board') >= 0 && r && r.length === 4 &&
+			    r[2] > 0 && r[3] > 0)
+				return { x: r[0], y: r[1], w: r[2], h: r[3] };
+		}
+		return { x: board_at.x - 2.5 * tile, y: board_at.y - 2.5 * tile,
+		         w: 5 * tile, h: 5 * tile };
 	}
 
 	function zone_name(id) {
@@ -158,6 +194,7 @@
 				});
 			});
 		}
+		board_rect = board_zone();
 
 		if (map) {
 			(map.layers || []).forEach(function (layer) {
@@ -619,6 +656,8 @@
 		faces = body.faces || faces;
 		lines = body.lines || lines;
 		board = body.board || board;
+		if (body.board)
+			fill_panel();
 		take_characters(body.characters);
 		people = {};
 		(layout.participants || []).forEach(function (p) { people[p.id] = p; });
@@ -1130,89 +1169,334 @@
 
 	/*
 	 * Each provider login's allowance on the wall the pack tags
-	 * usage_board: its title, then a meter per window filled for what is
-	 * left, in the tone libclawt gave the window's level, and the value
-	 * label beside it.  Every word arrives from the server
-	 * (clawt_usage_*()); nothing here decides a level.  No logins, no
-	 * board -- as the lrg scene.
+	 * usage_board, fitted to that zone as the lrg scene fits it
+	 * (clawt_office_board_layout_world()): rows of words -- title, then
+	 * label, meter and figure per window -- when they all fit at a legible
+	 * size; else a badge with the provider's initial and a meter for the
+	 * login's tightest window, as many as fit with "+N" for the rest; else
+	 * one badge in the worst tone.  Nothing is drawn outside the zone.
+	 * Every word, level and tone arrives from the server; nothing here
+	 * decides one.  No logins, no board.
 	 *
 	 * The board is a dark panel in either theme, so its tones are the
 	 * bright ones the lrg board paints clawt_allowance_level_tone() in,
 	 * not the page's foreground tokens, which are dark in the light theme.
 	 */
 	var board_ink = { good: '#2ec27e', warn: '#e5a50a', bad: '#e01b24', neutral: '#78aeed' };
+	var BOARD_MIN_PX = 10;        /* the smallest text the board draws */
+	var board_box = null;         /* where the board was drawn, stage pixels */
 
-	function draw_board(c) {
-		var logins = board && Array.isArray(board.logins) ? board.logins : [];
-		var pr, bs, px, line, pad, bar_w, label_w = 0, value_w = 0, title_w = 0;
-		var width, height = 0, x, y;
+	function board_logins() {
+		return board && Array.isArray(board.logins) ? board.logins : [];
+	}
 
-		if (!board_at || logins.length === 0)
-			return;
-		pr = project(board_at.x, board_at.y);
-		bs = Math.max(0.85, Math.min(1.25, pr.s * view.boost));
-		px = Math.round(10 * bs);
-		line = Math.round(15 * bs);
-		pad = 7 * bs;
-		bar_w = 96 * bs;
+	/* @text cut to @room pixels in the current font, ending in an ellipsis. */
+	function fit_text(c, text, room) {
+		var lo = 0, hi, mid, best = '';
 
-		/* as wide as its words: a value label can be "$3.20 of $10.00 left" */
-		c.save();
+		text = text || '';
+		if (c.measureText(text).width <= room)
+			return text;
+		if (c.measureText('\u2026').width > room)
+			return '';
+		hi = text.length - 1;
+		best = '\u2026';
+		while (lo <= hi) {
+			mid = (lo + hi) >> 1;
+			if (c.measureText(text.slice(0, mid).replace(/\s+$/, '') + '\u2026').width <= room) {
+				best = text.slice(0, mid).replace(/\s+$/, '') + '\u2026';
+				lo = mid + 1;
+			} else {
+				hi = mid - 1;
+			}
+		}
+		return best;
+	}
+
+	function board_meter(c, x, y, w, h, w_obj) {
+		c.fillStyle = '#3c404c';
+		c.fillRect(x, y, w, h);
+		if (w_obj && typeof w_obj.remaining === 'number' && w_obj.kind !== 'balance') {
+			c.fillStyle = board_ink[w_obj.tone] || board_ink.neutral;
+			c.fillRect(x, y, w * Math.max(0, Math.min(1, w_obj.remaining / 100)), h);
+		}
+	}
+
+	/* Rows of words, or false when they do not fit the zone at @px. */
+	function board_rows(c, logins, z, px) {
+		var pad = Math.max(2, Math.floor(px * 0.4)), line = Math.floor(px * 1.4);
+		var gap = pad, inner = z.w - 2 * pad, lines = 0, value_w = 0, bar_w, label_w, y;
+
+		c.font = '500 ' + px + 'px ' + ink.sans;
 		logins.forEach(function (l) {
-			c.font = '700 ' + px + 'px ' + ink.sans;
-			title_w = Math.max(title_w, c.measureText(l.title || '').width);
-			c.font = '500 ' + px + 'px ' + ink.sans;
-			if (l.note)
-				title_w = Math.max(title_w, c.measureText(l.note).width);
+			lines += 1 + Math.max(1, (l.windows || []).length);
 			(l.windows || []).forEach(function (w) {
-				label_w = Math.max(label_w, c.measureText(trim_text(w.label, 18)).width);
 				value_w = Math.max(value_w, c.measureText(w.value || '').width);
 			});
-			height += line * (1 + Math.max(1, (l.windows || []).length));
 		});
-		width = Math.max(title_w, label_w + bar_w + value_w + 16 * bs) + pad * 2;
-		height += pad * 1.2;
-		x = Math.max(4, Math.min(view.W - width - 4, pr.x - width / 2));
-		y = Math.max(4, pr.y - 8 * bs - height);
+		if (pad * 2 + lines * line > z.h)
+			return false;
+		value_w = Math.min(Math.ceil(value_w), Math.floor(inner * 0.4));
+		bar_w = Math.floor(Math.max(inner * 0.2, px));
+		label_w = inner - value_w - bar_w - 2 * gap;
+		if (label_w < px * 2.5)
+			return false;
 
-		c.fillStyle = 'rgba(18,20,26,.9)';
-		round_rect(c, x, y, width, height, 6 * bs);
-		c.fill();
-		c.textAlign = 'left';
 		c.textBaseline = 'middle';
-		y += pad * 0.6;
+		y = z.y + pad;
 		logins.forEach(function (l) {
 			c.font = '700 ' + px + 'px ' + ink.sans;
 			c.fillStyle = '#fff';
-			c.fillText(l.title || '', x + pad, y + line / 2);
+			c.fillText(fit_text(c, l.title, inner), z.x + pad, y + line / 2);
 			y += line;
 			c.font = '500 ' + px + 'px ' + ink.sans;
 			if (!l.windows || l.windows.length === 0) {
-				c.fillStyle = 'rgba(200,204,214,.85)';
-				c.fillText(l.note || '', x + pad, y + line / 2);
+				c.fillStyle = '#969cac';
+				c.fillText(fit_text(c, l.status, inner), z.x + pad, y + line / 2);
 				y += line;
 				return;
 			}
 			l.windows.forEach(function (w) {
-				var bx = x + pad + label_w + 8 * bs;
-				var by = y + line / 2 - 3.5 * bs;
-				var fill = board_ink[w.tone] || board_ink.neutral;
+				var bx = z.x + pad + label_w + gap, bh = Math.max(2, Math.floor(px * 0.6));
 
-				c.fillStyle = 'rgba(200,204,214,.9)';
-				c.fillText(trim_text(w.label, 18), x + pad, y + line / 2);
-				c.fillStyle = '#3c404c';
-				c.fillRect(bx, by, bar_w, 7 * bs);
-				if (typeof w.remaining === 'number') {
-					c.fillStyle = fill;
-					c.fillRect(bx, by, bar_w * Math.max(0, Math.min(1, w.remaining / 100)), 7 * bs);
-				}
-				c.fillStyle = fill;
-				c.fillText(w.value || '', bx + bar_w + 8 * bs, y + line / 2);
+				c.fillStyle = '#bec3d2';
+				c.fillText(fit_text(c, w.label, label_w), z.x + pad, y + line / 2);
+				if (w.kind !== 'balance')
+					board_meter(c, bx, y + (line - bh) / 2, bar_w, bh, w);
+				c.fillStyle = '#fff';
+				c.fillText(fit_text(c, w.value, value_w), bx + bar_w + gap, y + line / 2);
 				y += line;
 			});
 		});
+		return true;
+	}
+
+	/* The largest badge for @cells gauges in the zone, and its grid. */
+	function board_grid(cells, z, pad, cap) {
+		var best = { side: -1 }, cols, rows, cw, ch, side;
+
+		for (cols = 1; cols <= cells; cols++) {
+			rows = Math.ceil(cells / cols);
+			cw = (z.w - pad * (cols + 1)) / cols;
+			ch = (z.h - pad * (rows + 1)) / rows;
+			side = Math.floor(Math.min(ch, cw / 2.2, cap));
+			if (side > best.side)
+				best = { side: side, cols: cols, cw: cw, ch: ch };
+		}
+		return best;
+	}
+
+	/* A gauge per login, or false when not even one fits. */
+	function board_gauges(c, logins, z) {
+		var least = BOARD_MIN_PX + 4, pad = Math.max(2, Math.floor(Math.min(z.w, z.h) * 0.05));
+		var n = logins.length, shown, cells, g, i;
+
+		for (shown = n; ; shown--) {
+			cells = shown === n ? n : shown + 1;
+			g = board_grid(cells, z, pad, 40);
+			if (g.side >= least || shown === 0)
+				break;
+		}
+		if (g.side < least || shown === 0)
+			return false;
+		c.textBaseline = 'middle';
+		c.textAlign = 'center';
+		for (i = 0; i < cells; i++) {
+			var cx = z.x + pad + (i % g.cols) * (g.cw + pad);
+			var cy = z.y + pad + Math.floor(i / g.cols) * (g.ch + pad);
+			var by = Math.floor(cy + (g.ch - g.side) / 2);
+			var l = logins[i], tight, letter, bh, bx;
+
+			if (i === shown) {
+				c.font = '600 ' + BOARD_MIN_PX + 'px ' + ink.sans;
+				c.fillStyle = '#969cac';
+				c.fillText(fit_text(c, '+' + (n - shown), g.cw), cx + g.cw / 2, cy + g.ch / 2);
+				continue;
+			}
+			tight = l.tightest >= 0 && l.windows ? l.windows[l.tightest] : null;
+			c.fillStyle = board_ink[tight ? tight.tone : l.tone] || board_ink.neutral;
+			c.fillRect(cx, by, g.side, g.side);
+			letter = g.side >= 2 * BOARD_MIN_PX + 4 ? 2 * BOARD_MIN_PX : BOARD_MIN_PX;
+			c.font = '800 ' + letter + 'px ' + ink.sans;
+			c.fillStyle = '#12141a';
+			c.fillText(fit_text(c, l.initial || '?', g.side), cx + g.side / 2, by + g.side / 2);
+			bh = Math.max(3, Math.floor(g.side * 0.4));
+			bx = cx + g.side + Math.max(2, Math.floor(g.side * 0.25));
+			board_meter(c, bx, by + (g.side - bh) / 2, cx + g.cw - bx, bh, tight);
+		}
+		c.textAlign = 'left';
+		return true;
+	}
+
+	function draw_board(c) {
+		var logins = board_logins();
+		var a, b, z, rank = { bad: 3, warn: 2, good: 1 }, worst = 'neutral', side;
+
+		board_box = null;
+		if (!board_rect || logins.length === 0 || usage_place !== 'world')
+			return;
+		/* the zone's corners on the stage: its box, flat or tilted */
+		a = project(board_rect.x, board_rect.y);
+		b = project(board_rect.x + board_rect.w, board_rect.y + board_rect.h);
+		z = { x: Math.floor(Math.min(a.x, b.x)), y: Math.floor(Math.min(a.y, b.y)),
+		      w: Math.floor(Math.abs(b.x - a.x)), h: Math.floor(Math.abs(b.y - a.y)) };
+		if (z.w < 2 || z.h < 2)
+			return;
+		board_box = z;
+
+		c.save();
+		c.beginPath();
+		c.rect(z.x, z.y, z.w, z.h);
+		c.clip();
+		c.fillStyle = 'rgba(18,20,26,.9)';
+		c.fillRect(z.x, z.y, z.w, z.h);
+		c.strokeStyle = '#464c5c';
+		c.strokeRect(z.x + 0.5, z.y + 0.5, z.w - 1, z.h - 1);
+		if (!board_rows(c, logins, z, 2 * BOARD_MIN_PX) &&
+		    !board_rows(c, logins, z, BOARD_MIN_PX) &&
+		    !board_gauges(c, logins, z)) {
+			/* too small for a gauge: one mark in the worst tone */
+			logins.forEach(function (l) {
+				if ((rank[l.tone] || 0) > (rank[worst] || 0))
+					worst = l.tone;
+			});
+			side = Math.min(z.w, z.h);
+			c.fillStyle = board_ink[worst] || board_ink.neutral;
+			c.fillRect(z.x + (z.w - side) / 2, z.y + (z.h - side) / 2, side, side);
+		}
 		c.restore();
 	}
+
+	/* -- The usage details panel ------------------------------------ */
+
+	/*
+	 * Every login and every window, in a table: the title and status, then
+	 * label, meter (none for a balance), figure and reset.  Beside the
+	 * board when it was hovered or clicked, docked in the stage's top
+	 * right corner when usage is "in the corner".  Kept inside the stage:
+	 * it scrolls rather than leaving it, and its cells end long words in
+	 * an ellipsis (CSS) rather than overflowing.
+	 */
+	var panel = document.createElement('div');
+	var panel_pinned = false;     /* opened by a click: stays until Escape or a click away */
+	var panel_quiet = false;      /* closed while hovered: not again until the pointer leaves */
+	var board_hover = false;
+
+	panel.className = 'office-usage-panel';
+	panel.hidden = true;
+	panel.setAttribute('role', 'dialog');
+	panel.setAttribute('aria-label', 'Provider usage');
+	stage.appendChild(panel);
+
+	function fill_panel() {
+		var logins = board_logins();
+		var h, table;
+
+		panel.textContent = '';
+		h = panel.appendChild(document.createElement('h3'));
+		h.textContent = 'Provider usage';
+		table = panel.appendChild(document.createElement('table'));
+		logins.forEach(function (l) {
+			var tr = table.appendChild(document.createElement('tr'));
+			var th = tr.appendChild(document.createElement('th'));
+
+			th.colSpan = 4;
+			th.textContent = l.title || '';
+			tr = table.appendChild(document.createElement('tr'));
+			tr.className = 'status';
+			th = tr.appendChild(document.createElement('td'));
+			th.colSpan = 4;
+			th.textContent = l.status || '';
+			(l.windows || []).forEach(function (w) {
+				var row = table.appendChild(document.createElement('tr'));
+				var cell, bar, fill;
+
+				cell = row.appendChild(document.createElement('td'));
+				cell.textContent = w.label || '';
+				cell.title = w.label || '';
+				cell = row.appendChild(document.createElement('td'));
+				if (w.kind !== 'balance') {
+					bar = cell.appendChild(document.createElement('span'));
+					bar.className = 'bar';
+					if (typeof w.remaining === 'number') {
+						fill = bar.appendChild(document.createElement('span'));
+						fill.style.width = Math.max(0, Math.min(100, w.remaining)) + '%';
+						fill.style.background = board_ink[w.tone] || board_ink.neutral;
+					}
+				}
+				cell = row.appendChild(document.createElement('td'));
+				cell.className = 'value';
+				cell.textContent = w.value || '';
+				cell = row.appendChild(document.createElement('td'));
+				cell.className = 'reset';
+				cell.textContent = w.reset || '';
+			});
+		});
+	}
+
+	function panel_open() {
+		if (usage_place === 'off' || board_logins().length === 0)
+			return false;
+		if (usage_place === 'corner')
+			return true;
+		return !!board_box && (panel_pinned || (!panel_quiet && board_hover));
+	}
+
+	/* Shown or hidden, and placed: beside the board, or in the corner, inside the stage. */
+	function place_panel() {
+		var open = panel_open(), m = 8, w, h, x, y;
+
+		if (panel.hidden !== !open)
+			panel.hidden = !open;
+		if (!open)
+			return;
+		panel.style.maxWidth = Math.max(120, view.W - 2 * m) + 'px';
+		panel.style.maxHeight = Math.max(60, view.H - 2 * m) + 'px';
+		w = panel.offsetWidth;
+		h = panel.offsetHeight;
+		if (usage_place === 'corner') {
+			x = view.W - m - w;
+			y = m;
+		} else {
+			x = board_box.x + board_box.w + m;
+			if (x + w > view.W - m)
+				x = board_box.x - m - w;
+			if (x < m)
+				x = board_box.x + (board_box.w - w) / 2;
+			y = board_box.y;
+		}
+		x = Math.max(m, Math.min(x, view.W - m - w));
+		y = Math.max(m, Math.min(y, view.H - m - h));
+		panel.style.left = Math.round(x) + 'px';
+		panel.style.top = Math.round(y) + 'px';
+	}
+
+	function on_board(ev) {
+		var r = actor_cv.getBoundingClientRect();
+		var x = ev.clientX - r.left, y = ev.clientY - r.top;
+
+		return !!board_box && x >= board_box.x && y >= board_box.y &&
+		       x < board_box.x + board_box.w && y < board_box.y + board_box.h;
+	}
+
+	panel.addEventListener('mouseleave', function () {
+		panel_quiet = false;
+		place_panel();
+	});
+	document.addEventListener('keydown', function (ev) {
+		if (ev.key !== 'Escape' || usage_place !== 'world' || panel.hidden)
+			return;
+		panel_pinned = false;
+		panel_quiet = true;
+		place_panel();
+	});
+	/* a click anywhere away from a pinned panel and its board closes it */
+	document.addEventListener('click', function (ev) {
+		if (!panel_pinned || panel.contains(ev.target) || (ev.target === actor_cv && on_board(ev)))
+			return;
+		panel_pinned = false;
+		place_panel();
+	}, true);
 
 	/* -- One frame -------------------------------------------------- */
 
@@ -1312,6 +1596,7 @@
 		});
 
 		draw_board(c);
+		place_panel();
 		plates = [];
 		bubbles = [];
 		frame.sprites.forEach(function (s) { draw_person(c, s, now); });
@@ -1469,6 +1754,18 @@
 
 	actor_cv.addEventListener('mousemove', function (ev) {
 		var h = hit(ev);
+		var was = board_hover;
+
+		board_hover = on_board(ev);
+		if (!board_hover && was)
+			panel_quiet = false;
+		if (board_hover !== was)
+			place_panel();
+		if (board_hover && !h) {
+			actor_cv.style.cursor = 'pointer';
+			tip.hidden = true;
+			return;
+		}
 
 		hover_id = h ? h.s.id : null;
 		actor_cv.style.cursor = h && clickable(h.s) ? 'pointer' : '';
@@ -1480,7 +1777,13 @@
 		show_tip(h.s);
 		last_paint = 0;
 	});
-	actor_cv.addEventListener('mouseleave', function () {
+	actor_cv.addEventListener('mouseleave', function (ev) {
+		/* onto the panel it opened is not away from the board */
+		board_hover = false;
+		if (!(ev.relatedTarget && panel.contains(ev.relatedTarget))) {
+			panel_quiet = false;
+			place_panel();
+		}
 		hover_id = null;
 		tip.hidden = true;
 		last_paint = 0;
@@ -1488,6 +1791,13 @@
 	actor_cv.addEventListener('click', function (ev) {
 		var h = hit(ev);
 
+		/* the board pins its panel open, and a second click closes it */
+		if (on_board(ev) && usage_place === 'world') {
+			panel_pinned = !panel_pinned;
+			panel_quiet = !panel_pinned;
+			place_panel();
+			return;
+		}
 		if (h && clickable(h.s))
 			window.location.href = '/a/' + encodeURIComponent(h.s.id) + '/chat';
 	});
@@ -1499,6 +1809,10 @@
 			tilt_btn.setAttribute('aria-pressed', want_tilt ? 'true' : 'false');
 		if (rooms_btn)
 			rooms_btn.setAttribute('aria-pressed', show_rooms ? 'true' : 'false');
+		if (usage_btn) {
+			usage_btn.textContent = 'Usage: ' + USAGE_WORDS[usage_place];
+			usage_btn.setAttribute('aria-pressed', usage_place === 'off' ? 'false' : 'true');
+		}
 	}
 	if (tilt_btn)
 		tilt_btn.addEventListener('click', function () {
@@ -1512,6 +1826,18 @@
 		rooms_btn.addEventListener('click', function () {
 			show_rooms = !show_rooms;
 			pref_set('rooms', show_rooms);
+			sync_buttons();
+			last_paint = 0;
+		});
+	if (usage_btn)
+		usage_btn.addEventListener('click', function (ev) {
+			usage_place = USAGE_PLACES[(USAGE_PLACES.indexOf(usage_place) + 1) %
+			                           USAGE_PLACES.length];
+			try {
+				window.localStorage.setItem('clawt-office-usage', usage_place);
+			} catch (e) { /* private mode: the button still works this visit */ }
+			panel_pinned = false;
+			ev.stopPropagation();
 			sync_buttons();
 			last_paint = 0;
 		});
