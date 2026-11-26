@@ -1872,18 +1872,19 @@ test_comments_read_in_every_organization(Fixture *fixture, gconstpointer data)
 }
 
 /*
- * The comment cursor from before organizations were read one by one
- * carries on in each: a comment made since it, in an organization that
- * was never read, is delivered rather than skipped by a new baseline.
+ * An organization read for the first time is read as a first pass is,
+ * whatever the account's cursor from before says: changes from a day
+ * back, comments from a baseline -- never a replay from that cursor,
+ * which only ever said where the default organization was up to.
  */
 static void
-test_comment_cursor_carries_into_each_organization(Fixture *fixture,
-                                                   gconstpointer data)
+test_a_new_organization_starts_from_its_own_baseline(Fixture *fixture,
+                                                     gconstpointer data)
 {
     g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
                                           CLAWT_TASK_RUNNING);
-    g_autofree gchar *line = g_strdup_printf("comment %s alice: why?",
-                                             clawt_task_get_id(task));
+    Sent *changes = NULL;
+    guint i;
 
     (void)data;
     fixture->create_org = 2;
@@ -1892,17 +1893,33 @@ test_comment_cursor_carries_into_each_organization(Fixture *fixture,
                                      FALSE);
     drain(fixture);
 
-    /* the cursor an earlier version kept, read up to comment 5 */
+    /* what an earlier version kept: the default organization, quiet */
     clawt_task_store_put_venture_cursor(fixture->store,
-                                        "http://v.test|scout|comments", "5");
+                                        "http://v.test|scout|comments", "0");
+    clawt_task_store_put_venture_cursor(fixture->store,
+                                        "http://v.test|scout|changes",
+                                        "2026-11-26T10:00:00Z");
     fixture->comments_2 = g_strdup(
-        "[{\"id\":6,\"ticket_id\":1,\"author\":\"alice\",\"body\":\"why?\"}]");
+        "[{\"id\":4,\"ticket_id\":1,\"author\":\"alice\",\"body\":\"old\"}]");
     poll(fixture);
 
-    g_assert_true(inbound_has(fixture, line));
-    g_assert_nonnull(find_sent(fixture, "GET",
-        "/api/v1/ticket_comment?ticket_id__in=1&id__gt=5&order=id&limit=100"
-        "&organization_id=2"));
+    /* nothing replayed: a baseline, in the second organization too */
+    g_assert_cmpuint(fixture->inbound->len, ==, 0);
+    g_assert_null(find_sent(fixture, "GET",
+        "/api/v1/ticket_comment?ticket_id__in=1&id__gt=0"));
+
+    for (i = 0; i < fixture->sent->len; i++) {
+        Sent *sent = g_ptr_array_index(fixture->sent, i);
+
+        if (g_str_has_prefix(sent->url, "/api/v1/ticket?external_ref__like=") &&
+            g_strcmp0(sent->token, "t-scout") == 0 &&
+            strstr(sent->url, "organization_id=2") != NULL)
+            changes = sent;
+    }
+
+    g_assert_nonnull(changes);
+    g_assert_null(strstr(changes->url, "2026-11-26T10%3A00%3A00Z"));
+    g_assert_null(strstr(changes->url, "2026-11-26T10:00:00Z"));
 }
 
 /* A ticket filed in its repository's organization is adopted from there. */
@@ -2020,8 +2037,8 @@ main(int argc, char *argv[])
         test_changes_read_in_every_organization);
     ADD("comments-read-in-every-organization",
         test_comments_read_in_every_organization);
-    ADD("comment-cursor-carries-into-each-organization",
-        test_comment_cursor_carries_into_each_organization);
+    ADD("a-new-organization-starts-from-its-own-baseline",
+        test_a_new_organization_starts_from_its_own_baseline);
     ADD("adoption-reads-the-tickets-organization",
         test_adoption_reads_the_tickets_organization);
     ADD("comment-adoption-reads-the-tickets-organization",

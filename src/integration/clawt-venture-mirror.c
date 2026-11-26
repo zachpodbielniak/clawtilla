@@ -1960,24 +1960,20 @@ poll_cursor_key(PollJob *poll, const gchar *what)
 }
 
 /*
- * The cursor's value.  An organization not read on its own yet carries
- * on from the account's cursor from before each was read on its own:
- * what is after it was never read there, so starting afresh would skip
- * it -- a comment made since, a status a person set.
+ * The cursor's value, or %NULL.  An organization never read on its own
+ * has none, and is read as an account's first pass is: changes from a
+ * day back, comments from where they stood when the mirror started.  The
+ * account's cursor from before is not carried over: it says where the
+ * default organization was up to, which is nothing to another one -- its
+ * comments would be replayed from there, the history a first pass never
+ * replays.
  */
 static gchar *
 poll_cursor(PollJob *poll, const gchar *what)
 {
     g_autofree gchar *key = poll_cursor_key(poll, what);
-    gchar *value = clawt_task_store_venture_cursor(poll->mirror->store, key);
 
-    if (value == NULL && poll_organization(poll) > 0) {
-        g_autofree gchar *legacy = cursor_key(poll->account, what);
-
-        value = clawt_task_store_venture_cursor(poll->mirror->store, legacy);
-    }
-
-    return value;
+    return clawt_task_store_venture_cursor(poll->mirror->store, key);
 }
 
 static void
@@ -2556,7 +2552,6 @@ on_poll_intake(PollJob *poll, guint status, const gchar *body)
         JsonObject *t = json_array_get_object_element(rows, i);
         gint64 ticket = json_object_get_int_member_with_default(t, "id", 0);
         g_autofree gchar *known = NULL;
-        g_autofree gchar *seen = NULL;
         const gchar *ext = json_object_get_string_member_with_default(
             t, "external_ref", "");
 
@@ -2564,11 +2559,6 @@ on_poll_intake(PollJob *poll, guint status, const gchar *body)
         if (ticket <= 0 || (ext != NULL && *ext != '\0'))
             continue;
 
-        /* Listed by two of its organizations: queued, and counted, once. */
-        seen = g_strdup_printf("%s#intake#%" G_GINT64_FORMAT,
-                               poll->account->base, ticket);
-        if (!g_hash_table_add(poll->seen, g_steal_pointer(&seen)))
-            continue;
 
         known = clawt_task_store_venture_task_for_ticket(self->store, ticket);
 
