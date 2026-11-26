@@ -2148,6 +2148,8 @@ test_team_ticket_goes_to_the_lead(Fixture *fixture, gconstpointer data)
     /* the fleet's teams first, then only their tickets -- once */
     g_assert_cmpuint(count_sent(fixture, "GET",
         "/api/v1/team_membership?user_id__in="), ==, 1);
+    g_assert_nonnull(strstr(find_sent(fixture, "GET",
+        "/api/v1/team_membership?user_id__in=")->url, "&active=true&"));
     g_assert_cmpuint(count_sent(fixture, "GET",
         "/api/v1/ticket?team_id=7&assignee=&external_ref=&status=todo"
         "&kind=internal&id__gt=0&order=id&limit=10"), ==, 1);
@@ -2511,6 +2513,25 @@ test_team_capped_does_not_hold_another(Fixture *fixture, gconstpointer data)
 
     g_assert_true(inbound_has(fixture, "intake 1000 scout Other team"));
     g_assert_cmpuint(fixture->inbound->len, ==, 11);
+
+    /*
+     * Each team is read with a member's own token -- one VENTURE lets
+     * see the team's tickets whatever its role -- and a ticket's timeline
+     * with the taker's: helper reads the organization, but team 9 is
+     * scout's.
+     */
+    {
+        Sent *list = find_sent(fixture, "GET", "/api/v1/ticket?team_id=9&");
+        Sent *timeline = find_sent(fixture, "GET",
+                                   "/api/v1/activity/ticket/1000");
+
+        g_assert_nonnull(list);
+        g_assert_cmpstr(list->token, ==, "t-scout");
+        g_assert_nonnull(timeline);
+        g_assert_cmpstr(timeline->token, ==, "t-scout");
+        g_assert_cmpstr(find_sent(fixture, "GET",
+            "/api/v1/team_membership?user_id__in=")->token, ==, "t-helper");
+    }
     /* team 7 stopped at its cap: two pages, not ten */
     g_assert_cmpuint(count_sent(fixture, "GET", "/api/v1/ticket?team_id=7&"),
                      ==, 2);

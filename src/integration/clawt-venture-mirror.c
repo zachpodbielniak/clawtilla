@@ -2035,14 +2035,21 @@ answer_array(const gchar *body, JsonNode **holder)
 
 static void on_poll_answer(guint status, const gchar *body, gpointer data);
 
+/* GET @path on @account's server, with its token. */
+static void
+poll_send_as(PollJob *poll, Account *account, const gchar *path)
+{
+    ClawtVentureMirror *self = poll->mirror;
+    g_autofree gchar *url = g_strconcat(account->base, path, NULL);
+
+    self->request(self, "GET", url, account->token, NULL, NULL,
+                  on_poll_answer, poll, self->request_data);
+}
+
 static void
 poll_send(PollJob *poll, const gchar *path)
 {
-    ClawtVentureMirror *self = poll->mirror;
-    g_autofree gchar *url = g_strconcat(poll->account->base, path, NULL);
-
-    self->request(self, "GET", url, poll->account->token, NULL, NULL,
-                  on_poll_answer, poll, self->request_data);
+    poll_send_as(poll, poll->account, path);
 }
 
 /* What changed on this account's mirrored tickets since last time. */
@@ -2832,16 +2839,27 @@ poll_team(PollJob *poll)
 
     scope = organization_param(org);
     path = g_strdup_printf("/api/v1/team_membership?user_id__in=%s"
-                           "&order=id&limit=%d%s", users->str,
+                           "&active=true&order=id&limit=%d%s", users->str,
                            CLAWT_VENTURE_MIRROR_POLL_LIMIT, scope);
     poll->step = POLL_TEAM_MEMBERS;
     poll_send(poll, path);
 }
 
-/* One page of the current team's tickets nobody has, after the last. */
+/*
+ * One page of the current team's tickets nobody has, after the last --
+ * read with a member's own token: VENTURE lets a member see its team's
+ * tickets whatever its role in the organization, where the account that
+ * read the memberships might see none of them (a viewer, sales or
+ * support role sees only its own).
+ */
 static void
 poll_team_tickets(PollJob *poll)
 {
+    gint64 team = g_array_index(poll->team_list, gint64, poll->team_index);
+    g_autofree gchar *key = team_key(poll, team);
+    GPtrArray *agents = g_hash_table_lookup(poll->teams, key);
+    Account *member = g_hash_table_lookup(poll->mirror->accounts,
+                                          g_ptr_array_index(agents, 0));
     GArray *linked = team_linked_on(poll->mirror, poll->account->base);
     g_autoptr(GString) skip = g_string_new(NULL);
     g_autofree gchar *scope = organization_param(poll_organization(poll));
@@ -2856,13 +2874,12 @@ poll_team_tickets(PollJob *poll)
     path = g_strdup_printf(
         "/api/v1/ticket?team_id=%" G_GINT64_FORMAT "&assignee=&external_ref="
         "&status=todo&kind=internal&id__gt=%" G_GINT64_FORMAT "%s"
-        "&order=id&limit=%d%s",
-        g_array_index(poll->team_list, gint64, poll->team_index),
+        "&order=id&limit=%d%s", team,
         poll->team_last, skip->str, CLAWT_VENTURE_MIRROR_TEAM_PAGE, scope);
 
     poll->team_pages++;
     poll->step = POLL_TEAM;
-    poll_send(poll, path);
+    poll_send_as(poll, member != NULL ? member : poll->account, path);
 }
 
 /* The current team, from its first page; past the last, the next org. */
@@ -3080,10 +3097,15 @@ poll_team_next(PollJob *poll)
         return;
     }
 
+    /* its timeline as the taker, who as a member can always read it */
     poll->team_agent = agent;
     path = g_strdup_printf("/api/v1/activity/ticket/%" G_GINT64_FORMAT, ticket);
     poll->step = POLL_TEAM_WHO;
-    poll_send(poll, path);
+    {
+        Account *taker = g_hash_table_lookup(self->accounts, agent);
+
+        poll_send_as(poll, taker != NULL ? taker : poll->account, path);
+    }
 }
 
 /*
