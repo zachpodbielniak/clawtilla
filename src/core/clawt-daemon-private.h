@@ -897,6 +897,23 @@ clawt_daemon_compare_by_order(gconstpointer a, gconstpointer b,
 gboolean
 clawt_daemon_computer_stop_removes(ClawtAgentConfig *config);
 
+/*
+ * Defined in daemon-computer.c.  One line per agent whose kept container
+ * was removed and made again since this daemon started -- adopted from
+ * an earlier run and found not to match its config -- naming the agent,
+ * the container, when and why.  For team.list's warnings, the Fleet
+ * page's channel.  NULL when there is nothing to say.
+ */
+GStrv
+clawt_daemon_container_recreate_notes(ClawtDaemon *self);
+
+/*
+ * The same for one agent's computer, or NULL: the sentence agent.list
+ * reports as computer_recreated.
+ */
+const gchar *
+clawt_daemon_container_recreate_note(ClawtAgent *agent);
+
 ClawtIntegrationBinding *
 clawt_daemon_connector_binding(ClawtDaemon               *self,
                                const gchar               *name,

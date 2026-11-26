@@ -137,6 +137,19 @@ clawt_daemon_handle_team(
                 json_builder_add_string_value(builder, labelling[i]);
         }
 
+        /*
+         * And a kept container that was removed and made again because
+         * it no longer matched its config (VENTURE #21) -- the same list,
+         * because whoever finds their agent's packages gone looks here.
+         */
+        {
+            g_auto(GStrv) recreated =
+                clawt_daemon_container_recreate_notes(self);
+
+            for (i = 0; recreated != NULL && recreated[i] != NULL; i++)
+                json_builder_add_string_value(builder, recreated[i]);
+        }
+
         json_builder_end_array(builder);
         json_builder_end_object(builder);
 

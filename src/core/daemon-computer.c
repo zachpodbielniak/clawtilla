@@ -15,6 +15,61 @@
 #include "core/clawt-daemon.h"
 #include "core/clawt-daemon-private.h"
 
+const gchar *
+clawt_daemon_container_recreate_note(ClawtAgent *agent)
+{
+    ClawtComputer *computer;
+
+    computer = (agent != NULL) ? clawt_agent_get_computer(agent) : NULL;
+
+    if (computer == NULL || !CLAWT_IS_CONTAINER_COMPUTER(computer))
+        return NULL;
+
+    return clawt_container_computer_get_last_recreate(
+        CLAWT_CONTAINER_COMPUTER(computer));
+}
+
+GStrv
+clawt_daemon_container_recreate_notes(ClawtDaemon *self)
+{
+    g_autoptr(GPtrArray) notes = NULL;
+    g_autoptr(GHashTable) seen = NULL;
+    GPtrArray *agents;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), NULL);
+
+    agents = (self->agents != NULL) ? clawt_agent_manager_list(self->agents)
+                                    : NULL;
+    notes = g_ptr_array_new_with_free_func(g_free);
+
+    /*
+     * A shared machine is on every one of its agents, and was recreated
+     * once: said once, under the first agent on it.
+     */
+    seen = g_hash_table_new(g_direct_hash, g_direct_equal);
+
+    for (i = 0; agents != NULL && i < agents->len; i++) {
+        ClawtAgent *agent = g_ptr_array_index(agents, i);
+        ClawtComputer *computer = clawt_agent_get_computer(agent);
+        const gchar *note = clawt_daemon_container_recreate_note(agent);
+
+        if (note == NULL || !g_hash_table_add(seen, computer))
+            continue;
+
+        g_ptr_array_add(notes, g_strdup_printf(
+            "agent %s: %s. Anything installed inside it was lost",
+            clawt_agent_get_id(agent), note));
+    }
+
+    if (notes->len == 0)
+        return NULL;
+
+    g_ptr_array_add(notes, NULL);
+
+    return (GStrv)g_ptr_array_free(g_steal_pointer(&notes), FALSE);
+}
+
 /*
  * The answer to computer.desktop: how to reach the agent's VM desktop,
  * and which of its tools the agent may use.

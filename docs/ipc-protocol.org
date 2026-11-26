@@ -422,8 +422,12 @@ thing is three chances to disagree about what "active" means -- plus
 ~warnings~ for what only the whole fleet shows -- since 0.78.0 including
 container computers that share a writable folder at different SELinux
 levels, compared with the teams' stored pairs (see
-[[file:computers.org::#selinux-level][computers.org]]); the web Fleet page
-shows these. ~team.set~ refuses ~id~:
+[[file:computers.org::#selinux-level][computers.org]]), and one line per
+agent whose kept container was adopted after a restart and then removed
+and made again because it no longer matched its config, naming the
+container, when and why (see
+[[file:computers.org::#container-restarts][computers.org]]); the web Fleet
+page shows these. ~team.set~ refuses ~id~:
 everything refers to a team by it. ~team.remove~ answers with
 ~orphaned~, the number of agents still naming it.
 
@@ -606,7 +610,11 @@ An agent object carries ~vm_cpus~ and ~vm_memory_mb~ for a VM agent, and
 ~image~ for a container one.  It also carries ~computer~ (the type),
 ~computer_machine~ (whether it has a machine to power on and off) and
 ~computer_stop_removes~ (whether stopping that machine destroys it), so
-no client has to work any of the three out from the type.
+no client has to work any of the three out from the type.  A container agent
+whose kept container this daemon removed and made again -- because it no
+longer matched the config when it was adopted -- also carries
+~computer_recreated~, the sentence the Fleet page shows; it is absent
+otherwise.
 
 ~agent.stop~ and ~agent.restart~ stop the agent's *machine* as well ---
 those two verbs mean "this agent is finished for now", and a container

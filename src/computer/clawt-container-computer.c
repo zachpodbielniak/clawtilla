@@ -11,8 +11,16 @@
 #include "computer/clawt-container-computer.h"
 
 #include <json-glib/json-glib.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+/*
+ * How long the `podman container inspect` an adoption runs may take.  A
+ * local metadata read; this bounds a podman socket that has gone quiet,
+ * as the limits' own podman calls are bounded.
+ */
+#define CONTAINER_ADOPT_INSPECT_SECONDS (60)
 
 
 struct _ClawtContainerComputer {
@@ -34,6 +42,23 @@ struct _ClawtContainerComputer {
 
     /* NULL for none; see clawt_container_computer_set_limits(). */
     ClawtContainerLimits *limits;
+
+    /*
+     * Adoption across a daemon restart; see container_adopt().
+     *
+     * @reuse is whether a container found under our name may be kept at
+     * all (clawt_container_computer_set_reuse()).  @adoption_asked is
+     * whether this object has asked podman for its name yet: once per
+     * object, so an agent that never had a container costs one 404 and
+     * not one per start.  @recreate_reason is why the container found
+     * must be made again, set by the reconcile and consumed by the next
+     * start -- the only place anything is removed.  @last_recreate is the
+     * last recreate as the operator is told it, for the Fleet page.
+     */
+    gboolean        reuse;
+    gboolean        adoption_asked;
+    gchar          *recreate_reason;
+    gchar          *last_recreate;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtContainerComputer, clawt_container_computer,
@@ -239,6 +264,23 @@ clawt_container_computer_set_keep(ClawtContainerComputer *self, gboolean keep)
 }
 
 void
+clawt_container_computer_set_reuse(ClawtContainerComputer *self,
+                                   gboolean                reuse)
+{
+    g_return_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self));
+
+    self->reuse = reuse;
+}
+
+const gchar *
+clawt_container_computer_get_last_recreate(ClawtContainerComputer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), NULL);
+
+    return self->last_recreate;
+}
+
+void
 clawt_container_computer_set_limits(ClawtContainerComputer     *self,
                                     const ClawtContainerLimits *limits)
 {
@@ -407,6 +449,454 @@ clawt_container_computer_build_create_params(ClawtContainerComputer *self)
     return params;
 }
 
+/*
+ * An image reference with podman's implicit tag written out: "fedora" is
+ * "fedora:latest".  A digest reference is left as it is.  Only the last
+ * path component can carry the tag -- "localhost:5000/x" is a registry
+ * port, not a tag.
+ */
+static gchar *
+image_reference(const gchar *image)
+{
+    const gchar *slash;
+
+    if (strchr(image, '@') != NULL)
+        return g_strdup(image);
+
+    slash = strrchr(image, '/');
+
+    if (strchr(slash != NULL ? slash + 1 : image, ':') == NULL)
+        return g_strconcat(image, ":latest", NULL);
+
+    return g_strdup(image);
+}
+
+/*
+ * Whether the image a container was made from is the one configured.
+ *
+ * By name, not by image id: a re-pulled tag is a new id, and recreating
+ * every kept container because `podman pull` fetched a newer build of
+ * the same tag would be this ticket's bug again with a better excuse.
+ *
+ * And loosely by name.  podman records the name it resolved, so the
+ * configured "fedora:44" comes back as
+ * "registry.fedoraproject.org/fedora:44"; one being the other with a
+ * registry (or a path) in front, on a '/' boundary, is the same image.
+ * A false "differs" here destroys a container on every start, and a
+ * false "same" leaves one on an old image until it is rebuilt by hand --
+ * the second is the one that can be undone.
+ */
+static gboolean
+images_match(const gchar *wanted, const gchar *have)
+{
+    g_autofree gchar *a = NULL;
+    g_autofree gchar *b = NULL;
+    gsize la;
+    gsize lb;
+
+    a = image_reference(wanted);
+    b = image_reference(have);
+
+    if (strcmp(a, b) == 0)
+        return TRUE;
+
+    la = strlen(a);
+    lb = strlen(b);
+
+    if (la < lb && b[lb - la - 1] == '/' && strcmp(b + lb - la, a) == 0)
+        return TRUE;
+
+    if (lb < la && a[la - lb - 1] == '/' && strcmp(a + la - lb, b) == 0)
+        return TRUE;
+
+    return FALSE;
+}
+
+/*
+ * Whether two host paths name the same place: as written, cleaned up, or
+ * once symlinks are resolved -- on Silverblue /home is a link to
+ * /var/home, and the config and podman need not agree on which spelling
+ * they keep.
+ */
+static gboolean
+paths_match(const gchar *a, const gchar *b)
+{
+    g_autofree gchar *clean_a = NULL;
+    g_autofree gchar *clean_b = NULL;
+    gchar *real_a;
+    gchar *real_b;
+    gboolean same;
+
+    if (g_strcmp0(a, b) == 0)
+        return TRUE;
+
+    if (a == NULL || b == NULL || !g_path_is_absolute(a) ||
+        !g_path_is_absolute(b))
+        return FALSE;
+
+    clean_a = g_canonicalize_filename(a, NULL);
+    clean_b = g_canonicalize_filename(b, NULL);
+
+    if (strcmp(clean_a, clean_b) == 0)
+        return TRUE;
+
+    real_a = realpath(a, NULL);
+    real_b = realpath(b, NULL);
+    same = (real_a != NULL && real_b != NULL && strcmp(real_a, real_b) == 0);
+    free(real_a);
+    free(real_b);
+
+    return same;
+}
+
+/*
+ * The bind mounts that differ between the config and the container, as
+ * "mounts changed (+/added, -/removed, ~/changed)", or NULL.
+ *
+ * Bind mounts only.  They are what a person adds and removes, they are
+ * what podman lists under Mounts with a source and a mode, and they are
+ * the case that matters: a folder added to the config and missing from
+ * the machine.  A tmpfs is not in podman's Mounts at all, and a named
+ * volume's Source is its mountpoint rather than the name configured, so
+ * comparing either would answer "differs" for a container that does not
+ * -- and a false "differs" destroys the container at every start.
+ *
+ * No Mounts member at all is "could not tell", not "every mount was
+ * removed".
+ */
+static gchar *
+mounts_changed(ClawtContainerComputer *self, JsonObject *inspected)
+{
+    GPtrArray *mounts = clawt_computer_get_mounts(CLAWT_COMPUTER(self));
+    g_autoptr(GHashTable) have = NULL;
+    g_autoptr(GHashTable) wanted = NULL;
+    g_autoptr(GString) changes = NULL;
+    JsonArray *listed;
+    guint i;
+
+    if (!json_object_has_member(inspected, "Mounts") ||
+        !JSON_NODE_HOLDS_ARRAY(json_object_get_member(inspected, "Mounts")))
+        return NULL;
+
+    listed = json_object_get_array_member(inspected, "Mounts");
+
+    /* Destination to podman's object for it, binds only. */
+    have = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+    for (i = 0; i < json_array_get_length(listed); i++) {
+        JsonObject *one = json_array_get_object_element(listed, i);
+        const gchar *type;
+        const gchar *destination;
+
+        if (one == NULL)
+            continue;
+
+        type = json_object_get_string_member_with_default(one, "Type", "");
+        destination = json_object_get_string_member_with_default(
+            one, "Destination", NULL);
+
+        if (g_strcmp0(type, "bind") != 0 || destination == NULL ||
+            !g_path_is_absolute(destination))
+            continue;
+
+        g_hash_table_insert(have, g_canonicalize_filename(destination, NULL),
+                            one);
+    }
+
+    changes = g_string_new(NULL);
+    wanted = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+    /* Added or changed, in the config's order. */
+    for (i = 0; mounts != NULL && i < mounts->len; i++) {
+        ClawtMount *mount = g_ptr_array_index(mounts, i);
+        const gchar *target = clawt_mount_get_target(mount);
+        g_autofree gchar *destination = NULL;
+        g_autofree gchar *source = NULL;
+        JsonObject *found;
+
+        if (clawt_mount_get_mount_type(mount) != CLAWT_MOUNT_BIND ||
+            target == NULL || !g_path_is_absolute(target))
+            continue;
+
+        destination = g_canonicalize_filename(target, NULL);
+        g_hash_table_add(wanted, g_strdup(destination));
+        found = g_hash_table_lookup(have, destination);
+
+        if (found == NULL) {
+            g_string_append_printf(changes, "%s+%s",
+                                   changes->len > 0 ? ", " : "",
+                                   destination);
+            continue;
+        }
+
+        source = clawt_mount_resolved_source(mount);
+
+        if (!paths_match(source, json_object_get_string_member_with_default(
+                                     found, "Source", NULL)) ||
+            (clawt_mount_get_mode(mount) == CLAWT_MOUNT_MODE_RO) ==
+                json_object_get_boolean_member_with_default(found, "RW",
+                                                            TRUE))
+            g_string_append_printf(changes, "%s~%s",
+                                   changes->len > 0 ? ", " : "",
+                                   destination);
+    }
+
+    /* Removed, in podman's order. */
+    for (i = 0; i < json_array_get_length(listed); i++) {
+        JsonObject *one = json_array_get_object_element(listed, i);
+        const gchar *destination;
+        g_autofree gchar *clean = NULL;
+
+        if (one == NULL ||
+            g_strcmp0(json_object_get_string_member_with_default(
+                          one, "Type", ""), "bind") != 0)
+            continue;
+
+        destination = json_object_get_string_member_with_default(
+            one, "Destination", NULL);
+
+        if (destination == NULL || !g_path_is_absolute(destination))
+            continue;
+
+        clean = g_canonicalize_filename(destination, NULL);
+
+        if (!g_hash_table_contains(wanted, clean))
+            g_string_append_printf(changes, "%s-%s",
+                                   changes->len > 0 ? ", " : "", clean);
+    }
+
+    if (changes->len == 0)
+        return NULL;
+
+    return g_strdup_printf("mounts changed (%s)", changes->str);
+}
+
+/*
+ * Whether the container runs what the config says it should: our
+ * command, a JSON array, against podman's Config.Cmd.  Unknown -- no
+ * Cmd, or a command that is not an array of strings -- is "the same".
+ */
+static gboolean
+command_matches(ClawtContainerComputer *self, JsonObject *inspected)
+{
+    g_autoptr(JsonParser) parser = NULL;
+    JsonObject *config;
+    JsonArray *have;
+    JsonArray *want;
+    guint i;
+
+    if (self->command == NULL ||
+        !json_object_has_member(inspected, "Config") ||
+        !JSON_NODE_HOLDS_OBJECT(json_object_get_member(inspected, "Config")))
+        return TRUE;
+
+    config = json_object_get_object_member(inspected, "Config");
+
+    if (!json_object_has_member(config, "Cmd") ||
+        !JSON_NODE_HOLDS_ARRAY(json_object_get_member(config, "Cmd")))
+        return TRUE;
+
+    parser = json_parser_new();
+
+    if (!json_parser_load_from_data(parser, self->command, -1, NULL) ||
+        json_parser_get_root(parser) == NULL ||
+        !JSON_NODE_HOLDS_ARRAY(json_parser_get_root(parser)))
+        return TRUE;
+
+    have = json_object_get_array_member(config, "Cmd");
+    want = json_node_get_array(json_parser_get_root(parser));
+
+    if (json_array_get_length(have) != json_array_get_length(want))
+        return FALSE;
+
+    for (i = 0; i < json_array_get_length(want); i++) {
+        JsonNode *a = json_array_get_element(want, i);
+        JsonNode *b = json_array_get_element(have, i);
+
+        if (!JSON_NODE_HOLDS_VALUE(a) || !JSON_NODE_HOLDS_VALUE(b) ||
+            g_strcmp0(json_node_get_string(a), json_node_get_string(b)) != 0)
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+gboolean
+clawt_container_computer_compare(ClawtContainerComputer  *self,
+                                 const gchar             *inspected,
+                                 gchar                  **reason,
+                                 GError                 **error)
+{
+    g_autoptr(JsonParser) parser = NULL;
+    g_autoptr(GPtrArray) reasons = NULL;
+    g_autoptr(GError) local = NULL;
+    JsonNode *root;
+    JsonObject *object = NULL;
+    const gchar *image_name;
+    g_autofree gchar *mounts = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), FALSE);
+    g_return_val_if_fail(reason != NULL, FALSE);
+
+    *reason = NULL;
+
+    /*
+     * `podman container inspect` prints an array of one; an object on
+     * its own is accepted too, so a caller holding one need not wrap it.
+     */
+    parser = json_parser_new();
+
+    if (inspected == NULL ||
+        !json_parser_load_from_data(parser, inspected, -1, &local)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PROTOCOL,
+                    "podman's inspect of %s could not be read: %s",
+                    self->name, local != NULL ? local->message
+                                              : "it printed nothing");
+        return FALSE;
+    }
+
+    root = json_parser_get_root(parser);
+
+    if (root != NULL && JSON_NODE_HOLDS_ARRAY(root) &&
+        json_array_get_length(json_node_get_array(root)) > 0)
+        object = json_array_get_object_element(json_node_get_array(root), 0);
+    else if (root != NULL && JSON_NODE_HOLDS_OBJECT(root))
+        object = json_node_get_object(root);
+
+    if (object == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PROTOCOL,
+                    "podman's inspect of %s describes no container",
+                    self->name);
+        return FALSE;
+    }
+
+    reasons = g_ptr_array_new_with_free_func(g_free);
+
+    /*
+     * Only what podman cannot change in place.  The limits are not here:
+     * clawt_container_computer_apply_limits() gives an existing container
+     * new ones with `podman update` at every start, so a changed limit
+     * is never a reason to lose what the agent installed.
+     */
+
+    /* The image, by name (see images_match()). */
+    image_name = json_object_get_string_member_with_default(object,
+                                                            "ImageName", "");
+
+    if (self->image != NULL && *image_name != '\0' &&
+        !images_match(self->image, image_name))
+        g_ptr_array_add(reasons,
+                        g_strdup_printf("image changed (%s, the config "
+                                        "wants %s)", image_name,
+                                        self->image));
+
+    /* The bind mounts (see mounts_changed()). */
+    mounts = mounts_changed(self, object);
+
+    if (mounts != NULL)
+        g_ptr_array_add(reasons, g_steal_pointer(&mounts));
+
+    /*
+     * The SELinux level -- the one #13 sets at create and cannot be
+     * changed afterwards.  Compared with the level this object would
+     * create the container at, which the factory worked out from the
+     * config the same way it does for a create.  No wanted level
+     * (podman's random pair) accepts whatever pair the container has,
+     * and a label with no level in it (a host without SELinux) cannot be
+     * compared at all.
+     */
+    if (self->selinux_level != NULL) {
+        g_autofree gchar *have = clawt_selinux_level_of_label(
+            json_object_get_string_member_with_default(object,
+                                                       "ProcessLabel",
+                                                       NULL));
+
+        if (have != NULL && strcmp(have, self->selinux_level) != 0)
+            g_ptr_array_add(reasons,
+                            g_strdup_printf("SELinux level changed (%s, the "
+                                            "config wants %s)", have,
+                                            self->selinux_level));
+    }
+
+    /* The command it runs, which podman fixes at create too. */
+    if (!command_matches(self, object))
+        g_ptr_array_add(reasons,
+                        g_strdup_printf("command changed (the config wants "
+                                        "%s)", self->command));
+
+    /*
+     * Hook for #20: "init setting differs" is one more reason here,
+     * read from the same inspect (HostConfig.Init) -- a reason podman
+     * cannot fix in place.
+     */
+
+    if (reasons->len > 0) {
+        g_ptr_array_add(reasons, NULL);
+        *reason = g_strjoinv("; ", (gchar **)reasons->pdata);
+    }
+
+    return TRUE;
+}
+
+/*
+ * `podman container inspect` of @target, the whole JSON.
+ *
+ * The CLI and not podomation's inspect, which answers the id, the
+ * image's *id* and the state, and none of the mounts, the label or the
+ * image name a recreate is decided on.  The limits already read and set
+ * the same container through the same CLI, the same way: see
+ * clawt_container_limits_apply().
+ */
+static gchar *
+inspect_spec(ClawtContainerComputer  *self,
+             const gchar             *target,
+             GError                 **error)
+{
+    g_autofree gchar *podman = NULL;
+    g_autofree gchar *out = NULL;
+    g_autofree gchar *errors = NULL;
+    g_auto(GStrv) prefix = NULL;
+    g_autoptr(GPtrArray) argv = NULL;
+    gint status = -1;
+    guint i;
+
+    podman = clawt_container_limits_find_podman();
+
+    if (podman == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                            "the podman command is not on PATH or in "
+                            "/usr/bin (Fedora: podman)");
+        return NULL;
+    }
+
+    prefix = clawt_container_limits_podman_prefix(podman, self->connection);
+    argv = g_ptr_array_new();
+
+    for (i = 0; prefix[i] != NULL; i++)
+        g_ptr_array_add(argv, prefix[i]);
+
+    g_ptr_array_add(argv, (gpointer)"container");
+    g_ptr_array_add(argv, (gpointer)"inspect");
+    g_ptr_array_add(argv, (gpointer)target);
+    g_ptr_array_add(argv, NULL);
+
+    if (!clawt_run_argv_bounded((const gchar * const *)argv->pdata,
+                                CONTAINER_ADOPT_INSPECT_SECONDS, &status,
+                                &out, &errors, error))
+        return NULL;
+
+    if (status != 0) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_PROVISION,
+                    "`podman container inspect %s` exited with status %d: "
+                    "%s", target, status,
+                    (errors != NULL && *g_strstrip(errors) != '\0')
+                    ? errors : "it gave no reason");
+        return NULL;
+    }
+
+    return g_steal_pointer(&out);
+}
+
 static gboolean
 container_provision(ClawtComputer *computer, GError **error)
 {
@@ -442,17 +932,6 @@ container_provision(ClawtComputer *computer, GError **error)
                                        self->connection, "create",
                                    params, error);
 
-    /*
-     * A container we left behind holds the name.
-     *
-     * The name is deliberately predictable -- clawt-<agent> -- so a
-     * container can be found again after a daemon restart.  The cost is
-     * that a previous one still sitting there makes create fail, and it
-     * failed permanently: every later start hit the same collision, so a
-     * daemon killed at the wrong moment bricked the agent until somebody
-     * ran podman by hand.  Removing ours and trying once more is what a
-     * person would do, and it is safe because the name is ours.
-     */
     /*
      * The image is not pulled yet.
      *
@@ -498,14 +977,58 @@ container_provision(ClawtComputer *computer, GError **error)
         }
     }
 
+    /*
+     * A container already holds the name.
+     *
+     * The name is deliberately predictable -- clawt-<agent> -- so a
+     * container can be found again after a daemon restart, and since the
+     * adoption in container_reconcile() it is: a container under our name
+     * is adopted, or removed for a stated reason, before anything gets
+     * here.  So this is reached only when the adoption could not ask
+     * podman (the inspect failed, and then the create got through) or
+     * something made the container between the two.
+     *
+     * It used to be the ordinary path, and it removed whatever held the
+     * name and made a new one -- which is how every kept container was
+     * destroyed at every daemon restart, silently, with everything the
+     * agent had installed in it.
+     *
+     * A kept container is not removed here any more.  The start fails,
+     * saying why, and the next start asks podman again and adopts it.
+     * One failed start can be retried; a removed container cannot be
+     * brought back.  A container that is not kept is still replaced,
+     * which is what not keeping it means -- and said, like any other
+     * recreate.
+     */
     if (result == NULL && error != NULL && *error != NULL &&
-        strstr((*error)->message, "already in use") != NULL) {
+        strstr((*error)->message, "already in use") != NULL &&
+        self->keep && self->reuse) {
+        g_autofree gchar *why = g_strdup((*error)->message);
+        const gchar *agent_id = clawt_computer_get_agent_id(computer);
+
+        g_clear_error(error);
+        self->adoption_asked = FALSE;
+
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_PROVISION,
+                    "a container named %s already exists and could not be "
+                    "adopted, so nothing was removed (%s). Start the agent "
+                    "again to adopt it, or stop it and run `clawtilla "
+                    "computer rebuild %s` to replace it", self->name, why,
+                    agent_id != NULL ? agent_id : "<agent>");
+        g_warning("container %s: %s", self->name, (*error)->message);
+    } else if (result == NULL && error != NULL && *error != NULL &&
+               strstr((*error)->message, "already in use") != NULL) {
         g_autoptr(GHashTable) removal =
             g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
         g_autoptr(GHashTable) removed = NULL;
 
         g_hash_table_insert(removal, g_strdup("target"), g_strdup(self->name));
         g_hash_table_insert(removal, g_strdup("force"), g_strdup("true"));
+
+        g_message("recreating %s: name taken by a container we could not "
+                  "adopt (%s)", self->name,
+                  !self->keep ? "keep is false"
+                              : "this machine is made afresh at each start");
 
         removed = clawt_pod_bridge_call_for(self->bridge, "container",
                                             self->connection, "remove",
@@ -595,6 +1118,121 @@ container_target(ClawtContainerComputer *self)
  * interface, not a choice made here: every failure from the module
  * arrives as G_IO_ERROR_FAILED.
  */
+/*
+ * A container already under our name, found on this object's first
+ * reconcile: adopted, or marked to be made again and why.
+ *
+ * Every computer object starts ABSENT, and nothing carries a container id
+ * across a daemon restart -- nor across the rebuild of the object a
+ * settings change causes.  The reconcile used to answer ABSENT with
+ * "nothing has been created" without asking, so the start provisioned,
+ * the create collided with the container that was there all along, and
+ * the collision handler removed it and made a new one.  Every kept
+ * container was destroyed at every daemon restart, and everything
+ * installed in it with it (VENTURE #21).
+ *
+ * So the first reconcile asks podman for the name.  Nothing there is a
+ * 404 and the object stays ABSENT.  A container there is adopted: its
+ * id, and STOPPED or RUNNING from podman's state.  Before keeping it,
+ * it is compared with what the config would create now -- see
+ * clawt_container_computer_compare() -- and a difference podman cannot
+ * fix in place becomes @recreate_reason, which the start acts on.  The
+ * reconcile itself removes nothing.
+ *
+ * A container that is not kept (keep: false), or one whose owner said
+ * it is made afresh at each start (clawt_container_computer_set_reuse()),
+ * is found and marked to be replaced -- what it was before, said aloud.
+ *
+ * A comparison that cannot be made -- no podman CLI, an inspect that
+ * fails -- keeps the container.  The cost of that is a container on an
+ * old setting until somebody rebuilds it; the cost of the opposite is
+ * the bug this exists to fix.
+ */
+static gboolean
+container_adopt(ClawtContainerComputer *self, GError **error)
+{
+    ClawtComputer *computer = CLAWT_COMPUTER(self);
+    g_autoptr(GHashTable) params = NULL;
+    g_autoptr(GHashTable) result = NULL;
+    g_autoptr(GError) local = NULL;
+    const gchar *identifier;
+    const gchar *status;
+
+    if (!clawt_pod_bridge_load_module_for(self->bridge, "container",
+                                          self->connection, error))
+        return FALSE;
+
+    params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    g_hash_table_insert(params, g_strdup("target"), g_strdup(self->name));
+
+    result = clawt_pod_bridge_call_for(self->bridge, "container",
+                                       self->connection, "inspect", params,
+                                       &local);
+
+    /* Only a 404 is "nothing there"; see container_reconcile(). */
+    if (result == NULL) {
+        if (local != NULL && strstr(local->message, "HTTP 404") != NULL) {
+            self->adoption_asked = TRUE;
+            return TRUE;
+        }
+
+        g_propagate_error(error, g_steal_pointer(&local));
+        return FALSE;
+    }
+
+    self->adoption_asked = TRUE;
+
+    identifier = g_hash_table_lookup(result, "container_id");
+    status = g_hash_table_lookup(result, "state");
+
+    g_free(self->container_id);
+    self->container_id = (identifier != NULL && *identifier != '\0')
+                         ? g_strdup(identifier) : NULL;
+
+    g_clear_pointer(&self->recreate_reason, g_free);
+
+    if (!self->keep) {
+        self->recreate_reason = g_strdup(
+            "keep is false, so the container an earlier run left is not "
+            "reused");
+    } else if (!self->reuse) {
+        self->recreate_reason = g_strdup(
+            "this machine is made afresh at each start");
+    } else {
+        g_autofree gchar *inspected = NULL;
+        g_autofree gchar *reason = NULL;
+        g_autoptr(GError) unread = NULL;
+
+        inspected = inspect_spec(self, container_target(self), &unread);
+
+        if (inspected == NULL ||
+            !clawt_container_computer_compare(self, inspected, &reason,
+                                              &unread))
+            g_warning("container %s: adopted without comparing it with the "
+                      "config (%s); it is kept as it is. If its image, "
+                      "mounts or SELinux level should have changed, stop "
+                      "the agent and run `clawtilla computer rebuild`",
+                      self->name,
+                      unread != NULL ? unread->message : "no reason given");
+        else
+            self->recreate_reason = g_steal_pointer(&reason);
+    }
+
+    if (self->recreate_reason == NULL)
+        g_message("container %s: adopted the existing container (%s); "
+                  "nothing was recreated", self->name,
+                  (status != NULL && *status != '\0') ? status : "state "
+                                                               "unknown");
+
+    clawt_computer_set_state(computer,
+                             g_strcmp0(status, "running") == 0
+                             ? CLAWT_COMPUTER_STATE_RUNNING
+                             : CLAWT_COMPUTER_STATE_STOPPED,
+                             NULL);
+
+    return TRUE;
+}
+
 static gboolean
 container_reconcile(ClawtComputer *computer, GError **error)
 {
@@ -604,12 +1242,19 @@ container_reconcile(ClawtComputer *computer, GError **error)
     g_autoptr(GError) local = NULL;
 
     /*
-     * Nothing has been created, so there is nothing to disagree with.
-     * Asking anyway would turn every start of a fresh agent into a round
+     * Nothing has been created by this object -- but one may be there
+     * under our name, left by the daemon before this one or by the
+     * object this one replaced.  Asked once per object: after that an
+     * ABSENT state is one this object reached itself, and asking again
+     * would turn every start of an agent with no container into a round
      * trip that can only answer 404.
      */
-    if (clawt_computer_get_state(computer) == CLAWT_COMPUTER_STATE_ABSENT)
-        return TRUE;
+    if (clawt_computer_get_state(computer) == CLAWT_COMPUTER_STATE_ABSENT) {
+        if (self->adoption_asked)
+            return TRUE;
+
+        return container_adopt(self, error);
+    }
 
     params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     g_hash_table_insert(params, g_strdup("target"),
@@ -663,6 +1308,62 @@ clawt_container_computer_apply_limits(ClawtContainerComputer  *self,
     return TRUE;
 }
 
+/*
+ * Removes the adopted container @recreate_reason condemned, saying why.
+ *
+ * One g_message per recreate, naming the container and the reason, and
+ * for a kept container the same sentence kept as @last_recreate, which
+ * the daemon puts on the Fleet page: somebody whose agent just lost what
+ * it installed is told what did it.  A removal that fails keeps the
+ * reason for the next start, and creates nothing.
+ */
+static gboolean
+container_recreate(ClawtContainerComputer *self, GError **error)
+{
+    g_autofree gchar *reason = g_steal_pointer(&self->recreate_reason);
+    g_autoptr(GHashTable) params = NULL;
+    g_autoptr(GHashTable) result = NULL;
+    g_autoptr(GError) local = NULL;
+
+    g_message("recreating %s: %s", self->name, reason);
+
+    params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    g_hash_table_insert(params, g_strdup("target"),
+                        g_strdup(container_target(self)));
+    g_hash_table_insert(params, g_strdup("force"), g_strdup("true"));
+
+    result = clawt_pod_bridge_call_for(self->bridge, "container",
+                                       self->connection, "remove", params,
+                                       &local);
+
+    /* Gone already is as good as removed. */
+    if (result == NULL &&
+        (local == NULL || strstr(local->message, "HTTP 404") == NULL)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_PROVISION,
+                    "%s must be recreated (%s), and removing it failed: %s. "
+                    "Nothing was created; the next start tries again",
+                    self->name, reason,
+                    local != NULL ? local->message : "no reason given");
+        self->recreate_reason = g_steal_pointer(&reason);
+        return FALSE;
+    }
+
+    if (self->keep && self->reuse) {
+        g_autoptr(GDateTime) now = g_date_time_new_now_local();
+        g_autofree gchar *when = g_date_time_format(now, "%F %T");
+
+        g_free(self->last_recreate);
+        self->last_recreate = g_strdup_printf("recreated %s at %s: %s",
+                                              self->name, when, reason);
+    }
+
+    g_clear_pointer(&self->container_id, g_free);
+    clawt_computer_set_state(CLAWT_COMPUTER(self),
+                             CLAWT_COMPUTER_STATE_ABSENT, NULL);
+
+    return TRUE;
+}
+
 static gboolean
 container_start(ClawtComputer *computer, GError **error)
 {
@@ -678,6 +1379,17 @@ container_start(ClawtComputer *computer, GError **error)
      * a container that no longer existed -- so the one command an
      * operator reaches for to recover was the one that could not.
      */
+
+    /*
+     * An adopted container that must be made again goes first, so the
+     * provision below makes the new one; see container_recreate().
+     */
+    if (self->recreate_reason != NULL && !container_recreate(self, error)) {
+        clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
+                                 (error != NULL && *error != NULL)
+                                 ? (*error)->message : NULL);
+        return FALSE;
+    }
 
     if (clawt_computer_get_state(computer) == CLAWT_COMPUTER_STATE_ABSENT &&
         !clawt_computer_provision(computer, error))
@@ -808,6 +1520,9 @@ container_teardown(ClawtComputer *computer, GError **error)
 
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ABSENT, NULL);
     g_clear_pointer(&self->container_id, g_free);
+
+    /* Nothing is left to recreate: the next start makes one afresh. */
+    g_clear_pointer(&self->recreate_reason, g_free);
 
     return result != NULL;
 }
@@ -992,6 +1707,8 @@ clawt_container_computer_finalize(GObject *object)
     g_clear_pointer(&self->ports, g_free);
     g_clear_pointer(&self->selinux_level, g_free);
     g_clear_pointer(&self->limits, clawt_container_limits_free);
+    g_clear_pointer(&self->recreate_reason, g_free);
+    g_clear_pointer(&self->last_recreate, g_free);
 
     G_OBJECT_CLASS(clawt_container_computer_parent_class)->finalize(object);
 }
@@ -1019,4 +1736,5 @@ static void
 clawt_container_computer_init(ClawtContainerComputer *self)
 {
     self->keep = FALSE;
+    self->reuse = TRUE;
 }

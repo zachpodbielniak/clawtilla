@@ -93,6 +93,30 @@ clawt_selinux_level_is_valid(const gchar *level)
     return level_categories(level, cats) > 0;
 }
 
+gchar *
+clawt_selinux_level_of_label(const gchar *label)
+{
+    g_auto(GStrv) fields = NULL;
+
+    if (label == NULL || *label == '\0')
+        return NULL;
+
+    /*
+     * user:role:type:level, and the level itself has a colon in it
+     * ("s0:c1,c2"), so the split stops at four fields and the last one
+     * is the whole level.  Anything that is not a single valid level --
+     * a range such as spc_t's "s0-s0:c0.c1023", or no level at all -- is
+     * not one this module ever asks for, and is answered as unknown.
+     */
+    fields = g_strsplit(label, ":", 4);
+
+    if (g_strv_length(fields) != 4 ||
+        !clawt_selinux_level_is_valid(fields[3]))
+        return NULL;
+
+    return g_strdup(fields[3]);
+}
+
 gboolean
 clawt_selinux_level_parse(const gchar            *value,
                           ClawtSelinuxLevelMode  *mode,

@@ -268,6 +268,20 @@ clawt_container_limits_podman_prefix(
 );
 
 /**
+ * clawt_container_limits_find_podman:
+ *
+ * The podman command line tool, found the way every other binary the
+ * daemon runs is found: PATH, then /usr/bin/podman.
+ *
+ * Returns: (transfer full) (nullable): its path, or %NULL when there is
+ *   none
+ */
+gchar *
+clawt_container_limits_find_podman(
+	void
+);
+
+/**
  * clawt_container_limits_inspect_argv:
  * @podman: the podman binary
  * @connection: (nullable): as for clawt_container_limits_podman_prefix()

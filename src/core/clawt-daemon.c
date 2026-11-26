@@ -9683,6 +9683,17 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
         json_builder_add_string_value(
             builder, clawt_agent_config_get_string(config,
                                                    "computer.container.image"));
+
+        /*
+         * Why its kept container was last removed and made again, when
+         * it was -- only then, so a client shows it only when there is
+         * something to say.  See clawt_container_computer_compare().
+         */
+        if (clawt_daemon_container_recreate_note(agent) != NULL) {
+            json_builder_set_member_name(builder, "computer_recreated");
+            json_builder_add_string_value(
+                builder, clawt_daemon_container_recreate_note(agent));
+        }
     }
 
     /*

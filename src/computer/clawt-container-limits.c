@@ -645,10 +645,11 @@ clawt_container_limits_update_argv(
 /*
  * podman, found the way every other binary the daemon runs is found:
  * PATH, then the install location. NULL when there is none, and the
- * caller says so.
+ * caller says so. Public so the container computer's adoption check
+ * finds the same binary the limits do; see the header.
  */
-static gchar *
-find_podman(
+gchar *
+clawt_container_limits_find_podman(
 	void
 ){
 	gchar *found;
@@ -723,7 +724,7 @@ clawt_container_limits_apply(
 	if (!clawt_container_limits_validate(self, error))
 		return FALSE;
 
-	podman = find_podman();
+	podman = clawt_container_limits_find_podman();
 
 	if (podman == NULL) {
 		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,

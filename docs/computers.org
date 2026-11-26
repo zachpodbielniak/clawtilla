@@ -419,7 +419,7 @@ computer:
     image: "fedora:latest"
     name: "clawt-researcher"      # optional; generated if absent
     connection: "unix"            # unix | ssh://… | tcp://… | a named connection
-    keep: true                    # the default: it survives the agent stopping
+    keep: true                    # the default: it survives the agent stopping and the daemon restarting
 #+end_src
 
 ~computer.container.network~ is parsed and stored and never sent to
@@ -595,7 +595,7 @@ An explicit level is one or two categories in ~c0~..~c1023~, the second larger t
 *Changing it needs the container recreated.*  podman sets a container's level when it creates it and has no way to change it afterwards -- there is no ~podman update~ for it, as there is for the [[#container-limits][limits]].  So a change to the key, to an agent's ~team~ under ~auto~, or to its ~computer.use~ takes effect when the container is next made:
 
 - ~clawtilla agent set~ and ~clawtilla config reload~ say so, naming the agent and the old and new levels (the ~recreate~ field of ~agent.set~ and ~control.reload~; ~restart_required~ is set for a running agent).
-- A stopped agent's next start makes its container afresh -- removing the one it had, and with it anything installed inside, which is what every start after a settings change already does to a kept container.
+- A stopped agent's next start compares its container with the config, finds the level differs, and makes it afresh -- removing the one it had, and with it anything installed inside.  The daemon log and the Fleet page say so and why; see [[#container-restarts][Across daemon restarts]].  (Before VENTURE #21 was fixed, every start after a settings change, and every daemon restart, did this to every kept container whatever had changed; see below.)
 - A running agent keeps the container it has.  Stop the agent and start it again, or stop it and run ~clawtilla computer rebuild <agent>~.  Until then the daemon logs, at each start of the existing container, that it was created at one level and the config wants another; nothing is removed behind your back.
 
 *The warning.*  Two container computers that bind the same host folder -- or one folder inside the other -- at different levels, with at least one of them mounting it read-write, is reported as a warning, not an error: by ~clawtilla config validate~, in the daemon log at start, and on the Fleet page of the web client (it rides ~team.list~'s ~warnings~).  It names the folder and each agent with its level.  podman's random pair always counts as different, even from another random pair.  Two agents on one team under ~auto~ never warn, and nor do two agents on one shared machine -- they are one container.  clawtilla's own mounts (the per-agent workspace and the exchange) are not compared; see below.
@@ -666,14 +666,96 @@ need the ~podman~ command on this machine (Fedora: ~podman~).
 The same three keys apply to a [[#distrobox-limits][distrobox]], which is
 a podman container underneath.
 
-*** A container left behind
+*** Across daemon restarts: adopted, not recreated
+:PROPERTIES:
+:CUSTOM_ID: container-restarts
+:END:
 
-The container name is derived from the agent id -- =clawt-<agent>= --
-so it can be found again after a daemon restart.  If one is still there
-when the agent next starts, it is removed and recreated rather than
-failing: the name is ours, and a daemon killed at the wrong moment used
-to leave an agent that could never start again without running podman by
-hand.
+*A kept container is the same container after a daemon restart.*  The
+container name is derived from the agent id -- =clawt-<agent>= -- so it
+can be found again.  The first time a daemon starts an agent, it asks
+podman for that name.  If a container is there, it is *adopted*: its id is
+taken, it is ~stopped~ or ~running~ as podman says, and starting the agent
+starts that container.  Nothing is created and nothing is removed, so
+whatever the agent installed is still there.  The log says
+=container clawt-<agent>: adopted the existing container (exited); nothing
+was recreated=.
+
+The same happens when the agent's computer object is rebuilt because its
+settings changed (an ~agent set~ or a reload, then the next start): the
+new object adopts the container the old one made.
+
+*It used to be destroyed.*  Until VENTURE #21 was fixed, a daemon remembered nothing about
+the containers it had made, so every agent's first start after a restart
+tried to create its container, found the name taken, removed the
+container holding it and made a new one -- silently.  Every kept
+container, and every package installed in one, was lost at every daemon
+restart (VENTURE #21), and at every start after any settings change.
+
+*What forces a recreate.*  Before an adopted container is kept it is
+compared, with =podman container inspect=, against what the config would
+create now.  Only what podman cannot change in place counts:
+
+| What | Compared how | Reason in the log |
+|------+--------------+-------------------|
+| image | by name; a short name matches the full name podman resolved (~fedora:44~ is ~registry.fedoraproject.org/fedora:44~), and no tag is ~:latest~ | ~image changed (docker.io/library/debian:12, the config wants …)~ |
+| bind mounts | by destination: added, removed, or a different source or read-only/read-write | ~mounts changed (+/data/foo, -/old, ~/data/source)~ |
+| SELinux level | the level in podman's ProcessLabel against the [[*SELinux levels: one folder, several containers][level the config wants]] | ~SELinux level changed (s0:c7,c9, the config wants s0:c1,c2)~ |
+| command | ~computer.container.command~ against podman's Cmd | ~command changed (the config wants …)~ |
+
+Several reasons are joined with ~; ~.  Anything else is *not* a reason:
+
+- *Limits* are applied in place with ~podman update~ at every start (see
+  [[#container-limits][Process and memory limits]]).
+- *A re-pulled image* with the same name is the same image: the comparison
+  is by name, not by image id.
+- *tmpfs and named-volume mounts* are not compared -- podman's inspect
+  does not list a tmpfs, and reports a volume by its mountpoint rather
+  than the name configured -- nor is ~network~, which is never sent to
+  podman.
+- *Podman's random pair.*  With no level wanted (~selinux_level: random~,
+  or ~auto~ outside a team) any pair the container has is accepted --
+  including a team pair it was given earlier.  Rebuild it by hand to drop
+  one.
+
+*Where a recreate shows.*  One line in the daemon log at the moment it
+happens, naming the container and the reason:
+
+#+begin_example
+recreating clawt-wildebuild: mounts changed (+/data/foo)
+#+end_example
+
+and, until the daemon restarts, on the Fleet page of the web client (it
+rides ~team.list~'s ~warnings~, beside the SELinux shared-folder warning)
+and as ~computer_recreated~ on the agent in ~agent.list~:
+
+#+begin_example
+agent wildebuild: recreated clawt-wildebuild at 2026-11-26 12:24:10: mounts changed (+/data/foo). Anything installed inside it was lost
+#+end_example
+
+*When it cannot be compared, it is kept.*  The comparison needs the
+~podman~ command on this machine (Fedora: ~podman~), reached with
+~--url~ / ~--connection~ like the limits.  If it is missing, or the
+inspect fails or prints something unreadable, the container is adopted
+as it is, with a warning saying so.  A container left on an old setting
+can be rebuilt by hand; one removed by mistake cannot be brought back.
+
+*If podman cannot be asked at all*, the start goes on and the create
+finds the name taken.  For a kept container that is not the cue to remove
+it any more: the start fails with =a container named clawt-<agent> already
+exists and could not be adopted, so nothing was removed=, and the next
+start asks again and adopts it.  To replace it deliberately: stop the
+agent and run ~clawtilla computer rebuild <agent>~.
+
+*keep: false is unchanged.*  A container that is not kept is removed when
+the agent stops.  One left behind by a daemon that died is replaced at
+the next start, as before -- now with a =recreating clawt-<agent>: keep is
+false…= line in the log, and nothing on the Fleet page, since replacing
+it is what not keeping it means.
+
+*The broker's containers* are made afresh at every broker start, as they
+always were: their environment and ports are the broker's configuration,
+and an adopted container is not compared on either.
 
 *** A container removed behind clawtilla's back
 

@@ -1821,6 +1821,14 @@ build_computers(
 		clawt_container_computer_set_name(container, one->name);
 		clawt_container_computer_set_connection(container, connection);
 		clawt_container_computer_set_keep(container, TRUE);
+
+		/*
+		 * Made afresh at every broker start, as it always was: the
+		 * environment and ports are the broker's whole configuration,
+		 * and an adopted container is not compared on either, so
+		 * adopting one would leave a changed key unapplied.
+		 */
+		clawt_container_computer_set_reuse(container, FALSE);
 		clawt_container_computer_set_env(container, env);
 		clawt_container_computer_set_ports(container, one->ports);
 

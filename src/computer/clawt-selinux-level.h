@@ -89,6 +89,21 @@ typedef gchar *(*ClawtSelinuxTeamLevelFunc)(const gchar  *team,
 gboolean clawt_selinux_level_is_valid(const gchar *level);
 
 /**
+ * clawt_selinux_level_of_label:
+ * @label: (nullable): a process label as podman reports it, such as
+ *   "system_u:system_r:container_t:s0:c100,c200"
+ *
+ * The MCS level a container actually runs at, read from the
+ * ProcessLabel of `podman container inspect`, so an existing container
+ * can be compared with the level it should have.
+ *
+ * Returns: (transfer full) (nullable): the level, such as "s0:c100,c200",
+ *   or %NULL when @label is empty (a host without SELinux) or carries
+ *   anything but one valid level
+ */
+gchar *clawt_selinux_level_of_label(const gchar *label);
+
+/**
  * clawt_selinux_level_parse:
  * @value: (nullable): computer.container.selinux_level as written;
  *   %NULL or "" mean "auto"

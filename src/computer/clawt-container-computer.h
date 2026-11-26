@@ -138,6 +138,72 @@ void clawt_container_computer_set_keep(ClawtContainerComputer *self,
                                        gboolean                keep);
 
 /**
+ * clawt_container_computer_set_reuse:
+ * @self: a #ClawtContainerComputer
+ * @reuse: whether a container already under this name may be adopted
+ *
+ * The default, %TRUE, is what makes keep mean "across daemon restarts"
+ * too: the first start of a new object finds a container left under its
+ * name, compares it with the config (see
+ * clawt_container_computer_compare()), and adopts it unless something
+ * podman cannot change in place differs.
+ *
+ * %FALSE replaces a container found under the name at every first start
+ * of an object, saying so in the log.  For a machine whose whole spec is
+ * rebuilt each time it starts -- the broker's, whose environment and
+ * ports are not compared -- so a change to them is never left behind in
+ * an adopted container.  A container that is not kept is never adopted,
+ * whatever this says.
+ */
+void clawt_container_computer_set_reuse(ClawtContainerComputer *self,
+                                        gboolean                reuse);
+
+/**
+ * clawt_container_computer_compare:
+ * @self: a #ClawtContainerComputer
+ * @inspected: what `podman container inspect` printed for the container:
+ *   a JSON array of one object, or the object
+ * @reason: (out) (transfer full) (nullable): why the container must be
+ *   recreated, or %NULL when it can be kept
+ * @error: return location for a #GError
+ *
+ * Whether an existing container still matches what this object would
+ * create, judged only on what podman cannot change in place: the image
+ * (by name, so a re-pulled tag is the same image), the bind mounts
+ * (added, removed, or with a different source or mode), the SELinux
+ * level when one is wanted, and the command.  Limits are not compared --
+ * they are applied in place at every start.
+ *
+ * @reason reads "image changed (…)", "mounts changed (+/added, -/gone,
+ * ~/different)", "SELinux level changed (…)" or "command changed (…)",
+ * joined with "; " when several hold.  Anything @inspected does not say
+ * counts as unchanged.
+ *
+ * Returns: %TRUE when the comparison was made; %FALSE with @error set when
+ *   @inspected could not be read
+ */
+gboolean clawt_container_computer_compare(ClawtContainerComputer  *self,
+                                          const gchar             *inspected,
+                                          gchar                  **reason,
+                                          GError                 **error);
+
+/**
+ * clawt_container_computer_get_last_recreate:
+ * @self: a #ClawtContainerComputer
+ *
+ * The last time this object removed a kept container it had adopted and
+ * made it again, as one sentence: the container, when, and why.  The
+ * daemon reports it on the Fleet page (the warnings of team.list) and as
+ * computer_recreated in agent.list, so somebody whose agent lost what it
+ * installed can see what did it.
+ *
+ * Returns: (transfer none) (nullable): the sentence, or %NULL when this
+ *   object has not recreated a kept container
+ */
+const gchar *
+clawt_container_computer_get_last_recreate(ClawtContainerComputer *self);
+
+/**
  * clawt_container_computer_set_limits:
  * @self: a #ClawtContainerComputer
  * @limits: (nullable): the process and memory limits, or %NULL for none
