@@ -106,6 +106,96 @@ clamp_percent(gdouble value)
 }
 
 /*
+ * Raw keys the providers put in `label` when they have no display name.
+ * Claude's own normaliser already turns five_hour / seven_day* into the
+ * names below; the table is here so a key that arrives untranslated does
+ * too.  USAGE_PERIOD is Grok's currentPeriod.type, copied through as the
+ * label.  Anything else shaped like an identifier is sentence-cased.
+ */
+static const gchar *
+mapped_label(const gchar *raw)
+{
+    static const struct {
+        const gchar *key;
+        const gchar *label;
+    } table[] = {
+        { "USAGE_PERIOD",          "Usage period" },
+        { "five_hour",             "Session (5h)" },
+        { "seven_day",             "Weekly" },
+        { "seven_day_opus",        "Weekly (Opus)" },
+        { "seven_day_sonnet",      "Weekly (Sonnet)" },
+        { "seven_day_oauth_apps",  "Weekly (OAuth apps)" },
+    };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(table); i++)
+        if (g_strcmp0(table[i].key, raw) == 0)
+            return table[i].label;
+    return NULL;
+}
+
+/* [A-Z0-9_]+ or [a-z0-9_]+, and at least one letter.  Mixed case, spaces
+ * and punctuation are already a name ("Session (5h)", "prepaid balance"). */
+static gboolean
+raw_identifier(const gchar *text)
+{
+    const gchar *p;
+    gboolean upper = FALSE;
+    gboolean lower = FALSE;
+
+    if (text == NULL || *text == '\0')
+        return FALSE;
+    for (p = text; *p != '\0'; p++) {
+        if (*p == '_' || g_ascii_isdigit(*p))
+            continue;
+        if (g_ascii_isupper(*p))
+            upper = TRUE;
+        else if (g_ascii_islower(*p))
+            lower = TRUE;
+        else
+            return FALSE;
+    }
+    if (upper && lower)
+        return FALSE;
+    return upper || lower;
+}
+
+/* The label every client shows.  NULL when the source gave none. */
+static gchar *
+human_label(const gchar *raw)
+{
+    const gchar *mapped;
+    g_autofree gchar *lowered = NULL;
+    gchar *p;
+
+    if (raw == NULL)
+        return NULL;
+    mapped = mapped_label(raw);
+    if (mapped != NULL)
+        return g_strdup(mapped);
+    if (!raw_identifier(raw))
+        return g_strdup(raw);
+
+    lowered = g_ascii_strdown(raw, -1);
+    for (p = lowered; *p != '\0'; p++)
+        if (*p == '_')
+            *p = ' ';
+    if (lowered[0] >= 'a' && lowered[0] <= 'z')
+        lowered[0] = (gchar)(lowered[0] - 'a' + 'A');
+    return g_steal_pointer(&lowered);
+}
+
+/* Dollars or credits.  Tokens are a meter when they have a limit, and a
+ * bare count otherwise -- not a balance. */
+static gboolean
+currency_unit(const gchar *unit)
+{
+    return g_strcmp0(unit, "USD") == 0 ||
+           g_strcmp0(unit, "credit") == 0 ||
+           g_strcmp0(unit, "credits") == 0;
+}
+
+/*
  * One report entry -> one window.  The direction rule lives here and
  * nowhere else: remaining_percent when the source said "left", 100 minus
  * used_percent when it said "used", and remaining/limit when it gave
@@ -114,7 +204,8 @@ clamp_percent(gdouble value)
 static void
 add_window(JsonBuilder *builder, JsonObject *entry)
 {
-    const gchar *label = member_text(entry, "label");
+    const gchar *raw_label = member_text(entry, "label");
+    g_autofree gchar *label = human_label(raw_label);
     const gchar *unit = member_text(entry, "unit");
     const gchar *reset_text = member_text(entry, "reset_text");
     const gchar *reset_at = member_text(entry, "reset_at");
@@ -127,6 +218,7 @@ add_window(JsonBuilder *builder, JsonObject *entry)
     gboolean has_limit = member_number(entry, "limit", &limit);
     gboolean has_remaining = member_number(entry, "remaining", &remaining);
     gboolean has_left = FALSE;
+    gboolean balance = FALSE;
     gdouble left = 0.0;
     gint64 instant = 0;
 
@@ -141,16 +233,29 @@ add_window(JsonBuilder *builder, JsonObject *entry)
         left = clamp_percent(100.0 * (has_remaining ? remaining : limit - used) / limit);
     }
 
+    /* A currency or credit figure with no share of a limit.  Nothing in the
+     * report says a balance gates the login, so it is not a meter. */
+    balance = !has_left && currency_unit(unit) &&
+              (has_remaining || has_used || member_number(entry, "cost_usd", NULL));
+
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "label");
     json_builder_add_string_value(builder, label != NULL ? label : "Allowance");
+    if (raw_label != NULL) {
+        json_builder_set_member_name(builder, "key");
+        json_builder_add_string_value(builder, raw_label);
+    }
+    json_builder_set_member_name(builder, "kind");
+    json_builder_add_string_value(builder, balance ? "balance" : "meter");
     json_builder_set_member_name(builder, "unit");
     json_builder_add_string_value(builder, unit != NULL ? unit : "percent");
 
-    if (has_left) {
+    /* A balance keeps its figure and never a percentage, so 0 remaining
+     * cannot be read as "0% left". */
+    if (!balance && has_left) {
         json_builder_set_member_name(builder, "remaining_percent");
         json_builder_add_double_value(builder, left);
-    } else if (member_number(entry, "percent", &value)) {
+    } else if (!balance && member_number(entry, "percent", &value)) {
         json_builder_set_member_name(builder, "percent");
         json_builder_add_double_value(builder, clamp_percent(value));
     }
@@ -277,6 +382,9 @@ clawt_usage_window_level(JsonObject *window)
 {
     gdouble left = 0.0;
 
+    /* No field on a balance says it gates usage, so it is never a warning. */
+    if (g_strcmp0(member_text(window, "kind"), "balance") == 0)
+        return CLAWT_ALLOWANCE_UNKNOWN;
     if (!clawt_usage_window_remaining(window, &left))
         return CLAWT_ALLOWANCE_UNKNOWN;
     if (left <= (gdouble)CLAWT_ALLOWANCE_CRITICAL_PERCENT)
@@ -339,6 +447,19 @@ amount(const gchar *unit, gdouble value)
     }
 }
 
+/* "prepaid" in the label, either case.  The figure then says so. */
+static gboolean
+label_says_prepaid(JsonObject *window)
+{
+    const gchar *label = member_text(window, "label");
+    g_autofree gchar *lower = NULL;
+
+    if (label == NULL)
+        return FALSE;
+    lower = g_ascii_strdown(label, -1);
+    return strstr(lower, "prepaid") != NULL;
+}
+
 gchar *
 clawt_usage_window_value_label(JsonObject *window)
 {
@@ -347,6 +468,19 @@ clawt_usage_window_value_label(JsonObject *window)
     gdouble value = 0.0;
     gdouble limit = 0.0;
     gboolean has_limit = member_number(window, "limit", &limit);
+
+    /* A balance is a figure.  It is never "N% left". */
+    if (g_strcmp0(member_text(window, "kind"), "balance") == 0) {
+        if (member_number(window, "remaining", &value) ||
+            member_number(window, "used", &value)) {
+            if (g_strcmp0(unit, "USD") == 0 && label_says_prepaid(window))
+                return g_strdup_printf("$%.2f prepaid", value);
+            return amount(unit, value);
+        }
+        if (member_number(window, "cost_usd", &value))
+            return g_strdup_printf("$%.2f", value);
+        return g_strdup("Not reported");
+    }
 
     /* money and token windows read better as amounts than as a share */
     if (g_strcmp0(unit, "percent") != 0 && has_limit) {
@@ -527,4 +661,41 @@ clawt_usage_login_level(JsonObject *login)
         }
     }
     return worst;
+}
+
+JsonObject *
+clawt_usage_login_tightest_window(JsonObject *login)
+{
+    JsonArray *windows;
+    JsonObject *best = NULL;
+    gdouble best_used = -1.0;
+    guint i;
+
+    if (login == NULL || !json_object_has_member(login, "windows") ||
+        !JSON_NODE_HOLDS_ARRAY(json_object_get_member(login, "windows")))
+        return NULL;
+    windows = json_object_get_array_member(login, "windows");
+
+    /* Highest used share.  A balance has none.  A tie keeps the earlier
+     * window, which is the provider's own order. */
+    for (i = 0; i < json_array_get_length(windows); i++) {
+        JsonNode *node = json_array_get_element(windows, i);
+        JsonObject *window;
+        gdouble left = 0.0;
+        gdouble used;
+
+        if (node == NULL || !JSON_NODE_HOLDS_OBJECT(node))
+            continue;
+        window = json_node_get_object(node);
+        if (g_strcmp0(member_text(window, "kind"), "balance") == 0)
+            continue;
+        if (!clawt_usage_window_remaining(window, &left))
+            continue;
+        used = 100.0 - left;
+        if (best == NULL || used > best_used) {
+            best = window;
+            best_used = used;
+        }
+    }
+    return best;
 }

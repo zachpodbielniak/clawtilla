@@ -115,7 +115,8 @@ const gchar *clawt_allowance_level_tone(ClawtAllowanceLevel level);
  * @window: one window from `usage.providers`
  *
  * The headline figure: "62% left", "38% (direction not reported)",
- * "$3.20 of $10.00 left", "1,200 tokens used".
+ * "$3.20 of $10.00 left", "1,200 tokens used", or "$0.00 prepaid" for a
+ * balance.  A balance is never a percentage.
  *
  * Returns: (transfer full): the label
  */
@@ -178,8 +179,22 @@ gchar *clawt_usage_login_status_label(JsonObject *login, gint64 now);
  * clawt_usage_login_level:
  * @login: one login from `usage.providers`
  *
- * Returns: the most worrying level among @login's windows
+ * Returns: the most worrying level among @login's windows.  A balance
+ *   is not worrying: nothing in the report says it gates usage.
  */
 ClawtAllowanceLevel clawt_usage_login_level(JsonObject *login);
+
+/**
+ * clawt_usage_login_tightest_window:
+ * @login: one login from `usage.providers`
+ *
+ * The meter that has used the largest share of its allowance.  Balances
+ * have no share and are ignored.  When two meters tie, the earlier one
+ * in the provider's order is returned.
+ *
+ * Returns: (transfer none) (nullable): that window, or %NULL when
+ *   @login has no meter.  The pointer belongs to @login.
+ */
+JsonObject *clawt_usage_login_tightest_window(JsonObject *login);
 
 G_END_DECLS

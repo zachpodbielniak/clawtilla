@@ -475,6 +475,119 @@ test_readings_survive_a_restart(void)
     daemon_teardown(&fixture);
 }
 
+/* Raw keys become names; a name is left as it was; a balance is a figure. */
+static void
+test_labels_kinds_and_tightest(void)
+{
+    const gchar *period[] = { "used_percent", "10", NULL };
+    const gchar *unknown[] = { "used_percent", "50", NULL };
+    const gchar *human[] = { "used_percent", "38", NULL };
+    const gchar *weekly[] = { "used_percent", "92", NULL };
+    const gchar *prepaid[] = { "remaining", "0", NULL };
+    g_autofree gchar *a = entry_with("USAGE_PERIOD", "percent", period);
+    g_autofree gchar *b = entry_with("not_a_known_pool", "percent", unknown);
+    g_autofree gchar *c = entry_with("Session (5h)", "percent", human);
+    g_autofree gchar *d = entry_with("Weekly", "percent", weekly);
+    g_autofree gchar *e = entry_with("prepaid balance", "USD", prepaid);
+    g_autofree gchar *entries = g_strdup_printf("%s,%s,%s,%s,%s", a, b, c, d, e);
+    g_autoptr(JsonNode) report = report_node(entries, NULL);
+    g_autoptr(JsonNode) login = clawt_provider_usage_normalize(report);
+    JsonObject *root = json_node_get_object(login);
+    JsonObject *usage = window_at(login, 0);
+    JsonObject *raw = window_at(login, 1);
+    JsonObject *session = window_at(login, 2);
+    JsonObject *week = window_at(login, 3);
+    JsonObject *balance = window_at(login, 4);
+    g_autofree gchar *session_value = clawt_usage_window_value_label(session);
+    g_autofree gchar *balance_value = clawt_usage_window_value_label(balance);
+
+    g_assert_cmpstr(json_object_get_string_member(usage, "label"), ==, "Usage period");
+    g_assert_cmpstr(json_object_get_string_member(usage, "key"), ==, "USAGE_PERIOD");
+    g_assert_cmpstr(json_object_get_string_member(usage, "kind"), ==, "meter");
+
+    g_assert_cmpstr(json_object_get_string_member(raw, "label"), ==, "Not a known pool");
+    g_assert_cmpstr(json_object_get_string_member(raw, "key"), ==, "not_a_known_pool");
+
+    g_assert_cmpstr(json_object_get_string_member(session, "label"), ==, "Session (5h)");
+    g_assert_cmpstr(json_object_get_string_member(session, "key"), ==, "Session (5h)");
+    g_assert_cmpstr(json_object_get_string_member(session, "kind"), ==, "meter");
+    g_assert_cmpstr(session_value, ==, "62% left");
+
+    g_assert_cmpstr(json_object_get_string_member(balance, "kind"), ==, "balance");
+    g_assert_false(json_object_has_member(balance, "remaining_percent"));
+    g_assert_cmpstr(balance_value, ==, "$0.00 prepaid");
+    g_assert_null(strchr(balance_value, '%'));
+    g_assert_cmpint(clawt_usage_window_level(balance), ==, CLAWT_ALLOWANCE_UNKNOWN);
+
+    /* 92% used beats 38% used; the balance is not a candidate */
+    g_assert_true(clawt_usage_login_tightest_window(root) == week);
+
+    {
+        g_autofree gchar *named = entry_with("five_hour", "percent", period);
+        g_autofree gchar *opus = entry_with("seven_day_opus", "percent", period);
+        g_autofree gchar *sonnet = entry_with("seven_day_sonnet", "percent", period);
+        g_autofree gchar *oauth = entry_with("seven_day_oauth_apps", "percent", period);
+        g_autofree gchar *week_key = entry_with("seven_day", "percent", period);
+        g_autofree gchar *snake = entry_with("prepaid_balance", "USD", prepaid);
+        g_autofree gchar *both = g_strdup_printf("%s,%s,%s,%s,%s,%s",
+            named, week_key, opus, sonnet, oauth, snake);
+        g_autoptr(JsonNode) again_report = report_node(both, NULL);
+        g_autoptr(JsonNode) again = clawt_provider_usage_normalize(again_report);
+        g_autofree gchar *prepaid_value = NULL;
+
+        g_assert_cmpstr(json_object_get_string_member(window_at(again, 0), "label"),
+                        ==, "Session (5h)");
+        g_assert_cmpstr(json_object_get_string_member(window_at(again, 1), "label"),
+                        ==, "Weekly");
+        g_assert_cmpstr(json_object_get_string_member(window_at(again, 2), "label"),
+                        ==, "Weekly (Opus)");
+        g_assert_cmpstr(json_object_get_string_member(window_at(again, 3), "label"),
+                        ==, "Weekly (Sonnet)");
+        g_assert_cmpstr(json_object_get_string_member(window_at(again, 4), "label"),
+                        ==, "Weekly (OAuth apps)");
+        g_assert_cmpstr(json_object_get_string_member(window_at(again, 5), "label"),
+                        ==, "Prepaid balance");
+        g_assert_cmpstr(json_object_get_string_member(window_at(again, 5), "kind"),
+                        ==, "balance");
+        prepaid_value = clawt_usage_window_value_label(window_at(again, 5));
+        g_assert_cmpstr(prepaid_value, ==, "$0.00 prepaid");
+    }
+}
+
+/*
+ * What ai-glib keeps from a Claude Code Max get_usage (tests/test-cli-report.c
+ * CLAUDE_USAGE, subscription_type max): five_hour, seven_day, and the
+ * model_scoped "Fable" row.  seven_day_opus is null, seven_day_sonnet has a
+ * null utilization, and iguana_necktie / extra_usage are not windows.
+ */
+static void
+test_claude_max_windows(void)
+{
+    const gchar *session[] = { "used_percent", "15", "window_minutes", "300", NULL };
+    const gchar *weekly[] = { "used_percent", "21", "window_minutes", "10080", NULL };
+    const gchar *fable[] = { "used_percent", "0", "window_minutes", "10080", NULL };
+    g_autofree gchar *a = entry_with("Session (5h)", "percent", session);
+    g_autofree gchar *b = entry_with("Weekly", "percent", weekly);
+    g_autofree gchar *c = entry_with("Weekly (Fable)", "percent", fable);
+    g_autofree gchar *entries = g_strdup_printf("%s,%s,%s", a, b, c);
+    g_autoptr(JsonNode) report = report_node(entries, NULL);
+    g_autoptr(JsonNode) login = clawt_provider_usage_normalize(report);
+    JsonArray *windows = json_object_get_array_member(json_node_get_object(login),
+                                                      "windows");
+    const gchar *expect[] = { "Session (5h)", "Weekly", "Weekly (Fable)" };
+    guint i;
+
+    g_assert_cmpuint(json_array_get_length(windows), ==, G_N_ELEMENTS(expect));
+    for (i = 0; i < G_N_ELEMENTS(expect); i++) {
+        JsonObject *window = json_array_get_object_element(windows, i);
+
+        g_assert_cmpstr(json_object_get_string_member(window, "label"), ==, expect[i]);
+        g_assert_cmpstr(json_object_get_string_member(window, "kind"), ==, "meter");
+    }
+    g_assert_true(clawt_usage_login_tightest_window(json_node_get_object(login)) ==
+                  json_array_get_object_element(windows, 1));
+}
+
 gint
 main(gint argc, gchar *argv[])
 {
@@ -483,6 +596,9 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/provider-usage/claude-windows", test_claude_windows);
     g_test_add_func("/provider-usage/direction-unknown", test_direction_unknown);
     g_test_add_func("/provider-usage/money-and-dates", test_money_and_dates);
+    g_test_add_func("/provider-usage/labels-kinds-and-tightest",
+                    test_labels_kinds_and_tightest);
+    g_test_add_func("/provider-usage/claude-max-windows", test_claude_max_windows);
     g_test_add_func("/provider-usage/refuses-other-documents",
                     test_refuses_other_documents);
     g_test_add_func("/provider-usage/tones-and-meter", test_tones_and_meter);

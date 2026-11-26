@@ -168,6 +168,7 @@ limit_window_row(JsonObject *window, gint64 now)
     g_autofree gchar *reset = clawt_usage_window_reset_label(window, now);
     GtkWidget *value_label = gtk_label_new(value);
     gdouble left = 0.0;
+    gboolean balance = g_strcmp0(clawt_json_string(window, "kind", "meter"), "balance") == 0;
     ClawtAllowanceLevel level = clawt_usage_window_level(window);
 
     gtk_widget_set_margin_top(box, 8);
@@ -187,10 +188,10 @@ limit_window_row(JsonObject *window, gint64 now)
     gtk_widget_add_css_class(meter, "clawt-meter");
     gtk_widget_add_css_class(meter,
         clawt_gtk_tone_class(clawt_allowance_level_tone(level)));
-    if (clawt_usage_window_remaining(window, &left))
+    if (!balance && clawt_usage_window_remaining(window, &left))
         gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(meter), left / 100.0);
     else
-        /* no direction, no meter: an empty bar would read as "used up" */
+        /* no direction, or a balance: an empty bar would read as "used up" */
         gtk_widget_set_opacity(meter, 0.0);
     gtk_box_append(GTK_BOX(box), meter);
 

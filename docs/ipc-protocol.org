@@ -1385,7 +1385,7 @@ fleet uses: ~id~ (=<cli>:<account>= or =<cli>:default=), ~provider~
 ~pending~, ~ok~, ~unsupported~, ~error~), ~message~ (why, for the last
 two), ~read_at~ (unix seconds of the last answer, absent for none), and
 from the last good report ~plan~, ~source~, ~detail~, ~partial~,
-~collected_at~ and ~windows~.  Each window has ~label~ and ~unit~
+~collected_at~ and ~windows~.  Each window has ~label~ (a name; a raw key such as ~USAGE_PERIOD~ is already rewritten), ~key~ (that raw label, when the provider sent one), ~kind~ (~meter~ or ~balance~; a balance is a currency or credit figure with no percentage, drawn with no meter and never as a warning) and ~unit~
 (~percent~, ~tokens~ or ~USD~) and only the members the provider
 reported: ~remaining_percent~ (when the source gave a direction),
 ~percent~ (a figure with no direction), ~used~, ~limit~, ~remaining~,

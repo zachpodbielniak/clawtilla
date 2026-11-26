@@ -102,6 +102,7 @@ limit_window_element(JsonObject *window, gint64 now)
     g_autofree gchar *reset = clawt_usage_window_reset_label(window, now);
     ClawtAllowanceLevel level = clawt_usage_window_level(window);
     g_autofree gchar *tone = g_strdup_printf("meter-%s", clawt_allowance_level_tone(level));
+    gboolean balance = g_strcmp0(clawt_web_member(window, "kind", "meter"), "balance") == 0;
     gdouble left = 0.0;
 
     htmx_element_add_class(HTMX_ELEMENT(row), "limit-window");
@@ -110,7 +111,7 @@ limit_window_element(JsonObject *window, gint64 now)
 
     htmx_element_add_class(HTMX_ELEMENT(meter), "meter");
     htmx_element_add_class(HTMX_ELEMENT(meter), tone);
-    if (clawt_usage_window_remaining(window, &left)) {
+    if (!balance && clawt_usage_window_remaining(window, &left)) {
         g_autoptr(HtmxSpan) fill = htmx_span_new();
         g_autofree gchar *style = g_strdup_printf("width:%.1f%%", left);
         g_autofree gchar *now_text = g_strdup_printf("%.0f", left);
@@ -123,7 +124,7 @@ limit_window_element(JsonObject *window, gint64 now)
         htmx_element_set_attribute(HTMX_ELEMENT(meter), "aria-valuenow", now_text);
         htmx_element_set_attribute(HTMX_ELEMENT(meter), "aria-label", value);
     } else {
-        /* no direction, no meter: an empty bar would read as "used up" */
+        /* no direction, or a balance: an empty bar would read as "used up" */
         htmx_element_add_class(HTMX_ELEMENT(meter), "meter-none");
     }
     htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(meter));
