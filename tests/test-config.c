@@ -1466,6 +1466,168 @@ test_session_max_sessions_render_replaces_impossible_counts(void)
 }
 
 /*
+ * An agent block with comments in it and its keys in no particular
+ * order: a rollback has to give back the very bytes it started from, so
+ * the next save does not rewrite somebody's block.
+ */
+static const gchar *change_config =
+    "agents:\n"
+    "  - id: zed\n"
+    "    # the one being changed\n"
+    "    name: \"Zed\"\n"
+    "    model:\n"
+    "      model: sonnet   # cheap on purpose\n"
+    "    computer:\n"
+    "      type: container\n"
+    "    chief_of_staff: false\n"
+    "  - id: other\n"
+    "    name: \"Other\"\n";
+
+/*
+ * Rolled back: everything under the agent as it was, byte for byte --
+ * a changed value, and the `libreclaw:` and `ai:` mappings a nested key
+ * created on the way down, which is what undoing only the leaf would
+ * have left behind.
+ */
+static void
+test_agent_change_rollback_restores_the_block(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config =
+        clawt_config_load_from_string(change_config, &error);
+    g_autofree gchar *before = NULL;
+    g_autofree gchar *changed = NULL;
+    g_autofree gchar *after = NULL;
+    ClawtAgentConfig *zed;
+
+    g_assert_no_error(error);
+    zed = clawt_config_get_agent(config, "zed");
+    g_assert_nonnull(zed);
+    before = clawt_config_to_string(config);
+
+    clawt_agent_config_begin_change(zed);
+    g_assert_true(clawt_agent_config_set_from_string(
+        zed, "libreclaw.ai.process_timeout_ms", "3600000"));
+    g_assert_true(clawt_agent_config_set_from_string(zed, "model.model",
+                                                     "opus"));
+    g_assert_true(clawt_agent_config_set_from_string(zed, "name", "Zee"));
+
+    changed = clawt_config_to_string(config);
+    g_assert_nonnull(strstr(changed, "process_timeout_ms"));
+    g_assert_cmpstr(clawt_agent_config_get_string(zed, "model.model"), ==,
+                    "opus");
+
+    clawt_agent_config_rollback_change(zed);
+
+    g_assert_false(clawt_agent_config_has_key(
+        zed, "libreclaw.ai.process_timeout_ms"));
+    g_assert_cmpstr(clawt_agent_config_get_string(zed, "model.model"), ==,
+                    "sonnet");
+    g_assert_cmpstr(clawt_agent_config_get_string(zed, "name"), ==, "Zed");
+
+    after = clawt_config_to_string(config);
+    g_assert_cmpstr(before, ==, after);
+}
+
+/* Committed: the change stays, and a rollback after it has nothing to undo. */
+static void
+test_agent_change_commit_keeps_it(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config =
+        clawt_config_load_from_string(change_config, &error);
+    ClawtAgentConfig *zed;
+
+    g_assert_no_error(error);
+    zed = clawt_config_get_agent(config, "zed");
+
+    clawt_agent_config_begin_change(zed);
+    g_assert_true(clawt_agent_config_set_from_string(zed, "model.model",
+                                                     "opus"));
+    clawt_agent_config_commit_change(zed);
+    clawt_agent_config_rollback_change(zed);
+
+    g_assert_cmpstr(clawt_agent_config_get_string(zed, "model.model"), ==,
+                    "opus");
+}
+
+/* No change begun: commit and rollback both leave the agent alone. */
+static void
+test_agent_change_without_begin_is_nothing(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config =
+        clawt_config_load_from_string(change_config, &error);
+    ClawtAgentConfig *zed;
+
+    g_assert_no_error(error);
+    zed = clawt_config_get_agent(config, "zed");
+
+    g_assert_true(clawt_agent_config_set_from_string(zed, "model.model",
+                                                     "opus"));
+    clawt_agent_config_rollback_change(zed);
+    clawt_agent_config_commit_change(zed);
+
+    g_assert_cmpstr(clawt_agent_config_get_string(zed, "model.model"), ==,
+                    "opus");
+}
+
+/*
+ * A second begin starts again from where the agent is then: a rollback
+ * undoes only what came after it.
+ */
+static void
+test_agent_change_begin_again_starts_over(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config =
+        clawt_config_load_from_string(change_config, &error);
+    ClawtAgentConfig *zed;
+
+    g_assert_no_error(error);
+    zed = clawt_config_get_agent(config, "zed");
+
+    clawt_agent_config_begin_change(zed);
+    g_assert_true(clawt_agent_config_set_from_string(zed, "model.model",
+                                                     "opus"));
+    clawt_agent_config_begin_change(zed);
+    g_assert_true(clawt_agent_config_set_from_string(zed, "name", "Zee"));
+    clawt_agent_config_rollback_change(zed);
+
+    g_assert_cmpstr(clawt_agent_config_get_string(zed, "model.model"), ==,
+                    "opus");
+    g_assert_cmpstr(clawt_agent_config_get_string(zed, "name"), ==, "Zed");
+}
+
+/*
+ * The rollback touches only its own agent: the agent next to it, changed
+ * in the meantime, keeps its change.
+ */
+static void
+test_agent_change_rollback_leaves_other_agents(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config =
+        clawt_config_load_from_string(change_config, &error);
+    ClawtAgentConfig *zed;
+    ClawtAgentConfig *other;
+
+    g_assert_no_error(error);
+    zed = clawt_config_get_agent(config, "zed");
+    other = clawt_config_get_agent(config, "other");
+
+    clawt_agent_config_begin_change(zed);
+    g_assert_true(clawt_agent_config_set_from_string(zed, "name", "Zee"));
+    g_assert_true(clawt_agent_config_set_from_string(other, "name",
+                                                     "Another"));
+    clawt_agent_config_rollback_change(zed);
+
+    g_assert_cmpstr(clawt_agent_config_get_string(zed, "name"), ==, "Zed");
+    g_assert_cmpstr(clawt_agent_config_get_string(other, "name"), ==,
+                    "Another");
+}
+
+/*
  * The routing mode reaches the agent's own config.yaml, and libreclaw
  * understands every value clawtilla can render.
  *
@@ -3114,6 +3276,16 @@ main(int argc, char *argv[])
     g_test_add_func(
         "/config/session-max-sessions/render-replaces-impossible-counts",
         test_session_max_sessions_render_replaces_impossible_counts);
+    g_test_add_func("/config/agent-change/rollback-restores-the-block",
+                    test_agent_change_rollback_restores_the_block);
+    g_test_add_func("/config/agent-change/commit-keeps-it",
+                    test_agent_change_commit_keeps_it);
+    g_test_add_func("/config/agent-change/without-begin-is-nothing",
+                    test_agent_change_without_begin_is_nothing);
+    g_test_add_func("/config/agent-change/begin-again-starts-over",
+                    test_agent_change_begin_again_starts_over);
+    g_test_add_func("/config/agent-change/rollback-leaves-other-agents",
+                    test_agent_change_rollback_leaves_other_agents);
     g_test_add_func(
         "/config/routing-mode-survives-the-render-parse-round-trip",
         test_routing_mode_survives_the_render_parse_round_trip);

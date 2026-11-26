@@ -1486,6 +1486,31 @@ test_a_refused_set_writes_nothing(void)
                                       NULL));
     g_assert_cmpstr(before, ==, after);
 
+    /*
+     * ...which proves less than it looks: nothing is saved on a refusal,
+     * so the file would be unchanged even if the refused value were
+     * still sitting in memory.  The next good set is what would write it
+     * out -- and since the agent would then already fail to render, that
+     * set would be let through (see the test below).  So make one, and
+     * read what it saved.
+     */
+    {
+        g_autoptr(JsonNode) good = NULL;
+        g_autofree gchar *saved = NULL;
+
+        good = request(&fixture, "agent.set",
+                       "{\"agent\": \"chief\", \"key\": \"model.model\","
+                       " \"value\": \"opus\"}");
+        g_assert_false(clawt_ipc_frame_is_error(good));
+
+        g_assert_true(g_file_get_contents(fixture.config_path, &saved, NULL,
+                                          NULL));
+        g_assert_nonnull(strstr(saved, "opus"));
+        g_assert_null(strstr(saved, "libreclaw"));
+        g_assert_null(strstr(saved, "ai:"));
+        g_assert_null(strstr(saved, "process_timeout_ms"));
+    }
+
     fixture_teardown(&fixture);
 }
 
