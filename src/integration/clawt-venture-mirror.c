@@ -2559,7 +2559,6 @@ on_poll_intake(PollJob *poll, guint status, const gchar *body)
         if (ticket <= 0 || (ext != NULL && *ext != '\0'))
             continue;
 
-
         known = clawt_task_store_venture_task_for_ticket(self->store, ticket);
 
         if (known != NULL)
