@@ -407,7 +407,44 @@ job_send(Job *job, Account *account, const gchar *method, const gchar *path,
 
 /* ── The ticket's fields ─────────────────────────────────────────── */
 
-/* The fields the mirror owns, as it would write them now. */
+/*
+ * Whether a ref is of a ticket that came in from VENTURE (intake), as
+ * against one the mirror filed.
+ *
+ * A ticket the mirror filed has `_repo` in its receipt from the create
+ * reply on, and every later write keeps it; the receipt intake writes
+ * never has it.  So "a ticket and no `_repo`" is an intake ticket, which
+ * covers refs stored before intake wrote `_intake` itself.  A ref with no
+ * ticket yet (skipped, or not yet created) is neither: the mirror files
+ * it, and owns its title.
+ */
+static gboolean
+ref_is_intake(const ClawtVentureRef *ref)
+{
+    g_autoptr(JsonNode) snap = NULL;
+    JsonObject *so;
+
+    if (ref == NULL || ref->ticket_id <= 0)
+        return FALSE;
+
+    snap = (ref->snapshot != NULL) ? json_from_string(ref->snapshot, NULL)
+                                   : NULL;
+
+    if (snap == NULL || !JSON_NODE_HOLDS_OBJECT(snap))
+        return TRUE;
+
+    so = json_node_get_object(snap);
+
+    return json_object_has_member(so, "_intake") ||
+           !json_object_has_member(so, "_repo");
+}
+
+/*
+ * The fields the mirror owns, as it would write them now.  The title is
+ * owned only on a ticket the mirror filed: an intake ticket has the
+ * title its author gave it, and the task's own is "#<N> <title>" cut to
+ * the task title limit, which must never be written back.
+ */
 static JsonObject *
 desired_fields(Job *job)
 {
@@ -417,8 +454,10 @@ desired_fields(Job *job)
     Account *owner = (assignee != NULL)
         ? g_hash_table_lookup(job->mirror->accounts, assignee) : NULL;
 
-    json_object_set_string_member(o, "title",
-        (title != NULL && *title != '\0') ? title : clawt_task_get_id(job->task));
+    if (!ref_is_intake(job->ref))
+        json_object_set_string_member(o, "title",
+            (title != NULL && *title != '\0') ? title
+                                              : clawt_task_get_id(job->task));
     json_object_set_string_member(o, "status",
         clawt_venture_mirror_ticket_status(
             (gint)clawt_task_get_state(job->task)));
@@ -2257,6 +2296,8 @@ intake_one(PollJob *poll, JsonObject *t, const gchar *from_agent)
             json_object_get_string_member_with_default(t, "title", ""));
         json_object_set_string_member(so, "status", "todo");
         json_object_set_string_member(so, "assignee", poll->account->user);
+        /* it came from VENTURE: its title is the author's, never written */
+        json_object_set_boolean_member(so, "_intake", TRUE);
         text = json_to_string(snap, FALSE);
 
         ref.task_id = task_id;

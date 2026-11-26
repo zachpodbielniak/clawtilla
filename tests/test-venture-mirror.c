@@ -63,6 +63,7 @@ typedef struct {
     gint64          create_org;         /* organization_id in a created ticket */
     gchar          *intake_url;         /* the url intake was handed */
     gchar          *intake_task;        /* and the task it made */
+    gboolean        name_intake;        /* intake names its task "#N title" */
 } Fixture;
 
 typedef struct {
@@ -833,6 +834,16 @@ rec_intake(gpointer data, const gchar *agent_id, gint64 ticket,
     fixture->intake_url = g_strdup(url);
     g_free(fixture->intake_task);
     fixture->intake_task = g_strdup(clawt_task_get_id(task));
+
+    /* as the daemon does: "#<ticket> <title>", cut to the task limit */
+    if (fixture->name_intake) {
+        g_autofree gchar *named = g_strdup_printf("#%" G_GINT64_FORMAT " %s",
+                                                  ticket, title);
+
+        clawt_task_set_title(task, named);
+        g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+    }
+
     g_ptr_array_add(fixture->inbound, g_strdup_printf(
         "intake %" G_GINT64_FORMAT " %s %s%s%s", ticket, agent_id, title,
         from_agent != NULL ? " from " : "",
@@ -1554,6 +1565,131 @@ test_intake_link_carries_the_organization(Fixture *fixture, gconstpointer data)
     g_assert_cmpstr(ref->url, ==, fixture->intake_url);
 }
 
+/* How many PATCHes to a ticket carried a title member. */
+static guint
+patches_with_title(Fixture *fixture, const gchar *path, guint *patches)
+{
+    guint with = 0;
+    guint i;
+
+    *patches = 0;
+
+    for (i = 0; i < fixture->sent->len; i++) {
+        Sent *sent = g_ptr_array_index(fixture->sent, i);
+        g_autoptr(JsonNode) holder = NULL;
+
+        if (g_strcmp0(sent->method, "PATCH") != 0 ||
+            g_strcmp0(sent->url, path) != 0)
+            continue;
+
+        (*patches)++;
+        if (json_object_has_member(body_of(sent, &holder), "title"))
+            with++;
+    }
+
+    return with;
+}
+
+/* A ticket taken in keeps its title: never written, however often. */
+static void
+test_intake_title_is_never_written(Fixture *fixture, gconstpointer data)
+{
+    g_autofree gchar *long_title = g_strnfill(130, 'w');
+    g_autoptr(ClawtTask) task = NULL;
+    g_autoptr(JsonNode) holder = NULL;
+    Sent *sent;
+    guint patches = 0;
+
+    (void)data;
+    fixture->name_intake = TRUE;
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     TRUE);
+    clawt_venture_mirror_set_account_intake(fixture->mirror, "scout", TRUE);
+    fixture->assigned = g_strdup_printf(
+        "[{\"id\":50,\"version\":2,\"title\":\"%s\","
+        "  \"status\":\"todo\"}]", long_title);
+
+    poll(fixture);
+
+    /* the first update: reference, status and assignee -- not the title */
+    sent = find_sent(fixture, "PATCH", "/api/v1/ticket/50");
+    g_assert_nonnull(sent);
+    g_assert_false(json_object_has_member(body_of(sent, &holder), "title"));
+    g_assert_true(json_object_has_member(json_node_get_object(holder),
+                                         "external_ref"));
+
+    /* a second update, on the task's next move: still not */
+    task = clawt_task_store_get(fixture->store, fixture->intake_task);
+    g_assert_nonnull(task);
+    clawt_task_set_state(task, CLAWT_TASK_RUNNING);
+    g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+    drain(fixture);
+
+    g_assert_cmpuint(patches_with_title(fixture, "/api/v1/ticket/50",
+                                        &patches), ==, 0);
+    g_assert_cmpuint(patches, >=, 2);
+}
+
+/* A ticket the mirror filed still has its title kept current. */
+static void
+test_outbound_title_is_still_written(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_PENDING);
+    g_autoptr(JsonNode) holder = NULL;
+    Sent *sent;
+
+    (void)data;
+    drain(fixture);
+
+    clawt_task_set_title(task, "A better title");
+    clawt_task_set_state(task, CLAWT_TASK_RUNNING);
+    g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+    drain(fixture);
+
+    sent = find_sent(fixture, "PATCH", "/api/v1/ticket/1");
+    g_assert_nonnull(sent);
+    g_assert_cmpstr(json_object_get_string_member(body_of(sent, &holder),
+                                                  "title"), ==,
+                    "A better title");
+}
+
+/*
+ * A ref stored before intake wrote `_intake`: a receipt of the ticket as
+ * it was, with no `_repo`.  It is still an intake ticket.
+ */
+static void
+test_old_intake_ref_is_recognised(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "user", "scout",
+                                          CLAWT_TASK_PENDING);
+    ClawtVentureRef ref = { 0 };
+    g_autoptr(JsonNode) holder = NULL;
+    Sent *sent;
+
+    (void)data;
+    ref.task_id = (gchar *)clawt_task_get_id(task);
+    ref.instance = (gchar *)"books-scout";
+    ref.ticket_id = 60;
+    ref.version = 1;
+    ref.snapshot = (gchar *)"{\"title\":\"Theirs\",\"status\":\"todo\","
+                            "\"assignee\":\"scout-bot\"}";
+    ref.state = (gchar *)"synced";
+    g_assert_true(clawt_task_store_put_venture_ref(fixture->store, &ref,
+                                                   NULL));
+
+    clawt_task_set_state(task, CLAWT_TASK_RUNNING);
+    g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+    drain(fixture);
+
+    sent = find_sent(fixture, "PATCH", "/api/v1/ticket/60");
+    g_assert_nonnull(sent);
+    g_assert_false(json_object_has_member(body_of(sent, &holder), "title"));
+    g_assert_cmpstr(json_object_get_string_member(json_node_get_object(holder),
+                                                  "status"), ==,
+                    "in_progress");
+}
+
 #define ADD(name, fn) \
     g_test_add("/venture-mirror/" name, Fixture, NULL, fixture_setup, fn, \
                fixture_teardown)
@@ -1604,6 +1740,10 @@ main(int argc, char *argv[])
         test_created_ticket_link_carries_its_organization);
     ADD("intake-link-carries-organization",
         test_intake_link_carries_the_organization);
+    ADD("intake-title-is-never-written", test_intake_title_is_never_written);
+    ADD("outbound-title-is-still-written",
+        test_outbound_title_is_still_written);
+    ADD("old-intake-ref-is-recognised", test_old_intake_ref_is_recognised);
     g_test_add_func("/venture-mirror/finds-pull-requests",
                     test_finds_pull_requests);
 
