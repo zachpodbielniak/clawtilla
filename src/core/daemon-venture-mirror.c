@@ -365,8 +365,38 @@ inbound_intake(gpointer data, const gchar *agent_id, gint64 ticket,
     return g_strdup(clawt_task_get_id(task));
 }
 
+/*
+ * How an agent stands for a ticket given to a VENTURE team it is in: the
+ * tasks it has open -- everything assigned to it and not finished,
+ * waiting ones included, so a ticket taken this pass counts against the
+ * next -- and whether it leads a clawtilla team.  Not a fleet agent: -1.
+ */
+gint
+clawt_daemon_venture_mirror_standing(ClawtDaemon *self, const gchar *agent_id,
+                                     gboolean *leads)
+{
+    ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
+    g_autoptr(GPtrArray) open = NULL;
+
+    if (agent == NULL)
+        return -1;
+
+    *leads = (clawt_team_role_of(clawt_agent_get_config(agent)) ==
+              CLAWT_TEAM_LEAD);
+    open = clawt_task_manager_list(self->tasks, agent_id, FALSE);
+
+    return (gint)open->len;
+}
+
+static gint
+inbound_standing(gpointer data, const gchar *agent_id, gboolean *leads)
+{
+    return clawt_daemon_venture_mirror_standing(data, agent_id, leads);
+}
+
 static const ClawtVentureMirrorInbound inbound = {
-    inbound_cancel, inbound_review, inbound_comment, inbound_intake
+    inbound_cancel, inbound_review, inbound_comment, inbound_intake,
+    inbound_standing
 };
 
 /*

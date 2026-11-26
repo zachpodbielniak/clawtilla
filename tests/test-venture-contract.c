@@ -139,6 +139,24 @@ test_the_mirror_reads_what_venture_answers(void)
     expect("ticket-activity", "action", "string");
     expect("ticket-activity", "actor", "string");
     expect("ticket-activity", "changes.assignee.to", "string");
+    /* and who gave it to a team */
+    expect("ticket-activity", "changes.team_id.to", "int");
+
+    /* whoami's user id: how a team membership names an agent */
+    expect("whoami", "user.id", "int");
+
+    /* a team's tickets nobody has, and the team's members */
+    expect("ticket-team-list", "records.id", "int");
+    expect("ticket-team-list", "records.version", "int");
+    expect("ticket-team-list", "records.team_id", "int");
+    /* never given anybody, or another system's reference: null */
+    expect("ticket-team-list", "records.assignee", "null");
+    expect("ticket-team-list", "records.external_ref", "null");
+    expect("ticket-team-list", "records.title", "string");
+    expect("ticket-team-list", "records.description", "string");
+    expect("ticket-team-list", "records.organization_id", "int");
+    expect("team-membership-list", "records.user_id", "int");
+    expect("team-membership-list", "records.active", "bool");
 
     /* the branch link and the run */
     expect("ticket-link-create", "id", "int");

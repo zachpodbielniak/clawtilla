@@ -1279,6 +1279,13 @@ JsonNode *clawt_daemon_venture_mirror_describe(ClawtDaemon *self,
                                                const gchar *task_id);
 guint     clawt_daemon_venture_mirror_retry(ClawtDaemon *self,
                                             const gchar *task_id);
+/*
+ * How @agent_id stands for a VENTURE team's ticket: its open tasks, and
+ * @leads when it leads a team; -1 when it is no fleet agent.
+ */
+gint      clawt_daemon_venture_mirror_standing(ClawtDaemon *self,
+                                               const gchar *agent_id,
+                                               gboolean    *leads);
 
 /*
  * Grok bots, in daemon-grok.c.

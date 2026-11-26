@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: clawtilla docs integrations venture
 #+created: [2026-11-16]
-#+updated: [2026-11-24]
+#+updated: [2026-11-26]
 #+version: 0.50.0
 
 * What it is
@@ -135,6 +135,14 @@ Every minute the mirror reads VENTURE back, with each agent's own token, from a 
 - *Comments on tickets of tasks still going*, after the newest one it has seen.  The first pass only notes where comments are up to, so it never replays a ticket's history.  The mirror's own comments (by their =external_ref=) and the assignee's own (by its account -- which needs VENTURE 0.10.1, the first to record an API comment's author; on 0.10.0 such a comment comes back to the assignee as somebody's) are skipped; anybody else's -- a person's, or another agent's through its own VENTURE tools -- is kept as a note by =venture:<author>= and said to the assignee, fenced as data.  A note from VENTURE is never mirrored back.
 - *Intake*, with ~mirror_intake~ (on by default with ~mirror_tasks~): an =internal= ticket assigned to the agent's VENTURE user, still =todo= and carrying no other system's =external_ref=, becomes a task for that agent -- from the operator, titled =#<ticket> <title>=, its title and description fenced as data.  At most ten an hour per agent, counted across all its organizations.  The task is linked to the ticket at once, so the next pass leaves it alone, and the outbox's first update writes the ticket's reference and the task's status -- never its title.  Such a ticket is recognised by its receipt having no =_repo= (the mirror's own tickets always have it), so tickets taken in by earlier versions are covered too; new ones also carry =_intake=.
 
+*A ticket for a team*: an =internal=, =todo= ticket given to a VENTURE team (=team_id=) and to nobody becomes a task for one of that team's members.  The members are the team's own active =team_membership= rows in VENTURE whose user is a fleet agent's -- the user its token's =whoami= answered, on the same server, with ~mirror_intake~ on -- so there is no second list in clawtilla's configuration, and a person in the team is simply not a candidate.  Of those:
+
+1. one that leads a clawtilla team (~team_role: lead~) takes it;
+2. otherwise the one with the fewest open tasks -- everything assigned to it and not finished, waiting ones included;
+3. a tie goes to the first by agent id (the same rule among several leads).
+
+The task is linked to the ticket at once, and the outbox's first update writes the agent as the ticket's =assignee=, with that agent's own token -- so the next pass leaves it alone and people can see who has it.  It counts against the same ten an hour as the agent's own tickets; when the one chosen has had its ten, the ticket waits for the next hour rather than going to somebody else.  Each organization's team tickets (=GET /api/v1/ticket?team_id__gt=0&assignee=&status=todo&kind=internal=) are read once a pass, whichever accounts reach it, and each team's members (=GET /api/v1/team_membership?team_id=N=) once a pass.  =assignee== is VENTURE's "nobody": null or blank.  An agent that put the ticket in the team with its own account handed it over, exactly as by assigning it (below) -- unless it is also the one that takes it, when it handed nothing to anybody.
+
 *Who handed it over* (since 0.47.0): before taking a ticket in, the mirror reads its timeline (=GET /api/v1/activity/ticket/:id=) for whoever made it the agent's -- the newest change setting its assignee, or whoever created it with one.  When that is another fleet agent's own VENTURE account, the ticket is a *delegation from that agent*: the task is from it, and goes to the assignee as its message, so the pair budget (~orchestration.pair_message_budget~) and the hop limit hold it exactly as =clawtilla_delegate= would -- and a refusal fails the task with the reason.  From a person, it is the operator's, as before.  Without this, two agents could hand each other work through VENTURE for ever: work from the operator renews a pair's count.
 
 *Waking it early.*  A signed VENTURE webhook (Settings -> Webhooks, =ticket.*= and =ticket_comment.*=) pointed at a ~provider: venture~ trigger makes the poll run at once instead of within the minute.  The webhook only wakes it: the mirror reads VENTURE with each agent's own token and acts on what it finds there, never on the webhook's body.
@@ -145,7 +153,7 @@ A mirrored task that runs is recorded in VENTURE as an *external run* on its tic
 
 A hard-stop budget that is spent answers the run with 409: the mirror says so in the log and does not ask again for that task -- the ticket is still kept current, and clawtilla's own budgets (=spending=, project budgets) are what stop work.  A VENTURE without external runs is treated the same way.
 
-*The trade-off:* with intake on, anyone who can edit tickets in that VENTURE organization can hand the agent work.  The text reaches the agent fenced and the hourly cap holds, but the work itself is theirs to choose; turn ~mirror_intake~ off where that is more than you want.
+*The trade-off:* with intake on, anyone who can edit tickets in that VENTURE organization can hand the agent work -- by assigning it, or by giving it to a team the agent is in.  The text reaches the agent fenced and the hourly cap holds, but the work itself is theirs to choose; turn ~mirror_intake~ off where that is more than you want.
 
 * Milestones and goals (since 0.46.0)
 
@@ -164,7 +172,7 @@ An agent whose connector mirrors is told so in the integrations section of its =
 
 * The contract with VENTURE (since 0.46.0)
 
-What the mirror reads of each VENTURE answer is a contract, recorded on VENTURE's side: its =tests/fixtures/api-contract/= holds the shape -- every key, its type -- of each answer (=whoami=, repository resolve, a ticket filed, listed and updated, its timeline, comments made and listed, the branch link made and given its pull request, a run opened and closed, a milestone, a goal), and VENTURE's tests fail when one stops matching.  Every call the mirror makes has its answer recorded:
+What the mirror reads of each VENTURE answer is a contract, recorded on VENTURE's side: its =tests/fixtures/api-contract/= holds the shape -- every key, its type -- of each answer (=whoami=, repository resolve, a ticket filed, listed and updated, a team's tickets and members, its timeline, comments made and listed, the branch link made and given its pull request, a run opened and closed, a milestone, a goal), and VENTURE's tests fail when one stops matching.  Every call the mirror makes has its answer recorded:
 
 | The mirror calls | Recorded as |
 |------------------+-------------|
@@ -173,6 +181,8 @@ What the mirror reads of each VENTURE answer is a contract, recorded on VENTURE'
 | =GET /api/v1/forge_repo/:id= (a pinned repository) | =forge-repo= |
 | =POST /api/v1/ticket= | =ticket-create= |
 | =GET /api/v1/ticket?…= (adoption, changes, intake) | =ticket-list= |
+| =GET /api/v1/ticket?team_id__gt=0&assignee=…= (a team's tickets) | =ticket-team-list= |
+| =GET /api/v1/team_membership?team_id=…= (a team's members) | =team-membership-list= |
 | =GET /api/v1/ticket/:id= (after a stale version) | =ticket= |
 | =PATCH /api/v1/ticket/:id= | =ticket-update= |
 | =GET /api/v1/activity/ticket/:id= | =ticket-activity= |

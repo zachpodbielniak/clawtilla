@@ -112,6 +112,10 @@ typedef GStrv (*ClawtVentureMirrorTargetFunc)(ClawtVentureMirror *mirror,
  *   own VENTURE account assigned it, or %NULL for a person (since
  *   0.47.0): an agent handing another work through VENTURE is a
  *   delegation, held to the same loop limits as one through clawtilla
+ * @standing: (nullable): how @agent_id stands for a ticket assigned to a
+ *   VENTURE team it is a member of: its open tasks, with @leads set when
+ *   it leads a clawtilla team -- or -1 when it is not a fleet agent that
+ *   can take work.  %NULL: team tickets are not taken in
  *
  * What the mirror asks the daemon to do with changes made in VENTURE
  * (since 0.45.0).  @who is the VENTURE actor or author, as VENTURE spelt
@@ -127,6 +131,8 @@ typedef struct {
     gchar    *(*intake)(gpointer data, const gchar *agent_id, gint64 ticket,
                         const gchar *title, const gchar *description,
                         const gchar *url, const gchar *from_agent);
+    gint      (*standing)(gpointer data, const gchar *agent_id,
+                          gboolean *leads);
 } ClawtVentureMirrorInbound;
 
 /**
@@ -138,7 +144,10 @@ typedef struct {
  *
  * Turns the reverse direction on: a poll every minute reads the
  * mirrored tickets that changed, the comments on those still going and,
- * with @intake, each account's new tickets.  %NULL turns it off.
+ * with @intake, each account's new tickets -- and, with @inbound's
+ * standing, the tickets given to a VENTURE team and nobody in it, each
+ * to one of the team's members that is a fleet agent.  %NULL turns it
+ * off.
  */
 void clawt_venture_mirror_set_inbound(ClawtVentureMirror              *self,
                                       const ClawtVentureMirrorInbound *inbound,

@@ -5403,6 +5403,50 @@ test_an_agent_reports_its_team(void)
 }
 
 /*
+ * How an agent stands for a VENTURE team's ticket: its open tasks --
+ * waiting ones too, finished ones not -- and whether it leads a team.
+ * Somebody who is no fleet agent stands nowhere.
+ */
+static void
+test_venture_team_standing(void)
+{
+    Fixture fixture = { 0 };
+    ClawtTask *done;
+    gboolean leads = TRUE;
+
+    fixture_setup(&fixture,
+                  "teams:\n  - id: research\n"
+                  "agents:\n"
+                  "  - id: boss\n    team: research\n    team_role: lead\n"
+                  "  - id: worker\n    team: research\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    g_assert_nonnull(clawt_task_manager_create(fixture.daemon->tasks, "user",
+        "worker", "One", NULL, NULL));
+    g_assert_nonnull(clawt_task_manager_create(fixture.daemon->tasks, "user",
+        "worker", "Two", NULL, NULL));
+    done = clawt_task_manager_create(fixture.daemon->tasks, "user", "worker",
+                                     "Three", NULL, NULL);
+    g_assert_nonnull(done);
+    g_assert_cmpuint(clawt_task_manager_cancel(fixture.daemon->tasks,
+        clawt_task_get_id(done), "not needed", "user"), ==, 1);
+
+    g_assert_cmpint(clawt_daemon_venture_mirror_standing(fixture.daemon,
+                                                         "worker", &leads),
+                    ==, 2);
+    g_assert_false(leads);
+    g_assert_cmpint(clawt_daemon_venture_mirror_standing(fixture.daemon,
+                                                         "boss", &leads),
+                    ==, 0);
+    g_assert_true(leads);
+    g_assert_cmpint(clawt_daemon_venture_mirror_standing(fixture.daemon,
+                                                         "alice", &leads),
+                    ==, -1);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * team.list counts the running agents itself. Three clients counting the
  * same thing is three chances to disagree about what "active" means.
  */
@@ -12746,6 +12790,8 @@ main(int argc, char *argv[])
                     test_an_agent_on_an_unknown_team_still_shows);
     g_test_add_func("/daemon/agent-reports-its-team",
                     test_an_agent_reports_its_team);
+    g_test_add_func("/daemon/venture-team-standing",
+                    test_venture_team_standing);
     g_test_add_func("/daemon/team-list-counts-and-warns",
                     test_team_list_counts_and_warns);
     g_test_add_func("/daemon/team-edits-guarded",

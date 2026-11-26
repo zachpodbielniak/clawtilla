@@ -76,6 +76,19 @@ typedef struct {
     gchar          *assigned_2;
     gint64          adopt_org;          /* adoption finds only with this id */
     guint           comment_conflicts;  /* answer this many POST comment 409 */
+
+    /*
+     * Teams.  A todo ticket with a team and nobody assigned, as VENTURE
+     * lists them (team_id__gt=0&assignee=), in the default organization
+     * and the second; the team's memberships, whatever team is asked
+     * for; and each agent's standing in the fleet, as the daemon would
+     * answer it: its open tasks, and whether it leads a clawtilla team.
+     */
+    gchar          *team_tickets;
+    gchar          *team_tickets_2;
+    gchar          *team_members;
+    GHashTable     *open_tasks;         /* agent -> GINT_TO_POINTER(n) */
+    gchar          *leads;              /* the one agent that leads, or NULL */
 } Fixture;
 
 typedef struct {
@@ -138,9 +151,15 @@ fake_send(ClawtVentureMirror     *mirror,
         if (g_strcmp0(token, "t-bad") == 0) {
             answer->status = 401;
         } else {
+            /* t-lead is user 11, t-scout 12, t-helper 13 */
+            gint64 user_id = g_strcmp0(token, "t-lead") == 0 ? 11
+                : g_strcmp0(token, "t-scout") == 0 ? 12
+                : g_strcmp0(token, "t-helper") == 0 ? 13 : 90;
+
             answer->body = g_strdup_printf(
-                "{\"actor\":\"API token #%s\",\"user\":{\"username\":\"%s-bot\"}"
-                "%s%s}", token, token + 2,
+                "{\"actor\":\"API token #%s\",\"user\":{\"id\":%"
+                G_GINT64_FORMAT ",\"username\":\"%s-bot\"}"
+                "%s%s}", token, user_id, token + 2,
                 fixture->memberships != NULL ? ",\"memberships\":" : "",
                 fixture->memberships != NULL ? fixture->memberships : "");
         }
@@ -172,6 +191,14 @@ fake_send(ClawtVentureMirror     *mirror,
             "[{\"kind\":\"change\",\"action\":\"update\","
             "\"actor\":\"API token #t-lead\",\"changes\":{\"assignee\":"
             "{\"from\":null,\"to\":\"scout-bot\"}}},"
+            " {\"kind\":\"change\",\"action\":\"create\","
+            "\"actor\":\"alice\",\"changes\":null}]");
+    } else if (g_strcmp0(path, "/api/v1/activity/ticket/51") == 0) {
+        /* a person made it; scout's own account put it in the team */
+        answer->body = g_strdup(
+            "[{\"kind\":\"change\",\"action\":\"update\","
+            "\"actor\":\"API token #t-scout\",\"changes\":{\"team_id\":"
+            "{\"from\":null,\"to\":7}}},"
             " {\"kind\":\"change\",\"action\":\"create\","
             "\"actor\":\"alice\",\"changes\":null}]");
     } else if (g_str_has_prefix(path, "/api/v1/activity/ticket/")) {
@@ -208,6 +235,14 @@ fake_send(ClawtVentureMirror     *mirror,
         const gchar *rows = in_second ? fixture->comments_2 : fixture->comments;
 
         answer->body = g_strdup(rows != NULL ? rows : "[]");
+    } else if (g_str_has_prefix(path, "/api/v1/ticket?team_id__gt=0")) {
+        const gchar *rows = in_second ? fixture->team_tickets_2
+                                      : fixture->team_tickets;
+
+        answer->body = g_strdup(rows != NULL ? rows : "[]");
+    } else if (g_str_has_prefix(path, "/api/v1/team_membership?team_id=")) {
+        answer->body = g_strdup(fixture->team_members != NULL
+                                ? fixture->team_members : "[]");
     } else if (g_str_has_prefix(path, "/api/v1/ticket?assignee=")) {
         const gchar *rows = in_second ? fixture->assigned_2 : fixture->assigned;
 
@@ -278,6 +313,8 @@ fixture_setup(Fixture *fixture, gconstpointer data)
     fixture->sent = g_ptr_array_new_with_free_func(sent_free);
     fixture->inbound = g_ptr_array_new_with_free_func(g_free);
     fixture->remote = g_strdup("git@forge.test:acme/known.git");
+    fixture->open_tasks = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                g_free, NULL);
 
     fixture->mirror = clawt_venture_mirror_new(fixture->store, NULL);
     clawt_venture_mirror_set_request_func(fixture->mirror, fake_send,
@@ -309,6 +346,11 @@ fixture_teardown(Fixture *fixture, gconstpointer data)
     g_free(fixture->assigned_2);
     g_free(fixture->intake_url);
     g_free(fixture->intake_task);
+    g_free(fixture->team_tickets);
+    g_free(fixture->team_tickets_2);
+    g_free(fixture->team_members);
+    g_clear_pointer(&fixture->open_tasks, g_hash_table_unref);
+    g_free(fixture->leads);
     clawt_test_remove_tree(fixture->dir);
     g_free(fixture->dir);
 }
@@ -885,11 +927,29 @@ rec_intake(gpointer data, const gchar *agent_id, gint64 ticket,
         from_agent != NULL ? " from " : "",
         from_agent != NULL ? from_agent : ""));
 
+    /* the task it made is one more open task, as the daemon counts */
+    g_hash_table_insert(fixture->open_tasks, g_strdup(agent_id),
+        GINT_TO_POINTER(GPOINTER_TO_INT(g_hash_table_lookup(
+            fixture->open_tasks, agent_id)) + 1));
+
     return g_strdup(clawt_task_get_id(task));
 }
 
+/* Every account in the fixture is a fleet agent; "user" is not. */
+static gint
+rec_standing(gpointer data, const gchar *agent_id, gboolean *leads)
+{
+    Fixture *fixture = data;
+
+    if (g_strcmp0(agent_id, "user") == 0)
+        return -1;
+
+    *leads = (g_strcmp0(agent_id, fixture->leads) == 0);
+    return GPOINTER_TO_INT(g_hash_table_lookup(fixture->open_tasks, agent_id));
+}
+
 static const ClawtVentureMirrorInbound recorder = {
-    rec_cancel, rec_review, rec_comment, rec_intake
+    rec_cancel, rec_review, rec_comment, rec_intake, rec_standing
 };
 
 static gboolean
@@ -1973,6 +2033,244 @@ test_comment_adoption_reads_the_tickets_organization(Fixture *fixture,
                     ==, 77);
 }
 
+/* ── Tickets for a team ──────────────────────────────────────────── */
+
+/*
+ * lead (user 11), scout (12) and helper (13), every one with intake on,
+ * and a team ticket waiting in the default organization -- nobody's and
+ * no other system's written null, as VENTURE answers a ticket never
+ * given either.  The team's
+ * memberships name all three, a person who is no fleet agent (user 40)
+ * and helper's old, inactive membership again.
+ */
+static void
+team_setup(Fixture *fixture)
+{
+    clawt_venture_mirror_set_account(fixture->mirror, "helper", "books-helper",
+                                     "http://v.test", "t-helper");
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     TRUE);
+    clawt_venture_mirror_set_account_intake(fixture->mirror, "lead", TRUE);
+    clawt_venture_mirror_set_account_intake(fixture->mirror, "scout", TRUE);
+    clawt_venture_mirror_set_account_intake(fixture->mirror, "helper", TRUE);
+    fixture->team_members = g_strdup(
+        "{\"records\":["
+        "{\"id\":1,\"team_id\":7,\"user_id\":40,\"active\":true},"
+        "{\"id\":2,\"team_id\":7,\"user_id\":12,\"active\":true},"
+        "{\"id\":3,\"team_id\":7,\"user_id\":13,\"active\":false},"
+        "{\"id\":4,\"team_id\":7,\"user_id\":11,\"active\":true},"
+        "{\"id\":5,\"team_id\":7,\"user_id\":13,\"active\":true}],"
+        "\"count\":5,\"total\":5}");
+    fixture->team_tickets = g_strdup(
+        "{\"records\":[{\"id\":50,\"version\":2,\"title\":\"Team work\","
+        "\"description\":\"d\",\"status\":\"todo\",\"kind\":\"internal\","
+        "\"team_id\":7,\"assignee\":null,\"external_ref\":null,"
+        "\"organization_id\":1}],\"count\":1,\"total\":1}");
+}
+
+static void
+set_open(Fixture *fixture, const gchar *agent, gint n)
+{
+    g_hash_table_insert(fixture->open_tasks, g_strdup(agent),
+                        GINT_TO_POINTER(n));
+}
+
+/*
+ * A member that leads a clawtilla team takes the team's ticket, however
+ * busy it is; the team's tickets are read once a pass per organization,
+ * not once per account.
+ */
+static void
+test_team_ticket_goes_to_the_lead(Fixture *fixture, gconstpointer data)
+{
+    (void)data;
+    team_setup(fixture);
+    fixture->leads = g_strdup("lead");
+    set_open(fixture, "lead", 5);
+
+    poll(fixture);
+
+    g_assert_true(inbound_has(fixture, "intake 50 lead Team work"));
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+    g_assert_cmpuint(count_sent(fixture, "GET",
+        "/api/v1/ticket?team_id__gt=0&assignee=&status=todo&kind=internal"
+        "&order=id&limit=10"), ==, 1);
+    g_assert_nonnull(find_sent(fixture, "GET",
+        "/api/v1/team_membership?team_id=7&order=id&limit=100"));
+}
+
+/*
+ * No member leads: the one with the fewest open tasks takes it.  A
+ * member who is no fleet agent, and a membership that is not active,
+ * count for nothing.
+ */
+static void
+test_team_ticket_goes_to_the_least_busy(Fixture *fixture, gconstpointer data)
+{
+    (void)data;
+    team_setup(fixture);
+    set_open(fixture, "lead", 4);
+    set_open(fixture, "scout", 1);
+    set_open(fixture, "helper", 2);
+
+    poll(fixture);
+    g_assert_true(inbound_has(fixture, "intake 50 scout Team work"));
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+}
+
+/* A tie goes to the first by agent id. */
+static void
+test_team_tie_goes_to_the_first_by_id(Fixture *fixture, gconstpointer data)
+{
+    (void)data;
+    team_setup(fixture);
+    set_open(fixture, "lead", 1);
+    set_open(fixture, "scout", 1);
+    set_open(fixture, "helper", 1);
+
+    poll(fixture);
+    g_assert_true(inbound_has(fixture, "intake 50 helper Team work"));
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+}
+
+/*
+ * Whoever took it is written back as the ticket's assignee, with its own
+ * token -- so people see who has it, and the next pass leaves it alone.
+ */
+static void
+test_team_assignee_is_written_back(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(JsonNode) patch = NULL;
+    JsonObject *o;
+    Sent *sent;
+
+    (void)data;
+    team_setup(fixture);
+    set_open(fixture, "lead", 3);
+    set_open(fixture, "scout", 3);
+
+    poll(fixture);
+    g_assert_true(inbound_has(fixture, "intake 50 helper Team work"));
+
+    sent = find_sent(fixture, "PATCH", "/api/v1/ticket/50");
+    g_assert_nonnull(sent);
+    g_assert_cmpstr(sent->token, ==, "t-helper");
+    o = body_of(sent, &patch);
+    g_assert_cmpstr(json_object_get_string_member(o, "assignee"), ==,
+                    "helper-bot");
+    g_assert_cmpint(json_object_get_int_member(o, "version"), ==, 2);
+    g_assert_nonnull(g_strrstr(json_object_get_string_member(o,
+                                                             "external_ref"),
+                               "clawtilla:"));
+    /* never its title: the author's, as on any ticket taken in */
+    g_assert_false(json_object_has_member(o, "title"));
+
+    /* VENTURE still lists it (as it would, before the write lands) */
+    poll(fixture);
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+}
+
+/* The same ten an hour: a team ticket counts against whoever takes it. */
+static void
+test_team_cap_is_held(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(GString) rows = g_string_new("[");
+    guint i;
+
+    (void)data;
+    team_setup(fixture);
+    /* only helper is in this team */
+    g_free(fixture->team_members);
+    fixture->team_members = g_strdup(
+        "[{\"id\":5,\"team_id\":7,\"user_id\":13,\"active\":true}]");
+
+    for (i = 0; i < 11; i++)
+        g_string_append_printf(rows,
+            "%s{\"id\":%u,\"version\":1,\"title\":\"T%u\",\"status\":\"todo\","
+            "\"team_id\":7,\"assignee\":null}", i > 0 ? "," : "", 300 + i, i);
+    g_string_append(rows, "]");
+    g_free(fixture->team_tickets);
+    fixture->team_tickets = g_string_free(g_steal_pointer(&rows), FALSE);
+
+    poll(fixture);
+    g_assert_cmpuint(fixture->inbound->len, ==, 10);
+    g_assert_true(inbound_has(fixture, "intake 309 helper T9"));
+    g_assert_false(inbound_has(fixture, "intake 310 helper T10"));
+}
+
+/* A team in the second organization is read there, and its ticket taken. */
+static void
+test_team_in_the_second_organization(Fixture *fixture, gconstpointer data)
+{
+    Sent *members;
+
+    (void)data;
+    team_setup(fixture);
+    fixture->memberships = g_strdup(TWO_ORGANIZATIONS);
+    g_free(fixture->team_tickets);
+    fixture->team_tickets = NULL;
+    fixture->team_tickets_2 = g_strdup(
+        "[{\"id\":60,\"version\":1,\"title\":\"At home\",\"status\":\"todo\","
+        "\"team_id\":7,\"assignee\":\"\",\"organization_id\":2}]");
+    set_open(fixture, "lead", 2);
+    set_open(fixture, "helper", 2);
+
+    poll(fixture);
+    g_assert_true(inbound_has(fixture, "intake 60 scout At home"));
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+    g_assert_nonnull(find_sent(fixture, "GET",
+        "/api/v1/ticket?team_id__gt=0&assignee=&status=todo&kind=internal"
+        "&order=id&limit=10&organization_id=2"));
+    members = find_sent(fixture, "GET", "/api/v1/team_membership?team_id=7");
+    g_assert_nonnull(members);
+    g_assert_nonnull(strstr(members->url, "organization_id=2"));
+}
+
+/*
+ * An agent that put the ticket in the team through its own VENTURE
+ * account handed it over: a delegation from that agent, held to the loop
+ * limits, as an assignment through VENTURE is.
+ */
+static void
+test_team_handed_over_by_an_agent(Fixture *fixture, gconstpointer data)
+{
+    (void)data;
+    team_setup(fixture);
+    g_free(fixture->team_tickets);
+    fixture->team_tickets = g_strdup(
+        "[{\"id\":51,\"version\":1,\"title\":\"Passed on\",\"status\":\"todo\","
+        "\"team_id\":7,\"assignee\":\"\"}]");
+    fixture->leads = g_strdup("lead");
+
+    poll(fixture);
+    g_assert_true(inbound_has(fixture, "intake 51 lead Passed on from scout"));
+}
+
+/* No member that is a fleet agent, or somebody has it: left alone. */
+static void
+test_team_ticket_nobody_can_take(Fixture *fixture, gconstpointer data)
+{
+    (void)data;
+    team_setup(fixture);
+    g_free(fixture->team_members);
+    fixture->team_members = g_strdup(
+        "[{\"id\":1,\"team_id\":7,\"user_id\":40,\"active\":true}]");
+    g_free(fixture->team_tickets);
+    fixture->team_tickets = g_strdup(
+        "[{\"id\":52,\"version\":1,\"title\":\"People only\","
+        "\"status\":\"todo\",\"team_id\":7,\"assignee\":\"\"},"
+        " {\"id\":53,\"version\":1,\"title\":\"Somebody has it\","
+        "\"status\":\"todo\",\"team_id\":7,\"assignee\":\"alice\"}]");
+
+    poll(fixture);
+    /* the team was read, and nobody in it could take the ticket */
+    g_assert_nonnull(find_sent(fixture, "GET",
+                               "/api/v1/team_membership?team_id=7"));
+    g_assert_cmpuint(fixture->inbound->len, ==, 0);
+    g_assert_null(find_sent(fixture, "PATCH", "/api/v1/ticket/52"));
+    g_assert_null(find_sent(fixture, "PATCH", "/api/v1/ticket/53"));
+}
+
 #define ADD(name, fn) \
     g_test_add("/venture-mirror/" name, Fixture, NULL, fixture_setup, fn, \
                fixture_teardown)
@@ -2043,6 +2341,17 @@ main(int argc, char *argv[])
         test_adoption_reads_the_tickets_organization);
     ADD("comment-adoption-reads-the-tickets-organization",
         test_comment_adoption_reads_the_tickets_organization);
+    ADD("team-ticket-goes-to-the-lead", test_team_ticket_goes_to_the_lead);
+    ADD("team-ticket-goes-to-the-least-busy",
+        test_team_ticket_goes_to_the_least_busy);
+    ADD("team-tie-goes-to-the-first-by-id",
+        test_team_tie_goes_to_the_first_by_id);
+    ADD("team-assignee-is-written-back", test_team_assignee_is_written_back);
+    ADD("team-cap-is-held", test_team_cap_is_held);
+    ADD("team-in-the-second-organization",
+        test_team_in_the_second_organization);
+    ADD("team-handed-over-by-an-agent", test_team_handed_over_by_an_agent);
+    ADD("team-ticket-nobody-can-take", test_team_ticket_nobody_can_take);
     g_test_add_func("/venture-mirror/finds-pull-requests",
                     test_finds_pull_requests);
 
