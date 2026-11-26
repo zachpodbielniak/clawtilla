@@ -2094,7 +2094,7 @@ test_comment_adoption_reads_the_tickets_organization(Fixture *fixture,
  * no other system's written null, as VENTURE answers a ticket never
  * given either.  The team's
  * memberships name all three, a person who is no fleet agent (user 40)
- * and helper's old, inactive membership again.
+ * and an old, inactive membership of helper's beside its active one.
  */
 static void
 team_setup(Fixture *fixture)
@@ -2157,8 +2157,7 @@ test_team_ticket_goes_to_the_lead(Fixture *fixture, gconstpointer data)
 
 /*
  * No member leads: the one with the fewest open tasks takes it.  A
- * member who is no fleet agent, and a membership that is not active,
- * count for nothing.
+ * member who is no fleet agent counts for nothing.
  */
 static void
 test_team_ticket_goes_to_the_least_busy(Fixture *fixture, gconstpointer data)
@@ -2168,6 +2167,26 @@ test_team_ticket_goes_to_the_least_busy(Fixture *fixture, gconstpointer data)
     set_open(fixture, "lead", 4);
     set_open(fixture, "scout", 1);
     set_open(fixture, "helper", 2);
+
+    poll(fixture);
+    g_assert_true(inbound_has(fixture, "intake 50 scout Team work"));
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+}
+
+/*
+ * A membership that is not active makes nobody a member, even should
+ * VENTURE answer it: helper, idle, has only an inactive one.
+ */
+static void
+test_team_inactive_member_is_not_chosen(Fixture *fixture, gconstpointer data)
+{
+    (void)data;
+    team_setup(fixture);
+    g_free(fixture->team_members);
+    fixture->team_members = g_strdup(
+        "[{\"id\":2,\"team_id\":7,\"user_id\":12,\"active\":true},"
+        " {\"id\":3,\"team_id\":7,\"user_id\":13,\"active\":false}]");
+    set_open(fixture, "scout", 5);
 
     poll(fixture);
     g_assert_true(inbound_has(fixture, "intake 50 scout Team work"));
@@ -2608,6 +2627,8 @@ main(int argc, char *argv[])
     ADD("comment-adoption-reads-the-tickets-organization",
         test_comment_adoption_reads_the_tickets_organization);
     ADD("team-ticket-goes-to-the-lead", test_team_ticket_goes_to_the_lead);
+    ADD("team-inactive-member-is-not-chosen",
+        test_team_inactive_member_is_not_chosen);
     ADD("team-ticket-goes-to-the-least-busy",
         test_team_ticket_goes_to_the_least_busy);
     ADD("team-tie-goes-to-the-first-by-id",
