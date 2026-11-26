@@ -114,8 +114,8 @@ typedef GStrv (*ClawtVentureMirrorTargetFunc)(ClawtVentureMirror *mirror,
  *   delegation, held to the same loop limits as one through clawtilla
  * @standing: (nullable): how @agent_id stands for a ticket assigned to a
  *   VENTURE team it is a member of: its open tasks, with @leads set when
- *   it leads a clawtilla team -- or -1 when it is not a fleet agent that
- *   can take work.  %NULL: team tickets are not taken in
+ *   it leads a clawtilla team -- or -1 when it is not a fleet agent.
+ *   %NULL: team tickets are not taken in
  *
  * What the mirror asks the daemon to do with changes made in VENTURE
  * (since 0.45.0).  @who is the VENTURE actor or author, as VENTURE spelt

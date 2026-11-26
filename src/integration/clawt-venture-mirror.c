@@ -1888,6 +1888,8 @@ typedef struct {
     GPtrArray          *team;        /* JsonNode team tickets to take in */
     GHashTable         *teams;       /* "base#team" -> GPtrArray of agents */
     const gchar        *team_agent;  /* who takes team->pdata[0]; in teams */
+    gchar              *team_ids;    /* "7,9": the agents' teams, this org */
+    guint               team_pages;  /* pages of their tickets read */
     gboolean            asking;      /* first, every unknown account's whoami */
     gboolean            context_changed;
 } PollJob;
@@ -1915,6 +1917,7 @@ poll_free(PollJob *poll)
     if (poll->team != NULL)
         g_ptr_array_unref(poll->team);
     g_hash_table_unref(poll->teams);
+    g_free(poll->team_ids);
     g_object_unref(poll->mirror);
     g_free(poll);
 }
@@ -2523,8 +2526,13 @@ assigning_agent(PollJob *poll, const gchar *body, const gchar *field,
     while (g_hash_table_iter_next(&it, NULL, &slot)) {
         Account *account = slot;
 
-        /* the operator's own account is the operator, not an agent */
+        /*
+         * The operator's own account is the operator, not an agent; and
+         * an actor is somebody on this server -- "API token #12" names a
+         * different token on another.
+         */
         if (account->known && g_strcmp0(account->agent_id, "user") != 0 &&
+            g_strcmp0(account->base, poll->account->base) == 0 &&
             (g_strcmp0(actor, account->actor) == 0 ||
              g_strcmp0(actor, account->user) == 0))
             return account->agent_id;
@@ -2628,7 +2636,16 @@ on_poll_intake(PollJob *poll, guint status, const gchar *body)
  * to the first by agent id.  The members are the team's own memberships
  * in VENTURE -- there is no second list in clawtilla's configuration --
  * and an agent is one when its account's whoami named that user.
+ *
+ * Each organization is read in two steps: the fleet's users' team
+ * memberships, which say both which teams have an agent in them and who
+ * those agents are; then only those teams' tickets.  Asking for every
+ * team's tickets instead lets a backlog in teams of people fill every
+ * page, for ever, ahead of the agents' own.
  */
+
+#define CLAWT_VENTURE_MIRROR_TEAM_PAGE  (10)
+#define CLAWT_VENTURE_MIRROR_TEAM_PAGES (10)
 
 /* Whether nobody has @t: VENTURE writes "nobody" as null or blank. */
 static gboolean
@@ -2648,10 +2665,16 @@ ticket_is_unassigned(JsonObject *t)
     return who == NULL || *who == '\0';
 }
 
-/*
- * The agent whose account is VENTURE user @user_id on @base, and takes
- * tickets in -- never the operator's own account.
- */
+/* Whether @account takes a team's tickets: an agent's, on @base. */
+static gboolean
+account_takes_team_work(Account *account, const gchar *base)
+{
+    return account->known && account->intake && account->user_id > 0 &&
+           g_strcmp0(account->base, base) == 0 &&
+           g_strcmp0(account->agent_id, "user") != 0;
+}
+
+/* The agent whose account is VENTURE user @user_id on @base, or NULL. */
 static Account *
 account_for_user(ClawtVentureMirror *self, const gchar *base, gint64 user_id)
 {
@@ -2665,10 +2688,8 @@ account_for_user(ClawtVentureMirror *self, const gchar *base, gint64 user_id)
     while (g_hash_table_iter_next(&it, NULL, &value)) {
         Account *account = value;
 
-        if (account->known && account->intake &&
-            account->user_id == user_id &&
-            g_strcmp0(account->base, base) == 0 &&
-            g_strcmp0(account->agent_id, "user") != 0)
+        if (account->user_id == user_id &&
+            account_takes_team_work(account, base))
             return account;
     }
 
@@ -2714,20 +2735,24 @@ team_key(PollJob *poll, gint64 team)
 }
 
 /*
- * The organization's team tickets nobody has: todo, internal, from no
- * other system.  Read once a pass for each server and organization --
- * every account in it would see the same ones -- by the first account
- * with intake on that reaches it.  Without memberships (an older
- * VENTURE) that is the server's default organization, the same for all.
+ * The organization's teams with an agent in them: every team membership
+ * of the users the fleet's accounts on this server are.  Read once a
+ * pass for each server and organization -- every account in it would
+ * see the same -- by the first account with intake on that reaches it.
+ * Without memberships (an older VENTURE) the organization is the
+ * server's default one, the same for all.
  */
 static void
 poll_team(PollJob *poll)
 {
     ClawtVentureMirror *self = poll->mirror;
     gint64 org = poll_organization(poll);
+    g_autoptr(GString) users = g_string_new(NULL);
     g_autofree gchar *once = NULL;
     g_autofree gchar *scope = NULL;
     g_autofree gchar *path = NULL;
+    GHashTableIter it;
+    gpointer value;
 
     if (!self->intake || !self->inbound_on || self->inbound.intake == NULL ||
         self->inbound.standing == NULL || !poll->account->intake ||
@@ -2746,38 +2771,166 @@ poll_team(PollJob *poll)
 
     g_hash_table_add(poll->seen, g_steal_pointer(&once));
 
+    g_hash_table_iter_init(&it, self->accounts);
+    while (g_hash_table_iter_next(&it, NULL, &value)) {
+        Account *account = value;
+
+        if (account_takes_team_work(account, poll->account->base))
+            g_string_append_printf(users, "%s%" G_GINT64_FORMAT,
+                                   users->len > 0 ? "," : "",
+                                   account->user_id);
+    }
+
+    if (users->len == 0) {
+        poll_next_organization(poll);
+        return;
+    }
+
     scope = organization_param(org);
-    path = g_strdup_printf("/api/v1/ticket?team_id__gt=0&assignee=&status=todo"
-                           "&kind=internal&order=id&limit=10%s", scope);
+    path = g_strdup_printf("/api/v1/team_membership?user_id__in=%s"
+                           "&order=id&limit=%d%s", users->str,
+                           CLAWT_VENTURE_MIRROR_POLL_LIMIT, scope);
+    poll->step = POLL_TEAM_MEMBERS;
+    poll_send(poll, path);
+}
+
+/* One page of the agents' teams' tickets nobody has, after @after. */
+static void
+poll_team_tickets(PollJob *poll, gint64 after)
+{
+    g_autofree gchar *scope = organization_param(poll_organization(poll));
+    g_autofree gchar *path = g_strdup_printf(
+        "/api/v1/ticket?team_id__in=%s&assignee=&external_ref=&status=todo"
+        "&kind=internal&id__gt=%" G_GINT64_FORMAT "&order=id&limit=%d%s",
+        poll->team_ids, after, CLAWT_VENTURE_MIRROR_TEAM_PAGE, scope);
+
+    poll->team_pages++;
     poll->step = POLL_TEAM;
     poll_send(poll, path);
 }
 
+/*
+ * Who of the fleet is in which team, from their active memberships:
+ * each team's agents, kept for the pass; then the tickets of those
+ * teams.  A list VENTURE would not give is nobody's this pass.
+ */
+static void
+on_poll_team_members(PollJob *poll, guint status, const gchar *body)
+{
+    ClawtVentureMirror *self = poll->mirror;
+    g_autoptr(JsonNode) holder = NULL;
+    g_autoptr(GString) ids = g_string_new(NULL);
+    g_autoptr(GHashTable) listed = g_hash_table_new_full(g_str_hash,
+                                                          g_str_equal,
+                                                          g_free, NULL);
+    JsonArray *rows;
+    guint n;
+    guint i;
+
+    if (status != 200) {
+        g_message("venture mirror: the fleet's team memberships could not be "
+                  "read (%u); team tickets wait", status);
+        poll_next_organization(poll);
+        return;
+    }
+
+    rows = answer_array(body, &holder);
+    n = (rows != NULL) ? json_array_get_length(rows) : 0;
+
+    if (n >= CLAWT_VENTURE_MIRROR_POLL_LIMIT)
+        g_message("venture mirror: the fleet's users have %u team "
+                  "memberships or more; only the first %d are read", n,
+                  CLAWT_VENTURE_MIRROR_POLL_LIMIT);
+
+    for (i = 0; i < n; i++) {
+        JsonObject *row = json_array_get_object_element(rows, i);
+        gint64 team;
+        Account *account;
+        GPtrArray *agents;
+        g_autofree gchar *key = NULL;
+        guint j;
+        gboolean held = FALSE;
+
+        if (row == NULL ||
+            !json_object_get_boolean_member_with_default(row, "active", FALSE))
+            continue;
+
+        team = json_object_get_int_member_with_default(row, "team_id", 0);
+        account = account_for_user(self, poll->account->base,
+            json_object_get_int_member_with_default(row, "user_id", 0));
+
+        if (team <= 0 || account == NULL)
+            continue;
+
+        key = team_key(poll, team);
+
+        /* first seen this organization: a fresh list, and its id asked for */
+        if (!g_hash_table_contains(listed, key)) {
+            g_hash_table_add(listed, g_strdup(key));
+            g_hash_table_insert(poll->teams, g_strdup(key),
+                                g_ptr_array_new_with_free_func(g_free));
+            g_string_append_printf(ids, "%s%" G_GINT64_FORMAT,
+                                   ids->len > 0 ? "," : "", team);
+        }
+
+        agents = g_hash_table_lookup(poll->teams, key);
+
+        for (j = 0; j < agents->len; j++)
+            held = held || g_strcmp0(g_ptr_array_index(agents, j),
+                                     account->agent_id) == 0;
+
+        if (!held)
+            g_ptr_array_add(agents, g_strdup(account->agent_id));
+    }
+
+    if (ids->len == 0) {
+        poll_next_organization(poll);
+        return;
+    }
+
+    g_free(poll->team_ids);
+    poll->team_ids = g_string_free(g_steal_pointer(&ids), FALSE);
+    poll->team_pages = 0;
+    if (poll->team != NULL)
+        g_ptr_array_unref(poll->team);
+    poll->team = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)json_node_unref);
+
+    poll_team_tickets(poll, 0);
+}
+
+/*
+ * A page of the teams' tickets: those no task has yet are queued; a
+ * full page asks for the next, up to a bound -- the hourly cap is what
+ * decides how many are taken, not where the first page ends.
+ */
 static void
 on_poll_team(PollJob *poll, guint status, const gchar *body)
 {
     ClawtVentureMirror *self = poll->mirror;
     g_autoptr(JsonNode) holder = NULL;
     JsonArray *rows;
+    gint64 last = 0;
+    guint n;
     guint i;
 
     if (status != 200) {
-        poll_next_organization(poll);
+        poll_team_next(poll);
         return;
     }
 
     rows = answer_array(body, &holder);
-    if (poll->team != NULL)
-        g_ptr_array_unref(poll->team);
-    poll->team = g_ptr_array_new_with_free_func(
-        (GDestroyNotify)json_node_unref);
+    n = (rows != NULL) ? json_array_get_length(rows) : 0;
 
-    for (i = 0; rows != NULL && i < json_array_get_length(rows); i++) {
+    for (i = 0; i < n; i++) {
         JsonObject *t = json_array_get_object_element(rows, i);
         gint64 ticket = json_object_get_int_member_with_default(t, "id", 0);
         g_autofree gchar *known = NULL;
         const gchar *ext = json_object_get_string_member_with_default(
             t, "external_ref", "");
+
+        if (ticket > last)
+            last = ticket;
 
         if (ticket <= 0 || (ext != NULL && *ext != '\0') ||
             json_object_get_int_member_with_default(t, "team_id", 0) <= 0 ||
@@ -2793,21 +2946,39 @@ on_poll_team(PollJob *poll, guint status, const gchar *body)
             json_array_get_element(rows, i)));
     }
 
+    if (n >= CLAWT_VENTURE_MIRROR_TEAM_PAGE && last > 0 &&
+        poll->team_pages < CLAWT_VENTURE_MIRROR_TEAM_PAGES) {
+        poll_team_tickets(poll, last);
+        return;
+    }
+
     poll_team_next(poll);
 }
 
-/* The first team ticket's taker, once its team's members are known. */
+/* The first queued team ticket: who takes it, then who handed it over. */
 static void
-poll_team_pick(PollJob *poll)
+poll_team_next(PollJob *poll)
 {
     ClawtVentureMirror *self = poll->mirror;
-    JsonObject *t = json_node_get_object(g_ptr_array_index(poll->team, 0));
-    gint64 ticket = json_object_get_int_member_with_default(t, "id", 0);
-    gint64 team = json_object_get_int_member_with_default(t, "team_id", 0);
-    g_autofree gchar *key = team_key(poll, team);
-    GPtrArray *agents = g_hash_table_lookup(poll->teams, key);
-    const gchar *agent = (agents != NULL) ? team_choose(self, agents) : NULL;
+    JsonObject *t;
+    gint64 ticket;
+    gint64 team;
+    g_autofree gchar *key = NULL;
     g_autofree gchar *path = NULL;
+    GPtrArray *agents;
+    const gchar *agent;
+
+    if (poll->team == NULL || poll->team->len == 0) {
+        poll_next_organization(poll);
+        return;
+    }
+
+    t = json_node_get_object(g_ptr_array_index(poll->team, 0));
+    ticket = json_object_get_int_member_with_default(t, "id", 0);
+    team = json_object_get_int_member_with_default(t, "team_id", 0);
+    key = team_key(poll, team);
+    agents = g_hash_table_lookup(poll->teams, key);
+    agent = (agents != NULL) ? team_choose(self, agents) : NULL;
 
     if (agent == NULL) {
         g_debug("venture mirror: no fleet agent in team %" G_GINT64_FORMAT
@@ -2818,6 +2989,14 @@ poll_team_pick(PollJob *poll)
         return;
     }
 
+    /*
+     * The one chosen at its cap: the ticket waits for the next hour.  It
+     * is not passed on -- ten an hour is a bound on what one agent is
+     * handed, and spilling the rest onto the team would make it ten an
+     * hour per member.  A slot is spent even when the daemon then
+     * refuses the ticket, which is what keeps a ticket that is refused
+     * every time to ten tries an hour.
+     */
     if (!intake_allowed(self, agent)) {
         g_message("venture mirror: %s already took %d tickets this hour; "
                   "team ticket #%" G_GINT64_FORMAT " waits for the next",
@@ -2831,85 +3010,6 @@ poll_team_pick(PollJob *poll)
     path = g_strdup_printf("/api/v1/activity/ticket/%" G_GINT64_FORMAT, ticket);
     poll->step = POLL_TEAM_WHO;
     poll_send(poll, path);
-}
-
-/* The next team ticket: its team's members, then who takes it. */
-static void
-poll_team_next(PollJob *poll)
-{
-    JsonObject *t;
-    gint64 team;
-    g_autofree gchar *key = NULL;
-    g_autofree gchar *scope = NULL;
-    g_autofree gchar *path = NULL;
-
-    if (poll->team == NULL || poll->team->len == 0) {
-        poll_next_organization(poll);
-        return;
-    }
-
-    t = json_node_get_object(g_ptr_array_index(poll->team, 0));
-    team = json_object_get_int_member_with_default(t, "team_id", 0);
-    key = team_key(poll, team);
-
-    if (g_hash_table_contains(poll->teams, key)) {
-        poll_team_pick(poll);
-        return;
-    }
-
-    scope = organization_param(poll_organization(poll));
-    path = g_strdup_printf("/api/v1/team_membership?team_id=%" G_GINT64_FORMAT
-                           "&order=id&limit=100%s", team, scope);
-    poll->step = POLL_TEAM_MEMBERS;
-    poll_send(poll, path);
-}
-
-/*
- * A team's members that are fleet agents: its active memberships whose
- * user is an account's.  Read once a pass for each team; a team VENTURE
- * would not list is nobody's this pass, and its tickets wait.
- */
-static void
-on_poll_team_members(PollJob *poll, guint status, const gchar *body)
-{
-    ClawtVentureMirror *self = poll->mirror;
-    JsonObject *t = json_node_get_object(g_ptr_array_index(poll->team, 0));
-    gint64 team = json_object_get_int_member_with_default(t, "team_id", 0);
-    GPtrArray *agents = g_ptr_array_new_with_free_func(g_free);
-    g_autoptr(JsonNode) holder = NULL;
-    JsonArray *rows = (status == 200) ? answer_array(body, &holder) : NULL;
-    guint i;
-
-    if (status != 200)
-        g_message("venture mirror: the members of team %" G_GINT64_FORMAT
-                  " could not be read (%u); its tickets wait", team, status);
-
-    for (i = 0; rows != NULL && i < json_array_get_length(rows); i++) {
-        JsonObject *row = json_array_get_object_element(rows, i);
-        Account *account;
-        guint j;
-        gboolean held = FALSE;
-
-        if (row == NULL ||
-            !json_object_get_boolean_member_with_default(row, "active", FALSE))
-            continue;
-
-        account = account_for_user(self, poll->account->base,
-            json_object_get_int_member_with_default(row, "user_id", 0));
-
-        if (account == NULL)
-            continue;
-
-        for (j = 0; j < agents->len; j++)
-            held = held || g_strcmp0(g_ptr_array_index(agents, j),
-                                     account->agent_id) == 0;
-
-        if (!held)
-            g_ptr_array_add(agents, g_strdup(account->agent_id));
-    }
-
-    g_hash_table_insert(poll->teams, team_key(poll, team), agents);
-    poll_team_pick(poll);
 }
 
 /*

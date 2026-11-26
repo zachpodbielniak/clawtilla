@@ -139,9 +139,11 @@ Every minute the mirror reads VENTURE back, with each agent's own token, from a 
 
 1. one that leads a clawtilla team (~team_role: lead~) takes it;
 2. otherwise the one with the fewest open tasks -- everything assigned to it and not finished, waiting ones included;
-3. a tie goes to the first by agent id (the same rule among several leads).
+3. a tie goes to the first by agent id.
 
-The task is linked to the ticket at once, and the outbox's first update writes the agent as the ticket's =assignee=, with that agent's own token -- so the next pass leaves it alone and people can see who has it.  It counts against the same ten an hour as the agent's own tickets; when the one chosen has had its ten, the ticket waits for the next hour rather than going to somebody else.  Each organization's team tickets (=GET /api/v1/ticket?team_id__gt=0&assignee=&status=todo&kind=internal=) are read once a pass, whichever accounts reach it, and each team's members (=GET /api/v1/team_membership?team_id=N=) once a pass.  =assignee== is VENTURE's "nobody": null or blank.  An agent that put the ticket in the team with its own account handed it over, exactly as by assigning it (below) -- unless it is also the one that takes it, when it handed nothing to anybody.
+When several members lead, the same order decides among them: fewest open tasks, then agent id.
+
+The task is linked to the ticket at once, and the outbox's first update writes the agent as the ticket's =assignee=, with that agent's own token -- so the next pass leaves it alone and people can see who has it.  It counts against the same ten an hour as the agent's own tickets; when the one chosen has had its ten, the ticket waits for the next hour rather than going to somebody else.  Each organization is read once a pass, whichever accounts reach it, in two steps: the fleet's users' team memberships (=GET /api/v1/team_membership?user_id__in=…=), which say which teams have an agent in them and who; then only those teams' tickets (=GET /api/v1/ticket?team_id__in=…&assignee=&external_ref=&status=todo&kind=internal=), page by page (=id__gt==) up to a hundred.  Asking only for the agents' teams is what keeps a backlog in teams of people from filling every page ahead of them.  =assignee== and =external_ref== are VENTURE's "none": null or blank.  An agent that put the ticket in the team with its own account handed it over, exactly as by assigning it (below) -- unless it is also the one that takes it, when it handed nothing to anybody.
 
 *Who handed it over* (since 0.47.0): before taking a ticket in, the mirror reads its timeline (=GET /api/v1/activity/ticket/:id=) for whoever made it the agent's -- the newest change setting its assignee, or whoever created it with one.  When that is another fleet agent's own VENTURE account, the ticket is a *delegation from that agent*: the task is from it, and goes to the assignee as its message, so the pair budget (~orchestration.pair_message_budget~) and the hop limit hold it exactly as =clawtilla_delegate= would -- and a refusal fails the task with the reason.  From a person, it is the operator's, as before.  Without this, two agents could hand each other work through VENTURE for ever: work from the operator renews a pair's count.
 
@@ -181,8 +183,8 @@ What the mirror reads of each VENTURE answer is a contract, recorded on VENTURE'
 | =GET /api/v1/forge_repo/:id= (a pinned repository) | =forge-repo= |
 | =POST /api/v1/ticket= | =ticket-create= |
 | =GET /api/v1/ticket?…= (adoption, changes, intake) | =ticket-list= |
-| =GET /api/v1/ticket?team_id__gt=0&assignee=…= (a team's tickets) | =ticket-team-list= |
-| =GET /api/v1/team_membership?team_id=…= (a team's members) | =team-membership-list= |
+| =GET /api/v1/ticket?team_id__in=…&assignee=…= (the agents' teams' tickets) | =ticket-team-list= |
+| =GET /api/v1/team_membership?user_id__in=…= (the agents' teams) | =team-membership-list= |
 | =GET /api/v1/ticket/:id= (after a stale version) | =ticket= |
 | =PATCH /api/v1/ticket/:id= | =ticket-update= |
 | =GET /api/v1/activity/ticket/:id= | =ticket-activity= |
