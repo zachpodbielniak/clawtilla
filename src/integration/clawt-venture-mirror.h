@@ -418,6 +418,25 @@ const gchar *clawt_venture_mirror_account_user(ClawtVentureMirror *self,
                                                const gchar        *agent_id);
 
 /**
+ * clawt_venture_mirror_warnings:
+ * @self: a #ClawtVentureMirror
+ *
+ * What the operator should fix for the mirror to keep a task's ticket
+ * current (VENTURE #30), one line each, sorted: an agent
+ * whose token cannot reach the organization its tickets are in (VENTURE
+ * answers 404 for them), a write refused by VENTURE's install-wide role
+ * gate (403), or a 404 the ticket's own read-back contradicts.  Each
+ * names the agent, the organization and the fix, and goes once a write
+ * by that agent in that organization succeeds again.  The rows behind
+ * them are kept and retried, never given up on.  `team.list` carries
+ * them, so the Fleet page shows them.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the warnings,
+ *   possibly none
+ */
+GStrv clawt_venture_mirror_warnings(ClawtVentureMirror *self);
+
+/**
  * clawt_venture_mirror_start:
  * @self: a #ClawtVentureMirror
  * @interval_seconds: how often the outbox is drained

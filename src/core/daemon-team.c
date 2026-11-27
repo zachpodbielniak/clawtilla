@@ -150,6 +150,20 @@ clawt_daemon_handle_team(
                 json_builder_add_string_value(builder, recreated[i]);
         }
 
+        /*
+         * And what the VENTURE mirror needs fixed (VENTURE #30): a token
+         * that cannot reach its tickets' organization, a write VENTURE's
+         * role gate refused.  The tasks are kept; this is where the
+         * operator learns their tickets have stopped moving.
+         */
+        if (self->venture_mirror != NULL) {
+            g_auto(GStrv) mirror =
+                clawt_venture_mirror_warnings(self->venture_mirror);
+
+            for (i = 0; mirror != NULL && mirror[i] != NULL; i++)
+                json_builder_add_string_value(builder, mirror[i]);
+        }
+
         json_builder_end_array(builder);
         json_builder_end_object(builder);
 

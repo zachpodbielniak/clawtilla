@@ -89,6 +89,15 @@ typedef struct {
     gchar          *team_members;
     GHashTable     *open_tasks;         /* agent -> GINT_TO_POINTER(n) */
     gchar          *leads;              /* the one agent that leads, or NULL */
+
+    /*
+     * VENTURE #30: what a PATCH of a ticket and a read of one answer, when
+     * not the usual 200 -- a token minted before its user joined the
+     * ticket's organization is answered 404 by both.
+     */
+    guint           patch_status;       /* every PATCH /ticket/N, or 0 */
+    guint           read_status;        /* every GET /ticket/N, or 0 */
+    gchar          *read_body;          /* and its body, or NULL */
 } Fixture;
 
 typedef struct {
@@ -310,6 +319,19 @@ fake_send(ClawtVentureMirror     *mirror,
                g_str_has_prefix(path, "/api/v1/ticket_comment?external_ref=")) {
         answer->body = g_strdup(adoptable ? "{\"items\":[{\"id\":77}]}"
                                           : "{\"items\":[]}");
+    } else if (g_strcmp0(method, "PATCH") == 0 &&
+               g_str_has_prefix(path, "/api/v1/ticket/") &&
+               fixture->patch_status != 0) {
+        answer->status = fixture->patch_status;
+        answer->body = g_strdup(fixture->patch_status == 404
+            ? "{\"message\":\"No such record: 1\"}"
+            : "{\"message\":\"Forbidden: requires the editor role\"}");
+    } else if (g_strcmp0(method, "GET") == 0 &&
+               g_str_has_prefix(path, "/api/v1/ticket/") &&
+               (fixture->read_status != 0 || fixture->read_body != NULL)) {
+        answer->status = fixture->read_status != 0 ? fixture->read_status
+                                                   : 200;
+        answer->body = g_strdup(fixture->read_body);
     } else if (g_strcmp0(method, "PATCH") == 0) {
         if (fixture->patch_conflicts > 0) {
             fixture->patch_conflicts--;
@@ -404,6 +426,7 @@ fixture_teardown(Fixture *fixture, gconstpointer data)
     g_free(fixture->team_members);
     g_clear_pointer(&fixture->open_tasks, g_hash_table_unref);
     g_free(fixture->leads);
+    g_free(fixture->read_body);
     clawt_test_remove_tree(fixture->dir);
     g_free(fixture->dir);
 }
@@ -2603,6 +2626,383 @@ test_team_capped_does_not_hold_another(Fixture *fixture, gconstpointer data)
                      ==, 2);
 }
 
+/* ── A 404 is confirmed before it is believed (VENTURE #30) ──────── */
+
+/*
+ * A task filed (ticket @n, in the repository's organization 3) and then
+ * moved to running, so the next drain PATCHes its ticket as scout.
+ */
+static ClawtTask *
+filed_then_running(Fixture *fixture)
+{
+    ClawtTask *task = save_task(fixture, "lead", "scout", CLAWT_TASK_PENDING);
+
+    drain(fixture);
+    clawt_task_set_state(task, CLAWT_TASK_RUNNING);
+    g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+
+    return task;
+}
+
+/* Every row waiting out a backoff made due now, as if it had passed. */
+static void
+make_due(Fixture *fixture)
+{
+    g_autoptr(GPtrArray) rows = clawt_task_store_outbox_due(fixture->store,
+        G_MAXINT32, 100, NULL);
+    guint i;
+
+    g_assert_nonnull(rows);
+    for (i = 0; i < rows->len; i++) {
+        ClawtVentureOutboxRow *row = g_ptr_array_index(rows, i);
+
+        g_assert_true(clawt_task_store_outbox_retry(fixture->store, row->id,
+                                                    row->attempts, 0, NULL));
+    }
+}
+
+/* The one mirror warning, which must hold every one of @needles. */
+static gboolean
+warned(Fixture *fixture, const gchar *const *needles)
+{
+    g_auto(GStrv) warnings = clawt_venture_mirror_warnings(fixture->mirror);
+    guint i;
+
+    g_assert_nonnull(warnings);
+    g_assert_cmpuint(g_strv_length(warnings), ==, 1);
+
+    for (i = 0; needles[i] != NULL; i++)
+        if (strstr(warnings[0], needles[i]) == NULL) {
+            g_test_message("no '%s' in: %s", needles[i], warnings[0]);
+            return FALSE;
+        }
+
+    return TRUE;
+}
+
+static guint
+warning_count(Fixture *fixture)
+{
+    g_auto(GStrv) warnings = clawt_venture_mirror_warnings(fixture->mirror);
+
+    return g_strv_length(warnings);
+}
+
+/* The task's row is still queued, never given up on, and its ref kept. */
+static void
+assert_kept(Fixture *fixture, ClawtTask *task, const gchar *reason)
+{
+    g_autoptr(ClawtVentureRef) ref = clawt_task_store_venture_ref(
+        fixture->store, clawt_task_get_id(task));
+    g_autofree gchar *last_error = NULL;
+    guint queued = 0;
+    guint dead = 0;
+
+    clawt_task_store_outbox_state(fixture->store, clawt_task_get_id(task),
+                                  &queued, &dead, &last_error);
+    g_assert_cmpuint(queued, ==, 1);
+    g_assert_cmpuint(dead, ==, 0);
+    g_assert_cmpstr(ref->state, ==, "synced");
+    g_assert_nonnull(last_error);
+    g_assert_nonnull(strstr(last_error, reason));
+}
+
+/*
+ * PATCH 404, but the same token reads the ticket back: whatever VENTURE
+ * meant, the ticket is not gone.  The task is kept, the write retried,
+ * and the operator told.
+ */
+static void
+test_404_that_reads_back_is_kept(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = filed_then_running(fixture);
+    static const gchar *const needles[] = {
+        "scout's update", "organization 3", "#1", NULL
+    };
+
+    (void)data;
+    fixture->patch_status = 404;
+    drain(fixture);
+
+    g_assert_cmpuint(count_sent(fixture, "GET", "/api/v1/ticket/1"), ==, 1);
+    g_assert_cmpstr(find_sent(fixture, "GET", "/api/v1/ticket/1")->token, ==,
+                    "t-scout");
+    assert_kept(fixture, task, "reads back");
+    g_assert_true(warned(fixture, needles));
+}
+
+/*
+ * The VENTURE #30 case: the token was minted before scout's user joined
+ * organization 3, so the PATCH and the read-back both say 404 -- and
+ * whoami, asked afresh, lists only organization 2.  Kept, and the Fleet
+ * page names the agent, the organization and the fix.
+ */
+static void
+test_404_in_an_unreached_organization_is_kept(Fixture *fixture,
+                                              gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = NULL;
+    g_autoptr(JsonNode) described = NULL;
+    static const gchar *const needles[] = {
+        "scout's VENTURE token cannot reach organization 3",
+        "Re-mint scout's VENTURE token",
+        "clawtilla connector key books-scout",
+        "add its user scout-bot to organization 3",
+        "#1", NULL
+    };
+    guint whoami;
+
+    (void)data;
+    fixture->memberships = g_strdup("[{\"organization_id\":2,"
+                                    "\"organization\":\"Other\","
+                                    "\"role\":\"editor\"}]");
+    task = filed_then_running(fixture);
+    whoami = count_sent(fixture, "GET", "/api/v1/whoami");
+
+    fixture->patch_status = 404;
+    fixture->read_status = 404;
+    drain(fixture);
+
+    g_assert_cmpuint(count_sent(fixture, "GET", "/api/v1/ticket/1"), ==, 1);
+    /* what the token reaches, asked again rather than remembered */
+    g_assert_cmpuint(count_sent(fixture, "GET", "/api/v1/whoami"), ==,
+                     whoami + 1);
+    assert_kept(fixture, task, "cannot reach organization 3");
+    g_assert_true(warned(fixture, needles));
+
+    described = clawt_venture_mirror_describe(fixture->store,
+                                              clawt_task_get_id(task));
+    g_assert_cmpstr(json_object_get_string_member(
+        json_node_get_object(described), "state"), ==, "queued");
+}
+
+/*
+ * The organization is reached and the ticket still 404s: it really is
+ * gone, and the task is given up on exactly as before.
+ */
+static void
+test_404_in_a_reached_organization_is_dropped(Fixture *fixture,
+                                              gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = NULL;
+    g_autoptr(ClawtVentureRef) ref = NULL;
+
+    (void)data;
+    fixture->memberships = g_strdup("[{\"organization_id\":3,"
+                                    "\"organization\":\"Acme\","
+                                    "\"role\":\"editor\"}]");
+    task = filed_then_running(fixture);
+
+    fixture->patch_status = 404;
+    fixture->read_status = 404;
+    g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
+                          "*the ticket was deleted in VENTURE*");
+    drain(fixture);
+    g_test_assert_expected_messages();
+
+    ref = clawt_task_store_venture_ref(fixture->store,
+                                       clawt_task_get_id(task));
+    g_assert_cmpstr(ref->state, ==, "dead");
+    g_assert_cmpstr(ref->reason, ==, "the ticket was deleted in VENTURE");
+    g_assert_cmpuint(warning_count(fixture), ==, 0);
+}
+
+/*
+ * A VENTURE whose whoami names no memberships cannot say what a token
+ * reaches, so a 404 confirmed by the read-back is believed, as before.
+ */
+static void
+test_404_without_memberships_is_dropped(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = filed_then_running(fixture);
+    g_autoptr(ClawtVentureRef) ref = NULL;
+
+    (void)data;
+    fixture->patch_status = 404;
+    fixture->read_status = 404;
+    g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
+                          "*the ticket was deleted in VENTURE*");
+    drain(fixture);
+    g_test_assert_expected_messages();
+
+    ref = clawt_task_store_venture_ref(fixture->store,
+                                       clawt_task_get_id(task));
+    g_assert_cmpstr(ref->state, ==, "dead");
+    g_assert_cmpuint(warning_count(fixture), ==, 0);
+}
+
+/* Soft-deleted and still served: gone all the same. */
+static void
+test_404_soft_deleted_is_dropped(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = filed_then_running(fixture);
+    g_autoptr(ClawtVentureRef) ref = NULL;
+
+    (void)data;
+    fixture->patch_status = 404;
+    fixture->read_body = g_strdup("{\"id\":1,\"version\":3,"
+                                  "\"organization_id\":3,"
+                                  "\"deleted_at\":\"2026-11-27T10:00:00Z\"}");
+    g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
+                          "*the ticket was deleted in VENTURE*");
+    drain(fixture);
+    g_test_assert_expected_messages();
+
+    ref = clawt_task_store_venture_ref(fixture->store,
+                                       clawt_task_get_id(task));
+    g_assert_cmpstr(ref->state, ==, "dead");
+    g_assert_cmpuint(warning_count(fixture), ==, 0);
+}
+
+/*
+ * A 403 to a write is VENTURE's install-wide role gate: kept, retried and
+ * explained -- and once the role is fixed and a write lands, the warning
+ * goes.
+ */
+static void
+test_403_is_warned_until_a_write_lands(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = filed_then_running(fixture);
+    g_autoptr(ClawtVentureRef) ref = NULL;
+    static const gchar *const needles[] = {
+        "VENTURE refused scout's write (updating the ticket)",
+        "requires the editor role", "install-wide", "scout-bot", NULL
+    };
+    guint queued = 7;
+
+    (void)data;
+    fixture->patch_status = 403;
+    drain(fixture);
+
+    assert_kept(fixture, task, "install-wide role gate");
+    g_assert_true(warned(fixture, needles));
+
+    fixture->patch_status = 0;
+    make_due(fixture);
+    drain(fixture);
+
+    g_assert_cmpuint(warning_count(fixture), ==, 0);
+    clawt_task_store_outbox_state(fixture->store, clawt_task_get_id(task),
+                                  &queued, NULL, NULL);
+    g_assert_cmpuint(queued, ==, 0);
+    ref = clawt_task_store_venture_ref(fixture->store,
+                                       clawt_task_get_id(task));
+    g_assert_cmpstr(ref->state, ==, "synced");
+}
+
+/*
+ * The token re-minted (or the membership added): the kept write goes
+ * through on its retry, and the warning with it.
+ */
+static void
+test_unreached_warning_clears_after_a_write(Fixture *fixture,
+                                            gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = NULL;
+    guint queued = 7;
+
+    (void)data;
+    fixture->memberships = g_strdup("[{\"organization_id\":2}]");
+    task = filed_then_running(fixture);
+
+    fixture->patch_status = 404;
+    fixture->read_status = 404;
+    drain(fixture);
+    g_assert_cmpuint(warning_count(fixture), ==, 1);
+
+    fixture->patch_status = 0;
+    fixture->read_status = 0;
+    make_due(fixture);
+    drain(fixture);
+
+    g_assert_cmpuint(warning_count(fixture), ==, 0);
+    clawt_task_store_outbox_state(fixture->store, clawt_task_get_id(task),
+                                  &queued, NULL, NULL);
+    g_assert_cmpuint(queued, ==, 0);
+}
+
+/*
+ * Every ticket in an organization the token lost 404s at once: one
+ * read-back per ticket, one whoami for all of them, one warning naming
+ * them all -- and their retries inside the hold ask nothing again.
+ */
+static void
+test_many_404s_confirm_once_each(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) one = NULL;
+    g_autoptr(ClawtTask) two = NULL;
+    g_autoptr(ClawtTask) three = NULL;
+    static const gchar *const needles[] = {
+        "cannot reach organization 3", "#1", "#2", "#3", NULL
+    };
+    guint whoami;
+    gint64 i;
+
+    (void)data;
+    fixture->memberships = g_strdup("[{\"organization_id\":2}]");
+    one = save_task(fixture, "lead", "scout", CLAWT_TASK_PENDING);
+    two = save_task(fixture, "lead", "scout", CLAWT_TASK_PENDING);
+    three = save_task(fixture, "lead", "scout", CLAWT_TASK_PENDING);
+    drain(fixture);
+    whoami = count_sent(fixture, "GET", "/api/v1/whoami");
+
+    clawt_task_set_state(one, CLAWT_TASK_RUNNING);
+    clawt_task_set_state(two, CLAWT_TASK_RUNNING);
+    clawt_task_set_state(three, CLAWT_TASK_RUNNING);
+    g_assert_true(clawt_task_store_save(fixture->store, one, NULL, NULL));
+    g_assert_true(clawt_task_store_save(fixture->store, two, NULL, NULL));
+    g_assert_true(clawt_task_store_save(fixture->store, three, NULL, NULL));
+
+    fixture->patch_status = 404;
+    fixture->read_status = 404;
+    drain(fixture);
+
+    for (i = 1; i <= 3; i++) {
+        g_autofree gchar *path = g_strdup_printf(
+            "/api/v1/ticket/%" G_GINT64_FORMAT, i);
+
+        g_assert_cmpuint(count_sent(fixture, "PATCH", path), ==, 1);
+        g_assert_cmpuint(count_sent(fixture, "GET", path), ==, 1);
+    }
+    g_assert_cmpuint(count_sent(fixture, "GET", "/api/v1/whoami"), ==,
+                     whoami + 1);
+    g_assert_true(warned(fixture, needles));
+    assert_kept(fixture, one, "cannot reach");
+    assert_kept(fixture, two, "cannot reach");
+    assert_kept(fixture, three, "cannot reach");
+
+    /* retried inside the hold: the PATCH again, and nothing else */
+    make_due(fixture);
+    drain(fixture);
+
+    for (i = 1; i <= 3; i++) {
+        g_autofree gchar *path = g_strdup_printf(
+            "/api/v1/ticket/%" G_GINT64_FORMAT, i);
+
+        g_assert_cmpuint(count_sent(fixture, "PATCH", path), ==, 2);
+        g_assert_cmpuint(count_sent(fixture, "GET", path), ==, 1);
+    }
+    g_assert_cmpuint(count_sent(fixture, "GET", "/api/v1/whoami"), ==,
+                     whoami + 1);
+    assert_kept(fixture, one, "found not to be gone");
+    g_assert_cmpuint(warning_count(fixture), ==, 1);
+}
+
+/* An agent no longer mirroring has nothing left to fix. */
+static void
+test_warnings_follow_the_accounts(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = filed_then_running(fixture);
+
+    (void)data;
+    fixture->patch_status = 403;
+    drain(fixture);
+    g_assert_cmpuint(warning_count(fixture), ==, 1);
+
+    clawt_venture_mirror_clear_accounts(fixture->mirror);
+    g_assert_cmpuint(warning_count(fixture), ==, 0);
+}
+
 #define ADD(name, fn) \
     g_test_add("/venture-mirror/" name, Fixture, NULL, fixture_setup, fn, \
                fixture_teardown)
@@ -2648,6 +3048,20 @@ main(int argc, char *argv[])
     ADD("review-is-written-by-the-reviewer",
         test_review_is_written_by_the_reviewer);
     ADD("account-learned-once", test_account_learned_once);
+    ADD("404-that-reads-back-is-kept", test_404_that_reads_back_is_kept);
+    ADD("404-in-an-unreached-organization-is-kept",
+        test_404_in_an_unreached_organization_is_kept);
+    ADD("404-in-a-reached-organization-is-dropped",
+        test_404_in_a_reached_organization_is_dropped);
+    ADD("404-without-memberships-is-dropped",
+        test_404_without_memberships_is_dropped);
+    ADD("404-soft-deleted-is-dropped", test_404_soft_deleted_is_dropped);
+    ADD("403-is-warned-until-a-write-lands",
+        test_403_is_warned_until_a_write_lands);
+    ADD("unreached-warning-clears-after-a-write",
+        test_unreached_warning_clears_after_a_write);
+    ADD("many-404s-confirm-once-each", test_many_404s_confirm_once_each);
+    ADD("warnings-follow-the-accounts", test_warnings_follow_the_accounts);
     g_test_add_func("/venture-mirror/record-url", test_record_url);
     ADD("created-link-carries-organization",
         test_created_ticket_link_carries_its_organization);

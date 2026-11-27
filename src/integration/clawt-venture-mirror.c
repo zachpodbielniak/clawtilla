@@ -19,6 +19,23 @@
  * until the operator retries the task.  Sequential on purpose: VENTURE
  * sees the fleet's work in the order it happened, and one slow answer
  * holds the drain, not the agents.
+ *
+ * A 404 to a PATCH is not taken on its word (VENTURE #30): VENTURE says
+ * 404 both for a ticket that is gone and for one in an organization the
+ * token was not minted for.  So the ticket is read back, and then the
+ * token's own organizations asked (whoami), before the task is given up
+ * on:
+ *
+ *   PATCH 404 ─► GET ticket ─► 200: kept, retried, warned
+ *                           ─► 404 ─► whoami ─► its organization reached:
+ *                                               gone, dead as before
+ *                                           ─► not reached: kept,
+ *                                               retried, warned
+ *
+ * and a 403 to a write -- VENTURE's install-wide role gate -- is kept
+ * and warned about too, rather than given up on.  The warnings are the
+ * mirror's own (clawt_venture_mirror_warnings()), shown on the Fleet
+ * page, and each goes once a write by that agent succeeds again.
  */
 
 #include "clawtilla.h"
@@ -32,6 +49,13 @@
 #define CLAWT_VENTURE_MIRROR_PROGRESS_GAP   (600)
 #define CLAWT_VENTURE_MIRROR_DESCRIPTION_MAX (8192)
 #define CLAWT_VENTURE_MIRROR_COMMENT_MAX    (16384)
+
+/*
+ * How long a confirmed "the ticket is not gone" holds, and how long a
+ * whoami answer is good for when confirming one: a burst of 404s is one
+ * read-back per ticket and one whoami per account, not one per row.
+ */
+#define CLAWT_VENTURE_MIRROR_CONFIRM_HOLD   (300)
 
 /* ── Accounts ────────────────────────────────────────────────────── */
 
@@ -54,6 +78,16 @@ typedef struct {
      * an organization, as before.
      */
     GArray  *organizations;
+
+    /*
+     * Whether whoami named memberships at all (an older VENTURE does not),
+     * and when a 404's confirmation last asked it: the organizations it
+     * reaches are read afresh for that -- a membership removed since the
+     * first whoami narrows an existing token at once -- but once per hold,
+     * not once per ticket.
+     */
+    gboolean listed;
+    gint64   reach_at;
 } Account;
 
 static void
@@ -129,6 +163,10 @@ struct _ClawtVentureMirror {
     GSource                  *poll_timer;
     GHashTable               *intake_times;  /* agent -> GArray of gint64 */
     GHashTable               *team_linked;   /* base -> GArray of gint64 */
+
+    /* VENTURE #30: 404s confirmed, and what the operator is told. */
+    GHashTable               *confirmed;     /* "base#ticket" -> gint64 time */
+    GHashTable               *warnings;      /* "agent#kind#org" -> Warning */
 };
 
 G_DEFINE_FINAL_TYPE(ClawtVentureMirror, clawt_venture_mirror, G_TYPE_OBJECT)
@@ -151,7 +189,9 @@ typedef enum {
     STEP_RUN_START,
     STEP_RUN_FINISH,
     STEP_LINK,
-    STEP_PULL_REQUEST
+    STEP_PULL_REQUEST,
+    STEP_CONFIRM_READ,
+    STEP_CONFIRM_WHO
 } Step;
 
 typedef struct {
@@ -172,6 +212,8 @@ typedef struct {
     gint64                 organization_id;
     guint                  conflicts;
     gint64                 pull_request;
+    gchar                 *refused;  /* VENTURE's message for the 404 being
+                                      * confirmed */
 } Job;
 
 static void job_next(Job *job);
@@ -186,6 +228,7 @@ job_free(Job *job)
     g_clear_pointer(&job->ref, clawt_venture_ref_free);
     g_clear_pointer(&job->note, json_node_unref);
     g_strfreev(job->remotes);
+    g_free(job->refused);
     g_object_unref(job->mirror);
     g_free(job);
 }
@@ -400,6 +443,113 @@ job_refused(Job *job, guint status, const gchar *body, const gchar *what)
     job_dead(job, why);
 }
 
+/* ── Warnings for the operator (VENTURE #30) ─────────────────────── */
+
+/*
+ * One thing the operator should fix, about one agent: its token cannot
+ * reach an organization, VENTURE's role gate refused it, or a 404 that
+ * the ticket's own read-back contradicts.  Keyed by agent, kind and
+ * organization, so ten tickets in one unreachable organization are one
+ * warning naming them, not ten.
+ */
+typedef struct {
+    gchar  *agent_id;
+    gint64  organization_id;  /* 0: install-wide, cleared by any success */
+    gchar  *text;             /* without the ticket list */
+    GArray *tickets;          /* gint64, each once */
+} Warning;
+
+static void
+warning_free(gpointer data)
+{
+    Warning *warning = data;
+
+    if (warning == NULL)
+        return;
+
+    g_free(warning->agent_id);
+    g_free(warning->text);
+    g_array_unref(warning->tickets);
+    g_free(warning);
+}
+
+/*
+ * Raises (or refreshes) a warning.  Said in the log once, when it is new
+ * or its text changed -- not on every retry of every row it covers.
+ */
+static void
+warning_raise(ClawtVentureMirror *self, Account *account, const gchar *kind,
+              gint64 organization_id, gint64 ticket, const gchar *text)
+{
+    g_autofree gchar *key = g_strdup_printf("%s#%s#%" G_GINT64_FORMAT,
+                                            account->agent_id, kind,
+                                            organization_id);
+    Warning *warning = g_hash_table_lookup(self->warnings, key);
+    gboolean said = FALSE;
+    guint i;
+
+    if (warning == NULL) {
+        warning = g_new0(Warning, 1);
+        warning->agent_id = g_strdup(account->agent_id);
+        warning->organization_id = organization_id;
+        warning->tickets = g_array_new(FALSE, FALSE, sizeof(gint64));
+        g_hash_table_replace(self->warnings, g_steal_pointer(&key), warning);
+    }
+
+    if (g_strcmp0(warning->text, text) != 0) {
+        g_free(warning->text);
+        warning->text = g_strdup(text);
+        said = TRUE;
+    }
+
+    for (i = 0; i < warning->tickets->len; i++)
+        if (g_array_index(warning->tickets, gint64, i) == ticket)
+            break;
+
+    if (ticket > 0 && i == warning->tickets->len) {
+        g_array_append_val(warning->tickets, ticket);
+        said = TRUE;
+    }
+
+    if (said && ticket > 0)
+        g_message("venture mirror: ticket #%" G_GINT64_FORMAT ": %s", ticket,
+                  text);
+    else if (said)
+        g_message("venture mirror: %s", text);
+}
+
+/*
+ * A write by @account in @organization_id succeeded: whatever was said
+ * about it there -- and anything install-wide about it -- is over.
+ */
+static void
+warnings_clear(ClawtVentureMirror *self, Account *account,
+               gint64 organization_id)
+{
+    GHashTableIter iter;
+    gpointer value;
+
+    if (account == NULL)
+        return;
+
+    g_hash_table_iter_init(&iter, self->warnings);
+
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        Warning *warning = value;
+
+        if (g_strcmp0(warning->agent_id, account->agent_id) == 0 &&
+            (warning->organization_id == 0 ||
+             warning->organization_id == organization_id))
+            g_hash_table_iter_remove(&iter);
+    }
+}
+
+static gchar *
+confirm_key(Account *account, gint64 ticket)
+{
+    return g_strdup_printf("%s#%" G_GINT64_FORMAT, account->base, ticket);
+}
+
 /* ── Sending ─────────────────────────────────────────────────────── */
 
 static void on_answer(guint status, const gchar *body, gpointer data);
@@ -513,6 +663,8 @@ description_of(ClawtTask *task)
 
 static void step_run(Job *job);
 static void step_link(Job *job);
+static void written_by(Job *job, Account *account, gint64 organization_id);
+static void job_forbidden(Job *job, const gchar *body, const gchar *what);
 
 /* One bookkeeping key in the ticket's receipt (`_run`, `_run_done`). */
 static void
@@ -1255,6 +1407,9 @@ account_learn_organizations(Account *account, JsonObject *o)
 
     g_array_set_size(account->organizations, 0);
 
+    /* An empty list says "none"; no list at all, "this VENTURE cannot say". */
+    account->listed = (memberships != NULL);
+
     for (i = 0; memberships != NULL &&
                 i < json_array_get_length(memberships); i++) {
         JsonNode *m = json_array_get_element(memberships, i);
@@ -1401,6 +1556,11 @@ on_created(Job *job, guint status, const gchar *body)
         return;
     }
 
+    if (status == 403) {
+        job_forbidden(job, body, "filing the ticket");
+        return;
+    }
+
     if (status != 200 && status != 201) {
         job_refused(job, status, body, "filing the ticket");
         return;
@@ -1421,6 +1581,8 @@ on_created(Job *job, guint status, const gchar *body)
                  written, o);
         json_object_unref(written);
     }
+
+    written_by(job, job->creator, job->ref->organization_id);
 
     /* A note row filed the ticket on the way to its comment. */
     if (g_strcmp0(job->row->kind, "note") == 0) {
@@ -1462,6 +1624,278 @@ on_adopted(Job *job, guint status, const gchar *body)
     job_next(job);
 }
 
+/* ── A 404 confirmed before it is believed (VENTURE #30) ─────────── */
+
+/*
+ * A write by @account landed in @organization_id: its warnings there are
+ * over, and so is any hold on the ticket's 404.
+ */
+static void
+written_by(Job *job, Account *account, gint64 organization_id)
+{
+    ClawtVentureMirror *self = job->mirror;
+
+    warnings_clear(self, account, organization_id);
+
+    if (account != NULL && job->ref != NULL && job->ref->ticket_id > 0) {
+        g_autofree gchar *key = confirm_key(account, job->ref->ticket_id);
+
+        g_hash_table_remove(self->confirmed, key);
+    }
+}
+
+/*
+ * A 403 to a write.  VENTURE's write routes check the install-wide role
+ * -- the lower of the token's and its user's -- before any organization's,
+ * so an agent that is an editor in the ticket's organization but a viewer
+ * install-wide is refused.  Nothing a retry changes by itself, but nothing
+ * worth giving the task up for either: kept, retried on the backoff, and
+ * said on the Fleet page until a write by that agent succeeds.
+ */
+static void
+job_forbidden(Job *job, const gchar *body, const gchar *what)
+{
+    Account *account = job->acting;
+    g_autofree gchar *message = answer_message(403, body);
+    g_autofree gchar *text = NULL;
+    g_autofree gchar *why = NULL;
+
+    if (account == NULL) {
+        job_refused(job, 403, body, what);
+        return;
+    }
+
+    text = g_strdup_printf(
+        "VENTURE refused %s's write (%s): %s.  VENTURE checks a ticket "
+        "write against the install-wide role -- the lower of the token's "
+        "and its user %s's -- not the organization's, so an editor in the "
+        "organization who is a viewer install-wide is refused.  Give %s an "
+        "editor role install-wide in VENTURE (and mint a new token if the "
+        "token's own role is lower, then `clawtilla connector key %s`); the "
+        "write is kept and retried", account->agent_id, what, message,
+        account->user != NULL ? account->user : "?",
+        account->user != NULL ? account->user : "that user",
+        account->instance != NULL ? account->instance : "?");
+
+    warning_raise(job->mirror, account, "forbidden", 0,
+                  job->ref != NULL ? job->ref->ticket_id : 0, text);
+
+    why = g_strdup_printf("%s: %s (VENTURE's install-wide role gate); "
+                          "retried", what, message);
+    job_later(job, why);
+}
+
+/* Gone after all: the ticket is given up on, as a 404 always was. */
+static void
+confirm_gone(Job *job, const gchar *why)
+{
+    ClawtVentureRef ref = *job->ref;
+    g_autofree gchar *key = confirm_key(job->writer, job->ref->ticket_id);
+
+    g_hash_table_remove(job->mirror->confirmed, key);
+
+    ref.state = (gchar *)"dead";
+    ref.reason = (gchar *)why;
+    clawt_task_store_put_venture_ref(job->mirror->store, &ref, NULL);
+    job_dead(job, why);
+}
+
+/* Not gone: held, warned about, and the write retried on the backoff. */
+static void
+confirm_kept(Job *job, const gchar *kind, gint64 organization_id,
+             const gchar *text, const gchar *why)
+{
+    g_autofree gchar *key = confirm_key(job->writer, job->ref->ticket_id);
+
+    g_hash_table_replace(job->mirror->confirmed, g_steal_pointer(&key),
+                         GSIZE_TO_POINTER((gsize)now_seconds()));
+    warning_raise(job->mirror, job->writer, kind, organization_id,
+                  job->ref->ticket_id, text);
+    job_later(job, why);
+}
+
+/*
+ * The ticket read back 404 too, and whoami has said what the token
+ * reaches: whether the ticket's organization is among it decides.  An
+ * older VENTURE whose whoami names no memberships, or a ticket whose
+ * organization was never learnt, cannot be told apart from a deleted
+ * one -- and is given up on, as before.
+ */
+static void
+confirm_decide(Job *job)
+{
+    Account *account = job->writer;
+    gint64 organization = job->ref->organization_id;
+    gboolean reached = FALSE;
+    guint i;
+
+    if (!account->listed || organization <= 0) {
+        confirm_gone(job, "the ticket was deleted in VENTURE");
+        return;
+    }
+
+    for (i = 0; account->organizations != NULL &&
+                i < account->organizations->len; i++)
+        reached = reached ||
+            g_array_index(account->organizations, gint64, i) == organization;
+
+    if (reached) {
+        confirm_gone(job, "the ticket was deleted in VENTURE");
+        return;
+    }
+
+    {
+        g_autofree gchar *text = g_strdup_printf(
+            "%s's VENTURE token cannot reach organization %" G_GINT64_FORMAT
+            ", where its tickets are mirrored -- VENTURE answers 404 for them "
+            "-- so its writes there are kept and retried, not dropped.  "
+            "Re-mint %s's VENTURE token (then `clawtilla connector key %s`), "
+            "or add its user %s to organization %" G_GINT64_FORMAT " and then "
+            "re-mint it: a token reaches only the organizations its user was "
+            "in when it was minted", account->agent_id, organization,
+            account->agent_id,
+            account->instance != NULL ? account->instance : "?",
+            account->user != NULL ? account->user : "?", organization);
+        g_autofree gchar *why = g_strdup_printf(
+            "updating the ticket: %s; the token cannot reach organization %"
+            G_GINT64_FORMAT " (re-mint it); retried",
+            job->refused != NULL ? job->refused : "VENTURE answered 404",
+            organization);
+
+        confirm_kept(job, "unreachable", organization, text, why);
+    }
+}
+
+/*
+ * A PATCH answered 404.  Within the hold of a confirmation that said the
+ * ticket is not gone, the row simply waits again: no read-back, no
+ * whoami.  Otherwise the ticket is read back with the same token.
+ */
+static void
+confirm_begin(Job *job, const gchar *body)
+{
+    ClawtVentureMirror *self = job->mirror;
+    g_autofree gchar *key = confirm_key(job->writer, job->ref->ticket_id);
+    gpointer held = NULL;
+    g_autofree gchar *path = NULL;
+
+    g_free(job->refused);
+    job->refused = answer_message(404, body);
+
+    if (g_hash_table_lookup_extended(self->confirmed, key, NULL, &held) &&
+        now_seconds() - (gint64)GPOINTER_TO_SIZE(held) <
+            CLAWT_VENTURE_MIRROR_CONFIRM_HOLD) {
+        g_autofree gchar *why = g_strdup_printf(
+            "updating the ticket: %s; it was found not to be gone, so the "
+            "write is retried", job->refused);
+
+        job_later(job, why);
+        return;
+    }
+
+    path = g_strdup_printf("/api/v1/ticket/%" G_GINT64_FORMAT,
+                           job->ref->ticket_id);
+    job->step = STEP_CONFIRM_READ;
+    job_send(job, job->writer, "GET", path, NULL, NULL);
+}
+
+static void
+on_confirm_read(Job *job, guint status, const gchar *body)
+{
+    g_autoptr(JsonNode) holder = NULL;
+    JsonObject *o;
+
+    if (status == 200) {
+        JsonNode *deleted;
+
+        o = answer_object(body, &holder);
+        deleted = (o != NULL) ? json_object_get_member(o, "deleted_at")
+                              : NULL;
+
+        /* Soft-deleted, and still served: gone all the same. */
+        if (deleted != NULL && !JSON_NODE_HOLDS_NULL(deleted)) {
+            confirm_gone(job, "the ticket was deleted in VENTURE");
+            return;
+        }
+
+        {
+            gint64 organization = (o != NULL)
+                ? json_object_get_int_member_with_default(
+                      o, "organization_id", job->ref->organization_id)
+                : job->ref->organization_id;
+            g_autofree gchar *text = g_strdup_printf(
+                "VENTURE answered 404 to %s's update of a ticket in "
+                "organization %" G_GINT64_FORMAT ", but the same token reads "
+                "the ticket back; the write is kept and retried.  If it goes "
+                "on, check %s's role in that organization",
+                job->writer->agent_id, organization, job->writer->agent_id);
+            g_autofree gchar *why = g_strdup_printf(
+                "updating the ticket: %s, though it reads back; retried",
+                job->refused != NULL ? job->refused : "VENTURE answered 404");
+
+            confirm_kept(job, "readback", organization, text, why);
+        }
+        return;
+    }
+
+    if (status == 404) {
+        Account *account = job->writer;
+
+        if (account->reach_at > 0 &&
+            now_seconds() - account->reach_at <
+                CLAWT_VENTURE_MIRROR_CONFIRM_HOLD) {
+            confirm_decide(job);
+            return;
+        }
+
+        job->step = STEP_CONFIRM_WHO;
+        step_whoami(job, account);
+        return;
+    }
+
+    /* Not an answer about the ticket: never a reason to give it up. */
+    if (status == 401 || status == 202) {
+        job_refused(job, status, body, "re-reading the ticket");
+        return;
+    }
+
+    {
+        g_autofree gchar *message = answer_message(status, body);
+        g_autofree gchar *why = g_strdup_printf(
+            "updating the ticket: %s; re-reading it to confirm: %s",
+            job->refused != NULL ? job->refused : "VENTURE answered 404",
+            message);
+
+        job_later(job, why);
+    }
+}
+
+static void
+on_confirm_who(Job *job, guint status, const gchar *body)
+{
+    g_autoptr(JsonNode) holder = NULL;
+
+    if (status != 200) {
+        if (status == 401) {
+            job_refused(job, status, body, "asking VENTURE who this token is");
+        } else {
+            g_autofree gchar *message = answer_message(status, body);
+            g_autofree gchar *why = g_strdup_printf(
+                "updating the ticket: %s; asking VENTURE what the token "
+                "reaches: %s",
+                job->refused != NULL ? job->refused : "VENTURE answered 404",
+                message);
+
+            job_later(job, why);
+        }
+        return;
+    }
+
+    account_learn(job->mirror, job->writer, answer_object(body, &holder));
+    job->writer->reach_at = now_seconds();
+    confirm_decide(job);
+}
+
 static void
 on_updated(Job *job, guint status, const gchar *body)
 {
@@ -1480,12 +1914,12 @@ on_updated(Job *job, guint status, const gchar *body)
     }
 
     if (status == 404) {
-        ClawtVentureRef ref = *job->ref;
+        confirm_begin(job, body);
+        return;
+    }
 
-        ref.state = (gchar *)"dead";
-        ref.reason = (gchar *)"the ticket was deleted in VENTURE";
-        clawt_task_store_put_venture_ref(job->mirror->store, &ref, NULL);
-        job_dead(job, "the ticket was deleted in VENTURE");
+    if (status == 403) {
+        job_forbidden(job, body, "updating the ticket");
         return;
     }
 
@@ -1494,6 +1928,7 @@ on_updated(Job *job, guint status, const gchar *body)
         return;
     }
 
+    written_by(job, job->writer, job->ref->organization_id);
     o = answer_object(body, &holder);
 
     {
@@ -1558,10 +1993,18 @@ on_commented(Job *job, guint status, const gchar *body)
         return;
     }
 
+    if (status == 403 && job->step == STEP_COMMENT) {
+        job_forbidden(job, body, "adding the comment");
+        return;
+    }
+
     if (status != 200 && status != 201) {
         job_refused(job, status, body, "adding the comment");
         return;
     }
+
+    if (job->step == STEP_COMMENT)
+        written_by(job, job->acting, job->ref->organization_id);
 
     o = (job->step == STEP_COMMENT_ADOPT) ? answer_first(body, &holder)
                                           : answer_object(body, &holder);
@@ -1617,6 +2060,12 @@ on_answer(guint status, const gchar *body, gpointer data)
         break;
     case STEP_PULL_REQUEST:
         on_pull_request(job, status, body);
+        break;
+    case STEP_CONFIRM_READ:
+        on_confirm_read(job, status, body);
+        break;
+    case STEP_CONFIRM_WHO:
+        on_confirm_who(job, status, body);
         break;
     default:
         job_dead(job, "the mirror lost its place");
@@ -3789,6 +4238,7 @@ clawt_venture_mirror_set_account(ClawtVentureMirror *self,
         g_free(old->token);
         old->token = g_strdup(token);
         old->known = FALSE;
+        old->reach_at = 0;
         return;
     }
 
@@ -3857,6 +4307,51 @@ clawt_venture_mirror_account_user(ClawtVentureMirror *self,
         ? g_hash_table_lookup(self->accounts, agent_id) : NULL;
 
     return (account != NULL) ? account->user : NULL;
+}
+
+GStrv
+clawt_venture_mirror_warnings(ClawtVentureMirror *self)
+{
+    g_autoptr(GPtrArray) texts = NULL;
+    GHashTableIter iter;
+    gpointer value;
+
+    g_return_val_if_fail(CLAWT_IS_VENTURE_MIRROR(self), NULL);
+
+    texts = g_ptr_array_new_with_free_func(g_free);
+    g_hash_table_iter_init(&iter, self->warnings);
+
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        Warning *warning = value;
+        g_autoptr(GString) text = NULL;
+        guint i;
+
+        /* An agent that no longer mirrors has nothing to fix here. */
+        if (!g_hash_table_contains(self->accounts, warning->agent_id))
+            continue;
+
+        text = g_string_new("VENTURE mirror: ");
+        g_string_append(text, warning->text);
+
+        for (i = 0; i < warning->tickets->len && i < 5; i++)
+            g_string_append_printf(text, "%s#%" G_GINT64_FORMAT,
+                                   i == 0 ? " (tickets " : ", ",
+                                   g_array_index(warning->tickets, gint64, i));
+        if (warning->tickets->len > 5)
+            g_string_append_printf(text, " and %u more",
+                                   warning->tickets->len - 5);
+        if (warning->tickets->len > 0)
+            g_string_append_c(text, ')');
+
+        g_string_append_c(text, '.');
+        g_ptr_array_add(texts, g_string_free(g_steal_pointer(&text), FALSE));
+    }
+
+    /* sorted, so the Fleet page does not reshuffle them */
+    g_ptr_array_sort(texts, compare_names);
+    g_ptr_array_add(texts, NULL);
+
+    return (GStrv)g_ptr_array_free(g_steal_pointer(&texts), FALSE);
 }
 
 void
@@ -4014,6 +4509,8 @@ clawt_venture_mirror_finalize(GObject *object)
     g_hash_table_unref(self->last_progress);
     g_hash_table_unref(self->intake_times);
     g_hash_table_unref(self->team_linked);
+    g_hash_table_unref(self->confirmed);
+    g_hash_table_unref(self->warnings);
     g_clear_object(&self->store);
     g_clear_pointer(&self->context, g_main_context_unref);
 
@@ -4068,4 +4565,8 @@ clawt_venture_mirror_init(ClawtVentureMirror *self)
     self->intake_times = g_hash_table_new_full(g_str_hash, g_str_equal,
                                                g_free,
                                                (GDestroyNotify)g_array_unref);
+    self->confirmed = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                            NULL);
+    self->warnings = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                           warning_free);
 }
