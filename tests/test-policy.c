@@ -105,6 +105,27 @@ test_bad_rule_shadows(void)
     g_assert_nonnull(strstr(clawt_agent_config_get_shadow_reason(agent), "policy.rules"));
 }
 
+/*
+ * Only the four local reads may run with no daemon to ask.  A network
+ * read, a shell, a write or a near-miss of a name must still fail closed.
+ */
+static void
+test_local_reads_only(void)
+{
+    static const gchar *const yes[] = { "Read", "Glob", "Grep", "LS" };
+    static const gchar *const no[] = {
+        "Bash", "WebFetch", "WebSearch", "Write", "Edit", "Task",
+        "TodoRead", "read", "Read ", "ReadX", "mcp__x__Read", ""
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(yes); i++)
+        g_assert_true(clawt_policy_tool_reads_locally(yes[i]));
+    for (i = 0; i < G_N_ELEMENTS(no); i++)
+        g_assert_false(clawt_policy_tool_reads_locally(no[i]));
+    g_assert_false(clawt_policy_tool_reads_locally(NULL));
+}
+
 /* An unknown tool is never read: the guess falls on the side that asks. */
 static void
 test_native_classes(void)
@@ -684,6 +705,7 @@ main(gint argc, gchar *argv[])
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/policy/parse-rule", test_parse_rule);
+    g_test_add_func("/policy/local-reads-only", test_local_reads_only);
     g_test_add_func("/policy/hook-reads-offline-only-when-rules-allow",
                     test_hook_reads_offline_only_when_rules_allow);
     g_test_add_func("/policy/first-match-and-fallback", test_first_match_and_fallback);
