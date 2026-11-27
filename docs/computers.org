@@ -664,60 +664,134 @@ chcon -R -l s0 ~/source/some-project
 
 *The exchange is a known limitation.*  ~/mnt/clawtilla/exchange/shared~ is read-write for every agent, whatever team it is on.  A file written into it from *inside* a container is readable only by containers at the same level -- teammates under ~auto~, but not agents on other teams or at random pairs.  Writing to the exchange from the host (an agent's own Write tool, at the host path) avoids it.  The warning above does not report it, because every container fleet would see it.
 
-*** Process and memory limits
+*** CPU, process and memory limits
 :PROPERTIES:
 :CUSTOM_ID: container-limits
 :END:
 
-An agent's build can fork without bound or eat the host's memory, and
-without a limit the machine that suffers is yours.  Three keys:
+An agent's build can fork without bound, run ~make -j$(nproc)~ on every core, or eat the host's memory, and without a limit the machine that suffers is yours.  On a 20-core host three gates in parallel took the load average to 54 and made an unrelated timing test fail (VENTURE #26).  Six keys:
 
 | Key | Takes | Unset |
 |-----+-------+-------|
-| ~computer.container.pids_limit~ | the most processes and threads; ~-1~ for none | ~0~: podman's default (2048 on Fedora) |
+| ~computer.container.cpus~ | a CPU count, fractional allowed: ~4~, ~2.5~, ~0.5~ -- more than 0, no more than the host has | no cap |
+| ~computer.container.cpu_weight~ | a cgroup v2 ~cpu.weight~, 1--10000; ~100~ is everybody's default share | ~0~: podman's default |
+| ~computer.container.cpuset~ | which CPUs: ~0-7~, ~0,2,4-6~ -- each must exist on the host | any CPU |
 | ~computer.container.memory~ | a size: ~512m~, ~4g~ | no limit |
 | ~computer.container.memory_swap~ | memory *and* swap together; ~-1~ for unlimited swap | podman's default (as much swap again) |
+| ~computer.container.pids_limit~ | the most processes and threads; ~-1~ for none | ~0~: podman's default (2048 on Fedora) |
 
 #+begin_src yaml
 computer:
   type: container
   container:
+    cpus: "4"         # four CPUs' worth of time, however many it spreads over
+    cpu_weight: 200   # twice the share of an agent at 100 while they compete
+    cpuset: "0-7"     # and only on these
     pids_limit: 2048
     memory: 4g
     memory_swap: 6g   # 4g of memory, 2g of swap
 #+end_src
 
-*Sizes are podman's:* a whole number and an optional ~b~, ~k~, ~m~ or ~g~
-(either case, ~gb~ too), in powers of 1024.  A fraction is refused rather
-than rounded --- ~1.5g~ is answered with "write 1536m" --- because a limit
-has to have exactly one value.  Memory under podman's 6 MiB floor,
-~memory_swap~ without ~memory~, and ~memory_swap~ smaller than ~memory~ are
-refused too.  All of it is refused *where it arrives*: ~agent set~ and the
-clients' forms answer with the key at fault, and a hand-edited file stops
-the computer being built at the next start, naming it, rather than reaching
-podman as a libpod error.
+*~cpus~ is a cap, ~cpu_weight~ is a share.*  ~cpus: 4~ is podman's ~--cpus~ (=NanoCpus=): the machine never gets more than four CPUs' worth of time, even on an idle host.  ~cpu_weight~ only matters under contention: an agent at 200 gets twice the CPU of one at 100 while both want it, and all of it when nobody else does.  podman has no ~--cpu-weight~ -- it takes ~--cpu-shares~ (2--262144) and the OCI runtime turns shares into ~cpu.weight~ -- so the weight is passed as the shares that crun and runc (2025 and later) turn back into it: 1 -> 2, 100 -> 1024 (podman's default), 10000 -> 262144.  An older runtime converts linearly instead; the absolute weight then differs but the order does not, and order is all a weight means.
 
-*Applied with ~podman update~, in place.*  podomation's create request
-carries no limits, so the container is created and then given them with
-~podman update~ before its first start --- it never runs without them.  At
-every later start clawtilla asks ~podman container inspect~ what the
-machine has and sends ~podman update~ for whatever differs, and only that.
-A changed limit therefore reaches the existing container without a rebuild
-and without losing what the agent installed.  Changed with ~agent set~ (or
-a client) while the machine is running, it is applied at once, on a
-worker thread; the next start would apply it anyway.
+*Sizes are podman's:* a whole number and an optional ~b~, ~k~, ~m~ or ~g~ (either case, ~gb~ too), in powers of 1024.  A fraction is refused rather than rounded --- ~1.5g~ is answered with "write 1536m" --- because a limit has to have exactly one value.  A CPU count may have up to nine decimal places (podman keeps billionths), and is written with a leading digit: ~0.5~, not ~.5~.
 
-*Clearing a key leaves the last value.*  podman cannot tell its own
-default from a value somebody chose, so an unset limit is never touched:
-to lift one, set ~-1~ (processes, swap), or rebuild.
+*** Three levels: the fleet, the team, the agent
+:PROPERTIES:
+:CUSTOM_ID: container-limits-levels
+:END:
 
-*Remote podman is reached the same way.*  The podman commands carry
-~--url~ with ~computer.container.connection~ (or ~--connection~ for a named
-connection), so the limits reach the podman that owns the machine.  They
-need the ~podman~ command on this machine (Fedora: ~podman~).
+Each of the six keys can be set at three levels, and the most specific one that sets it wins -- *key by key*, so a team's memory and an agent's own cpus combine:
 
-The same three keys apply to a [[#distrobox-limits][distrobox]], which is
-a podman container underneath.
+| Level | Where | Example |
+|-------+-------+---------|
+| the agent | ~agents[].computer.container.<key>~ (a shared machine: its ~computers[]~ entry) | ~cpus: "6"~ |
+| its team | ~teams[].computer.container.<key>~ | forge at ~cpus: "4"~, ~memory: 8g~ |
+| the fleet | ~defaults.container.<key>~ | ~pids_limit: 4096~ |
+
+#+begin_src yaml
+defaults:
+  container:
+    pids_limit: 4096
+teams:
+  - id: forge
+    computer:
+      container:
+        cpus: "4"
+        memory: 8g
+agents:
+  - id: wildebuild
+    team: forge
+    computer:
+      type: container
+      container:
+        cpus: "6"       # overrides forge's 4; forge's 8g still applies
+#+end_src
+
+The fleet level is ~defaults.container~, not ~defaults.computer.container~: ~defaults.computer~ is already the computer type, a scalar, and cannot also hold a section.
+
+*Where each value came from is shown.*  ~clawtilla agent show~ prints a ~limits:~ line -- =cpus 6 (agent), memory 8g (team forge), pids_limit 4096 (defaults)= -- and ~agent.list~ carries the same per key (see [[#container-limits-ipc][below]]).  A team's limits are set with ~clawtilla team set forge computer.container.cpus 4~ (an empty value removes one), and ~team.list~ reports each team's own.
+
+*** Refused where they arrive, warned where they did not
+:PROPERTIES:
+:CUSTOM_ID: container-limits-validation
+:END:
+
+Refused, each naming the key: ~cpus~ of 0, more than the host's CPUs (~cpus: 64~ on a 20-core host), or not a number; ~cpu_weight~ outside 1--10000; a ~cpuset~ naming a CPU the host lacks, or not a CPU list; memory under podman's 6 MiB floor; ~memory_swap~ without ~memory~, or smaller than it (~-1~ aside).  The host is the one clawtilla runs on -- counted from =/sys/devices/system/cpu/online= -- including for a machine on a remote podman (~computer.container.connection~), whose own size cannot be known without asking it.
+
+*Where they are refused:* ~clawtilla config validate~ checks the fleet's defaults and every team's on their own, and every container and distrobox agent's effective set -- which is where levels contradict each other, as a team's ~memory_swap: 6g~ under an agent's own ~memory: 8g~ ("memory_swap from team forge").  ~agent set~ and ~team set~ refuse a bad value at once, as do ~agent create~ and ~clawtilla_create_agent~.
+
+*A bad value that reaches the daemon anyway* -- a hand edit nobody validated -- is a warning, not a lost agent: that one limit is left out and the rest still apply.  The daemon log says =agent wildebuild: computer.container.memory_swap is 6g, less than memory (8g) ... (set by team forge); not applied=, the Fleet page shows the same sentence (~team.list~'s ~warnings~), and ~agent.list~ lists it under ~container_limits.refused~.  (Before 0.78.0 a bad limit stopped the computer being built at all.)
+
+*** Applying a change: live, or at the next start
+:PROPERTIES:
+:CUSTOM_ID: container-limits-apply
+:END:
+
+podomation's create request carries no limits, so the container is created and then given them with ~podman update~ before its first start --- it never runs without them.  At every later start clawtilla asks ~podman container inspect~ what the machine has (=PidsLimit=, =Memory=, =MemorySwap=, =NanoCpus=, =CpuShares=, =CpusetCpus=) and sends ~podman update~ for whatever differs, and only that -- an unchanged limit costs one inspect.  A changed limit therefore reaches the existing container without a rebuild and without losing what the agent installed.
+
+*A running machine is changed in place.*  On cgroup v2, CPU and memory can change under a running container, so a change made with ~agent set~, ~team set~, a client, or a reload of a hand-edited file is applied at once, on a worker thread, with no restart and no recreate.  Every running machine is asked after a team or fleet change; one the change does not reach costs an inspect.
+
+*Where podman cannot, it waits for the restart, and says so.*  If ~podman update~ refuses on a running machine -- a ~cpuset~ the cgroup will not take while tasks run, a cpuset controller not delegated to a rootless user, rootless cgroup v1 -- each change is tried on its own (memory and memory_swap together), the ones podman takes are kept, and the rest are applied to the stopped machine at its next start.  The log says which path every change took:
+
+#+begin_example
+container clawt-wildebuild: limits applied with podman update (live): --cpus=6 changed in place on the running machine, with no restart
+container clawt-wildebuild: restart required: podman would not change --cpuset-cpus=0-7 (Error: ...) on the running machine; they are applied when it next starts. --cpus=6 changed in place
+#+end_example
+
+and a restart still required is a warning on the Fleet page until the machine restarts.  A refusal on a machine that is *not* running fails its start, as before: there is no later to defer it to, and starting without the limit would be the quiet version of not having set it.
+
+*Clearing a key leaves the last value.*  podman cannot tell its own default from a value somebody chose, so an unset limit is never touched: to lift one, set ~-1~ (processes, swap), or rebuild.  That includes removing a team or fleet default -- members keep it until their machines are rebuilt.
+
+*Remote podman is reached the same way.*  The podman commands carry ~--url~ with ~computer.container.connection~ (or ~--connection~ for a named connection), so the limits reach the podman that owns the machine.  They need the ~podman~ command on this machine (Fedora: ~podman~).
+
+*Rootless and cgroup notes.*  Rootless podman on cgroup v2 (Fedora's default) can set ~cpus~, ~cpu_weight~, ~memory~ and ~pids_limit~ out of the box: systemd delegates the ~cpu~, ~memory~ and ~pids~ controllers to the user.  ~cpuset~ needs the ~cpuset~ controller delegated as well, which Fedora does not do by default (a drop-in for =user@.service= with ~Delegate=cpu cpuset io memory pids~); without it podman refuses the cpuset and the start fails, naming it.  On cgroup v1, rootless podman cannot set resource limits at all -- leave them unset there, or run the daemon's podman rootful.
+
+*** What it is using, OOM kills and the memory limit
+:PROPERTIES:
+:CUSTOM_ID: container-limits-usage
+:END:
+
+Every 30 seconds the daemon runs one ~podman stats --no-stream~ per podman connection that has a running container computer -- never one per request, so a client polling ~agent.list~ costs nothing -- and keeps the sample on the computer: CPU (as a percentage of one CPU, ~400~ is four flat out, from the CPU time between two samples rather than podman's average since the container started), memory used and podman's limit, and the process count.  ~clawtilla agent show~ prints it on its ~usage:~ line.
+
+*Sitting at the memory limit* -- 95% or more of ~computer.container.memory~ for two samples running -- is a warning in the log and on the Fleet page (=agent wildebuild is at its memory limit: 7.8g of 8g used=), and ~container_usage.at_memory_limit~ in ~agent.list~.
+
+*An OOM kill is an incident.*  When the kernel kills a process inside the machine because it reached its memory limit, clawtilla files an incident of kind ~out-of-memory~ ("ran out of memory") with the reason =killed: out of memory at 8g (container clawt-wildebuild, 1 process killed). The limit is computer.container.memory= -- rather than leaving a build that died with "Killed" to be read as a crash.  It is heard two ways: podman's own ~oom~ container event (through podomation's event stream), and the cgroup's ~oom_kill~ counter in =memory.events=, read at each sample, which also sees a compiler killed inside a machine that itself lived on.  One kill heard both ways is one report: a second within 90 seconds is held back.  The counter needs a local podman (a ~unix://~ connection) and cgroup v2; a remote machine relies on the event alone.  The report tells whoever leads the team not to simply retry: the same work hits the same limit.
+
+*** What clients read
+:PROPERTIES:
+:CUSTOM_ID: container-limits-ipc
+:END:
+
+For a container or distrobox agent, ~agent.list~ (and ~agent.show~) carry:
+
+- ~container_cpus~, ~container_cpu_weight~, ~container_cpuset~, ~container_memory~, ~container_memory_swap~, ~container_pids_limit~ -- the agent's *own* values, empty when unset, so a form that is opened and saved never pins an inherited value on the agent.
+- ~container_limits~ -- an object with one member per key (~cpus~, ~cpu_weight~, ~cpuset~, ~memory~, ~memory_swap~, ~pids_limit~), each ={value, written, source, team, own}=: ~value~ is what the machine gets (empty when refused or unset), ~written~ what the most specific level says, ~source~ one of ~agent~, ~team~, ~defaults~ or empty, ~team~ the team when it came from one, ~own~ the agent's own value.  Then ~refused~ (sentences, one per limit left out), ~host_cpus~ and ~host_memory~ (bytes, for suggesting values from the size of the machine), and for a container ~applied~ (~unchanged~, ~applied~, ~live~ or ~restart-required~), ~applied_note~ and ~applied_at~ (microseconds since the epoch).
+- ~container_usage~ -- once there is a sample: ~cpu_percent~ (a number), ~memory_used~, ~memory_limit~ (bytes; the host's memory when there is no limit), ~pids~, ~sampled_at~ (microseconds), ~at_memory_limit~.
+
+~team.list~ gives each team a ~container_limits~ object of the keys it sets, as written, and its ~warnings~ carry the refusals, restarts required and machines at their memory limit.
+
+The same keys apply to a [[#distrobox-limits][distrobox]], which is a podman container underneath; its usage is not sampled.
 
 *** Across daemon restarts: adopted, not recreated
 :PROPERTIES:
@@ -958,14 +1032,14 @@ computer somebody chose precisely so that what the agent installs
 survives --- so discarding it at every stop would mean paying that cost
 on every start.
 
-*** Process and memory limits
+*** CPU, process and memory limits
 :PROPERTIES:
 :CUSTOM_ID: distrobox-limits
 :END:
 
-The [[#container-limits][container limits]] apply here too ---
-~computer.container.pids_limit~, ~memory~ and ~memory_swap~, the same keys,
-because a box is a podman container.  At creation they go to distrobox as
+The [[#container-limits][container limits]] apply here too --- all six
+~computer.container~ keys, at the same three levels, because a box is a
+podman container.  At creation they go to distrobox as
 ~--additional-flags~, one complete option per flag (~--memory=4g~, never
 ~--memory 4g~: distrobox passes every word as its own flag, and a lone
 ~4g~ would reach podman as the image).  A box made before they were set,

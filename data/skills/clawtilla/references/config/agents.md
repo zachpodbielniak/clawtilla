@@ -1383,7 +1383,11 @@ inside the machine, which is the point: the agent's container dies
 rather than your desktop.
 
 Applies to container and distrobox computers, at creation and then
-with `podman update` whenever it changes.
+with `podman update` whenever it changes -- in place on a running
+machine. Inherited from the team (teams[].computer.container) and
+then the fleet (defaults.container) when the agent does not set it.
+An OOM kill inside the machine is filed as an incident naming this
+limit.
 
 ### `agents.computer.container.memory_swap`
 
@@ -1399,6 +1403,58 @@ to memory means no swap at all. Unset lets podman allow as much swap
 again as memory. It needs memory to be set and must not be smaller
 than it; both are refused when they arrive rather than when podman
 reads them.
+
+### `agents.computer.container.cpus`
+
+- Type: string
+- Default: unset
+- Since: 0.78.0
+
+Most CPU time the machine may use, as a count of CPUs: 4, 2.5, 0.5.
+
+podman's --cpus, a hard cap: 4 on a 20-CPU host lets the machine use
+four CPUs' worth of time however many it spreads across, so one
+agent's make -j32 cannot take the host's load to 54. More than zero
+and no more than this host's CPUs; refused otherwise, naming the key.
+Unset means no cap.
+
+Takes its default from the agent's team (teams[].computer.container)
+and then the fleet (defaults.container); the agent's own value wins.
+Changed on a running machine with `podman update`, in place, with no
+restart.
+
+### `agents.computer.container.cpu_weight`
+
+- Type: integer
+- Default: `0`
+- Since: 0.78.0
+
+The machine's share of CPU when the host is busy: a cgroup v2
+cpu.weight, 1 to 10000, where 100 is everybody's default.
+
+Relative, not a cap: an agent at 200 gets twice the CPU of one at 100
+while they compete, and all of it when nobody else wants any. 0
+leaves podman's default. podman takes shares rather than a weight, so
+this is passed as --cpu-shares (100 -> 1024, 1 -> 2, 10000 -> 262144);
+the runtime turns it back into cpu.weight.
+
+Inherited from the team and then the fleet like cpus, and changed in
+place the same way.
+
+### `agents.computer.container.cpuset`
+
+- Type: string
+- Default: unset
+- Since: 0.78.0
+
+Which CPUs the machine may run on, e.g. 0-7 or 0,2,4-6.
+
+Pinning, for keeping a noisy agent off the cores something else
+needs. Every CPU named must exist on this host. podman's
+--cpuset-cpus; rootless podman needs the cpuset controller delegated
+to the user's systemd (Fedora does not by default), and where podman
+cannot change it on a running machine it is applied at the next
+restart instead, and the Fleet page says so.
 
 ### `agents.computer.container.selinux_level`
 

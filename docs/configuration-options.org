@@ -405,6 +405,70 @@ An entry is a reference, optionally followed by ' -- ' and a note:
 
 Nothing is validated here. A reference podman cannot pull fails at start with podman's own error.
 
+** =defaults.container=
+
+Container limits every container and distrobox agent gets unless its
+team or the agent itself says otherwise.
+
+The same six keys as agents.computer.container -- cpus, cpu_weight,
+cpuset, memory, memory_swap, pids_limit -- with the same meaning. Most
+specific wins, key by key: the agent's own value, then its team's
+(teams[].computer.container), then this. `clawtilla agent show` says
+which one each value came from.
+
+Written here rather than under defaults.computer, which is already
+the computer type.
+
+*** =defaults.container.cpus=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.78.0
+
+The fleet's agents.computer.container.cpus.
+
+*** =defaults.container.cpu_weight=
+
+- Type :: integer
+- Default :: unset
+- Since :: 0.78.0
+
+The fleet's agents.computer.container.cpu_weight.
+
+*** =defaults.container.cpuset=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.78.0
+
+The fleet's agents.computer.container.cpuset.
+
+*** =defaults.container.memory=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.78.0
+
+The fleet's agents.computer.container.memory.
+
+*** =defaults.container.memory_swap=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.78.0
+
+The fleet's agents.computer.container.memory_swap. Checked against the
+memory an agent ends up with, wherever that came from: a team's 8g
+memory under a fleet swap total of 6g is refused.
+
+*** =defaults.container.pids_limit=
+
+- Type :: integer
+- Default :: unset
+- Since :: 0.78.0
+
+The fleet's agents.computer.container.pids_limit.
+
 *** =defaults.workspace_root=
 
 - Type :: path
@@ -2360,6 +2424,68 @@ team's agents may use. For jentic, the Jentic agent the team acts
 as, whose API key `clawtilla broker key team:<id>` stores. An agent
 with its own agents.broker_server uses that one instead. Unused
 unless broker.enabled is on.
+
+** =teams.computer=
+
+Defaults for the computers of this team's agents.
+
+** =teams.computer.container=
+
+Container limits for this team's container and distrobox agents.
+
+Between the fleet's defaults.container and the agent's own
+computer.container, key by key: a member's own cpus beats the team's,
+and the team's memory still applies to it. Set from a client with
+`clawtilla team set <team> computer.container.cpus 4`; running
+members take the change in place.
+
+*** =teams.computer.container.cpus=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.78.0
+
+The team's agents.computer.container.cpus.
+
+*** =teams.computer.container.cpu_weight=
+
+- Type :: integer
+- Default :: unset
+- Since :: 0.78.0
+
+The team's agents.computer.container.cpu_weight.
+
+*** =teams.computer.container.cpuset=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.78.0
+
+The team's agents.computer.container.cpuset.
+
+*** =teams.computer.container.memory=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.78.0
+
+The team's agents.computer.container.memory.
+
+*** =teams.computer.container.memory_swap=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.78.0
+
+The team's agents.computer.container.memory_swap.
+
+*** =teams.computer.container.pids_limit=
+
+- Type :: integer
+- Default :: unset
+- Since :: 0.78.0
+
+The team's agents.computer.container.pids_limit.
 
 ** =computers=
 
@@ -6114,7 +6240,11 @@ inside the machine, which is the point: the agent's container dies
 rather than your desktop.
 
 Applies to container and distrobox computers, at creation and then
-with `podman update` whenever it changes.
+with `podman update` whenever it changes -- in place on a running
+machine. Inherited from the team (teams[].computer.container) and
+then the fleet (defaults.container) when the agent does not set it.
+An OOM kill inside the machine is filed as an incident naming this
+limit.
 
 *** =agents.computer.container.memory_swap=
 
@@ -6130,6 +6260,58 @@ to memory means no swap at all. Unset lets podman allow as much swap
 again as memory. It needs memory to be set and must not be smaller
 than it; both are refused when they arrive rather than when podman
 reads them.
+
+*** =agents.computer.container.cpus=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.78.0
+
+Most CPU time the machine may use, as a count of CPUs: 4, 2.5, 0.5.
+
+podman's --cpus, a hard cap: 4 on a 20-CPU host lets the machine use
+four CPUs' worth of time however many it spreads across, so one
+agent's make -j32 cannot take the host's load to 54. More than zero
+and no more than this host's CPUs; refused otherwise, naming the key.
+Unset means no cap.
+
+Takes its default from the agent's team (teams[].computer.container)
+and then the fleet (defaults.container); the agent's own value wins.
+Changed on a running machine with `podman update`, in place, with no
+restart.
+
+*** =agents.computer.container.cpu_weight=
+
+- Type :: integer
+- Default :: =0=
+- Since :: 0.78.0
+
+The machine's share of CPU when the host is busy: a cgroup v2
+cpu.weight, 1 to 10000, where 100 is everybody's default.
+
+Relative, not a cap: an agent at 200 gets twice the CPU of one at 100
+while they compete, and all of it when nobody else wants any. 0
+leaves podman's default. podman takes shares rather than a weight, so
+this is passed as --cpu-shares (100 -> 1024, 1 -> 2, 10000 -> 262144);
+the runtime turns it back into cpu.weight.
+
+Inherited from the team and then the fleet like cpus, and changed in
+place the same way.
+
+*** =agents.computer.container.cpuset=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.78.0
+
+Which CPUs the machine may run on, e.g. 0-7 or 0,2,4-6.
+
+Pinning, for keeping a noisy agent off the cores something else
+needs. Every CPU named must exist on this host. podman's
+--cpuset-cpus; rootless podman needs the cpuset controller delegated
+to the user's systemd (Fedora does not by default), and where podman
+cannot change it on a running machine it is applied at the next
+restart instead, and the Fleet page says so.
 
 *** =agents.computer.container.selinux_level=
 

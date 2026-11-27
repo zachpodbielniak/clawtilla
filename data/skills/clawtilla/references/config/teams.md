@@ -109,3 +109,65 @@ team's agents may use. For jentic, the Jentic agent the team acts
 as, whose API key `clawtilla broker key team:<id>` stores. An agent
 with its own agents.broker_server uses that one instead. Unused
 unless broker.enabled is on.
+
+## `teams.computer`
+
+Defaults for the computers of this team's agents.
+
+## `teams.computer.container`
+
+Container limits for this team's container and distrobox agents.
+
+Between the fleet's defaults.container and the agent's own
+computer.container, key by key: a member's own cpus beats the team's,
+and the team's memory still applies to it. Set from a client with
+`clawtilla team set <team> computer.container.cpus 4`; running
+members take the change in place.
+
+### `teams.computer.container.cpus`
+
+- Type: string
+- Default: unset
+- Since: 0.78.0
+
+The team's agents.computer.container.cpus.
+
+### `teams.computer.container.cpu_weight`
+
+- Type: integer
+- Default: unset
+- Since: 0.78.0
+
+The team's agents.computer.container.cpu_weight.
+
+### `teams.computer.container.cpuset`
+
+- Type: string
+- Default: unset
+- Since: 0.78.0
+
+The team's agents.computer.container.cpuset.
+
+### `teams.computer.container.memory`
+
+- Type: string
+- Default: unset
+- Since: 0.78.0
+
+The team's agents.computer.container.memory.
+
+### `teams.computer.container.memory_swap`
+
+- Type: string
+- Default: unset
+- Since: 0.78.0
+
+The team's agents.computer.container.memory_swap.
+
+### `teams.computer.container.pids_limit`
+
+- Type: integer
+- Default: unset
+- Since: 0.78.0
+
+The team's agents.computer.container.pids_limit.

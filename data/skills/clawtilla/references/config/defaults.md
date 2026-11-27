@@ -79,6 +79,70 @@ An entry is a reference, optionally followed by ' -- ' and a note:
 
 Nothing is validated here. A reference podman cannot pull fails at start with podman's own error.
 
+## `defaults.container`
+
+Container limits every container and distrobox agent gets unless its
+team or the agent itself says otherwise.
+
+The same six keys as agents.computer.container -- cpus, cpu_weight,
+cpuset, memory, memory_swap, pids_limit -- with the same meaning. Most
+specific wins, key by key: the agent's own value, then its team's
+(teams[].computer.container), then this. `clawtilla agent show` says
+which one each value came from.
+
+Written here rather than under defaults.computer, which is already
+the computer type.
+
+### `defaults.container.cpus`
+
+- Type: string
+- Default: unset
+- Since: 0.78.0
+
+The fleet's agents.computer.container.cpus.
+
+### `defaults.container.cpu_weight`
+
+- Type: integer
+- Default: unset
+- Since: 0.78.0
+
+The fleet's agents.computer.container.cpu_weight.
+
+### `defaults.container.cpuset`
+
+- Type: string
+- Default: unset
+- Since: 0.78.0
+
+The fleet's agents.computer.container.cpuset.
+
+### `defaults.container.memory`
+
+- Type: string
+- Default: unset
+- Since: 0.78.0
+
+The fleet's agents.computer.container.memory.
+
+### `defaults.container.memory_swap`
+
+- Type: string
+- Default: unset
+- Since: 0.78.0
+
+The fleet's agents.computer.container.memory_swap. Checked against the
+memory an agent ends up with, wherever that came from: a team's 8g
+memory under a fleet swap total of 6g is refused.
+
+### `defaults.container.pids_limit`
+
+- Type: integer
+- Default: unset
+- Since: 0.78.0
+
+The fleet's agents.computer.container.pids_limit.
+
 ### `defaults.workspace_root`
 
 - Type: path

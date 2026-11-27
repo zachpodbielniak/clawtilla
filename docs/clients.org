@@ -838,8 +838,8 @@ client and lrg alike, each drawn only for the computer types that read it
   agents.  Sizes are written as podman writes them (~512m~, ~4g~); empty
   means podman's default.  A bad value is refused when saved, naming the
   field, and a change reaches a running machine at once with ~podman
-  update~, without a rebuild.  See [[file:computers.org::#container-limits][Process
-  and memory limits]].
+  update~, without a rebuild.  See [[file:computers.org::#container-limits][CPU,
+  process and memory limits]].
 - *Wake command* -- ssh agents.  One line, split into a program and its
   arguments (~wakeonlan aa:bb:cc:dd:ee:ff~), never run through a shell;
   a line using a pipe or a redirection is refused when saved.  See

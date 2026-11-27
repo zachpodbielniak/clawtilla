@@ -65,14 +65,23 @@ computer:
     connection: unix          # or ssh://, tcp://, a podman named connection
     keep: true                # default: survives stops
     command: null             # default is long-lived; set only for an image whose entrypoint should run
+    cpus: "4"                 # cap: four CPUs' worth of time; > 0 and <= host CPUs
+    cpu_weight: 200           # share under contention, 1-10000, 100 = default (sent as --cpu-shares)
+    cpuset: "0-7"             # pinning; rootless needs the cpuset controller delegated
     pids_limit: 2048          # -1 none, 0 podman default
     memory: 4g                # whole numbers only: 1.5g is refused, write 1536m
     memory_swap: 6g
 ```
 
+Limits have three levels, most specific wins key by key: the agent's `computer.container.<k>`, its team's `teams[].computer.container.<k>`, the fleet's `defaults.container.<k>` (not `defaults.computer.*`: that is the computer type). `clawtilla agent show A` prints each with its source (`cpus 6 (agent), memory 8g (team forge)`); `clawtilla team set forge computer.container.cpus 4` sets a team's.
+
+- Refused with the key named by `config validate`, `agent set`, `team set` and agent creation: cpus 0 or > host CPUs, cpu_weight outside 1-10000, a cpuset CPU the host lacks, memory < 6m, memory_swap without or below memory (across levels too). A bad value that reaches the daemon anyway is a warning (log, Fleet page, `container_limits.refused`) and that one limit is left out; the agent keeps its computer.
+- A change on a running machine is `podman update`d in place (log: `limits applied with podman update (live)`). Where podman refuses it live (cpuset, rootless cgroup v1) the rest still apply and the refused part waits for the next start (`restart required: ...`, also a Fleet page warning).
+- Usage is sampled every 30 s, one `podman stats` per connection: `agent show` prints `usage: CPU 212.4%, memory 3.1g of 8.0g, 143 pids`. 95%+ of the memory limit for two samples is a warning. An OOM kill becomes an incident of kind `out-of-memory`: "killed: out of memory at 8g (container clawt-A, 1 process killed)". Do not just retry it: reduce parallelism or ask for more memory.
+
 - Rootless podman needs `systemctl --user enable --now podman.socket`. First start pulls (silent in `agent logs`).
 - `computer.container.network` is stored and never sent to podman.
-- Limits are applied with `podman update` in place at every start (and immediately when set on a running machine); clearing a key leaves the last value (set `-1` or rebuild).
+- Limits are applied with `podman update` in place at every start (and immediately when set on a running machine, at any level); clearing a key leaves the last value (set `-1` or rebuild).
 - `keep: false`: a stop destroys the container; `computer stop|restart` then require `--remove`.
 - `podman rm -f clawt-<agent>` is recoverable: next `agent start` provisions anew. Only a podman 404 means "gone". `computer status` reports remembered state until a start reconciles.
 - `clawtilla image` lists suggested images; add your own under `defaults.container_images` (`"ref -- note"`).

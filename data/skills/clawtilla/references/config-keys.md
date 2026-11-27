@@ -48,6 +48,13 @@ see security.md).
 | `defaults.computer` | enum | `none` | `computer.type` | Default computer type for new agents. |
 | `defaults.container_image` | string | `registry.fedoraproject.org/fedora:45` | `computer.container.image` | Image a container agent gets when it does not name one. |
 | `defaults.container_images` | list of strings |  |  | Extra images to offer in a client's image list. |
+| `defaults.container` | section |  |  | Container limits every container and distrobox agent gets unless its team or the agent itself says otherwise. |
+| `defaults.container.cpus` | string |  |  | The fleet's agents.computer.container.cpus. |
+| `defaults.container.cpu_weight` | integer |  |  | The fleet's agents.computer.container.cpu_weight. |
+| `defaults.container.cpuset` | string |  |  | The fleet's agents.computer.container.cpuset. |
+| `defaults.container.memory` | string |  |  | The fleet's agents.computer.container.memory. |
+| `defaults.container.memory_swap` | string |  |  | The fleet's agents.computer.container.memory_swap. |
+| `defaults.container.pids_limit` | integer |  |  | The fleet's agents.computer.container.pids_limit. |
 | `defaults.workspace_root` | path | `~/.clawtilla/agents` |  | Where per-agent workspaces are scaffolded. |
 | `defaults.exchange_dir` | path | `$XDG_DATA_HOME/clawtilla/exchange` |  | Shared drop-box mounted into every computer at /mnt/clawtilla/exchange. |
 | `defaults.mounts` | list of mappings |  |  | Host paths shared into *every* agent's computer. |
@@ -246,6 +253,14 @@ see security.md).
 | `teams.tags` | list of strings |  |  | Labels that give this team a job in the software, by tag rather than by name, so the team can be called whatever you like. |
 | `teams.skills` | list of strings |  |  | Skills every agent on this team gets. |
 | `teams.broker_server` | string |  |  | The broker's gateway server for this team's agents. |
+| `teams.computer` | section |  |  | Defaults for the computers of this team's agents. |
+| `teams.computer.container` | section |  |  | Container limits for this team's container and distrobox agents. |
+| `teams.computer.container.cpus` | string |  |  | The team's agents.computer.container.cpus. |
+| `teams.computer.container.cpu_weight` | integer |  |  | The team's agents.computer.container.cpu_weight. |
+| `teams.computer.container.cpuset` | string |  |  | The team's agents.computer.container.cpuset. |
+| `teams.computer.container.memory` | string |  |  | The team's agents.computer.container.memory. |
+| `teams.computer.container.memory_swap` | string |  |  | The team's agents.computer.container.memory_swap. |
+| `teams.computer.container.pids_limit` | integer |  |  | The team's agents.computer.container.pids_limit. |
 
 ## `computers` ([config/computers.md](config/computers.md))
 
@@ -600,6 +615,9 @@ see security.md).
 | `agents.computer.container.pids_limit` | integer | `0` |  | Most processes and threads the machine may hold at once. |
 | `agents.computer.container.memory` | string |  |  | Most memory the machine may use, e.g. |
 | `agents.computer.container.memory_swap` | string |  |  | Memory and swap together, e.g. |
+| `agents.computer.container.cpus` | string |  |  | Most CPU time the machine may use, as a count of CPUs: 4, 2.5, 0.5. |
+| `agents.computer.container.cpu_weight` | integer | `0` |  | The machine's share of CPU when the host is busy: a cgroup v2 cpu.weight, 1 to 10000, where 100 is everybody's default. |
+| `agents.computer.container.cpuset` | string |  |  | Which CPUs the machine may run on, e.g. |
 | `agents.computer.container.selinux_level` | string | `auto` |  | The SELinux MCS level the container is created at. |
 | `agents.computer.container.init` | boolean | `true` |  | Run podman's init (catatonit) as the container's PID 1. |
 | `agents.computer.ssh` | section |  |  | A machine reached over ssh. |
