@@ -97,11 +97,26 @@ Every task save and every note queues a row in ~tasks.db~'s =venture_outbox=, in
 | 2xx | records the ticket, version and receipt; done |
 | 409 to a create | the ticket exists from an earlier attempt (the same =external_ref=): finds it, in the organization it was filed in, and adopts it |
 | 409 to an update | somebody changed the ticket: re-reads its version and sends the same change, twice at most |
-| 404 to an update | the ticket was deleted: gives up on the task |
+| 404 to an update | confirms it first (below): gives up on the task only when the ticket is really gone |
+| 403 to a create, an update or a comment | VENTURE's install-wide role gate: keeps the row, retries it on the backoff, and warns on the Fleet page (below) |
 | nothing, 408, 429, 5xx | waits and retries: 30 seconds, doubling, to half an hour |
 | 202 | the token's role stages writes (a viewer): gives up -- the account needs an editor membership |
 | 401 | the token was refused: gives up, naming the agent and the connector to reconnect |
 | any other 4xx | gives up, with VENTURE's own message |
+
+** A 404 is confirmed before it is believed (VENTURE #30)
+
+VENTURE answers =404 No such record= for two different things: a ticket that is gone, and a ticket in an organization the token cannot reach.  A token's organizations are a snapshot taken when it is minted ([[file:venture-setup.org::*On VENTURE: an account and a token for the agent][venture-setup.org]]), so an agent whose VENTURE user joined an organization after its token was made is answered 404 for every ticket there -- and the mirror used to read that as "deleted" and give the task up.  Now a 404 to an update is checked, with the same token, before anything is dropped:
+
+1. The ticket is read back (=GET /api/v1/ticket/:id=).  If it answers, the ticket is not gone -- whatever the 404 meant -- and the row is kept, retried on the backoff, and warned about.  If it answers with =deleted_at= set (soft-deleted, still served), it is gone.
+2. If the read-back is 404 too, =whoami= is asked afresh for the organizations the token reaches (its =memberships=: an active membership the token's snapshot also names).  The ticket's organization -- kept with its ref -- among them: the ticket is gone, and the task is given up on as before ("the ticket was deleted in VENTURE").  Not among them: the row is kept and retried, and the Fleet page says which agent cannot reach which organization, and the fix: re-mint the agent's token (then =clawtilla connector key <connector>=), or add its user to the organization and then re-mint.
+3. A VENTURE whose =whoami= names no memberships cannot say what a token reaches, and a ref with no organization cannot be checked against it: both are given up on, as before.
+
+*No storm.*  The mirror sends one request at a time, and a task has one row due at once, so a ticket has at most one confirmation in flight.  A ticket found not to be gone is not read back again for five minutes: its retries inside that hold just send the write again.  And =whoami= is asked once per account per five minutes for all of them -- a hundred tickets in an organization the token lost are a hundred read-backs and one =whoami=, and one warning naming them.
+
+*The 403 edge.*  VENTURE checks a ticket write against the token's *install-wide* role -- the lower of the token's and its user's -- before any organization's, so a user who is a viewer install-wide but an editor in the ticket's organization is refused 403.  A 403 to a create, an update or a comment is kept, retried on the backoff, and warned about with that explanation, rather than given up on with a line in the log.
+
+*The warnings* ride ~team.list~'s ~warnings~ (the Fleet page; =clawt_venture_mirror_warnings()=), each naming the agent and, where it is about one, the organization and its tickets.  One goes as soon as a write by that agent succeeds in that organization (any write, for the install-wide 403); one about an agent that no longer mirrors is not shown.  They are kept in the daemon's memory: after a restart the kept rows are retried and raise them again if nothing was fixed.
 
 Creates carry =Idempotency-Key=, so a create that timed out and is sent again is answered with the first ticket, not a second.
 
@@ -243,6 +258,9 @@ The mirror is one half of the connector; the other is the staged-write bridge, w
 | Not mirrored: no repository in VENTURE matches the task's remotes, or the delegator's account cannot see it | add the =forge_repo= in VENTURE, in an organization that agent's account is a member of -- and mint its token after the membership |
 | gave up: VENTURE refused <agent>'s token | mint a new token for that agent and =clawtilla connector connect <connector>=, then Retry |
 | gave up: … stages its writes (a viewer?) | give the agent's VENTURE user an editor membership, mint a new token, Retry |
+| Fleet page: "<agent>'s VENTURE token cannot reach organization N" | the agent's user joined organization N after its token was minted (or the membership is inactive): mint a new token and =clawtilla connector key <connector>=; the kept writes go through on their next retry |
+| Fleet page: "VENTURE refused <agent>'s write … install-wide" | VENTURE's write routes check the install-wide role: give the agent's VENTURE user an editor role install-wide (and re-mint if the token's own role is lower) |
+| Fleet page: "VENTURE answered 404 to <agent>'s update …, but the same token reads the ticket back" | VENTURE disagrees with itself about the ticket; the write is retried.  If it goes on, check the agent's role in that organization |
 | Waiting to be sent: VENTURE did not answer | VENTURE is down or unreachable; it catches up by itself |
 | "venture mirror: … has no credential yet" in the log | the connector has no token file yet: =clawtilla connector connect <connector>= |
 | "venture: confirmation … was staged by '…', which is no single connector here" | a person or a token outside the fleet staged it (or one token is configured on two connectors); answer it in VENTURE |
