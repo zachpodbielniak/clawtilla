@@ -1846,6 +1846,116 @@ an incident; the task it had created is cancelled with the reason.
 as events; the last carries ~agent~, ~failures~ and ~error~ and is an
 error in every client's alerts panel.
 
+**** routine.occurrences and routine.upcoming: the Schedule calendar (since 0.78.0)
+
+The fleet's routines laid out in time, for the Schedule page (Day, Week
+and Month views and the Upcoming runs panel; VENTURE #35).  Both replies
+are built by =ClawtRoutineCalendar= in libclawt, so every client draws
+the same answer and none of them expands a cron expression itself.
+
+Times on the wire are UTC, written =2026-11-24T14:00:00Z=.  Every reply
+also carries ~time_zone~, the daemon's zone name (=America/Detroit=):
+schedules fire in the daemon's local time, so a client converts to that
+zone for display and says so ("Times in America/Detroit").  A client in
+another zone that converts to its own will put a 09:00 routine at the
+wrong hour on its grid.
+
+~routine.occurrences~ request:
+
+| Field              | Type    | Default                   | Meaning |
+|--------------------+---------+---------------------------+---------|
+| ~from~             | string  | start of today, local     | window start, inclusive: ISO 8601 (no offset means UTC) or a bare =YYYY-MM-DD=, which is local midnight |
+| ~to~               | string  | ~from~ + 7 days           | window end, exclusive, same forms |
+| ~agent~            | string  | all                       | only this agent's routines and crons |
+| ~team~             | string  | all                       | only agents whose =agents.team= is this |
+| ~include_disabled~ | boolean | false                     | include routines and libreclaw crons that are off, and the crons of disabled agents |
+| ~collapse~         | boolean | false                     | fold a routine's runs on one local day into a group when there are three or more |
+
+Refused with =INVALID_ARGUMENT= -- and a message saying which bound --
+for a time that does not parse, a window that is empty or backwards, one
+longer than =daemon.calendar_max_days= (62), and one holding more than
+=daemon.calendar_max_occurrences= (5000) occurrences, which names the
+routine that holds most.  Nothing is silently cut short.
+
+Reply:
+
+| Field         | Meaning |
+|---------------+---------|
+| ~from~, ~to~, ~now~ | the window as answered, and the daemon's now, UTC |
+| ~time_zone~   | the daemon's zone name |
+| ~count~       | every occurrence in the window, folded or not |
+| ~routines~    | an index of every routine and scheduled libreclaw cron that passed the filters, with or without occurrences: ~source~, ~id~, ~agent~, ~title~, ~enabled~, ~schedule~ (the preset, =custom= for a cron), ~expression~, ~jitter_seconds~, ~every_seconds~ (the shortest gap between runs -- 3600 for hourly; absent for a manual routine), ~problem~ when the schedule cannot be read |
+| ~unscheduled~ | libreclaw crons that cannot go on a calendar: an =interval_seconds= job (counted from when the agent's process started) with ~interval_seconds~, or a schedule clawtilla cannot parse with ~problem~.  Same fields as ~routines~ |
+| ~occurrences~ | the occurrences, soonest first; with ~collapse~, only those not in a group |
+| ~groups~      | with ~collapse~ only: one per routine per local day with three or more runs |
+
+An occurrence:
+
+| Field          | Present        | Meaning |
+|----------------+----------------+---------|
+| ~source~       | always         | =routine= or =libreclaw-cron= -- label the second so it is not mistaken for a routine |
+| ~routine~      | always         | the routine id, or the libreclaw job's name |
+| ~agent~        | always         | the agent, for its avatar |
+| ~title~        | always         | the routine's =description=, else its id; a job's name |
+| ~at~           | always         | the scheduled time; for a run by hand, when it started |
+| ~earliest~, ~latest~ | always   | the jitter window: =at= to =at= + =jitter_seconds= (equal without jitter) |
+| ~kind~         | always         | =scheduled=, or =manual= for a run nothing scheduled (Run now, an automation) |
+| ~repeat~       | always         | the preset: =hourly=, =daily=, =weekdays=, =weekly=, =custom=, =manual= -- the hint for folding client-side |
+| ~status~       | always         | =upcoming=, =due=, =running=, =ok=, =failed=, =skipped= or =unknown= (=ClawtOccurrenceStatus= nicks) |
+| ~reason~       | when it helps  | with =skipped=: =daemon_down=, =catch_up=, =agent_stopped=, =refused=, =cancelled=; with =due=: =next_tick=, =jitter=; with =unknown=: =no_record=, =not_tracked= |
+| ~detail~       | when known     | why: the failure, the refusal, the task's own reason |
+| ~started_at~   | it started     | when the run actually began |
+| ~task~         | a task was made | the task to open: its result, its transcript |
+| ~task_state~   | the task is known | the task's state nick, for a client that wants more than ~status~ |
+| ~room~         | the task is known | the room the run is in -- a routine's own room when it is isolated |
+| ~by_hand~      | true only      | a person started it |
+| ~queued~       | true only      | with =agent_stopped=: still in the agent's mailbox, and runs when the agent starts |
+
+How a past time gets its status.  The runner keeps a history of every
+scheduled time (=ClawtRunEntry=, =daemon.routine_history_days=): started
+with which task, failed to start, refused by a guard, missed while the
+daemon was down or the machine asleep, or folded into a =catch_up= run.
+A started run is then judged by its task: completed is =ok=; failed or
+stalled is =failed=; cancelled is =skipped= / =cancelled=; pending or
+running on an agent that is not up is =skipped= / =agent_stopped= with
+~queued~ (the daemon marks a routine's task running before it delivers
+the prompt, so a run held in a stopped agent's mailbox reads as running);
+any other open state is =running=.  A task the daemon no longer knows counts
+as =ok= -- it started, which is what the runner can vouch for.  A past
+time with nothing recorded is =due= for two minutes (the tick may not have
+come) or while a jitter is pending, and =unknown= / =no_record= after
+that: before the history was kept, pruned from it, or while the routine
+was off.  Runs the current schedule would not produce -- a Run now, a
+time from before the schedule was edited -- are included as they
+happened.  A libreclaw cron in the past is always =unknown= /
+=not_tracked=: clawtilla lays them out from the agent's =libreclaw:=
+block and does not run them.
+
+A group (~collapse~):
+
+| Field          | Meaning |
+|----------------+---------|
+| ~source~, ~routine~, ~agent~, ~title~ | as an occurrence |
+| ~day~          | the local date, =2026-11-24= |
+| ~first~, ~last~ | the first and last run that day, UTC |
+| ~count~        | how many runs |
+| ~every_seconds~ | the gap when every gap is the same |
+| ~label~        | the card's text, in the daemon's zone: =every hour, 08:00-18:00=, =every 15 minutes, ...=, or =12 runs, ...= |
+| ~status~       | the worst in it, so a failure is not hidden: failed, running, due, skipped, unknown, ok, upcoming in that order |
+| ~statuses~     | how many of each status, ={"ok": 5, "upcoming": 6}= |
+| ~occurrences~  | every run in it, for the expand control |
+
+~routine.upcoming~ takes ~limit~ (default 10, at most 200; a number or a
+numeric string), ~agent~ and ~team~, and returns ~now~, ~time_zone~ and
+~runs~: the next ~limit~ runs of every enabled routine and scheduled
+libreclaw cron, soonest first, each an occurrence with =status: upcoming=.
+A routine's first run in ~runs~ is exactly its ~next_run~ in
+~routine.list~: both come from =clawt_routine_runner_next_run_after()=.
+
+Neither request changes anything, and neither publishes an event.  A
+client refreshes on ~routine.ran~ and ~routine.changed~, and on a task
+event for a task it is showing.
+
 *** wait.*
 
 Conditions an agent asked to be told about with ~clawtilla_wait_until~, checked by the daemon rather than by the model.  See [[file:orchestration.org::*Waits: a condition checked by code][orchestration.org]].

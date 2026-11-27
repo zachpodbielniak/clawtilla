@@ -120,6 +120,7 @@ licence, send nothing, and exit 0.
 | ~integration matrix-rooms <name>~ | |
 | ~integration test <name>~ | send one notification now |
 | ~routine list/add/set/rm/run~ | standing work on a schedule |
+| ~routine calendar [--from D] [--to D] [--agent A] [--team T] [--disabled] [--expand] [--ics [-o FILE]]~ | every routine's runs in a window -- how past ones went, what is next -- as a table or an iCalendar file (~routine.occurrences~) |
 | ~attachment list <agent or room>~ | every file a conversation carried, newest first: kind, size, sender, date, name, and the id (or old host path) |
 | ~attachment get <id> [-o FILE]~ | the daemon's copy of one file, written to its own name (or FILE; ~-o -~ for stdout) |
 | ~computer rebuild <agent>~ | destroy the guest and build it again from the image |
@@ -2064,6 +2065,20 @@ commands...") when there is none, and the agent's own words under a
 caption saying whose they are when there is one.
 
 A routine whose computer did not start =routines.max_start_failures= runs in a row (three by default) is turned off by the daemon, and its row says so in libclawt's words -- "turned off after 3 failed starts: <the computer's error>" (~clawt_routine_turned_off_note()~) -- with a *Turn back on* button beside it that sends ~routine.update~ with =enabled: true=.  The notification list gets the same news as an error (~routine.turned_off~, worded by ~clawt_routine_turned_off_alert()~ through ~clawt_alert_text_for_event()~, in the daemon).  The editor has the limit as *Turn off after failed starts*, with ~clawt_routine_start_failures_hint()~ under it; GTK, web and lrg draw all four the same way, and ~make parity~ declares them.  See [[file:routines.org::#max-start-failures][routines.org]].
+
+*** The Schedule page: what the daemon gives a client (since 0.78.0)
+
+The Schedule page -- Day, Week and Month views of the fleet's routines, with an *Upcoming runs* panel (VENTURE #35) -- draws two frames and works nothing out itself.  The fields are in [[file:ipc-protocol.org][ipc-protocol.org]] under ~routine.occurrences~; this is how a client is meant to use them, so GTK, web and lrg draw one calendar.
+
+- *The window is the view.*  Day, Week and Month ask ~routine.occurrences~ for the visible range: =from= the first local midnight shown, =to= the midnight after the last (exclusive).  A month grid with its leading and trailing weeks is at most 42 days, inside =daemon.calendar_max_days= (62).  Today, previous and next move the window; nothing is cached across a move that cannot be asked again.
+- *Times are the daemon's.*  Every time is UTC on the wire.  Convert to the reply's =time_zone= -- not the viewer's zone -- for the grid and every label, and say so: "Times in America/Detroit".  A routine at 09:00 fires at nine in the daemon's zone; a browser in another zone that used its own would put it at the wrong hour.
+- *A card* is an occurrence: its time (=at=; with jitter, the window =earliest=-=latest=), =title=, and the =agent='s avatar.  Its mark comes from =status=: =ok= a check, =failed= a cross, =skipped= a dash, =running= a spinner, =due= a clock, =unknown= nothing, and =upcoming= dimmed with a clock.  =reason= and =detail= are the tooltip -- =skipped= / =agent_stopped= with =queued= is "waiting for <agent> to start", not lost.  A =libreclaw-cron= card is labelled as such (its =source=), never mistaken for a routine, and has no editor behind it.
+- *Clicking.*  A past card with a =task= opens that task -- result, transcript (=room=) -- through the client's existing task view; a past card without one shows its =reason= and =detail=.  A future card opens the routine by =routine= id in the existing routine editor: edit, Run now (~routine.run~), turn off (~routine.update~ =enabled: false=).
+- *Busy days.*  Ask with =collapse: true= and draw each of =groups= as one card: its =label= ("every hour, 08:00-18:00"), the =status= (the worst in it) as the mark, =statuses= as the counts, and an expand control over its =occurrences=.  A day with more cards than fit says "+N more", which is the client's own layout and not the daemon's.
+- *Filters.*  Agent and team map to =agent= and =team=; *Show turned-off routines* to =include_disabled=.
+- *Upcoming runs* is ~routine.upcoming~ with =limit= 10: title, when, agent avatar.  Its first run of each routine is that routine's =next_run= in ~routine.list~, so the panel and the routine list never disagree.
+- *Refreshing.*  Neither frame publishes anything.  Ask again on ~routine.ran~, ~routine.changed~ and ~routine.turned_off~, and on ~task.changed~ for a task a visible card shows.
+- *Errors are for showing.*  A window past a bound is refused with a sentence naming the bound (and, for too many occurrences, the routine that holds most); show it, do not retry smaller behind the person's back.
 
 *** The Computer tab has five views
 

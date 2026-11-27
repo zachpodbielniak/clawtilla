@@ -86,6 +86,7 @@ See [integrations.md](integrations.md), [connectors.md](connectors.md).
 | `clawtilla routine list` | schedules and next runs |
 | `clawtilla routine add <id> <agent> [key=value...]` / `set <id> [key=value...]` | keys from `routines.*`: description, instructions, schedule (manual, hourly, daily, weekdays, weekly, custom), at, weekday, cron, model, enabled, catch_up, ... |
 | `clawtilla routine rm <id>` / `run <id>` | remove; run now |
+| `clawtilla routine calendar [--from D] [--to D] [--agent A] [--team T] [--disabled] [--expand] [--ics [-o FILE]]` | every routine's runs in a window (default today + 6 days), past ones with ok/failed/skipped/running, folded per day unless `--expand`; `--ics` writes RFC 5545 |
 | `clawtilla trigger list` | webhooks that can start a run |
 | `clawtilla trigger add <id> <agent> [key=value...]` | prints the secret and address ONCE; starts disabled and unverified. Providers: generic, forgejo, gitea, github, gitlab, venture; mode run or post |
 | `clawtilla trigger set <id> [key=value...]` | e.g. `enabled=true`, `match=path=value` (repeat, at most 10), `mode=post room=ops`, `max_pending=2` |

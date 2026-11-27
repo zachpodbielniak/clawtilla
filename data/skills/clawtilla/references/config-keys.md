@@ -30,6 +30,9 @@ see security.md).
 | `daemon.token_file` | path |  |  | File holding the bearer token remote clients must present. |
 | `daemon.device_idle_days` | integer | `90` |  | Days a paired device may go unseen before its token stops working. 0 means never. |
 | `daemon.event_log_days` | integer | `30` |  | How many days of per-room event logs to keep. |
+| `daemon.routine_history_days` | integer | `62` |  | How many days of each routine's run history to keep: what happened at every scheduled time -- started (and which task), failed, refused, missed while the daemon was down, or folded into a catch-up run. |
+| `daemon.calendar_max_days` | integer | `62` |  | The longest window one routine.occurrences request may ask for, in days. |
+| `daemon.calendar_max_occurrences` | integer | `5000` |  | The most occurrences one routine.occurrences request may return, across every routine and libreclaw cron in the window. |
 | `daemon.allow_unconfined_host` | boolean | `false` |  | **D** Permit agents to use computer.host.confine: none. |
 | `daemon.automation_dir` | path | `~/.clawtilla/pods` |  | Where podomation pods that watch the fleet live. |
 | `daemon.webhook_enabled` | boolean | `false` |  | Whether to accept inbound trigger deliveries. |

@@ -10,6 +10,8 @@ clawtilla routine add <id> <agent> [key=value ...]
 clawtilla routine set <id> [key=value ...]     # keys are routines.* schema keys
 clawtilla routine rm <id>
 clawtilla routine run <id>                     # now; ignores schedule AND enabled
+clawtilla routine calendar [--from D] [--to D] [--agent A] [--team T] [--disabled] [--expand]
+clawtilla routine calendar --ics -o routines.ics   # RFC 5545, one VEVENT per run, stable UIDs
 ```
 
 ```yaml
@@ -66,7 +68,21 @@ The agent's prompt is the instructions plus a note that nobody is waiting: do th
 
 - Routines fire only while the daemon runs. A missed slot shows `missed: due ..., but the daemon was not running`; missed is not failed.
 - `catch_up: true` runs **once** at daemon start however many were missed. A routine that never ran has missed nothing. Off by default.
-- Run state: `<state_dir>/routines.yaml` (0600), never `clawtilla.yaml`: `last_run`, outcome (`ok|failed|missed|never`), detail, task id, start-failure count/error, edit fingerprint. Unparseable file = warning + empty slate (nothing catches up).
+- Run state: `<state_dir>/routines.yaml` (0600), never `clawtilla.yaml`: `last_run`, outcome (`ok|failed|missed|never`), detail, task id, start-failure count/error, edit fingerprint, and (0.78.0+) the per-time `history` the calendar reads. Unparseable file = warning + empty slate (nothing catches up).
+
+### The Schedule calendar (0.78.0+)
+
+"What happens at 09:00 tomorrow, and how did Tuesday go", fleet-wide. IPC `routine.occurrences {from, to, agent?, team?, include_disabled?, collapse?}` and `routine.upcoming {limit?, agent?, team?}`; fields in docs/ipc-protocol.org, meaning in docs/routines.org "The Schedule calendar".
+
+- Times on the wire are UTC; every reply has `time_zone` (the daemon's zone). Show times in *that* zone: schedules fire in daemon-local time.
+- Expansion is `clawt_cron_next()` repeated, so DST matches the scheduler: Detroit hourly = 23 runs on the March change day, 25 on the November one; a 02:30 daily skips the spring day, a 01:30 one fires twice in autumn.
+- Past `status` comes from the runner's history in `routines.yaml` (`history:` per routine, kept `daemon.routine_history_days`, max 2000 lines) joined with the run's task: `ok` (task completed), `failed` (could not start, or task failed/stalled), `running`, `skipped` with `reason` `daemon_down` / `catch_up` / `agent_stopped` (+`queued: true`) / `refused` / `cancelled`, `due` (`next_tick` for 2 minutes, or `jitter`), `unknown` (`no_record`, or `not_tracked` for libreclaw crons). Future = `upcoming`. Jitter is `earliest`..`latest`.
+- A late tick or a restart still runs once, against the *latest* due time; the earlier times are kept as missed (or `caught-up` for `catch_up` routines). Times before the routine's last edit are not counted as missed.
+- Run now and old-schedule runs appear as they happened (`kind: manual` for Run now).
+- `collapse: true` folds 3+ runs of one routine on one local day into a `groups` entry: `label` ("every hour, 08:00-18:00"), worst `status`, `statuses` counts, member `occurrences`.
+- libreclaw `cron:` jobs from an agent's `libreclaw:` block are laid out as `source: libreclaw-cron` (read-only; past ones `unknown`); `interval_seconds` jobs go to `unscheduled`. Runtime-added libreclaw jobs are not seen. Triggers never appear.
+- Bounds: `daemon.calendar_max_days` (62), `daemon.calendar_max_occurrences` (5000); past either the request is refused, naming the bound (and the busiest routine).
+- `routine.upcoming`'s first run of each routine == `routine.list` `next_run` (same function).
 
 ### Model, worktree, jitter
 
