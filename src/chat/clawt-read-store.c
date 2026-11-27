@@ -104,6 +104,19 @@ clawt_read_store_new(const gchar *path, GError **error)
         return NULL;
     }
 
+    /*
+     * Written on the daemon's main loop, so a write must not wait on the
+     * disk: WAL with synchronous=NORMAL appends a commit to the log and
+     * syncs only at a checkpoint, as the task store and the mailbox
+     * already do.  At SQLite's defaults every write fsync()ed a rollback
+     * journal and the database, and on a saturated disk one fsync held
+     * the loop -- and the control socket's accept -- for tens of seconds
+     * (tests/test-store-sync.c).  A power cut can lose the last commits;
+     * it cannot corrupt the file.
+     */
+    sqlite3_exec(self->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+    sqlite3_exec(self->db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
+
     if (sqlite3_exec(self->db, SCHEMA_SQL, NULL, NULL, NULL) != SQLITE_OK) {
         set_sqlite_error(error, self->db, "creating the read schema");
         return NULL;

@@ -92,6 +92,13 @@ clawt_revisions_new(const gchar *path, GError **error)
 
     sqlite3_busy_timeout(self->db, 2000);
     sqlite3_exec(self->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+    /*
+     * WAL alone still fsync()s every commit: synchronous stays FULL until
+     * it is set.  Recorded on the main loop, so NORMAL, as the task store
+     * does -- a commit then syncs only at a checkpoint
+     * (tests/test-store-sync.c).
+     */
+    sqlite3_exec(self->db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
 
     if (sqlite3_exec(self->db, SCHEMA_SQL, NULL, NULL, NULL) != SQLITE_OK) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
