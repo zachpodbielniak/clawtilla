@@ -450,9 +450,53 @@ test_a_refused_window_keeps_the_daemons_sentence(void)
 /* ── Escaping ────────────────────────────────────────────────────── */
 
 /*
+ * only_inside_attributes:
+ * @html: a rendered page
+ * @needle: markup a hostile string carries, e.g. "<b>x</b>"
+ *
+ * htmx-glib escapes '"' and '&' in attribute values but not '<', and a
+ * '<' inside a quoted attribute value is inert.  So a hostile name may
+ * appear unescaped there (a face's title, an img alt) and nowhere else.
+ * Each occurrence must sit after an opening quote that comes after the
+ * last '>' before it: inside the value of a tag still being written.
+ *
+ * Returns: %TRUE when every occurrence of @needle is inside a quoted
+ *   attribute value
+ */
+static gboolean
+only_inside_attributes(
+	const gchar	*html,
+	const gchar	*needle
+){
+	const gchar *p;
+
+	for (p = strstr(html, needle); p != NULL; p = strstr(p + 1, needle)) {
+		const gchar *q;
+		const gchar *last_quote = NULL;
+		const gchar *last_close = NULL;
+
+		for (q = p; q > html; q--) {
+			if (last_quote == NULL && q[-1] == '"')
+				last_quote = q - 1;
+			if (q[-1] == '>') {
+				last_close = q - 1;
+				break;
+			}
+		}
+
+		if (last_quote == NULL || (last_close != NULL &&
+		                           last_quote < last_close))
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
  * Titles, agent names, team names and details are written by people and
- * models.  A "<" that reaches the page is script injection, and a quote
- * that closes a title attribute is the same thing by another road.
+ * models.  A "<" that reaches the page as markup is script injection, and
+ * a quote that closes a title attribute is the same thing by another
+ * road.
  */
 static void
 test_daemon_strings_are_escaped(void)
@@ -463,13 +507,14 @@ test_daemon_strings_are_escaped(void)
 	g_assert_null(strstr(html, "<script>"));
 	g_assert_nonnull(strstr(html, "&lt;script&gt;alert(1)"));
 
-	/* the detail lands in a title attribute; it cannot leave it */
-	g_assert_null(strstr(html, "<i>"));
+	/* the detail lands in a title attribute; its quote cannot close it */
 	g_assert_null(strstr(html, "onmouseover=\"y"));
+	g_assert_nonnull(strstr(html, "x&quot; onmouseover=&quot;y"));
+	g_assert_true(only_inside_attributes(html, "<i>"));
 
 	/* an agent's name and a team's, in the faces and the filters */
-	g_assert_null(strstr(html, "<b>x</b>"));
-	g_assert_null(strstr(html, "<u>team</u>"));
+	g_assert_true(only_inside_attributes(html, "<b>x</b>"));
+	g_assert_true(only_inside_attributes(html, "<u>team</u>"));
 	g_assert_nonnull(strstr(html, "Ops &lt;u&gt;team"));
 }
 
