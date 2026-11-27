@@ -19,9 +19,7 @@ gboolean
 clawt_daemon_is_limit_key(
 	const gchar *key
 ){
-	return g_strcmp0(key, "computer.container.pids_limit") == 0 ||
-	       g_strcmp0(key, "computer.container.memory") == 0 ||
-	       g_strcmp0(key, "computer.container.memory_swap") == 0;
+	return clawt_container_limit_key_is(key);
 }
 
 /* The worker half: one podman inspect, and an update when it differs. */
@@ -105,6 +103,39 @@ clawt_daemon_apply_limits_in_place(
 
 	g_task_set_task_data(task, g_object_ref(computer), g_object_unref);
 	g_task_run_in_thread(task, apply_limits_worker);
+}
+
+void
+clawt_daemon_apply_limits_everywhere(
+	ClawtDaemon *self
+){
+	GPtrArray *agents;
+	g_autoptr(GHashTable) seen = NULL;
+	guint i;
+
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (self->agents == NULL)
+		return;
+
+	agents = clawt_agent_manager_list(self->agents);
+	seen = g_hash_table_new(g_direct_hash, g_direct_equal);
+
+	/*
+	 * Every running machine, once -- a shared one is on several agents.
+	 * An unchanged machine costs one inspect on a worker and no update,
+	 * so asking all of them is cheaper than working out which a fleet
+	 * or team default reaches.
+	 */
+	for (i = 0; agents != NULL && i < agents->len; i++) {
+		ClawtAgent *agent = g_ptr_array_index(agents, i);
+		ClawtComputer *computer = clawt_agent_get_computer(agent);
+
+		if (computer == NULL || !g_hash_table_add(seen, computer))
+			continue;
+
+		clawt_daemon_apply_limits_in_place(self, clawt_agent_get_id(agent));
+	}
 }
 
 /*
@@ -1742,26 +1773,57 @@ clawt_daemon_handle_agent(
          * start as a libpod error naming no key.
          */
         if (clawt_daemon_is_limit_key(key)) {
-            g_autoptr(ClawtContainerLimits) limits =
+            g_autoptr(ClawtContainerLimits) effective_set =
                 clawt_computer_factory_limits(config);
+            g_autoptr(ClawtContainerLimits) limits =
+                clawt_container_limits_new();
             g_autoptr(GError) why = NULL;
 
-            if (g_strcmp0(key, "computer.container.pids_limit") == 0) {
-                gint64 pids = 0;
+            /*
+             * This key as the agent will have it, and -- for memory and
+             * memory_swap, the one pair judged together -- the other half
+             * as the agent has it now, from whichever level: an agent's
+             * own memory is checked against its team's memory_swap as
+             * much as against its own. Only those: a team default that is
+             * already wrong is config validate's to report, not a reason
+             * to refuse an unrelated key. Clearing a key falls back to
+             * the level below, which is checked the same way.
+             */
+            if (g_strcmp0(key, "computer.container.memory") == 0 ||
+                g_strcmp0(key, "computer.container.memory_swap") == 0) {
+                clawt_container_limits_set_memory(
+                    limits, clawt_container_limits_get_memory(effective_set));
+                clawt_container_limits_set_memory_swap(
+                    limits,
+                    clawt_container_limits_get_memory_swap(effective_set));
+            }
 
-                if (value != NULL && *value != '\0' &&
-                    !g_ascii_string_to_signed(value, 10, G_MININT64,
-                                              G_MAXINT64, &pids, NULL))
-                    return clawt_ipc_error_new(
-                        request, CLAWT_ERROR_INVALID_ARGUMENT,
-                        "computer.container.pids_limit takes a whole "
-                        "number: 0 for podman's default, -1 for no limit");
+            {
+                const gchar *effective = value;
 
-                clawt_container_limits_set_pids_limit(limits, pids);
-            } else if (g_strcmp0(key, "computer.container.memory") == 0) {
-                clawt_container_limits_set_memory(limits, value);
-            } else {
-                clawt_container_limits_set_memory_swap(limits, value);
+                /*
+                 * Cleared: what the agent will have is whatever its team
+                 * or the fleet sets, so that is what is checked.
+                 */
+                if (effective == NULL || *effective == '\0') {
+                    const gchar *team =
+                        clawt_agent_config_get_string(config, "team");
+                    g_autofree gchar *fleet_key =
+                        clawt_container_limit_fleet_key(key);
+
+                    effective = clawt_config_get_team_container_limit(
+                        self->config, team, key);
+
+                    if (effective == NULL)
+                        effective = clawt_config_get_string(self->config,
+                                                            fleet_key);
+                }
+
+                if (!clawt_container_limits_set_key(limits, key, effective,
+                                                    &why))
+                    return clawt_ipc_error_new(request,
+                                               CLAWT_ERROR_INVALID_ARGUMENT,
+                                               why->message);
             }
 
             if (!clawt_container_limits_validate(limits, &why))

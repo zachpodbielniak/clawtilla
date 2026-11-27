@@ -752,6 +752,16 @@ static const ClawtParamInfo create_agent_params[] = {
     { "container_image", "string",
       "For computer=container: the image to run, e.g. fedora:latest.",
       FALSE },
+    { "container_cpus", "string",
+      "For computer=container: the most CPUs it may use, e.g. \"4\" or "
+      "\"2.5\" -- no more than the host has (clawtilla_agent_options says "
+      "how many). Leave it out to take the team's or the fleet's.",
+      FALSE },
+    { "container_memory", "string",
+      "For computer=container: the most memory it may use, e.g. \"8g\" or "
+      "\"512m\" (whole numbers). Past it the kernel kills a process "
+      "inside, and that is reported. Leave it out to take the team's or "
+      "the fleet's.", FALSE },
     { "vm_image",    "string",
       "For computer=vm: the path of an image from "
       "clawtilla_agent_options. Do not invent one -- an image that is "
@@ -5399,6 +5409,30 @@ tool_agent_options(ClawtMcpTools *self)
         }
     }
 
+    /*
+     * The container limits, with the host's size to choose them against:
+     * a chief creating a coder should not have to guess whether 8 CPUs is
+     * a third of the machine or all of it.
+     */
+    {
+        g_autofree gchar *memory =
+            clawt_container_usage_format_bytes(clawt_host_memory_bytes());
+
+        g_string_append_printf(out,
+            "\nContainer limits (computer=container): this host has %u CPUs "
+            "and %s of memory. container_cpus caps CPU time (\"4\", \"2.5\"; "
+            "no more than the host has); container_memory caps memory "
+            "(\"8g\", \"512m\"; whole numbers). More in `settings`: "
+            "computer.container.cpu_weight (1-10000, 100 is the default "
+            "share), computer.container.cpuset (\"0-7\"), "
+            "computer.container.memory_swap, computer.container.pids_limit. "
+            "Unset, an agent takes its team's value "
+            "(teams[].computer.container) and then the fleet's "
+            "(defaults.container), so leave them out unless this agent "
+            "needs something different from its team.\n",
+            clawt_host_cpu_count(), memory);
+    }
+
     g_string_append(out,
         "\nKeys you may pass in `settings`, as key=value lines:\n");
 
@@ -5661,6 +5695,8 @@ tool_create_agent(ClawtMcpTools *self,
         { "model",           "model.model" },
         { "computer",        "computer.type" },
         { "container_image", "computer.container.image" },
+        { "container_cpus",  "computer.container.cpus" },
+        { "container_memory", "computer.container.memory" },
         { "vm_image",        "computer.vm.image" },
         { NULL, NULL }
     };

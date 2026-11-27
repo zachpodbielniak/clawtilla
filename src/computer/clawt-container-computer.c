@@ -22,6 +22,20 @@
  */
 #define CONTAINER_ADOPT_INSPECT_SECONDS (60)
 
+/*
+ * Consecutive samples at the memory limit before a machine counts as
+ * sitting there: one sample at 96% is a spike, two in a row is a build
+ * that has nowhere left to go.
+ */
+#define PRESSURE_SAMPLES (2)
+
+/*
+ * How long after one OOM report another is held back. The kill reaches
+ * clawtilla twice -- podman's event and the cgroup counter at the next
+ * sample -- and both are the same kill.
+ */
+#define OOM_REPORT_QUIET_US ((gint64)90 * G_USEC_PER_SEC)
+
 
 struct _ClawtContainerComputer {
     ClawtComputer parent_instance;
@@ -43,8 +57,28 @@ struct _ClawtContainerComputer {
     /* podman's init as PID 1; see clawt_container_computer_set_init(). */
     gboolean        init;
 
+    /*
+     * @lock guards what a worker thread writes and the main loop reads:
+     * the limits (replaced by a refresh while an apply may be running),
+     * the last apply's outcome, and the usage the sampler leaves.
+     */
+    GMutex          lock;
+
     /* NULL for none; see clawt_container_computer_set_limits(). */
     ClawtContainerLimits *limits;
+
+    /* The last apply that changed anything; see ..._get_limits_outcome(). */
+    ClawtContainerLimitsOutcome limits_outcome;
+    gchar          *limits_note;
+    gint64          limits_applied_at;
+
+    /* The sampler's; see clawt_container_computer_take_usage(). */
+    ClawtContainerUsage *usage;
+    guint           pressure_samples;
+    gboolean        memory_pressure;
+    gint64          oom_kills_seen;
+    gint64          last_oom_report;
+    gchar          *cgroup_path;
 
     /*
      * Adoption across a daemon restart; see container_adopt().
@@ -289,10 +323,197 @@ clawt_container_computer_set_limits(ClawtContainerComputer     *self,
 {
     g_return_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self));
 
+    g_mutex_lock(&self->lock);
+
     g_clear_pointer(&self->limits, clawt_container_limits_free);
 
     if (!clawt_container_limits_is_empty(limits))
         self->limits = clawt_container_limits_copy(limits);
+
+    g_mutex_unlock(&self->lock);
+}
+
+ClawtContainerLimitsOutcome
+clawt_container_computer_get_limits_outcome(ClawtContainerComputer  *self,
+                                            gchar                  **note,
+                                            gint64                  *at)
+{
+    ClawtContainerLimitsOutcome outcome;
+
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self),
+                         CLAWT_CONTAINER_LIMITS_UNCHANGED);
+
+    g_mutex_lock(&self->lock);
+
+    outcome = self->limits_outcome;
+
+    if (note != NULL)
+        *note = g_strdup(self->limits_note);
+
+    if (at != NULL)
+        *at = self->limits_applied_at;
+
+    g_mutex_unlock(&self->lock);
+
+    return outcome;
+}
+
+ClawtContainerUsage *
+clawt_container_computer_get_usage(ClawtContainerComputer *self)
+{
+    ClawtContainerUsage *usage;
+
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), NULL);
+
+    g_mutex_lock(&self->lock);
+    usage = (self->usage != NULL) ? clawt_container_usage_copy(self->usage)
+                                  : NULL;
+    g_mutex_unlock(&self->lock);
+
+    return usage;
+}
+
+gboolean
+clawt_container_computer_get_memory_pressure(ClawtContainerComputer *self)
+{
+    gboolean pressure;
+
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), FALSE);
+
+    g_mutex_lock(&self->lock);
+    pressure = self->memory_pressure;
+    g_mutex_unlock(&self->lock);
+
+    return pressure;
+}
+
+gchar *
+clawt_container_computer_get_memory_limit(ClawtContainerComputer *self)
+{
+    gchar *memory;
+
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), NULL);
+
+    g_mutex_lock(&self->lock);
+    memory = (self->limits != NULL)
+        ? g_strdup(clawt_container_limits_get_memory(self->limits)) : NULL;
+    g_mutex_unlock(&self->lock);
+
+    return memory;
+}
+
+gint64
+clawt_container_computer_take_usage(ClawtContainerComputer    *self,
+                                    const ClawtContainerUsage *usage,
+                                    gboolean                  *pressure_changed)
+{
+    gint64 killed = 0;
+    gboolean at_limit;
+
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), 0);
+
+    if (pressure_changed != NULL)
+        *pressure_changed = FALSE;
+
+    g_mutex_lock(&self->lock);
+
+    /* Gone from the sample: stopped, so nothing it says still holds. */
+    if (usage == NULL) {
+        g_clear_pointer(&self->usage, clawt_container_usage_free);
+
+        if (self->memory_pressure && pressure_changed != NULL)
+            *pressure_changed = TRUE;
+
+        self->memory_pressure = FALSE;
+        self->pressure_samples = 0;
+        g_mutex_unlock(&self->lock);
+        return 0;
+    }
+
+    /*
+     * The OOM counter, against what this object last saw. The first
+     * reading is a baseline, not news: a kill from before the daemon
+     * started is not something it can say anything useful about. A new
+     * container -- another id -- starts its counter again, so the
+     * baseline goes with it.
+     */
+    if (self->usage != NULL &&
+        g_strcmp0(self->usage->container_id, usage->container_id) != 0)
+        self->oom_kills_seen = -1;
+
+    if (usage->oom_kills >= 0) {
+        if (self->oom_kills_seen >= 0 && usage->oom_kills > self->oom_kills_seen)
+            killed = usage->oom_kills - self->oom_kills_seen;
+
+        self->oom_kills_seen = usage->oom_kills;
+    }
+
+    at_limit = clawt_container_usage_at_memory_limit(
+        usage, (self->limits != NULL)
+               ? clawt_container_limits_get_memory(self->limits) : NULL);
+
+    self->pressure_samples = at_limit ? self->pressure_samples + 1 : 0;
+
+    if ((self->pressure_samples >= PRESSURE_SAMPLES) != self->memory_pressure) {
+        self->memory_pressure = !self->memory_pressure;
+
+        if (pressure_changed != NULL)
+            *pressure_changed = TRUE;
+    }
+
+    g_clear_pointer(&self->usage, clawt_container_usage_free);
+    self->usage = clawt_container_usage_copy(usage);
+
+    g_mutex_unlock(&self->lock);
+
+    return killed;
+}
+
+gboolean
+clawt_container_computer_claim_oom_report(ClawtContainerComputer *self,
+                                          gint64                  now)
+{
+    gboolean claimed;
+
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), FALSE);
+
+    g_mutex_lock(&self->lock);
+
+    claimed = self->last_oom_report == 0 ||
+              now - self->last_oom_report >= OOM_REPORT_QUIET_US;
+
+    if (claimed)
+        self->last_oom_report = now;
+
+    g_mutex_unlock(&self->lock);
+
+    return claimed;
+}
+
+gchar *
+clawt_container_computer_get_cgroup_path(ClawtContainerComputer *self)
+{
+    gchar *path;
+
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), NULL);
+
+    g_mutex_lock(&self->lock);
+    path = g_strdup(self->cgroup_path);
+    g_mutex_unlock(&self->lock);
+
+    return path;
+}
+
+void
+clawt_container_computer_set_cgroup_path(ClawtContainerComputer *self,
+                                         const gchar            *path)
+{
+    g_return_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self));
+
+    g_mutex_lock(&self->lock);
+    g_free(self->cgroup_path);
+    self->cgroup_path = g_strdup(path);
+    g_mutex_unlock(&self->lock);
 }
 
 const ClawtContainerLimits *
@@ -1350,21 +1571,55 @@ gboolean
 clawt_container_computer_apply_limits(ClawtContainerComputer  *self,
                                       GError                 **error)
 {
-    gboolean changed = FALSE;
+    g_autoptr(ClawtContainerLimits) limits = NULL;
+    g_autofree gchar *note = NULL;
+    ClawtContainerLimitsOutcome outcome = CLAWT_CONTAINER_LIMITS_UNCHANGED;
 
     g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), FALSE);
 
-    if (self->limits == NULL)
+    /*
+     * A copy, taken under the lock: a refresh on the main loop replaces
+     * the limits while this runs on a worker, and the old value would be
+     * freed under the podman call reading it.
+     */
+    g_mutex_lock(&self->lock);
+    limits = (self->limits != NULL) ? clawt_container_limits_copy(self->limits)
+                                    : NULL;
+    g_mutex_unlock(&self->lock);
+
+    if (limits == NULL)
         return TRUE;
 
-    if (!clawt_container_limits_apply(self->limits, self->connection,
-                                      container_target(self), &changed,
-                                      error))
+    if (!clawt_container_limits_apply(limits, self->connection,
+                                      container_target(self), &outcome,
+                                      &note, error))
         return FALSE;
 
-    if (changed)
-        g_message("container %s: limits applied with podman update",
-                  self->name);
+    /*
+     * Which path it took, in the log every time and on the object for
+     * the Fleet page: "live" and "restart required" are different
+     * answers to "did my change land".
+     */
+    switch (outcome) {
+    case CLAWT_CONTAINER_LIMITS_UNCHANGED:
+        return TRUE;
+    case CLAWT_CONTAINER_LIMITS_APPLIED:
+    case CLAWT_CONTAINER_LIMITS_APPLIED_LIVE:
+        g_message("container %s: limits applied with podman update (%s): %s",
+                  self->name, clawt_container_limits_outcome_nick(outcome),
+                  note);
+        break;
+    case CLAWT_CONTAINER_LIMITS_RESTART_REQUIRED:
+        g_warning("container %s: %s", self->name, note);
+        break;
+    }
+
+    g_mutex_lock(&self->lock);
+    self->limits_outcome = outcome;
+    g_free(self->limits_note);
+    self->limits_note = g_steal_pointer(&note);
+    self->limits_applied_at = g_get_real_time();
+    g_mutex_unlock(&self->lock);
 
     return TRUE;
 }
@@ -1768,6 +2023,10 @@ clawt_container_computer_finalize(GObject *object)
     g_clear_pointer(&self->ports, g_free);
     g_clear_pointer(&self->selinux_level, g_free);
     g_clear_pointer(&self->limits, clawt_container_limits_free);
+    g_clear_pointer(&self->limits_note, g_free);
+    g_clear_pointer(&self->usage, clawt_container_usage_free);
+    g_clear_pointer(&self->cgroup_path, g_free);
+    g_mutex_clear(&self->lock);
     g_clear_pointer(&self->recreate_reason, g_free);
     g_clear_pointer(&self->last_recreate, g_free);
 
@@ -1798,4 +2057,6 @@ clawt_container_computer_init(ClawtContainerComputer *self)
 {
     self->keep = FALSE;
     self->reuse = TRUE;
+    self->oom_kills_seen = -1;
+    g_mutex_init(&self->lock);
 }

@@ -686,6 +686,93 @@ agent_verb_is_known(const gchar *verb)
 }
 
 /* @asked_for: see print_usage_text(). */
+/*
+ * The limits block of `agent show`: one line per limit that is set at any
+ * level, its value and where it came from, then anything refused, how
+ * the last change landed, and the last usage sample.
+ *
+ *   limits:      cpus 6 (agent), memory 8g (team forge), pids_limit 500 (defaults)
+ *   usage:       CPU 212.4%, memory 3.1g of 8.0g, 143 pids (12s ago)
+ */
+static void
+print_container_limits(JsonObject *agent)
+{
+    static const gchar *const keys[] = {
+        "cpus", "cpu_weight", "cpuset", "memory", "memory_swap",
+        "pids_limit", NULL
+    };
+    JsonObject *limits = json_object_get_object_member(agent,
+                                                       "container_limits");
+    g_autoptr(GString) line = g_string_new(NULL);
+    guint i;
+
+    for (i = 0; keys[i] != NULL; i++) {
+        JsonObject *entry;
+        const gchar *written;
+        const gchar *source;
+        const gchar *team;
+        g_autofree gchar *from = NULL;
+
+        if (!json_object_has_member(limits, keys[i]))
+            continue;
+
+        entry = json_object_get_object_member(limits, keys[i]);
+        written = member_or(entry, "written", "");
+        source = member_or(entry, "source", "");
+        team = member_or(entry, "team", NULL);
+
+        if (*written == '\0')
+            continue;
+
+        from = (g_strcmp0(source, "team") == 0 && team != NULL)
+            ? g_strdup_printf("team %s", team) : g_strdup(source);
+
+        g_string_append_printf(line, "%s%s %s (%s%s)",
+                               line->len > 0 ? ", " : "", keys[i], written,
+                               from,
+                               *member_or(entry, "value", "") == '\0'
+                                   ? ", refused" : "");
+    }
+
+    g_print("limits:      %s\n",
+            line->len > 0 ? line->str
+                          : "none (podman's defaults: no CPU or memory cap)");
+
+    if (json_object_has_member(limits, "refused")) {
+        JsonArray *refused = json_object_get_array_member(limits, "refused");
+
+        for (i = 0; i < json_array_get_length(refused); i++)
+            g_print("  refused:   %s\n",
+                    json_array_get_string_element(refused, i));
+    }
+
+    if (json_object_has_member(limits, "applied_note"))
+        g_print("  applied:   %s: %s\n", member_or(limits, "applied", ""),
+                member_or(limits, "applied_note", ""));
+
+    if (json_object_has_member(agent, "container_usage")) {
+        JsonObject *usage = json_object_get_object_member(agent,
+                                                          "container_usage");
+        gint64 used = json_object_get_int_member(usage, "memory_used");
+        gint64 limit = json_object_get_int_member(usage, "memory_limit");
+        gint64 age = (g_get_real_time() -
+                      json_object_get_int_member(usage, "sampled_at")) /
+                     G_USEC_PER_SEC;
+        g_autofree gchar *used_text = clawt_container_usage_format_bytes(used);
+        g_autofree gchar *limit_text =
+            clawt_container_usage_format_bytes(limit);
+
+        g_print("usage:       CPU %.1f%%, memory %s of %s, %" G_GINT64_FORMAT
+                " pids (%" G_GINT64_FORMAT "s ago)%s\n",
+                json_object_get_double_member(usage, "cpu_percent"),
+                used_text, limit_text,
+                json_object_get_int_member(usage, "pids"), MAX(age, 0),
+                (json_object_has_member(usage, "at_memory_limit") &&
+                 json_object_get_boolean_member(usage, "at_memory_limit"))
+                    ? " -- AT ITS MEMORY LIMIT" : "");
+    }
+}
+
 static void
 print_agent_usage(gboolean asked_for)
 {
@@ -1140,6 +1227,15 @@ cmd_agent(int argc, char *argv[])
                             : "the agent may look but not act");
         }
         g_print("computer:    %s\n", member_or(agent, "computer", "none"));
+
+        /*
+         * A container's limits, each with where it came from -- its own
+         * value, its team's, the fleet's -- and what the machine is using
+         * now. See print_container_limits().
+         */
+        if (json_object_has_member(agent, "container_limits"))
+            print_container_limits(agent);
+
         g_print("can:         %s\n", member_or(agent, "caps", "-"));
         g_print("queue:       %" G_GINT64_FORMAT "\n",
                 json_object_get_int_member(agent, "mailbox_depth"));
@@ -4272,7 +4368,12 @@ cmd_team(int argc, char *argv[])
     if (g_strcmp0(verb, "set") == 0) {
         if (argc < 6) {
             g_printerr("Usage: clawtilla team set <id> <key> <value>\n");
-            g_printerr("  keys: name, description, color, order\n");
+            g_printerr("  keys: name, description, color, order,\n"
+                       "        computer.container.{cpus,cpu_weight,cpuset,"
+                       "memory,memory_swap,pids_limit}\n"
+                       "  e.g.  clawtilla team set forge "
+                       "computer.container.cpus 4\n"
+                       "  an empty value (\"\") removes the key\n");
             return EXIT_FAILURE;
         }
 

@@ -60,6 +60,33 @@ clawt_daemon_handle_team(
             json_builder_set_member_name(builder, "order");
             json_builder_add_int_value(builder, team->order);
 
+            /*
+             * The team's container limits as written, short keys ("cpus",
+             * "memory"), only those it sets: what a client's team editor
+             * shows and what members without their own value inherit.
+             */
+            {
+                guint k;
+
+                json_builder_set_member_name(builder, "container_limits");
+                json_builder_begin_object(builder);
+
+                for (k = 0; k < CLAWT_CONTAINER_LIMIT_KEYS; k++) {
+                    const gchar *key = clawt_container_limit_key_nth(k);
+                    const gchar *value = clawt_config_get_team_container_limit(
+                        self->config, team->id, key);
+
+                    if (value == NULL)
+                        continue;
+
+                    json_builder_set_member_name(
+                        builder, key + strlen("computer.container."));
+                    json_builder_add_string_value(builder, value);
+                }
+
+                json_builder_end_object(builder);
+            }
+
             /* as written; clawt_team_tag_lookup() says which are known */
             json_builder_set_member_name(builder, "tags");
             json_builder_begin_array(builder);
@@ -145,9 +172,17 @@ clawt_daemon_handle_team(
         {
             g_auto(GStrv) recreated =
                 clawt_daemon_container_recreate_notes(self);
+            g_auto(GStrv) limits = clawt_daemon_container_limit_notes(self);
 
             for (i = 0; recreated != NULL && recreated[i] != NULL; i++)
                 json_builder_add_string_value(builder, recreated[i]);
+
+            /*
+             * And the container limits: one refused, one waiting for a
+             * restart, a machine at its memory limit.
+             */
+            for (i = 0; limits != NULL && limits[i] != NULL; i++)
+                json_builder_add_string_value(builder, limits[i]);
         }
 
         /*
@@ -240,6 +275,40 @@ clawt_daemon_handle_team(
             return clawt_ipc_error_new(request, error->code, error->message);
 
         /*
+         * A container limit for the whole team, checked as the team's set
+         * will be with this value in place -- refused here, naming the
+         * key, rather than warned about on every member's next start.
+         */
+        if (clawt_container_limit_key_is(key)) {
+            g_autoptr(ClawtContainerLimits) limits =
+                clawt_container_limits_new();
+            guint k;
+
+            for (k = 0; k < CLAWT_CONTAINER_LIMIT_KEYS; k++) {
+                const gchar *other = clawt_container_limit_key_nth(k);
+                const gchar *now = (g_strcmp0(other, key) == 0)
+                    ? value
+                    : clawt_config_get_team_container_limit(self->config,
+                                                            team_id, other);
+
+                if (!clawt_container_limits_set_key(limits, other, now,
+                                                    &error))
+                    return clawt_ipc_error_new(request,
+                                               CLAWT_ERROR_INVALID_ARGUMENT,
+                                               error->message);
+            }
+
+            if (!clawt_container_limits_validate_level(
+                    limits, clawt_host_cpu_count(), &error)) {
+                g_autofree gchar *said = g_strdup_printf(
+                    "team %s: %s", team_id, error->message);
+
+                return clawt_ipc_error_new(request,
+                                           CLAWT_ERROR_INVALID_ARGUMENT, said);
+            }
+        }
+
+        /*
          * Dispatched on what the schema says the key is.  A list written
          * as a scalar is read back as nothing, so `skills` set through
          * here reached no agent; a list arrives as `values` (an array),
@@ -289,6 +358,13 @@ team_saved:
 
         /* A team's broker_server decides its members' broker connector. */
         clawt_config_refresh_broker_connectors(self->config);
+
+        /*
+         * A team limit reaches its running members now, in place, as an
+         * agent's own does through agent.set.
+         */
+        if (clawt_container_limit_key_is(key))
+            clawt_daemon_apply_limits_everywhere(self);
 
         /*
          * The agents' own files describe their team, so they are

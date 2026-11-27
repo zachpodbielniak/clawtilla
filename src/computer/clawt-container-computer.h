@@ -19,6 +19,7 @@
 
 #include "computer/clawt-computer.h"
 #include "computer/clawt-container-limits.h"
+#include "computer/clawt-container-usage.h"
 #include "computer/clawt-pod-bridge.h"
 
 G_BEGIN_DECLS
@@ -217,7 +218,8 @@ clawt_container_computer_get_last_recreate(ClawtContainerComputer *self);
 /**
  * clawt_container_computer_set_limits:
  * @self: a #ClawtContainerComputer
- * @limits: (nullable): the process and memory limits, or %NULL for none
+ * @limits: (nullable): the CPU, process and memory limits, or %NULL for
+ *   none
  *
  * Copied. Applied with `podman update` before the container's first
  * start and again at every start whose limits differ from what podman
@@ -246,12 +248,114 @@ clawt_container_computer_get_limits(ClawtContainerComputer *self);
  * Gives the existing container its limits now, with `podman update` and
  * only for what differs; see clawt_container_limits_apply(). Run by every
  * start, and by the daemon when a limit is changed under a running one.
- * Blocking: call it from a worker thread.
+ * Which path it took is logged and kept; see
+ * clawt_container_computer_get_limits_outcome(). Blocking: call it from a
+ * worker thread.
  *
- * Returns: %TRUE if the container has its limits, or has none to have
+ * Returns: %TRUE if the container has its limits, will at its next start,
+ *   or has none to have
  */
 gboolean clawt_container_computer_apply_limits(ClawtContainerComputer  *self,
                                                GError                 **error);
+
+/**
+ * clawt_container_computer_get_limits_outcome:
+ * @self: a #ClawtContainerComputer
+ * @note: (out) (optional) (transfer full) (nullable): what was changed and
+ *   how, or why podman would not -- see clawt_container_limits_apply()
+ * @at: (out) (optional): when, g_get_real_time(); 0 for never
+ *
+ * The last application of the limits that changed anything: in place on
+ * the running machine, on the stopped machine before a start, or refused
+ * on the running machine and waiting for its next start. The daemon
+ * reports it as container_limits_applied in agent.list, and a restart
+ * still required as a warning on the Fleet page.
+ *
+ * Returns: the outcome; %CLAWT_CONTAINER_LIMITS_UNCHANGED when nothing has
+ *   been changed since this object was made
+ */
+ClawtContainerLimitsOutcome
+clawt_container_computer_get_limits_outcome(ClawtContainerComputer  *self,
+                                            gchar                  **note,
+                                            gint64                  *at);
+
+/**
+ * clawt_container_computer_get_memory_limit:
+ * @self: a #ClawtContainerComputer
+ *
+ * Returns: (transfer full) (nullable): computer.container.memory as this
+ *   machine has it, or %NULL for none
+ */
+gchar *clawt_container_computer_get_memory_limit(ClawtContainerComputer *self);
+
+/**
+ * clawt_container_computer_take_usage:
+ * @self: a #ClawtContainerComputer
+ * @usage: (nullable): the machine's latest sample, or %NULL when it was
+ *   not in the sample (stopped)
+ * @pressure_changed: (out) (optional): whether the machine started or
+ *   stopped sitting at its memory limit with this sample
+ *
+ * Keeps the sampler's latest figures for agent.list, and works out from
+ * them what is news: processes OOM-killed since the last sample (the
+ * cgroup's counter; the first reading is a baseline), and whether the
+ * machine has been at %CLAWT_CONTAINER_USAGE_PRESSURE_PERCENT of its
+ * memory limit for two samples running.
+ *
+ * Returns: how many processes were OOM-killed since the last sample
+ */
+gint64 clawt_container_computer_take_usage(ClawtContainerComputer    *self,
+                                           const ClawtContainerUsage *usage,
+                                           gboolean                  *pressure_changed);
+
+/**
+ * clawt_container_computer_get_usage:
+ * @self: a #ClawtContainerComputer
+ *
+ * Returns: (transfer full) (nullable): the latest sample, or %NULL before
+ *   the first or while the machine is stopped
+ */
+ClawtContainerUsage *
+clawt_container_computer_get_usage(ClawtContainerComputer *self);
+
+/**
+ * clawt_container_computer_get_memory_pressure:
+ * @self: a #ClawtContainerComputer
+ *
+ * Returns: %TRUE while the machine sits at its memory limit
+ */
+gboolean clawt_container_computer_get_memory_pressure(ClawtContainerComputer *self);
+
+/**
+ * clawt_container_computer_claim_oom_report:
+ * @self: a #ClawtContainerComputer
+ * @now: g_get_real_time()
+ *
+ * Whether an OOM kill may be reported now. The same kill arrives twice --
+ * podman's event and the cgroup counter -- so one report holds the next
+ * back for ninety seconds.
+ *
+ * Returns: %TRUE if the caller should file the report
+ */
+gboolean clawt_container_computer_claim_oom_report(ClawtContainerComputer *self,
+                                                   gint64                  now);
+
+/**
+ * clawt_container_computer_get_cgroup_path:
+ * @self: a #ClawtContainerComputer
+ *
+ * Returns: (transfer full) (nullable): where the sampler found the
+ *   container's cgroup, relative to the cgroup v2 mount
+ */
+gchar *clawt_container_computer_get_cgroup_path(ClawtContainerComputer *self);
+
+/**
+ * clawt_container_computer_set_cgroup_path:
+ * @self: a #ClawtContainerComputer
+ * @path: (nullable): the cgroup, or %NULL to ask podman again
+ */
+void clawt_container_computer_set_cgroup_path(ClawtContainerComputer *self,
+                                              const gchar            *path);
 
 /**
  * clawt_container_computer_get_name:

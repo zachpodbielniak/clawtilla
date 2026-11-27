@@ -71,15 +71,39 @@ ClawtComputer *clawt_computer_factory_create_shared(const gchar       *computer_
  * clawt_computer_factory_limits:
  * @agent_config: (transfer none): the agent's configuration
  *
- * computer.container.pids_limit, memory and memory_swap, as one value.
- * Read for the container and distrobox backends alike, both of which are
- * a podman container underneath. Not validated here; see
- * clawt_container_limits_validate().
+ * The six computer.container limits as this agent has them, each
+ * resolved through clawt_agent_config_get_container_limit() -- its own,
+ * else its team's, else the fleet's -- as one value. Read for the
+ * container and distrobox backends alike, both of which are a podman
+ * container underneath. Not validated here; see
+ * clawt_container_limits_validate(). A whole-number key that is not a
+ * number reads as unset; clawt_computer_factory_limits_checked() says so.
  *
  * Returns: (transfer full): the limits; empty when none are set
  */
 ClawtContainerLimits *clawt_computer_factory_limits(
     ClawtAgentConfig *agent_config);
+
+/**
+ * clawt_computer_factory_limits_checked:
+ * @agent_config: (transfer none): the agent's configuration
+ * @host_cpus: CPUs to check against; 0 for this host's
+ * @refusals: (element-type utf8) (nullable): where to add one sentence per
+ *   limit that is not applied, naming the key and where it came from
+ *
+ * The limits that will actually be applied: clawt_computer_factory_limits()
+ * with every value podman would refuse taken out
+ * (clawt_container_limits_drop_invalid()). A bad value that reached the
+ * daemon without `config validate` -- a hand edit, a team default the
+ * agent's own memory now contradicts -- costs that one limit, said in
+ * @refusals, and not the agent its place in the fleet.
+ *
+ * Returns: (transfer full): the valid limits
+ */
+ClawtContainerLimits *clawt_computer_factory_limits_checked(
+    ClawtAgentConfig *agent_config,
+    guint             host_cpus,
+    GPtrArray        *refusals);
 
 /**
  * clawt_computer_factory_refresh:
@@ -96,7 +120,10 @@ ClawtContainerLimits *clawt_computer_factory_limits(
  * it does not need -- the point of applying limits with `podman update`
  * is that it does not. The next start applies what this sets.
  *
- * Returns: %FALSE if the new limits are ones podman would refuse
+ * A limit podman would refuse is logged as a warning and left out rather
+ * than failing the refresh; see clawt_computer_factory_limits_checked().
+ *
+ * Returns: %FALSE if a setting other than the limits cannot be taken
  */
 gboolean clawt_computer_factory_refresh(ClawtAgentConfig  *agent_config,
                                         ClawtComputer     *computer,

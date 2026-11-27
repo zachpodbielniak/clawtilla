@@ -1348,6 +1348,37 @@ clawt_agent_config_validate_computer(ClawtAgentConfig *self, GError **error)
 
     g_return_val_if_fail(self != NULL, FALSE);
 
+    /*
+     * A container's limits, as it will have them -- its own, its team's,
+     * the fleet's -- so an agent created with cpus=64 on a 20-CPU host is
+     * refused, naming the key, rather than made with a limit that is then
+     * warned about and dropped at every start.
+     */
+    {
+        gint type = clawt_agent_config_get_enum(self, "computer.type");
+
+        if (type == CLAWT_COMPUTER_CONTAINER ||
+            type == CLAWT_COMPUTER_DISTROBOX) {
+            g_autoptr(ClawtContainerLimits) limits =
+                clawt_container_limits_new();
+            guint i;
+
+            for (i = 0; i < CLAWT_CONTAINER_LIMIT_KEYS; i++) {
+                const gchar *key = clawt_container_limit_key_nth(i);
+
+                if (!clawt_container_limits_set_key(
+                        limits, key,
+                        clawt_agent_config_get_container_limit(self, key,
+                                                               NULL, NULL),
+                        error))
+                    return FALSE;
+            }
+
+            if (!clawt_container_limits_validate(limits, error))
+                return FALSE;
+        }
+    }
+
     if (clawt_agent_config_get_enum(self, "computer.type") !=
         CLAWT_COMPUTER_VM)
         return TRUE;
@@ -3090,6 +3121,40 @@ clawt_config_set_team_string(ClawtConfig *self,
     if (g_strcmp0(key, "id") == 0)
         return FALSE;
 
+    /*
+     * A dotted key is a path inside the team, as everywhere else in the
+     * file: `computer.container.cpus` is three levels, not one member
+     * with dots in its name, which nothing would ever read back.
+     */
+    if (strchr(key, '.') != NULL) {
+        g_autofree gchar *parent_path = g_strdup(key);
+        gchar *last_dot = strrchr(parent_path, '.');
+        const gchar *leaf = last_dot + 1;
+        YamlNode *parent;
+
+        *last_dot = '\0';
+
+        if (value == NULL || *value == '\0') {
+            parent = node_at_path(entry, parent_path, FALSE);
+
+            if (parent != NULL &&
+                yaml_node_get_node_type(parent) == YAML_NODE_MAPPING)
+                yaml_mapping_remove_member(yaml_node_get_mapping(parent),
+                                           leaf);
+            return TRUE;
+        }
+
+        parent = node_at_path(entry, parent_path, TRUE);
+
+        if (parent == NULL ||
+            yaml_node_get_node_type(parent) != YAML_NODE_MAPPING)
+            return FALSE;
+
+        node = yaml_node_new_string(value);
+        yaml_mapping_set_member(yaml_node_get_mapping(parent), leaf, node);
+        return TRUE;
+    }
+
     if (value == NULL || *value == '\0') {
         yaml_mapping_remove_member(yaml_node_get_mapping(entry), key);
         return TRUE;
@@ -3107,6 +3172,126 @@ clawt_config_set_team_string(ClawtConfig *self,
     }
 
     return TRUE;
+}
+
+/* ── Container limits, at three levels ───────────────────────────── */
+
+const gchar *
+clawt_setting_source_nick(ClawtSettingSource source)
+{
+    switch (source) {
+    case CLAWT_SETTING_FROM_NONE:     return "";
+    case CLAWT_SETTING_FROM_AGENT:    return "agent";
+    case CLAWT_SETTING_FROM_TEAM:     return "team";
+    case CLAWT_SETTING_FROM_DEFAULTS: return "defaults";
+    }
+
+    return "";
+}
+
+gchar *
+clawt_container_limit_fleet_key(const gchar *key)
+{
+    g_return_val_if_fail(key != NULL, NULL);
+
+    if (g_str_has_prefix(key, "computer.container."))
+        return g_strconcat("defaults.container.",
+                           key + strlen("computer.container."), NULL);
+
+    return g_strconcat("defaults.", key, NULL);
+}
+
+/* Blank is unset at every level, as it is for the setters. */
+static const gchar *
+limit_value_or_null(const gchar *value)
+{
+    if (value == NULL)
+        return NULL;
+
+    while (g_ascii_isspace(*value))
+        value++;
+
+    return (*value != '\0') ? value : NULL;
+}
+
+const gchar *
+clawt_config_get_team_container_limit(ClawtConfig *self,
+                                      const gchar *team_id,
+                                      const gchar *key)
+{
+    YamlNode *entry;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    if (team_id == NULL || *team_id == '\0')
+        return NULL;
+
+    entry = team_node(self, team_id);
+
+    return (entry != NULL) ? limit_value_or_null(lookup_string(entry, key))
+                           : NULL;
+}
+
+const gchar *
+clawt_agent_config_get_container_limit(ClawtAgentConfig    *self,
+                                       const gchar         *key,
+                                       ClawtSettingSource  *source,
+                                       const gchar        **team_id)
+{
+    const gchar *value;
+    const gchar *team;
+
+    g_return_val_if_fail(self != NULL, NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    if (source != NULL)
+        *source = CLAWT_SETTING_FROM_NONE;
+
+    if (team_id != NULL)
+        *team_id = NULL;
+
+    /* The agent's own -- or its shared machine's, by the usual redirect. */
+    {
+        const gchar *path = key;
+        YamlNode *node = agent_node_for_key(self, key, &path);
+
+        value = limit_value_or_null(lookup_string(node, path));
+
+        if (value != NULL) {
+            if (source != NULL)
+                *source = CLAWT_SETTING_FROM_AGENT;
+            return value;
+        }
+    }
+
+    if (self->config == NULL)
+        return NULL;
+
+    /* Its team's. */
+    team = lookup_string(self->node, "team");
+    value = clawt_config_get_team_container_limit(self->config, team, key);
+
+    if (value != NULL) {
+        if (source != NULL)
+            *source = CLAWT_SETTING_FROM_TEAM;
+        if (team_id != NULL)
+            *team_id = team;
+        return value;
+    }
+
+    /* The fleet's. */
+    {
+        g_autofree gchar *fleet_key = clawt_container_limit_fleet_key(key);
+
+        value = limit_value_or_null(lookup_string(self->config->root,
+                                                  fleet_key));
+    }
+
+    if (value != NULL && source != NULL)
+        *source = CLAWT_SETTING_FROM_DEFAULTS;
+
+    return value;
 }
 
 gboolean
@@ -4444,6 +4629,154 @@ validate_daily_limit(const gchar *value, const gchar *key, GError **error)
 	return FALSE;
 }
 
+/*
+ * @message with every "computer.container." replaced by @spelling, so a
+ * refusal about a fleet default names the key as the file writes it.
+ */
+static gchar *
+respell_limit_message(const gchar *message, const gchar *spelling)
+{
+    g_auto(GStrv) parts = g_strsplit(message, "computer.container.", -1);
+
+    return g_strjoinv(spelling, parts);
+}
+
+/*
+ * One level's limits -- the fleet's or a team's -- read into a set, the
+ * whole-number keys refused here when they are not numbers.
+ */
+static ClawtContainerLimits *
+limits_at(YamlNode *root, const gchar *prefix, GError **error)
+{
+    g_autoptr(ClawtContainerLimits) limits = clawt_container_limits_new();
+    guint i;
+
+    for (i = 0; i < CLAWT_CONTAINER_LIMIT_KEYS; i++) {
+        const gchar *key = clawt_container_limit_key_nth(i);
+        g_autofree gchar *path = g_strconcat(
+            prefix, key + strlen("computer.container."), NULL);
+
+        if (!clawt_container_limits_set_key(limits, key,
+                                            lookup_string(root, path),
+                                            error))
+            return NULL;
+    }
+
+    return g_steal_pointer(&limits);
+}
+
+/*
+ * Every container limit in the file, at all three levels, against this
+ * host: the fleet's defaults and each team's on their own -- a default
+ * nobody uses yet is still a default somebody will -- and each container
+ * or distrobox agent's effective set, which is where levels contradict
+ * each other (a team's memory_swap under an agent's own memory).
+ */
+static gboolean
+validate_container_limits(ClawtConfig *self, GError **error)
+{
+    guint host_cpus = clawt_host_cpu_count();
+    YamlNode *teams;
+    guint i;
+
+    {
+        g_autoptr(GError) why = NULL;
+        g_autoptr(ClawtContainerLimits) fleet =
+            limits_at(self->root, "defaults.container.", &why);
+
+        if (fleet == NULL ||
+            !clawt_container_limits_validate_level(fleet, host_cpus,
+                                                   &why)) {
+            g_autofree gchar *said =
+                respell_limit_message(why->message, "defaults.container.");
+
+            g_set_error_literal(error, CLAWT_ERROR,
+                                CLAWT_ERROR_CONFIG_INVALID, said);
+            return FALSE;
+        }
+    }
+
+    teams = node_at_path(self->root, "teams", FALSE);
+
+    if (teams != NULL && yaml_node_get_node_type(teams) == YAML_NODE_SEQUENCE) {
+        YamlSequence *sequence = yaml_node_get_sequence(teams);
+
+        for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+            YamlNode *entry = yaml_sequence_get_element(sequence, i);
+            g_autoptr(GError) why = NULL;
+            g_autoptr(ClawtContainerLimits) team = NULL;
+            const gchar *id;
+
+            if (entry == NULL ||
+                yaml_node_get_node_type(entry) != YAML_NODE_MAPPING)
+                continue;
+
+            id = member_string(yaml_node_get_mapping(entry), "id");
+            team = limits_at(entry, "computer.container.", &why);
+
+            if (team == NULL ||
+                !clawt_container_limits_validate_level(team, host_cpus,
+                                                       &why)) {
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                            "team %s: %s", id != NULL ? id : "(no id)",
+                            why->message);
+                return FALSE;
+            }
+        }
+    }
+
+    for (i = 0; i < self->agents->len; i++) {
+        ClawtAgentConfig *agent = g_ptr_array_index(self->agents, i);
+        g_autoptr(ClawtContainerLimits) limits = clawt_container_limits_new();
+        g_autoptr(GString) inherited = g_string_new(NULL);
+        g_autoptr(GError) why = NULL;
+        gint type = clawt_agent_config_get_enum(agent, "computer.type");
+        guint k;
+
+        /* Only the two backends that are a podman container read them. */
+        if (type != CLAWT_COMPUTER_CONTAINER && type != CLAWT_COMPUTER_DISTROBOX)
+            continue;
+
+        for (k = 0; k < CLAWT_CONTAINER_LIMIT_KEYS; k++) {
+            const gchar *key = clawt_container_limit_key_nth(k);
+            ClawtSettingSource source = CLAWT_SETTING_FROM_NONE;
+            const gchar *team = NULL;
+            const gchar *value = clawt_agent_config_get_container_limit(
+                agent, key, &source, &team);
+
+            if (!clawt_container_limits_set_key(limits, key, value, &why)) {
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                            "agent %s: %s", clawt_agent_config_get_id(agent),
+                            why->message);
+                return FALSE;
+            }
+
+            if (source == CLAWT_SETTING_FROM_TEAM)
+                g_string_append_printf(inherited, "%s%s from team %s",
+                                       inherited->len > 0 ? "; " : "",
+                                       key + strlen("computer.container."),
+                                       team);
+            else if (source == CLAWT_SETTING_FROM_DEFAULTS)
+                g_string_append_printf(inherited, "%s%s from defaults",
+                                       inherited->len > 0 ? "; " : "",
+                                       key + strlen("computer.container."));
+        }
+
+        if (!clawt_container_limits_validate_for_host(limits, host_cpus,
+                                                      &why)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                        "agent %s: %s%s%s%s", clawt_agent_config_get_id(agent),
+                        why->message,
+                        inherited->len > 0 ? " (" : "",
+                        inherited->str,
+                        inherited->len > 0 ? ")" : "");
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
 gboolean
 clawt_config_validate_file(const gchar *path,
                           gboolean strict,
@@ -4584,6 +4917,10 @@ clawt_config_validate(ClawtConfig *self, GError **error)
 			}
 		}
 	}
+
+	/* The container limits, at all three levels: see above. */
+	if (!validate_container_limits(self, error))
+		return FALSE;
 
 	/*
 	 * A trigger that cannot act on any delivery is an error here, where

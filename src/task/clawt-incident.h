@@ -47,20 +47,24 @@ G_BEGIN_DECLS
  *   start while work was waiting for it
  * @CLAWT_INCIDENT_ROUTINE_FAILED: a routine run could not be started at
  *   all
+ * @CLAWT_INCIDENT_OUT_OF_MEMORY: the kernel OOM-killed a process in the
+ *   agent's container computer, which had reached its memory limit
  *
  * What kind of breakage an incident reports.
  *
- * Four rather than "failed", because they need different next steps from
- * whoever reads the report: a stalled run can simply be picked up again,
- * a failed one needs reading first, an agent that will not start needs a
- * person or a fixed setting before any retry can help, and a routine
- * that never ran has no task to retry at all.
+ * Several rather than "failed", because they need different next steps
+ * from whoever reads the report: a stalled run can simply be picked up
+ * again, a failed one needs reading first, an agent that will not start
+ * needs a person or a fixed setting before any retry can help, a routine
+ * that never ran has no task to retry at all, and work that ran out of
+ * memory will run out again unless it, or the limit, changes.
  */
 typedef enum {
 	CLAWT_INCIDENT_FAILED = 0,
 	CLAWT_INCIDENT_STALLED,
 	CLAWT_INCIDENT_UNSTARTABLE,
-	CLAWT_INCIDENT_ROUTINE_FAILED
+	CLAWT_INCIDENT_ROUTINE_FAILED,
+	CLAWT_INCIDENT_OUT_OF_MEMORY
 } ClawtIncidentKind;
 
 /**

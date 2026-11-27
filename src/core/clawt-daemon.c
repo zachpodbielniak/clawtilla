@@ -5922,6 +5922,7 @@ release_components(ClawtDaemon *self)
 
     autostart_cancel(self);
     sweep_cancel(self);
+    clawt_daemon_usage_stop(self);
 
     /*
      * Recordings before anything else.
@@ -8365,6 +8366,9 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
         g_source_unref(source);
     }
 
+    /* The container computers' use and OOM kills; see daemon-usage.c. */
+    clawt_daemon_usage_start(self);
+
     /*
      * The turn budgets, the repeat counter and the steer queue.  Here
      * rather than beside the guard, because this builds a timer of its
@@ -8604,6 +8608,7 @@ clawt_daemon_stop(ClawtDaemon *self)
     clawt_daemon_venture_stop(self);
 
     sweep_cancel(self);
+    clawt_daemon_usage_stop(self);
 
     /*
      * Before the fleet is stopped, because a grace timer left armed past
@@ -8793,6 +8798,12 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
     /* office.enabled may have changed */
     clawt_daemon_office_reconfigure(self);
     clawt_agent_manager_load(self->agents, NULL);
+
+    /*
+     * Container limits, at whichever level the edit changed them, reach
+     * the running machines in place -- one inspect each when nothing did.
+     */
+    clawt_daemon_apply_limits_everywhere(self);
 
     {
         g_autoptr(GPtrArray) moved =
@@ -9684,6 +9695,33 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
         json_builder_add_string_value(builder, memory != NULL ? memory : "");
         json_builder_set_member_name(builder, "container_memory_swap");
         json_builder_add_string_value(builder, swap != NULL ? swap : "");
+
+        /* The CPU keys likewise: the agent's own, empty for unset. */
+        {
+            const gchar *cpus = clawt_agent_config_get_string(
+                config, "computer.container.cpus");
+            gint64 weight = clawt_agent_config_get_int(
+                config, "computer.container.cpu_weight");
+            g_autofree gchar *weight_text = (weight != 0)
+                ? g_strdup_printf("%" G_GINT64_FORMAT, weight) : g_strdup("");
+            const gchar *cpuset = clawt_agent_config_get_string(
+                config, "computer.container.cpuset");
+
+            json_builder_set_member_name(builder, "container_cpus");
+            json_builder_add_string_value(builder, cpus != NULL ? cpus : "");
+            json_builder_set_member_name(builder, "container_cpu_weight");
+            json_builder_add_string_value(builder, weight_text);
+            json_builder_set_member_name(builder, "container_cpuset");
+            json_builder_add_string_value(builder,
+                                          cpuset != NULL ? cpuset : "");
+        }
+
+        /*
+         * And what the machine actually gets, key by key, with where each
+         * value came from -- agent, team or defaults -- and what it is
+         * using now. See clawt_daemon_add_container_limits().
+         */
+        clawt_daemon_add_container_limits(builder, agent);
     }
 
     /*

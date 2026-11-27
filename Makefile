@@ -193,6 +193,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/computer/clawt-container-computer.h \
 	$(SRCDIR)/computer/clawt-distrobox-computer.h \
 	$(SRCDIR)/computer/clawt-container-limits.h \
+	$(SRCDIR)/computer/clawt-container-usage.h \
 	$(SRCDIR)/computer/clawt-selinux-level.h \
 	$(SRCDIR)/computer/clawt-wake.h \
 	$(SRCDIR)/computer/clawt-cloud-init.h \
@@ -335,6 +336,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-skill-tests.c \
 	$(SRCDIR)/core/daemon-fleet.c \
 	$(SRCDIR)/core/daemon-computer.c \
+	$(SRCDIR)/core/daemon-usage.c \
 	$(SRCDIR)/core/daemon-screen.c \
 	$(SRCDIR)/core/daemon-design.c \
 	$(SRCDIR)/core/daemon-connector.c \
@@ -469,6 +471,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/computer/clawt-container-computer.c \
 	$(SRCDIR)/computer/clawt-distrobox-computer.c \
 	$(SRCDIR)/computer/clawt-container-limits.c \
+	$(SRCDIR)/computer/clawt-container-usage.c \
 	$(SRCDIR)/computer/clawt-selinux-level.c \
 	$(SRCDIR)/computer/clawt-wake.c \
 	$(SRCDIR)/computer/clawt-ssh-computer.c \

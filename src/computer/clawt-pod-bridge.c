@@ -16,11 +16,119 @@
 struct _ClawtPodBridge {
     GObject parent_instance;
 
-    GStrv       search_path;
-    GHashTable *modules;   /* "name" or "name@uri" -> PodModule* (owned) */
+    GStrv         search_path;
+    GHashTable   *modules;   /* "name" or "name@uri" -> PodModule* (owned) */
+
+    /* Where ::module-event is emitted: the context the bridge was made on. */
+    GMainContext *context;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtPodBridge, clawt_pod_bridge, G_TYPE_OBJECT)
+
+enum {
+    SIGNAL_MODULE_EVENT,
+    N_SIGNALS
+};
+
+static guint signals[N_SIGNALS];
+
+/*
+ * What an event source's handler needs to reach the bridge: a weak
+ * reference, because a module's stream thread can outlive the bridge
+ * (another reference to the module, a thread mid-emission at finalize),
+ * and an event arriving then has nowhere to go and is dropped.
+ */
+typedef struct {
+    GWeakRef      bridge;
+    GMainContext *context;
+    gchar        *module;
+    gchar        *connection;
+} EventRelay;
+
+/* One event on its way from a module's thread to the bridge's context. */
+typedef struct {
+    ClawtPodBridge *bridge;
+    gchar          *module;
+    gchar          *connection;
+    gchar          *event;
+    GVariant       *data;
+} EventDelivery;
+
+static void
+event_relay_free(gpointer data, GClosure *closure)
+{
+    EventRelay *relay = data;
+
+    (void)closure;
+
+    g_weak_ref_clear(&relay->bridge);
+    g_main_context_unref(relay->context);
+    g_free(relay->module);
+    g_free(relay->connection);
+    g_free(relay);
+}
+
+static void
+event_delivery_free(gpointer data)
+{
+    EventDelivery *delivery = data;
+
+    g_object_unref(delivery->bridge);
+    g_free(delivery->module);
+    g_free(delivery->connection);
+    g_free(delivery->event);
+    g_variant_unref(delivery->data);
+    g_free(delivery);
+}
+
+/* On the bridge's context: the signal, at last. */
+static gboolean
+deliver_event(gpointer data)
+{
+    EventDelivery *delivery = data;
+
+    g_signal_emit(delivery->bridge, signals[SIGNAL_MODULE_EVENT], 0,
+                  delivery->module, delivery->connection, delivery->event,
+                  delivery->data);
+
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * A module's PodEventSource::event-fired, on whatever thread its stream
+ * runs -- the container module emits from its own -- so handed to the
+ * bridge's context rather than emitted here, where a handler touching
+ * the daemon would race its main loop.
+ */
+static void
+on_event_fired(PodEventSource *source,
+               const gchar    *event_name,
+               GVariant       *event_data,
+               gpointer        user_data)
+{
+    EventRelay *relay = user_data;
+    EventDelivery *delivery;
+    ClawtPodBridge *bridge;
+
+    (void)source;
+
+    bridge = g_weak_ref_get(&relay->bridge);
+
+    if (bridge == NULL || event_name == NULL)
+        return;
+
+    delivery = g_new0(EventDelivery, 1);
+    delivery->bridge = bridge;
+    delivery->module = g_strdup(relay->module);
+    delivery->connection = g_strdup(relay->connection);
+    delivery->event = g_strdup(event_name);
+    delivery->data = (event_data != NULL)
+        ? g_variant_ref_sink(event_data)
+        : g_variant_ref_sink(g_variant_new("a{sv}", NULL));
+
+    g_main_context_invoke_full(relay->context, G_PRIORITY_DEFAULT,
+                               deliver_event, delivery, event_delivery_free);
+}
 
 /*
  * Where the binary that is running lives.
@@ -90,6 +198,9 @@ ClawtPodBridge *
 clawt_pod_bridge_new(const gchar *module_dir)
 {
     ClawtPodBridge *self = g_object_new(CLAWT_TYPE_POD_BRIDGE, NULL);
+
+    /* ::module-event is emitted where the bridge was made: the daemon's loop. */
+    self->context = g_main_context_ref_thread_default();
 
     if (module_dir != NULL) {
         /*
@@ -285,6 +396,19 @@ clawt_pod_bridge_load_module_for(ClawtPodBridge  *self,
      */
     if (POD_IS_EVENT_SOURCE(instance)) {
         g_autoptr(GError) start_error = NULL;
+        EventRelay *relay = g_new0(EventRelay, 1);
+
+        /*
+         * Connected before the start, so nothing the stream says between
+         * the two is lost; see ::module-event.
+         */
+        g_weak_ref_init(&relay->bridge, self);
+        relay->context = g_main_context_ref(self->context);
+        relay->module = g_strdup(module_name);
+        relay->connection = g_strdup(connection_uri);
+        g_signal_connect_data(instance, "event-fired",
+                              G_CALLBACK(on_event_fired), relay,
+                              event_relay_free, 0);
 
         if (!pod_event_source_start(POD_EVENT_SOURCE(instance),
                                     g_main_context_get_thread_default(),
@@ -700,6 +824,7 @@ clawt_pod_bridge_finalize(GObject *object)
 
     g_clear_pointer(&self->modules, g_hash_table_unref);
     g_clear_pointer(&self->search_path, g_strfreev);
+    g_clear_pointer(&self->context, g_main_context_unref);
 
     G_OBJECT_CLASS(clawt_pod_bridge_parent_class)->finalize(object);
 }
@@ -708,6 +833,27 @@ static void
 clawt_pod_bridge_class_init(ClawtPodBridgeClass *klass)
 {
     G_OBJECT_CLASS(klass)->finalize = clawt_pod_bridge_finalize;
+
+    /**
+     * ClawtPodBridge::module-event:
+     * @self: the bridge
+     * @module: the module that fired it, e.g. "container"
+     * @connection: (nullable): the connection that module instance was
+     *   loaded for
+     * @event: podomation's event name, e.g. "on_oom" or "on_die"
+     * @data: the event's fields, an a{sv} (for a container event:
+     *   container_id, container_name, image, action, status, message)
+     *
+     * An event from a loaded module that is an event source, emitted on
+     * the main context the bridge was made on whatever thread the module
+     * saw it on. How the daemon hears that podman OOM-killed an agent's
+     * container.
+     */
+    signals[SIGNAL_MODULE_EVENT] =
+        g_signal_new("module-event", G_TYPE_FROM_CLASS(klass),
+                     G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+                     G_TYPE_NONE, 4, G_TYPE_STRING, G_TYPE_STRING,
+                     G_TYPE_STRING, G_TYPE_VARIANT);
 }
 
 static void

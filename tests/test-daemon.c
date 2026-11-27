@@ -4675,6 +4675,99 @@ test_computer_settings_refused_where_they_arrive(void)
 
 
 
+/*
+ * Container limits at three levels, over the wire (VENTURE #26): a team
+ * limit set through team.set is checked where it arrives, naming the
+ * key; and agent.list says, for each key, what the agent gets and where
+ * it came from -- its own value, its team's, or the fleet's.
+ */
+static JsonObject *listed_agent(JsonNode *reply, const gchar *id);
+
+static void
+test_container_limits_three_levels_over_ipc(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) team_cpus = NULL;
+    g_autoptr(JsonNode) team_zero = NULL;
+    g_autoptr(JsonNode) own_memory = NULL;
+    g_autoptr(JsonNode) listed = NULL;
+    g_autoptr(JsonNode) teams = NULL;
+    JsonObject *agent;
+    JsonObject *limits;
+    JsonObject *cpus;
+    JsonObject *memory;
+    JsonObject *pids;
+
+    fixture_setup(&fixture,
+                  "defaults:\n"
+                  "  container:\n"
+                  "    pids_limit: 500\n"
+                  "teams:\n"
+                  "  - id: forge\n"
+                  "agents:\n"
+                  "  - id: hammer\n"
+                  "    team: forge\n"
+                  "    computer: {type: container}\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    team_cpus = request(&fixture, "team.set",
+                        "{\"team\":\"forge\",\"key\":"
+                        "\"computer.container.cpus\",\"value\":\"1\"}");
+    g_assert_false(clawt_ipc_frame_is_error(team_cpus));
+
+    team_zero = request(&fixture, "team.set",
+                        "{\"team\":\"forge\",\"key\":"
+                        "\"computer.container.cpus\",\"value\":\"0\"}");
+    g_assert_nonnull(strstr(error_text(team_zero),
+                            "team forge: computer.container.cpus"));
+
+    own_memory = request(&fixture, "agent.set",
+                         "{\"agent\":\"hammer\",\"key\":"
+                         "\"computer.container.memory\",\"value\":\"8g\"}");
+    g_assert_false(clawt_ipc_frame_is_error(own_memory));
+
+    listed = request(&fixture, "agent.list", "{}");
+    agent = listed_agent(listed, "hammer");
+    g_assert_nonnull(agent);
+    limits = json_object_get_object_member(agent, "container_limits");
+    g_assert_nonnull(limits);
+
+    cpus = json_object_get_object_member(limits, "cpus");
+    g_assert_cmpstr(json_object_get_string_member(cpus, "value"), ==, "1");
+    g_assert_cmpstr(json_object_get_string_member(cpus, "source"), ==, "team");
+    g_assert_cmpstr(json_object_get_string_member(cpus, "team"), ==, "forge");
+    g_assert_cmpstr(json_object_get_string_member(cpus, "own"), ==, "");
+
+    memory = json_object_get_object_member(limits, "memory");
+    g_assert_cmpstr(json_object_get_string_member(memory, "source"), ==,
+                    "agent");
+    g_assert_cmpstr(json_object_get_string_member(memory, "own"), ==, "8g");
+
+    pids = json_object_get_object_member(limits, "pids_limit");
+    g_assert_cmpstr(json_object_get_string_member(pids, "value"), ==, "500");
+    g_assert_cmpstr(json_object_get_string_member(pids, "source"), ==,
+                    "defaults");
+
+    g_assert_cmpint(json_object_get_int_member(limits, "host_cpus"), >=, 1);
+    g_assert_cmpuint(json_array_get_length(
+                         json_object_get_array_member(limits, "refused")),
+                     ==, 0);
+
+    /* The team's own, as written, for a team editor. */
+    teams = request(&fixture, "team.list", "{}");
+    {
+        JsonArray *list = json_object_get_array_member(payload_of(teams),
+                                                       "teams");
+        JsonObject *forge = json_array_get_object_element(list, 0);
+        JsonObject *own = json_object_get_object_member(forge,
+                                                        "container_limits");
+
+        g_assert_cmpstr(json_object_get_string_member(own, "cpus"), ==, "1");
+    }
+
+    fixture_teardown(&fixture);
+}
+
 /* ── Faces (0.53.0) ───────────────────────────────────────────────── */
 
 /* The agent.list entry for @id, borrowed from @reply. */
@@ -13356,6 +13449,8 @@ main(int argc, char *argv[])
                     test_on_first_use_does_not_start_the_computer);
     g_test_add_func("/daemon/computer/settings-refused-where-they-arrive",
                     test_computer_settings_refused_where_they_arrive);
+    g_test_add_func("/daemon/container-limits/three-levels-over-ipc",
+                    test_container_limits_three_levels_over_ipc);
     g_test_add_func("/daemon/face/create", test_create_with_a_face);
     g_test_add_func("/daemon/face/set-checked", test_set_face_checked);
     g_test_add_func("/daemon/face/list", test_list_reports_the_face);

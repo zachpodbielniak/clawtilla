@@ -36,6 +36,8 @@ clawt_incident_kind_get_type(
 			  "unstartable" },
 			{ CLAWT_INCIDENT_ROUTINE_FAILED, "CLAWT_INCIDENT_ROUTINE_FAILED",
 			  "routine-failed" },
+			{ CLAWT_INCIDENT_OUT_OF_MEMORY, "CLAWT_INCIDENT_OUT_OF_MEMORY",
+			  "out-of-memory" },
 			{ 0, NULL, NULL }
 		};
 		GType id = g_enum_register_static("ClawtIncidentKind", values);
@@ -142,6 +144,8 @@ clawt_incident_kind_label(
 		return "could not start";
 	case CLAWT_INCIDENT_ROUTINE_FAILED:
 		return "routine did not run";
+	case CLAWT_INCIDENT_OUT_OF_MEMORY:
+		return "ran out of memory";
 	}
 
 	return "failed";
@@ -1261,6 +1265,16 @@ next_step(
 		       "delegate it again with a narrower brief if it went in "
 		       "circles. If only a person can unblock it, tell your "
 		       "operator in one or two sentences and stop.";
+
+	case CLAWT_INCIDENT_OUT_OF_MEMORY:
+		return "The kernel killed a process inside the agent's computer "
+		       "because the machine reached its memory limit. Retrying "
+		       "the same work will hit the same limit: delegate it again "
+		       "with less parallelism (make -j2 rather than -j$(nproc)), "
+		       "or, if the work really needs more memory, tell your "
+		       "operator in one or two sentences with "
+		       "clawtilla_message_user which limit to raise "
+		       "(computer.container.memory) and stop.";
 
 	case CLAWT_INCIDENT_FAILED:
 	case CLAWT_INCIDENT_ROUTINE_FAILED:

@@ -434,7 +434,8 @@ gboolean
 clawt_distrobox_computer_apply_limits(ClawtDistroboxComputer  *self,
                                       GError                 **error)
 {
-    gboolean changed = FALSE;
+    ClawtContainerLimitsOutcome outcome = CLAWT_CONTAINER_LIMITS_UNCHANGED;
+    g_autofree gchar *note = NULL;
 
     g_return_val_if_fail(CLAWT_IS_DISTROBOX_COMPUTER(self), FALSE);
 
@@ -443,12 +444,15 @@ clawt_distrobox_computer_apply_limits(ClawtDistroboxComputer  *self,
 
     /* The local podman: distrobox has no remote connection to name. */
     if (!clawt_container_limits_apply(self->limits, NULL, self->name,
-                                      &changed, error))
+                                      &outcome, &note, error))
         return FALSE;
 
-    if (changed)
-        g_message("distrobox %s: limits applied with podman update",
-                  self->name);
+    if (outcome == CLAWT_CONTAINER_LIMITS_RESTART_REQUIRED)
+        g_warning("distrobox %s: %s", self->name, note);
+    else if (outcome != CLAWT_CONTAINER_LIMITS_UNCHANGED)
+        g_message("distrobox %s: limits applied with podman update (%s): %s",
+                  self->name, clawt_container_limits_outcome_nick(outcome),
+                  note);
 
     return TRUE;
 }

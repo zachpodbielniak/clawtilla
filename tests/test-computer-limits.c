@@ -358,10 +358,10 @@ test_limits_update_on_change(
 }
 
 /*
- * From the configuration to both backends: the same three keys reach a
- * container and a distrobox, a refused value stops the computer being
- * built (so the agent is told at once, naming the key), and the limits
- * are what the backend then holds.
+ * From the configuration to both backends: the same keys reach a
+ * container and a distrobox, a refused value is warned about and left
+ * out (the agent keeps its computer, and the warning names the key), and
+ * the limits are what the backend then holds.
  */
 static void
 test_limits_reach_both_backends(
@@ -415,7 +415,11 @@ test_limits_reach_both_backends(
 		}
 	}
 
-	/* A pair podman would refuse is refused before anything is built. */
+	/*
+	 * A pair podman would refuse costs the half that is wrong, said in a
+	 * warning naming the key, and not the computer: the agent stays in
+	 * the fleet with the memory limit it can have.
+	 */
 	{
 		g_autoptr(GError) error = NULL;
 		g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
@@ -427,13 +431,22 @@ test_limits_reach_both_backends(
 			"        memory: 4g\n"
 			"        memory_swap: 1g\n", &error);
 		g_autoptr(ClawtComputer) computer = NULL;
+		const ClawtContainerLimits *held;
 
 		g_assert_no_error(error);
+		g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+		                      "agent chief: computer.container.memory_swap*"
+		                      "not applied");
 		computer = clawt_computer_factory_create(
 			clawt_config_get_agent(config, "chief"), NULL, bridge, &error);
-		g_assert_null(computer);
-		g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID);
-		g_assert_nonnull(strstr(error->message, "memory_swap"));
+		g_test_assert_expected_messages();
+		g_assert_no_error(error);
+		g_assert_nonnull(computer);
+
+		held = clawt_container_computer_get_limits(
+			CLAWT_CONTAINER_COMPUTER(computer));
+		g_assert_cmpstr(clawt_container_limits_get_memory(held), ==, "4g");
+		g_assert_null(clawt_container_limits_get_memory_swap(held));
 	}
 }
 
@@ -481,22 +494,24 @@ test_limits_podman_integration(
 	{
 		g_autoptr(ClawtContainerLimits) limits =
 			limits_of(128, "256m", "512m");
-		gboolean changed = FALSE;
+		ClawtContainerLimitsOutcome outcome;
 
+		/* Created and never started: applied to a stopped machine. */
 		g_assert_true(clawt_container_limits_apply(limits, NULL, name,
-		                                           &changed, &error));
+		                                           &outcome, NULL, &error));
 		g_assert_no_error(error);
-		g_assert_true(changed);
+		g_assert_cmpint(outcome, ==, CLAWT_CONTAINER_LIMITS_APPLIED);
 
 		/* Again, unchanged: nothing to update. */
 		g_assert_true(clawt_container_limits_apply(limits, NULL, name,
-		                                           &changed, &error));
-		g_assert_false(changed);
+		                                           &outcome, NULL, &error));
+		g_assert_cmpint(outcome, ==, CLAWT_CONTAINER_LIMITS_UNCHANGED);
 
 		clawt_container_limits_set_pids_limit(limits, 64);
+		clawt_container_limits_set_cpus(limits, "1");
 		g_assert_true(clawt_container_limits_apply(limits, NULL, name,
-		                                           &changed, &error));
-		g_assert_true(changed);
+		                                           &outcome, NULL, &error));
+		g_assert_cmpint(outcome, ==, CLAWT_CONTAINER_LIMITS_APPLIED);
 	}
 
 	{
@@ -507,7 +522,8 @@ test_limits_podman_integration(
 			(const gchar * const *)inspect, 60, &status, &inspected, NULL,
 			&error));
 		g_assert_cmpint(status, ==, 0);
-		g_assert_cmpstr(g_strstrip(inspected), ==, "64 268435456 536870912");
+		g_assert_cmpstr(g_strstrip(inspected), ==,
+		                "64 268435456 536870912 1000000000 0 false");
 	}
 
 	{

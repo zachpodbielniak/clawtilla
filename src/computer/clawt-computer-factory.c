@@ -16,6 +16,8 @@
 #include "computer/clawt-vm-computer.h"
 #include "computer/clawt-ssh-computer.h"
 
+#include <string.h>
+
 static void
 apply_mounts(ClawtComputer    *computer,
              ClawtAgentConfig *agent_config,
@@ -898,22 +900,118 @@ ClawtContainerLimits *
 clawt_computer_factory_limits(ClawtAgentConfig *agent_config)
 {
     ClawtContainerLimits *limits;
+    guint i;
 
     g_return_val_if_fail(agent_config != NULL, NULL);
 
     limits = clawt_container_limits_new();
 
-    clawt_container_limits_set_pids_limit(
-        limits, clawt_agent_config_get_int(agent_config,
-                                           "computer.container.pids_limit"));
-    clawt_container_limits_set_memory(
-        limits, clawt_agent_config_get_string(agent_config,
-                                              "computer.container.memory"));
-    clawt_container_limits_set_memory_swap(
-        limits, clawt_agent_config_get_string(agent_config,
-                                              "computer.container.memory_swap"));
+    /*
+     * Each key at the most specific level that sets it. A whole number
+     * that is not one reads as unset here; the checked variant names it.
+     */
+    for (i = 0; i < CLAWT_CONTAINER_LIMIT_KEYS; i++) {
+        const gchar *key = clawt_container_limit_key_nth(i);
+
+        (void)clawt_container_limits_set_key(
+            limits, key,
+            clawt_agent_config_get_container_limit(agent_config, key, NULL,
+                                                   NULL),
+            NULL);
+    }
 
     return limits;
+}
+
+/* "team forge", "defaults" or "the agent", for a sentence about a value. */
+static gchar *
+limit_source_phrase(ClawtAgentConfig *agent_config, const gchar *key)
+{
+    ClawtSettingSource source = CLAWT_SETTING_FROM_NONE;
+    const gchar *team = NULL;
+
+    (void)clawt_agent_config_get_container_limit(agent_config, key, &source,
+                                                 &team);
+
+    switch (source) {
+    case CLAWT_SETTING_FROM_TEAM:
+        return g_strdup_printf("team %s", team);
+    case CLAWT_SETTING_FROM_DEFAULTS:
+        return g_strdup("defaults.container");
+    case CLAWT_SETTING_FROM_AGENT:
+    case CLAWT_SETTING_FROM_NONE:
+        break;
+    }
+
+    return g_strdup("the agent");
+}
+
+ClawtContainerLimits *
+clawt_computer_factory_limits_checked(ClawtAgentConfig *agent_config,
+                                      guint             host_cpus,
+                                      GPtrArray        *refusals)
+{
+    g_autoptr(ClawtContainerLimits) all = NULL;
+    g_autoptr(GPtrArray) why = NULL;
+    guint i;
+
+    g_return_val_if_fail(agent_config != NULL, NULL);
+
+    if (host_cpus == 0)
+        host_cpus = clawt_host_cpu_count();
+
+    all = clawt_container_limits_new();
+    why = g_ptr_array_new_with_free_func(g_free);
+
+    /* A whole-number key that is not a number is a refusal of its own. */
+    for (i = 0; i < CLAWT_CONTAINER_LIMIT_KEYS; i++) {
+        const gchar *key = clawt_container_limit_key_nth(i);
+        g_autoptr(GError) bad = NULL;
+
+        if (!clawt_container_limits_set_key(
+                all, key,
+                clawt_agent_config_get_container_limit(agent_config, key,
+                                                       NULL, NULL),
+                &bad))
+            g_ptr_array_add(why, g_strdup(bad->message));
+    }
+
+    {
+        ClawtContainerLimits *kept =
+            clawt_container_limits_drop_invalid(all, host_cpus, why);
+
+        /*
+         * Each refusal names its key first; say where that key's value
+         * came from, since a team default refused for one member is a
+         * different fix from a typo in the agent's own block.
+         */
+        for (i = 0; refusals != NULL && i < why->len; i++) {
+            const gchar *message = g_ptr_array_index(why, i);
+            const gchar *key = NULL;
+            guint k;
+
+            for (k = 0; k < CLAWT_CONTAINER_LIMIT_KEYS; k++) {
+                const gchar *candidate = clawt_container_limit_key_nth(k);
+
+                if (g_str_has_prefix(message, candidate) &&
+                    (key == NULL || strlen(candidate) > strlen(key)))
+                    key = candidate;
+            }
+
+            if (key != NULL) {
+                g_autofree gchar *from = limit_source_phrase(agent_config,
+                                                             key);
+
+                g_ptr_array_add(refusals, g_strdup_printf(
+                    "%s (set by %s); not applied", message, from));
+            } else {
+                g_ptr_array_add(refusals, g_strdup_printf(
+                    "%s; not applied", message));
+            }
+        }
+
+        return kept;
+    }
 }
 
 gboolean
@@ -940,17 +1038,23 @@ clawt_computer_factory_refresh(ClawtAgentConfig  *agent_config,
             CLAWT_COMPUTER_START_ON_FIRST_USE);
 
     if (type == CLAWT_COMPUTER_CONTAINER || type == CLAWT_COMPUTER_DISTROBOX) {
+        g_autoptr(GPtrArray) refusals = g_ptr_array_new_with_free_func(g_free);
         g_autoptr(ClawtContainerLimits) limits =
-            clawt_computer_factory_limits(agent_config);
+            clawt_computer_factory_limits_checked(agent_config, 0, refusals);
+        guint i;
 
         /*
-         * Refused here as well as where the value arrives: a hand-edited
+         * Checked here as well as where the value arrives: a hand-edited
          * clawtilla.yaml reaches this without passing `agent set`, and a
          * limit podman refuses would otherwise surface as a libpod error
-         * at the start, naming no key.
+         * at the start, naming no key. Warned and left out, not fatal:
+         * one bad limit costs that limit, not the agent its computer.
+         * The Fleet page shows the same sentences (container_limits).
          */
-        if (!clawt_container_limits_validate(limits, error))
-            return FALSE;
+        for (i = 0; i < refusals->len; i++)
+            g_warning("agent %s: %s",
+                      clawt_agent_config_get_id(agent_config),
+                      (const gchar *)g_ptr_array_index(refusals, i));
 
         if (type == CLAWT_COMPUTER_CONTAINER)
             clawt_container_computer_set_limits(

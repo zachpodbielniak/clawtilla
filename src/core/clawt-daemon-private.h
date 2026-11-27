@@ -675,6 +675,12 @@ struct _ClawtDaemon {
      */
     ClawtBroker       *broker;
     guint    sweep_source_id;
+
+    /* The container sampler (daemon-usage.c). */
+    guint    usage_source_id;
+    gboolean usage_in_flight;
+    gulong   usage_event_handler;
+
     gboolean running;
 };
 
@@ -984,8 +990,9 @@ void
 clawt_daemon_lifecycle_job_free(LifecycleJob *job);
 
 /*
- * Whether @key is one of computer.container.pids_limit, memory or
- * memory_swap -- the settings a running machine takes in place.
+ * Whether @key is one of the six computer.container limits -- cpus,
+ * cpu_weight, cpuset, memory, memory_swap, pids_limit -- the settings a
+ * running machine takes in place.
  */
 gboolean
 clawt_daemon_is_limit_key(
@@ -1001,6 +1008,54 @@ void
 clawt_daemon_apply_limits_in_place(
 	ClawtDaemon *self,
 	const gchar *agent_id
+);
+
+/*
+ * clawt_daemon_apply_limits_in_place() for every agent whose machine is
+ * running: after a fleet or team default changed (team.set, a reload),
+ * which can reach any of them.
+ */
+void
+clawt_daemon_apply_limits_everywhere(
+	ClawtDaemon *self
+);
+
+/*
+ * Defined in daemon-usage.c: the sampler of running container computers
+ * (`podman stats`, every CLAWT_USAGE_INTERVAL_SECONDS, one call per
+ * podman connection) and the OOM watch (podman's oom event and the
+ * cgroup's counter). Started with the daemon, stopped with it.
+ */
+void
+clawt_daemon_usage_start(
+	ClawtDaemon *self
+);
+
+void
+clawt_daemon_usage_stop(
+	ClawtDaemon *self
+);
+
+/*
+ * The agent.list members for a container agent's limits and use:
+ * container_limits (each key's effective value, where it came from, the
+ * agent's own, what is refused, how the last change landed, the host's
+ * size) and container_usage (the last sample). See docs/computers.org.
+ */
+void
+clawt_daemon_add_container_limits(
+	JsonBuilder *builder,
+	ClawtAgent  *agent
+);
+
+/*
+ * team.list's warnings about limits: a value refused and not applied, a
+ * change waiting for a restart, a machine sitting at its memory limit.
+ * NULL when there is nothing to say.
+ */
+GStrv
+clawt_daemon_container_limit_notes(
+	ClawtDaemon *self
 );
 
 ClawtMailbox *

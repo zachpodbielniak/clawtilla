@@ -1,5 +1,5 @@
 /*
- * clawt-container-limits.c - Process and memory limits for a podman machine
+ * clawt-container-limits.c - CPU, process and memory limits for a podman machine
  *
  * Copyright (C) 2026
  * SPDX-License-Identifier: AGPL-3.0-or-later
@@ -11,6 +11,7 @@
 #include "computer/clawt-container-limits.h"
 #include "computer/clawt-wake.h"
 
+#include <math.h>
 #include <string.h>
 
 /*
@@ -20,10 +21,26 @@
  */
 #define PODMAN_CALL_TIMEOUT_SECONDS (60)
 
+/* The most CPUs a cpuset may name; past any machine podman runs on. */
+#define CPUSET_MAX_CPUS (8192)
+
 struct _ClawtContainerLimits {
 	gint64  pids_limit;
 	gchar  *memory;
 	gchar  *memory_swap;
+	gchar  *cpus;
+	gint64  cpu_weight;
+	gchar  *cpuset;
+};
+
+/* The keys, in the order every surface lists them. */
+static const gchar *const limit_keys[CLAWT_CONTAINER_LIMIT_KEYS] = {
+	"computer.container.cpus",
+	"computer.container.cpu_weight",
+	"computer.container.cpuset",
+	"computer.container.memory",
+	"computer.container.memory_swap",
+	"computer.container.pids_limit"
 };
 
 G_DEFINE_BOXED_TYPE(ClawtContainerLimits, clawt_container_limits,
@@ -48,6 +65,9 @@ clawt_container_limits_copy(
 	copy->pids_limit = self->pids_limit;
 	copy->memory = g_strdup(self->memory);
 	copy->memory_swap = g_strdup(self->memory_swap);
+	copy->cpus = g_strdup(self->cpus);
+	copy->cpu_weight = self->cpu_weight;
+	copy->cpuset = g_strdup(self->cpuset);
 
 	return copy;
 }
@@ -61,6 +81,8 @@ clawt_container_limits_free(
 
 	g_free(self->memory);
 	g_free(self->memory_swap);
+	g_free(self->cpus);
+	g_free(self->cpuset);
 	g_free(self);
 }
 
@@ -146,14 +168,532 @@ clawt_container_limits_get_memory_swap(
 	return self->memory_swap;
 }
 
+void
+clawt_container_limits_set_cpus(
+	ClawtContainerLimits *self,
+	const gchar          *cpus
+){
+	g_return_if_fail(self != NULL);
+
+	g_free(self->cpus);
+	self->cpus = normalise_size(cpus);
+}
+
+const gchar *
+clawt_container_limits_get_cpus(
+	const ClawtContainerLimits *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+
+	return self->cpus;
+}
+
+void
+clawt_container_limits_set_cpu_weight(
+	ClawtContainerLimits *self,
+	gint64                cpu_weight
+){
+	g_return_if_fail(self != NULL);
+
+	self->cpu_weight = cpu_weight;
+}
+
+gint64
+clawt_container_limits_get_cpu_weight(
+	const ClawtContainerLimits *self
+){
+	g_return_val_if_fail(self != NULL, 0);
+
+	return self->cpu_weight;
+}
+
+void
+clawt_container_limits_set_cpuset(
+	ClawtContainerLimits *self,
+	const gchar          *cpuset
+){
+	g_return_if_fail(self != NULL);
+
+	g_free(self->cpuset);
+	self->cpuset = normalise_size(cpuset);
+}
+
+const gchar *
+clawt_container_limits_get_cpuset(
+	const ClawtContainerLimits *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+
+	return self->cpuset;
+}
+
 gboolean
 clawt_container_limits_is_empty(
 	const ClawtContainerLimits *self
 ){
 	return self == NULL ||
 	       (self->pids_limit == 0 && self->memory == NULL &&
-	        self->memory_swap == NULL);
+	        self->memory_swap == NULL && self->cpus == NULL &&
+	        self->cpu_weight == 0 && self->cpuset == NULL);
 }
+
+const gchar *
+clawt_container_limits_outcome_nick(
+	ClawtContainerLimitsOutcome outcome
+){
+	/* Every outcome named, no default: -Wswitch catches the next one. */
+	switch (outcome) {
+	case CLAWT_CONTAINER_LIMITS_UNCHANGED:
+		return "unchanged";
+	case CLAWT_CONTAINER_LIMITS_APPLIED:
+		return "applied";
+	case CLAWT_CONTAINER_LIMITS_APPLIED_LIVE:
+		return "live";
+	case CLAWT_CONTAINER_LIMITS_RESTART_REQUIRED:
+		return "restart-required";
+	}
+
+	return "unchanged";
+}
+
+const gchar *
+clawt_container_limit_key_nth(
+	guint n
+){
+	return (n < G_N_ELEMENTS(limit_keys)) ? limit_keys[n] : NULL;
+}
+
+gboolean
+clawt_container_limit_key_is(
+	const gchar *key
+){
+	guint i;
+
+	if (key == NULL)
+		return FALSE;
+
+	for (i = 0; i < G_N_ELEMENTS(limit_keys); i++)
+		if (g_strcmp0(limit_keys[i], key) == 0)
+			return TRUE;
+
+	return FALSE;
+}
+
+/*
+ * A whole number for one of the integer keys, or FALSE with the key
+ * named. Blank is 0, which is "unset" for both of them.
+ */
+static gboolean
+read_whole_number(
+	const gchar  *key,
+	const gchar  *value,
+	gint64       *out,
+	GError      **error
+){
+	g_autofree gchar *copy = NULL;
+
+	*out = 0;
+
+	if (value == NULL)
+		return TRUE;
+
+	copy = g_strstrip(g_strdup(value));
+
+	if (*copy == '\0')
+		return TRUE;
+
+	if (!g_ascii_string_to_signed(copy, 10, G_MININT64, G_MAXINT64, out,
+	                              NULL)) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+		            "%s is '%s', which is not a whole number", key, value);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+gboolean
+clawt_container_limits_set_key(
+	ClawtContainerLimits  *self,
+	const gchar           *key,
+	const gchar           *value,
+	GError               **error
+){
+	gint64 number;
+
+	g_return_val_if_fail(self != NULL, FALSE);
+	g_return_val_if_fail(key != NULL, FALSE);
+
+	if (g_strcmp0(key, "computer.container.cpus") == 0) {
+		clawt_container_limits_set_cpus(self, value);
+	} else if (g_strcmp0(key, "computer.container.cpuset") == 0) {
+		clawt_container_limits_set_cpuset(self, value);
+	} else if (g_strcmp0(key, "computer.container.memory") == 0) {
+		clawt_container_limits_set_memory(self, value);
+	} else if (g_strcmp0(key, "computer.container.memory_swap") == 0) {
+		clawt_container_limits_set_memory_swap(self, value);
+	} else if (g_strcmp0(key, "computer.container.cpu_weight") == 0) {
+		if (!read_whole_number(key, value, &number, error))
+			return FALSE;
+
+		clawt_container_limits_set_cpu_weight(self, number);
+	} else if (g_strcmp0(key, "computer.container.pids_limit") == 0) {
+		if (!read_whole_number(key, value, &number, error))
+			return FALSE;
+
+		clawt_container_limits_set_pids_limit(self, number);
+	} else {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		            "%s is not a container limit", key);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+gchar *
+clawt_container_limits_get_key(
+	const ClawtContainerLimits *self,
+	const gchar                *key
+){
+	g_return_val_if_fail(self != NULL, NULL);
+	g_return_val_if_fail(key != NULL, NULL);
+
+	if (g_strcmp0(key, "computer.container.cpus") == 0)
+		return g_strdup(self->cpus);
+
+	if (g_strcmp0(key, "computer.container.cpuset") == 0)
+		return g_strdup(self->cpuset);
+
+	if (g_strcmp0(key, "computer.container.memory") == 0)
+		return g_strdup(self->memory);
+
+	if (g_strcmp0(key, "computer.container.memory_swap") == 0)
+		return g_strdup(self->memory_swap);
+
+	if (g_strcmp0(key, "computer.container.cpu_weight") == 0)
+		return (self->cpu_weight != 0)
+		       ? g_strdup_printf("%" G_GINT64_FORMAT, self->cpu_weight)
+		       : NULL;
+
+	if (g_strcmp0(key, "computer.container.pids_limit") == 0)
+		return (self->pids_limit != 0)
+		       ? g_strdup_printf("%" G_GINT64_FORMAT, self->pids_limit)
+		       : NULL;
+
+	return NULL;
+}
+
+/* ── The host ────────────────────────────────────────────────────── */
+
+/*
+ * Every CPU in a kernel CPU list ("0-3,8"), marked in @mask, which holds
+ * CPUSET_MAX_CPUS entries. FALSE when @text is not such a list.
+ */
+static gboolean
+cpu_list_mark(
+	const gchar *text,
+	gboolean    *mask,
+	guint       *highest,
+	GError     **error
+){
+	g_auto(GStrv) parts = NULL;
+	guint i;
+	gboolean any;
+
+	any = FALSE;
+	*highest = 0;
+	parts = g_strsplit(text, ",", -1);
+
+	for (i = 0; parts[i] != NULL; i++) {
+		gchar *part = g_strstrip(parts[i]);
+		gchar *dash;
+		guint64 first;
+		guint64 last;
+		guint64 cpu;
+
+		dash = strchr(part, '-');
+
+		if (dash != NULL)
+			*dash = '\0';
+
+		/*
+		 * By hand rather than strtoul(), which takes a sign and leading
+		 * space: "-1" must not read as a CPU.
+		 */
+		if (!g_ascii_string_to_unsigned(part, 10, 0, CPUSET_MAX_CPUS - 1,
+		                                &first, NULL) ||
+		    (dash != NULL &&
+		     !g_ascii_string_to_unsigned(g_strstrip(dash + 1), 10, 0,
+		                                 CPUSET_MAX_CPUS - 1, &last,
+		                                 NULL))) {
+			g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+			            "'%s' is not a CPU list: write CPU numbers and "
+			            "ranges from 0, such as 0-7 or 0,2,4-6", text);
+			return FALSE;
+		}
+
+		if (dash == NULL)
+			last = first;
+
+		if (last < first) {
+			g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+			            "'%s' is not a CPU list: the range %" G_GUINT64_FORMAT
+			            "-%" G_GUINT64_FORMAT " runs backwards", text,
+			            first, last);
+			return FALSE;
+		}
+
+		for (cpu = first; cpu <= last; cpu++)
+			mask[cpu] = TRUE;
+
+		if ((guint)last > *highest)
+			*highest = (guint)last;
+
+		any = TRUE;
+	}
+
+	if (!any) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		            "'%s' names no CPUs", text);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+guint
+clawt_host_cpu_count(
+	void
+){
+	g_autofree gchar *online = NULL;
+	g_autofree gboolean *mask = NULL;
+	guint highest;
+	guint count;
+	guint i;
+
+	/*
+	 * The online list rather than g_get_num_processors(), which is this
+	 * process's affinity: a daemon started under taskset would otherwise
+	 * call a 20-CPU host a 4-CPU one and refuse every limit above that.
+	 */
+	if (g_file_get_contents("/sys/devices/system/cpu/online", &online, NULL,
+	                        NULL)) {
+		mask = g_new0(gboolean, CPUSET_MAX_CPUS);
+
+		if (cpu_list_mark(g_strstrip(online), mask, &highest, NULL)) {
+			count = 0;
+
+			for (i = 0; i <= highest; i++)
+				if (mask[i])
+					count++;
+
+			if (count > 0)
+				return count;
+		}
+	}
+
+	return MAX(g_get_num_processors(), 1);
+}
+
+gint64
+clawt_host_memory_bytes(
+	void
+){
+	g_autofree gchar *meminfo = NULL;
+	const gchar *line;
+	guint64 kib;
+
+	if (!g_file_get_contents("/proc/meminfo", &meminfo, NULL, NULL))
+		return 0;
+
+	line = strstr(meminfo, "MemTotal:");
+
+	if (line == NULL)
+		return 0;
+
+	line += strlen("MemTotal:");
+
+	while (*line == ' ' || *line == '\t')
+		line++;
+
+	kib = g_ascii_strtoull(line, NULL, 10);
+
+	return (gint64)MIN(kib, (guint64)G_MAXINT64 / 1024) * 1024;
+}
+
+/* ── CPU values ──────────────────────────────────────────────────── */
+
+gboolean
+clawt_container_cpus_parse(
+	const gchar  *text,
+	gint64       *nano_cpus,
+	GError      **error
+){
+	const gchar *p;
+	gint64 whole;
+	gint64 fraction;
+	guint places;
+
+	if (text == NULL || *text == '\0') {
+		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		                    "no CPU count given");
+		return FALSE;
+	}
+
+	/*
+	 * Digits by hand, as for a size: no sign, no exponent, no hex, and
+	 * no leading point -- ".5" is what podman reads and a person
+	 * misreads, so it is written 0.5.
+	 */
+	whole = 0;
+
+	for (p = text; g_ascii_isdigit(*p); p++) {
+		if (whole > 1000000) {
+			g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+			            "'%s' is too many CPUs", text);
+			return FALSE;
+		}
+
+		whole = whole * 10 + (*p - '0');
+	}
+
+	if (p == text) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		            "'%s' is not a CPU count: write a number such as 4 or "
+		            "2.5", text);
+		return FALSE;
+	}
+
+	fraction = 0;
+	places = 0;
+
+	if (*p == '.') {
+		for (p++; g_ascii_isdigit(*p); p++) {
+			if (places == 9) {
+				g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+				            "'%s' has more decimal places than podman "
+				            "keeps (nine)", text);
+				return FALSE;
+			}
+
+			fraction = fraction * 10 + (*p - '0');
+			places++;
+		}
+
+		if (places == 0) {
+			g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+			            "'%s' is not a CPU count: nothing follows the "
+			            "point", text);
+			return FALSE;
+		}
+	}
+
+	if (*p != '\0') {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		            "'%s' is not a CPU count: write a number such as 4 or "
+		            "2.5", text);
+		return FALSE;
+	}
+
+	for (; places < 9; places++)
+		fraction *= 10;
+
+	if (whole == 0 && fraction == 0) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		            "'%s' CPUs is no CPU at all: leave it unset for no "
+		            "limit", text);
+		return FALSE;
+	}
+
+	if (nano_cpus != NULL)
+		*nano_cpus = whole * 1000000000 + fraction;
+
+	return TRUE;
+}
+
+gchar *
+clawt_container_cpuset_normalise(
+	const gchar  *text,
+	guint         host_cpus,
+	GError      **error
+){
+	g_autofree gboolean *mask = NULL;
+	g_autoptr(GString) out = NULL;
+	guint highest;
+	guint i;
+
+	if (text == NULL || *text == '\0') {
+		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		                    "no CPU list given");
+		return NULL;
+	}
+
+	mask = g_new0(gboolean, CPUSET_MAX_CPUS);
+
+	if (!cpu_list_mark(text, mask, &highest, error))
+		return NULL;
+
+	if (host_cpus > 0 && highest >= host_cpus) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		            "'%s' names CPU %u, and this host has %u (0-%u)", text,
+		            highest, host_cpus, host_cpus - 1);
+		return NULL;
+	}
+
+	/* Ascending runs, a run of one written as a single number. */
+	out = g_string_new(NULL);
+
+	for (i = 0; i <= highest; i++) {
+		guint start;
+
+		if (!mask[i])
+			continue;
+
+		start = i;
+
+		while (i + 1 <= highest && mask[i + 1])
+			i++;
+
+		if (out->len > 0)
+			g_string_append_c(out, ',');
+
+		if (start == i)
+			g_string_append_printf(out, "%u", start);
+		else
+			g_string_append_printf(out, "%u-%u", start, i);
+	}
+
+	return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+gint64
+clawt_container_cpu_weight_to_shares(
+	gint64 cpu_weight
+){
+	gdouble exponent;
+	gdouble l;
+
+	if (cpu_weight <= 0)
+		return 0;
+
+	cpu_weight = CLAMP(cpu_weight, CLAWT_CONTAINER_CPU_WEIGHT_MIN,
+	                   CLAWT_CONTAINER_CPU_WEIGHT_MAX);
+
+	/*
+	 * The runtime computes weight = 10^e with e = (l^2 + 125 l)/612 -
+	 * 7/34 and l = log2(shares). Solved for l: l^2 + 125 l - 612 (log10
+	 * weight + 7/34) = 0, the positive root. The ends come out exact --
+	 * 1 -> l = 1, 100 -> l = 10, 10000 -> l = 18 -- and everything
+	 * between is rounded to the nearest whole share.
+	 */
+	exponent = log10((gdouble)cpu_weight) + 7.0 / 34.0;
+	l = (-125.0 + sqrt(125.0 * 125.0 + 4.0 * 612.0 * exponent)) / 2.0;
+
+	return CLAMP((gint64)llround(pow(2.0, l)), 2, 262144);
+}
+
+
 
 gboolean
 clawt_container_size_parse(
@@ -256,16 +796,76 @@ clawt_container_size_parse(
 	return TRUE;
 }
 
-gboolean
-clawt_container_limits_validate(
+/*
+ * The three CPU keys against a host of @host_cpus (0: no bound), each
+ * refusal naming its key.
+ */
+static gboolean
+validate_cpu(
+	const ClawtContainerLimits  *self,
+	guint                        host_cpus,
+	GError                     **error
+){
+	g_autoptr(GError) local = NULL;
+
+	if (self->cpus != NULL) {
+		gint64 nano = 0;
+
+		if (!clawt_container_cpus_parse(self->cpus, &nano, &local)) {
+			g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+			            "computer.container.cpus: %s", local->message);
+			return FALSE;
+		}
+
+		/*
+		 * More than the host has is not a limit -- it is a number that
+		 * looks like one and caps nothing -- and podman refuses it on
+		 * some versions, at the start rather than here.
+		 */
+		if (host_cpus > 0 && nano > (gint64)host_cpus * 1000000000) {
+			g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+			            "computer.container.cpus is %s, more than the %u "
+			            "CPUs this host has", self->cpus, host_cpus);
+			return FALSE;
+		}
+	}
+
+	if (self->cpu_weight != 0 &&
+	    (self->cpu_weight < CLAWT_CONTAINER_CPU_WEIGHT_MIN ||
+	     self->cpu_weight > CLAWT_CONTAINER_CPU_WEIGHT_MAX)) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+		            "computer.container.cpu_weight is %" G_GINT64_FORMAT
+		            ": it takes a cgroup v2 cpu.weight from %d to %d (100 "
+		            "is the default share), or 0 for podman's default",
+		            self->cpu_weight, CLAWT_CONTAINER_CPU_WEIGHT_MIN,
+		            CLAWT_CONTAINER_CPU_WEIGHT_MAX);
+		return FALSE;
+	}
+
+	if (self->cpuset != NULL) {
+		g_autofree gchar *canonical =
+			clawt_container_cpuset_normalise(self->cpuset, host_cpus,
+			                                 &local);
+
+		if (canonical == NULL) {
+			g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+			            "computer.container.cpuset: %s", local->message);
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
+/* The three memory and process keys, each refusal naming its key. */
+static gboolean
+validate_memory(
 	const ClawtContainerLimits  *self,
 	GError                     **error
 ){
 	g_autoptr(GError) local = NULL;
 	gint64 memory;
 	gint64 swap;
-
-	g_return_val_if_fail(self != NULL, FALSE);
 
 	if (self->pids_limit < -1) {
 		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
@@ -336,6 +936,125 @@ clawt_container_limits_validate(
 }
 
 gboolean
+clawt_container_limits_validate_for_host(
+	const ClawtContainerLimits  *self,
+	guint                        host_cpus,
+	GError                     **error
+){
+	g_return_val_if_fail(self != NULL, FALSE);
+
+	return validate_memory(self, error) &&
+	       validate_cpu(self, host_cpus, error);
+}
+
+gboolean
+clawt_container_limits_validate(
+	const ClawtContainerLimits  *self,
+	GError                     **error
+){
+	g_return_val_if_fail(self != NULL, FALSE);
+
+	/* Nothing CPU-shaped set: no reason to read /sys at all. */
+	if (self->cpus == NULL && self->cpuset == NULL)
+		return clawt_container_limits_validate_for_host(self, 0, error);
+
+	return clawt_container_limits_validate_for_host(
+		self, clawt_host_cpu_count(), error);
+}
+
+gboolean
+clawt_container_limits_validate_level(
+	const ClawtContainerLimits  *self,
+	guint                        host_cpus,
+	GError                     **error
+){
+	g_autoptr(ClawtContainerLimits) without = NULL;
+	g_autoptr(GError) local = NULL;
+
+	g_return_val_if_fail(self != NULL, FALSE);
+
+	if (self->memory_swap == NULL || self->memory != NULL)
+		return clawt_container_limits_validate_for_host(self, host_cpus,
+		                                                error);
+
+	/* A swap total alone: its spelling here, the pair where it lands. */
+	if (g_strcmp0(self->memory_swap, "-1") != 0 &&
+	    !clawt_container_size_parse(self->memory_swap, NULL, &local)) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+		            "computer.container.memory_swap: %s (or -1 for unlimited "
+		            "swap)", local->message);
+		return FALSE;
+	}
+
+	without = clawt_container_limits_copy(self);
+	clawt_container_limits_set_memory_swap(without, NULL);
+
+	return clawt_container_limits_validate_for_host(without, host_cpus,
+	                                                error);
+}
+
+ClawtContainerLimits *
+clawt_container_limits_drop_invalid(
+	const ClawtContainerLimits *self,
+	guint                       host_cpus,
+	GPtrArray                  *refusals
+){
+	ClawtContainerLimits *kept;
+	guint i;
+
+	g_return_val_if_fail(self != NULL, NULL);
+
+	kept = clawt_container_limits_new();
+
+	/*
+	 * Each key on its own first, in a set holding nothing else -- except
+	 * memory_swap, which only means anything beside memory and so is
+	 * judged with it, below.
+	 */
+	for (i = 0; i < G_N_ELEMENTS(limit_keys); i++) {
+		const gchar *key = limit_keys[i];
+		g_autofree gchar *value = NULL;
+		g_autoptr(ClawtContainerLimits) alone = NULL;
+		g_autoptr(GError) why = NULL;
+
+		if (g_strcmp0(key, "computer.container.memory_swap") == 0)
+			continue;
+
+		value = clawt_container_limits_get_key(self, key);
+
+		if (value == NULL)
+			continue;
+
+		alone = clawt_container_limits_new();
+		(void)clawt_container_limits_set_key(alone, key, value, NULL);
+
+		if (!clawt_container_limits_validate_for_host(alone, host_cpus,
+		                                              &why)) {
+			if (refusals != NULL)
+				g_ptr_array_add(refusals, g_strdup(why->message));
+			continue;
+		}
+
+		(void)clawt_container_limits_set_key(kept, key, value, NULL);
+	}
+
+	if (self->memory_swap != NULL) {
+		g_autoptr(GError) why = NULL;
+
+		clawt_container_limits_set_memory_swap(kept, self->memory_swap);
+
+		if (!clawt_container_limits_validate_for_host(kept, host_cpus,
+		                                              &why)) {
+			if (refusals != NULL)
+				g_ptr_array_add(refusals, g_strdup(why->message));
+			clawt_container_limits_set_memory_swap(kept, NULL);
+		}
+	}
+
+	return kept;
+}
+
+gboolean
 clawt_container_limits_swap_first(
 	const gchar *old_memory,
 	const gchar *old_swap,
@@ -375,6 +1094,36 @@ add_option(
 	g_ptr_array_add(out, g_strdup_printf("--%s=%s", name, value));
 }
 
+/*
+ * The CPU limits as options, in the spelling podman takes: the count as
+ * written, the weight as the shares it stands for, and the CPU list in
+ * its canonical form, so it compares equal to what inspect reports.
+ */
+static void
+add_cpu_options(
+	GPtrArray                  *out,
+	const ClawtContainerLimits *self
+){
+	if (self->cpus != NULL)
+		add_option(out, "cpus", self->cpus);
+
+	if (self->cpu_weight != 0) {
+		g_autofree gchar *shares = g_strdup_printf(
+			"%" G_GINT64_FORMAT,
+			clawt_container_cpu_weight_to_shares(self->cpu_weight));
+
+		add_option(out, "cpu-shares", shares);
+	}
+
+	if (self->cpuset != NULL) {
+		g_autofree gchar *canonical =
+			clawt_container_cpuset_normalise(self->cpuset, 0, NULL);
+
+		add_option(out, "cpuset-cpus",
+		           canonical != NULL ? canonical : self->cpuset);
+	}
+}
+
 GStrv
 clawt_container_limits_create_args(
 	const ClawtContainerLimits *self
@@ -395,6 +1144,9 @@ clawt_container_limits_create_args(
 
 	if (self != NULL && self->memory_swap != NULL)
 		add_option(out, "memory-swap", self->memory_swap);
+
+	if (self != NULL)
+		add_cpu_options(out, self);
 
 	g_ptr_array_add(out, NULL);
 
@@ -481,49 +1233,105 @@ clawt_container_limits_inspect_argv(
 }
 
 /*
- * The three numbers the inspect template prints, or FALSE when the text
- * is not that -- in which case every configured limit is applied rather
- * than guessed at.
+ * What the inspect template printed, read back.
+ *
+ * Older output -- the three memory and process numbers alone, which is
+ * what this printed before the CPU keys -- still reads: the CPU half is
+ * then unknown, and every CPU limit set is applied rather than guessed
+ * at. Anything that does not start with three numbers is unknown
+ * altogether, and every configured limit is applied.
  */
-static gboolean
-parse_inspected(
-	gchar       *inspected,
-	gint64      *pids,
-	gint64      *memory,
-	gint64      *swap
+typedef struct {
+	gboolean  known;
+	gint64    pids;
+	gint64    memory;
+	gint64    swap;
+	gboolean  cpu_known;
+	gint64    nano_cpus;
+	gint64    shares;
+	gboolean  running;
+	gchar    *cpuset;
+} Inspected;
+
+static void
+inspected_clear(
+	Inspected *inspected
 ){
+	g_clear_pointer(&inspected->cpuset, g_free);
+}
+
+static void
+parse_inspected(
+	const gchar *text,
+	Inspected   *out
+){
+	g_autofree gchar *copy = NULL;
 	g_auto(GStrv) words = NULL;
+	g_autoptr(GPtrArray) tokens = NULL;
+	gint64 values[5] = { 0, 0, 0, 0, 0 };
 	gchar *end;
-	guint count;
 	guint i;
-	gint64 values[3];
 
-	if (inspected == NULL)
-		return FALSE;
+	memset(out, 0, sizeof(*out));
 
-	words = g_strsplit_set(g_strstrip(inspected), " \t\n", -1);
-	count = 0;
+	if (text == NULL)
+		return;
 
-	for (i = 0; words[i] != NULL && count < 3; i++) {
-		if (*words[i] == '\0')
-			continue;
+	copy = g_strdup(text);
+	words = g_strsplit_set(g_strstrip(copy), " \t\n", -1);
+	tokens = g_ptr_array_new();
 
-		values[count] = g_ascii_strtoll(words[i], &end, 10);
+	for (i = 0; words[i] != NULL; i++)
+		if (*words[i] != '\0')
+			g_ptr_array_add(tokens, words[i]);
 
-		if (end == words[i] || *end != '\0')
-			return FALSE;
+	if (tokens->len < 3)
+		return;
 
-		count++;
+	for (i = 0; i < MIN(tokens->len, 5u); i++) {
+		const gchar *word = g_ptr_array_index(tokens, i);
+
+		values[i] = g_ascii_strtoll(word, &end, 10);
+
+		if (end == word || *end != '\0') {
+			/* The first three must be numbers; the CPU two may not be. */
+			if (i < 3)
+				return;
+
+			break;
+		}
 	}
 
-	if (count != 3)
-		return FALSE;
+	out->known = TRUE;
+	out->pids = values[0];
+	out->memory = values[1];
+	out->swap = values[2];
 
-	*pids = values[0];
-	*memory = values[1];
-	*swap = values[2];
+	if (i < 5 || tokens->len < 6)
+		return;
 
-	return TRUE;
+	out->cpu_known = TRUE;
+	out->nano_cpus = values[3];
+	out->shares = values[4];
+	out->running = g_strcmp0(g_ptr_array_index(tokens, 5), "true") == 0;
+
+	/* An unset cpuset prints nothing, so its absence is "none". */
+	if (tokens->len > 6)
+		out->cpuset = g_strdup(g_ptr_array_index(tokens, 6));
+}
+
+gboolean
+clawt_container_limits_inspected_running(
+	const gchar *inspected
+){
+	Inspected parsed;
+	gboolean running;
+
+	parse_inspected(inspected, &parsed);
+	running = parsed.running;
+	inspected_clear(&parsed);
+
+	return running;
 }
 
 GStrv
@@ -532,25 +1340,12 @@ clawt_container_limits_update_args(
 	const gchar                *inspected
 ){
 	GPtrArray *out;
-	gint64 have_pids;
-	gint64 have_memory;
-	gint64 have_swap;
-	gboolean known;
+	Inspected have;
 	gboolean memory_changed;
 
 	g_return_val_if_fail(self != NULL, NULL);
 
-	have_pids = 0;
-	have_memory = 0;
-	have_swap = 0;
-
-	{
-		/* parse_inspected() strips a copy; the copy is freed here. */
-		g_autofree gchar *copy = g_strdup(inspected);
-
-		known = parse_inspected(copy, &have_pids, &have_memory, &have_swap);
-	}
-
+	parse_inspected(inspected, &have);
 	out = g_ptr_array_new();
 
 	if (self->pids_limit != 0) {
@@ -558,9 +1353,9 @@ clawt_container_limits_update_args(
 		 * podman reports "no limit" as 0 or -1 depending on version and
 		 * cgroup driver; both mean the same as a configured -1.
 		 */
-		gboolean same = known &&
-		                (have_pids == self->pids_limit ||
-		                 (self->pids_limit == -1 && have_pids <= 0));
+		gboolean same = have.known &&
+		                (have.pids == self->pids_limit ||
+		                 (self->pids_limit == -1 && have.pids <= 0));
 
 		if (!same) {
 			g_autofree gchar *value =
@@ -576,7 +1371,7 @@ clawt_container_limits_update_args(
 		gint64 want = 0;
 
 		if (!clawt_container_size_parse(self->memory, &want, NULL) ||
-		    !known || have_memory != want) {
+		    !have.known || have.memory != want) {
 			add_option(out, "memory", self->memory);
 			memory_changed = TRUE;
 		}
@@ -592,17 +1387,54 @@ clawt_container_limits_update_args(
 		 * is refused unless the total moves in the same call.
 		 */
 		if (g_strcmp0(self->memory_swap, "-1") == 0)
-			same = known && have_swap <= 0;
+			same = have.known && have.swap <= 0;
 		else
-			same = known &&
+			same = have.known &&
 			       clawt_container_size_parse(self->memory_swap, &want,
 			                                  NULL) &&
-			       have_swap == want;
+			       have.swap == want;
 
 		if (!same || memory_changed)
 			add_option(out, "memory-swap", self->memory_swap);
 	}
 
+	/*
+	 * The CPU keys, each compared in podman's own unit: billionths of a
+	 * CPU, shares, and the CPU list in canonical form -- "0-3" and
+	 * "0,1,2,3" are the same set and must not cost an update.
+	 */
+	if (self->cpus != NULL) {
+		gint64 want = 0;
+
+		if (!clawt_container_cpus_parse(self->cpus, &want, NULL) ||
+		    !have.cpu_known || have.nano_cpus != want)
+			add_option(out, "cpus", self->cpus);
+	}
+
+	if (self->cpu_weight != 0) {
+		gint64 shares = clawt_container_cpu_weight_to_shares(self->cpu_weight);
+
+		if (!have.cpu_known || have.shares != shares) {
+			g_autofree gchar *value =
+				g_strdup_printf("%" G_GINT64_FORMAT, shares);
+
+			add_option(out, "cpu-shares", value);
+		}
+	}
+
+	if (self->cpuset != NULL) {
+		g_autofree gchar *want =
+			clawt_container_cpuset_normalise(self->cpuset, 0, NULL);
+		g_autofree gchar *now = (have.cpuset != NULL)
+			? clawt_container_cpuset_normalise(have.cpuset, 0, NULL)
+			: NULL;
+
+		if (want == NULL || !have.cpu_known || g_strcmp0(want, now) != 0)
+			add_option(out, "cpuset-cpus",
+			           want != NULL ? want : self->cpuset);
+	}
+
+	inspected_clear(&have);
 	g_ptr_array_add(out, NULL);
 
 	return (GStrv)g_ptr_array_free(out, FALSE);
@@ -697,25 +1529,89 @@ run_podman(
 	return FALSE;
 }
 
+/*
+ * The update options split into what podman can be asked for alone:
+ * each option by itself, except memory and memory-swap, which podman
+ * checks as a pair and so must travel together.
+ */
+static GPtrArray *
+option_groups(
+	const gchar * const *options
+){
+	GPtrArray *groups;
+	GPtrArray *memory;
+	gsize i;
+
+	groups = g_ptr_array_new_with_free_func((GDestroyNotify)g_strfreev);
+	memory = g_ptr_array_new_with_free_func(g_free);
+
+	for (i = 0; options != NULL && options[i] != NULL; i++) {
+		if (g_str_has_prefix(options[i], "--memory=") ||
+		    g_str_has_prefix(options[i], "--memory-swap=")) {
+			g_ptr_array_add(memory, g_strdup(options[i]));
+		} else {
+			GStrv one = g_new0(gchar *, 2);
+
+			one[0] = g_strdup(options[i]);
+			g_ptr_array_add(groups, one);
+		}
+	}
+
+	if (memory->len > 0) {
+		g_ptr_array_add(memory, NULL);
+		g_ptr_array_add(groups, g_ptr_array_free(memory, FALSE));
+	} else {
+		g_ptr_array_unref(memory);
+	}
+
+	return groups;
+}
+
+/* podman's complaint, its first line, for a sentence about it. */
+static gchar *
+first_line(
+	const gchar *text
+){
+	const gchar *newline;
+
+	if (text == NULL)
+		return g_strdup("it gave no reason");
+
+	newline = strchr(text, '\n');
+
+	return (newline != NULL) ? g_strndup(text, newline - text)
+	                         : g_strdup(text);
+}
+
 gboolean
 clawt_container_limits_apply(
-	const ClawtContainerLimits  *self,
-	const gchar                 *connection,
-	const gchar                 *name,
-	gboolean                    *changed,
-	GError                     **error
+	const ClawtContainerLimits   *self,
+	const gchar                  *connection,
+	const gchar                  *name,
+	ClawtContainerLimitsOutcome  *outcome,
+	gchar                       **note,
+	GError                      **error
 ){
 	g_autofree gchar *podman = NULL;
 	g_autofree gchar *inspected = NULL;
+	g_autofree gchar *wanted = NULL;
 	g_auto(GStrv) inspect = NULL;
 	g_auto(GStrv) options = NULL;
 	g_auto(GStrv) update = NULL;
 	g_autoptr(GError) local = NULL;
+	g_autoptr(GPtrArray) groups = NULL;
+	g_autoptr(GPtrArray) taken = NULL;
+	g_autoptr(GPtrArray) refused = NULL;
+	gboolean running;
+	guint i;
 
 	g_return_val_if_fail(name != NULL, FALSE);
 
-	if (changed != NULL)
-		*changed = FALSE;
+	if (outcome != NULL)
+		*outcome = CLAWT_CONTAINER_LIMITS_UNCHANGED;
+
+	if (note != NULL)
+		*note = NULL;
 
 	/* Nothing configured is nothing to ask podman about. */
 	if (clawt_container_limits_is_empty(self))
@@ -736,9 +1632,10 @@ clawt_container_limits_apply(
 	}
 
 	/*
-	 * What the machine has now. A failed inspect is not fatal: every
-	 * configured limit is then applied, which is the same request with
-	 * nothing skipped.
+	 * What the machine has now, and whether it is running. A failed
+	 * inspect is not fatal: every configured limit is then applied, which
+	 * is the same request with nothing skipped -- and the machine is
+	 * taken as stopped, so a refusal is reported rather than deferred.
 	 */
 	inspect = clawt_container_limits_inspect_argv(podman, connection, name);
 
@@ -748,6 +1645,7 @@ clawt_container_limits_apply(
 		g_clear_error(&local);
 	}
 
+	running = clawt_container_limits_inspected_running(inspected);
 	options = clawt_container_limits_update_args(self, inspected);
 	update = clawt_container_limits_update_argv(
 		podman, connection, name, (const gchar * const *)options);
@@ -755,13 +1653,101 @@ clawt_container_limits_apply(
 	if (update == NULL)
 		return TRUE;
 
-	if (!run_podman(update, NULL, error)) {
-		g_prefix_error(error, "the machine's limits could not be applied: ");
+	wanted = g_strjoinv(" ", options);
+
+	if (run_podman(update, NULL, &local)) {
+		if (outcome != NULL)
+			*outcome = running ? CLAWT_CONTAINER_LIMITS_APPLIED_LIVE
+			                   : CLAWT_CONTAINER_LIMITS_APPLIED;
+
+		if (note != NULL)
+			*note = g_strdup_printf(
+				running ? "%s changed in place on the running machine, "
+				          "with no restart"
+				        : "%s set on the stopped machine, before its start",
+				wanted);
+
+		return TRUE;
+	}
+
+	/*
+	 * A machine that is not running has no later to defer a refusal to:
+	 * the start is what is waiting on these limits, and starting without
+	 * them would be the quiet version of not having set them.
+	 */
+	if (!running) {
+		g_propagate_prefixed_error(error, g_steal_pointer(&local),
+		                           "the machine's limits could not be "
+		                           "applied: ");
 		return FALSE;
 	}
 
-	if (changed != NULL)
-		*changed = TRUE;
+	/*
+	 * Running, and podman said no to the lot. Each change on its own, so
+	 * the one podman cannot make live -- a cpuset, say -- does not hold
+	 * back the memory limit somebody set because memory is short now.
+	 */
+	g_debug("container %s: `podman update %s` refused on the running "
+	        "machine (%s); trying each change alone", name, wanted,
+	        local->message);
+	g_clear_error(&local);
+
+	groups = option_groups((const gchar * const *)options);
+	taken = g_ptr_array_new_with_free_func(g_free);
+	refused = g_ptr_array_new_with_free_func(g_free);
+
+	for (i = 0; i < groups->len; i++) {
+		GStrv group = g_ptr_array_index(groups, i);
+		g_auto(GStrv) one = clawt_container_limits_update_argv(
+			podman, connection, name, (const gchar * const *)group);
+		g_autofree gchar *words = g_strjoinv(" ", group);
+		g_autoptr(GError) why = NULL;
+
+		if (run_podman(one, NULL, &why)) {
+			g_ptr_array_add(taken, g_steal_pointer(&words));
+		} else {
+			g_autofree gchar *reason = first_line(why->message);
+
+			g_ptr_array_add(refused, g_strdup_printf("%s (%s)", words,
+			                                         reason));
+		}
+	}
+
+	if (refused->len == 0) {
+		g_ptr_array_add(taken, NULL);
+
+		if (outcome != NULL)
+			*outcome = CLAWT_CONTAINER_LIMITS_APPLIED_LIVE;
+
+		if (note != NULL) {
+			g_autofree gchar *list = g_strjoinv(" ", (gchar **)taken->pdata);
+
+			*note = g_strdup_printf("%s changed in place on the running "
+			                        "machine, with no restart", list);
+		}
+
+		return TRUE;
+	}
+
+	g_ptr_array_add(refused, NULL);
+	g_ptr_array_add(taken, NULL);
+
+	if (outcome != NULL)
+		*outcome = CLAWT_CONTAINER_LIMITS_RESTART_REQUIRED;
+
+	if (note != NULL) {
+		g_autofree gchar *refusals = g_strjoinv("; ", (gchar **)refused->pdata);
+		g_autofree gchar *list = g_strjoinv(" ", (gchar **)taken->pdata);
+
+		*note = (taken->len > 1)
+			? g_strdup_printf("restart required: podman would not change "
+			                  "%s on the running machine; they are applied "
+			                  "when it next starts. %s changed in place",
+			                  refusals, list)
+			: g_strdup_printf("restart required: podman would not change "
+			                  "%s on the running machine; they are applied "
+			                  "when it next starts", refusals);
+	}
 
 	return TRUE;
 }

@@ -321,6 +321,46 @@ static const ClawtSchemaEntry schema[] = {
   "Nothing is validated here. A reference podman cannot pull fails at "
   "start with podman's own error.", "0.1.0" },
 
+{ "defaults.container", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Container limits every container and distrobox agent gets unless its\n"
+  "team or the agent itself says otherwise.\n"
+  "\n"
+  "The same six keys as agents.computer.container -- cpus, cpu_weight,\n"
+  "cpuset, memory, memory_swap, pids_limit -- with the same meaning. Most\n"
+  "specific wins, key by key: the agent's own value, then its team's\n"
+  "(teams[].computer.container), then this. `clawtilla agent show` says\n"
+  "which one each value came from.\n"
+  "\n"
+  "Written here rather than under defaults.computer, which is already\n"
+  "the computer type.", "0.78.0" },
+
+{ "defaults.container.cpus", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The fleet's agents.computer.container.cpus.", "0.78.0" },
+
+{ "defaults.container.cpu_weight", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The fleet's agents.computer.container.cpu_weight.", "0.78.0" },
+
+{ "defaults.container.cpuset", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The fleet's agents.computer.container.cpuset.", "0.78.0" },
+
+{ "defaults.container.memory", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The fleet's agents.computer.container.memory.", "0.78.0" },
+
+{ "defaults.container.memory_swap", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The fleet's agents.computer.container.memory_swap. Checked against the\n"
+  "memory an agent ends up with, wherever that came from: a team's 8g\n"
+  "memory under a fleet swap total of 6g is refused.", "0.78.0" },
+
+{ "defaults.container.pids_limit", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The fleet's agents.computer.container.pids_limit.", "0.78.0" },
+
 { "defaults.workspace_root", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
   "~/.clawtilla/agents", NULL,
   "Where per-agent workspaces are scaffolded.\n"
@@ -1733,6 +1773,44 @@ static const ClawtSchemaEntry schema[] = {
   "as, whose API key `clawtilla broker key team:<id>` stores. An agent\n"
   "with its own agents.broker_server uses that one instead. Unused\n"
   "unless broker.enabled is on.", "0.24.0" },
+
+{ "teams.computer", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Defaults for the computers of this team's agents.", "0.78.0" },
+
+{ "teams.computer.container", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Container limits for this team's container and distrobox agents.\n"
+  "\n"
+  "Between the fleet's defaults.container and the agent's own\n"
+  "computer.container, key by key: a member's own cpus beats the team's,\n"
+  "and the team's memory still applies to it. Set from a client with\n"
+  "`clawtilla team set <team> computer.container.cpus 4`; running\n"
+  "members take the change in place.", "0.78.0" },
+
+{ "teams.computer.container.cpus", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The team's agents.computer.container.cpus.", "0.78.0" },
+
+{ "teams.computer.container.cpu_weight", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The team's agents.computer.container.cpu_weight.", "0.78.0" },
+
+{ "teams.computer.container.cpuset", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The team's agents.computer.container.cpuset.", "0.78.0" },
+
+{ "teams.computer.container.memory", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The team's agents.computer.container.memory.", "0.78.0" },
+
+{ "teams.computer.container.memory_swap", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The team's agents.computer.container.memory_swap.", "0.78.0" },
+
+{ "teams.computer.container.pids_limit", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The team's agents.computer.container.pids_limit.", "0.78.0" },
 
 /* ── computers ───────────────────────────────────────────────────── */
 { "computers", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
@@ -4368,7 +4446,11 @@ static const ClawtSchemaEntry schema[] = {
   "rather than your desktop.\n"
   "\n"
   "Applies to container and distrobox computers, at creation and then\n"
-  "with `podman update` whenever it changes.", "0.19.0" },
+  "with `podman update` whenever it changes -- in place on a running\n"
+  "machine. Inherited from the team (teams[].computer.container) and\n"
+  "then the fleet (defaults.container) when the agent does not set it.\n"
+  "An OOM kill inside the machine is filed as an incident naming this\n"
+  "limit.", "0.19.0" },
 
 { "agents.computer.container.memory_swap", CLAWT_SCHEMA_STRING,
   CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -4380,6 +4462,46 @@ static const ClawtSchemaEntry schema[] = {
   "again as memory. It needs memory to be set and must not be smaller\n"
   "than it; both are refused when they arrive rather than when podman\n"
   "reads them.", "0.19.0" },
+
+{ "agents.computer.container.cpus", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Most CPU time the machine may use, as a count of CPUs: 4, 2.5, 0.5.\n"
+  "\n"
+  "podman's --cpus, a hard cap: 4 on a 20-CPU host lets the machine use\n"
+  "four CPUs' worth of time however many it spreads across, so one\n"
+  "agent's make -j32 cannot take the host's load to 54. More than zero\n"
+  "and no more than this host's CPUs; refused otherwise, naming the key.\n"
+  "Unset means no cap.\n"
+  "\n"
+  "Takes its default from the agent's team (teams[].computer.container)\n"
+  "and then the fleet (defaults.container); the agent's own value wins.\n"
+  "Changed on a running machine with `podman update`, in place, with no\n"
+  "restart.", "0.78.0" },
+
+{ "agents.computer.container.cpu_weight", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "0", NULL,
+  "The machine's share of CPU when the host is busy: a cgroup v2\n"
+  "cpu.weight, 1 to 10000, where 100 is everybody's default.\n"
+  "\n"
+  "Relative, not a cap: an agent at 200 gets twice the CPU of one at 100\n"
+  "while they compete, and all of it when nobody else wants any. 0\n"
+  "leaves podman's default. podman takes shares rather than a weight, so\n"
+  "this is passed as --cpu-shares (100 -> 1024, 1 -> 2, 10000 -> 262144);\n"
+  "the runtime turns it back into cpu.weight.\n"
+  "\n"
+  "Inherited from the team and then the fleet like cpus, and changed in\n"
+  "place the same way.", "0.78.0" },
+
+{ "agents.computer.container.cpuset", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Which CPUs the machine may run on, e.g. 0-7 or 0,2,4-6.\n"
+  "\n"
+  "Pinning, for keeping a noisy agent off the cores something else\n"
+  "needs. Every CPU named must exist on this host. podman's\n"
+  "--cpuset-cpus; rootless podman needs the cpuset controller delegated\n"
+  "to the user's systemd (Fedora does not by default), and where podman\n"
+  "cannot change it on a running machine it is applied at the next\n"
+  "restart instead, and the Fleet page says so.", "0.78.0" },
 
 { "agents.computer.container.selinux_level", CLAWT_SCHEMA_STRING,
   CLAWT_SCHEMA_FLAG_NONE, "auto", NULL,

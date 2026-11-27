@@ -1052,8 +1052,9 @@ gboolean clawt_config_add_team(ClawtConfig  *self,
  * clawt_config_set_team_string:
  * @self: a #ClawtConfig
  * @team_id: which team
- * @key: the field, as it appears in the schema under `teams.`
- * @value: (nullable): the new value
+ * @key: the field, as it appears in the schema under `teams.`; a dotted
+ *   one, such as `computer.container.cpus`, is written nested
+ * @value: (nullable): the new value, or %NULL or "" to remove the key
  *
  * Returns: %TRUE when the team exists
  */
@@ -1186,6 +1187,80 @@ gint     clawt_agent_config_get_enum(ClawtAgentConfig *self,
  */
 GStrv    clawt_agent_config_get_string_list(ClawtAgentConfig *self,
                                             const gchar      *key);
+/**
+ * ClawtSettingSource:
+ * @CLAWT_SETTING_FROM_NONE: set nowhere; podman's own default applies
+ * @CLAWT_SETTING_FROM_AGENT: the agent's own block (or, for an agent on a
+ *   shared machine, that machine's entry under `computers:`)
+ * @CLAWT_SETTING_FROM_TEAM: the agent's team, `teams[].computer.container`
+ * @CLAWT_SETTING_FROM_DEFAULTS: the fleet, `defaults.container`
+ *
+ * Where a container limit an agent has came from.
+ */
+typedef enum {
+    CLAWT_SETTING_FROM_NONE = 0,
+    CLAWT_SETTING_FROM_AGENT,
+    CLAWT_SETTING_FROM_TEAM,
+    CLAWT_SETTING_FROM_DEFAULTS
+} ClawtSettingSource;
+
+/**
+ * clawt_setting_source_nick:
+ * @source: a #ClawtSettingSource
+ *
+ * Returns: (transfer none): "", "agent", "team" or "defaults"
+ */
+const gchar *clawt_setting_source_nick(ClawtSettingSource source);
+
+/**
+ * clawt_container_limit_fleet_key:
+ * @key: an agent-relative limit key, "computer.container.cpus"
+ *
+ * Where the fleet-wide default for @key is written: "defaults.container.cpus".
+ * Not `defaults.computer.container.*`, because `defaults.computer` is
+ * already the computer type, a scalar, and cannot also hold a section.
+ *
+ * Returns: (transfer full): the fleet key
+ */
+gchar *clawt_container_limit_fleet_key(const gchar *key);
+
+/**
+ * clawt_agent_config_get_container_limit:
+ * @self: a #ClawtAgentConfig
+ * @key: an agent-relative limit key, "computer.container.memory"
+ * @source: (out) (optional): where the value came from
+ * @team_id: (out) (optional) (transfer none) (nullable): the team, when
+ *   @source is %CLAWT_SETTING_FROM_TEAM
+ *
+ * One container limit as this agent has it: its own value, else its
+ * team's (`teams[].computer.container.<k>`), else the fleet's
+ * (`defaults.container.<k>`). Most specific wins, one key at a time -- a
+ * team's memory and an agent's own cpus combine.
+ *
+ * The one place the three levels are resolved, so the factory that
+ * applies the limits, `config validate`, agent.set's check and what
+ * `agent show` prints cannot disagree about where a value came from.
+ *
+ * Returns: (transfer none) (nullable): the value as written, or %NULL
+ *   when no level sets it
+ */
+const gchar *clawt_agent_config_get_container_limit(ClawtAgentConfig    *self,
+                                                    const gchar         *key,
+                                                    ClawtSettingSource  *source,
+                                                    const gchar        **team_id);
+
+/**
+ * clawt_config_get_team_container_limit:
+ * @self: a #ClawtConfig
+ * @team_id: (nullable): a team id
+ * @key: an agent-relative limit key, "computer.container.cpus"
+ *
+ * Returns: (transfer none) (nullable): what the team sets @key to
+ */
+const gchar *clawt_config_get_team_container_limit(ClawtConfig *self,
+                                                   const gchar *team_id,
+                                                   const gchar *key);
+
 /**
  * clawt_agent_config_validate_computer:
  * @self: a #ClawtAgentConfig
