@@ -3,7 +3,17 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 #include <clawtilla.h>
+#include "config/clawt-secret-ref-private.h"
+
+#include <glib/gstdio.h>
+
+#include <errno.h>
+#include <signal.h>
 #include <string.h>
+#include <sys/wait.h>
+
+/* Mirrors CLAWT_SECRET_COMMAND_REAP_GRACE_SECONDS in clawt-secret-ref.c. */
+#define TEST_REAP_GRACE_SECONDS (2)
 
 /**
  * test_command_success:
@@ -193,6 +203,121 @@ test_command_timeout_cleanup(void)
 	g_assert_cmpuint(g_hash_table_size(after), ==, g_hash_table_size(before));
 }
 
+/**
+ * child_state:
+ * @pid: a child of this process
+ *
+ * Look without reaping: waitid() with WNOWAIT leaves a zombie in place.
+ *
+ * Returns: 0 while @pid is alive, 1 once it has exited but is unreaped,
+ *   -1 once it is no longer this process's child at all (reaped)
+ */
+static gint
+child_state(GPid pid)
+{
+	siginfo_t info;
+
+	memset(&info, 0, sizeof(info));
+	if (waitid(P_PID, (id_t)pid, &info, WEXITED | WNOHANG | WNOWAIT) != 0) {
+		g_assert_cmpint(errno, ==, ECHILD);
+		return -1;
+	}
+	return info.si_pid == pid ? 1 : 0;
+}
+
+/**
+ * on_reap_deadline:
+ * @user_data: (type gboolean *): set when the test's own deadline passes
+ *
+ * Returns: %G_SOURCE_REMOVE
+ */
+static gboolean
+on_reap_deadline(gpointer user_data)
+{
+	*(gboolean *)user_data = TRUE;
+	return G_SOURCE_REMOVE;
+}
+
+/**
+ * test_command_unreaped_handoff:
+ *
+ * A timed-out command the kernel will not let go of -- uninterruptible
+ * sleep, simulated by the private hook that withholds SIGKILL -- must not
+ * hold the call past its deadline plus the reap grace.  The call returns
+ * CLAWT_ERROR_TIMEOUT, warns with the pid and locator, and leaves the
+ * pid with a child watch on the default context: still unreaped when the
+ * call returns, reaped by that watch once it dies, and no zombie after.
+ */
+static void
+test_command_unreaped_handoff(void)
+{
+	g_autoptr(ClawtSecretRef) ref = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GError) dir_error = NULL;
+	g_autoptr(GSource) deadline = NULL;
+	g_autofree gchar *directory = NULL;
+	g_autofree gchar *pid_path = NULL;
+	g_autofree gchar *locator = NULL;
+	g_autofree gchar *pid_text = NULL;
+	g_autofree gchar *value = NULL;
+	gint64 started;
+	gint64 elapsed;
+	gboolean expired = FALSE;
+	GPid pid;
+
+	directory = g_dir_make_tmp("test-secret-ref-XXXXXX", &dir_error);
+	g_assert_no_error(dir_error);
+	pid_path = g_build_filename(directory, "pid", NULL);
+	/* exec keeps the shell's pid, so the file names the direct child. */
+	locator = g_strdup_printf("sh -c 'echo $$ > %s; exec sleep 60'",
+		pid_path);
+	ref = clawt_secret_ref_new(CLAWT_SECRET_BACKEND_COMMAND, locator);
+
+	clawt_secret_ref_test_set_spare_on_timeout(TRUE);
+	g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+		"secret command (pid *) was not reaped * seconds after SIGKILL*");
+	started = g_get_monotonic_time();
+	value = clawt_secret_ref_resolve(ref, NULL, 1, &error);
+	elapsed = g_get_monotonic_time() - started;
+	g_test_assert_expected_messages();
+	clawt_secret_ref_test_set_spare_on_timeout(FALSE);
+
+	/* Deadline, then the whole grace, then returned: bounded both ways. */
+	g_assert_null(value);
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT);
+	g_assert_cmpint(elapsed, >=, (1 + TEST_REAP_GRACE_SECONDS) *
+		G_USEC_PER_SEC);
+	g_assert_cmpint(elapsed, <, (1 + TEST_REAP_GRACE_SECONDS + 2) *
+		G_USEC_PER_SEC);
+
+	/* The command is alive, still our child, and nobody has reaped it. */
+	g_assert_true(g_file_get_contents(pid_path, &pid_text, NULL, NULL));
+	pid = (GPid)g_ascii_strtoll(pid_text, NULL, 10);
+	g_assert_cmpint(pid, >, 0);
+	g_assert_cmpint(child_state(pid), ==, 0);
+
+	/*
+	 * Let it go, then iterate the default context until its watch has
+	 * reaped it.  The pidfd wakes the iteration; the test's own deadline
+	 * only bounds a failure.
+	 */
+	g_assert_cmpint(kill(pid, SIGKILL), ==, 0);
+	deadline = g_timeout_source_new_seconds(10);
+	g_source_set_callback(deadline, on_reap_deadline, &expired, NULL);
+	g_source_attach(deadline, NULL);
+	while (child_state(pid) != -1 && !expired)
+		g_main_context_iteration(NULL, TRUE);
+	g_source_destroy(deadline);
+	g_assert_false(expired);
+
+	/* No zombie: the pid is no longer a child of this process at all. */
+	g_assert_cmpint(waitpid(pid, NULL, WNOHANG), ==, -1);
+	g_assert_cmpint(errno, ==, ECHILD);
+
+	(void)g_remove(pid_path);
+	(void)g_rmdir(directory);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -215,5 +340,7 @@ main(int argc, char **argv)
 		"setsid sleep 4", test_command_timeout);
 	g_test_add_func("/secret-ref/command/timeout-cleanup",
 		test_command_timeout_cleanup);
+	g_test_add_func("/secret-ref/command/unreaped-handoff",
+		test_command_unreaped_handoff);
 	return g_test_run();
 }

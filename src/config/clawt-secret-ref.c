@@ -9,6 +9,7 @@
 
 #include "clawtilla.h"
 #include "config/clawt-secret-ref.h"
+#include "config/clawt-secret-ref-private.h"
 
 #include <yaml-glib.h>
 #include <string.h>
@@ -197,22 +198,48 @@ resolve_env(const gchar *locator, GError **error)
 }
 
 /*
+ * How long a timed-out command may take to be reaped after its SIGKILL.
+ * SIGKILL cannot be caught, but it is acted on only when the process next
+ * leaves the kernel: one in uninterruptible sleep -- a hung NFS or FUSE
+ * mount, a wedged socket on one -- is not reaped until that wait ends,
+ * which may be never.  The deadline exists so that such a command cannot
+ * hang startup, so the reap is bounded too.
+ */
+#define CLAWT_SECRET_COMMAND_REAP_GRACE_SECONDS (2)
+
+/*
+ * Test only (clawt-secret-ref-private.h): when set, a timed-out command is
+ * not killed, so the reap grace runs out exactly as it would for a child
+ * the kernel cannot kill yet.
+ */
+static gint spare_on_timeout = 0;
+
+/*
  * The state of one command resolution.  Everything that can hold a
  * descriptor -- the stdout pipe's source, the child watch's pidfd and the
  * deadline -- is attached to the private context that owns this, so the
  * calling thread releases all of it before resolve_command() returns.
  */
 typedef struct {
-	GPid      pid;
-	gint      stdout_fd;
-	GSource  *stdout_source;
-	GSource  *child_source;
-	GString  *output;
-	gint      wait_status;
-	gboolean  exited;
-	gboolean  timed_out;
-	gint      read_errno;
+	GMainContext *context;
+	GPid          pid;
+	gint          stdout_fd;
+	GSource      *stdout_source;
+	GSource      *child_source;
+	GSource      *grace_source;
+	GString      *output;
+	gint          wait_status;
+	gboolean      exited;
+	gboolean      timed_out;
+	gboolean      grace_expired;
+	gint          read_errno;
 } CommandWait;
+
+void
+clawt_secret_ref_test_set_spare_on_timeout(gboolean spare)
+{
+	g_atomic_int_set(&spare_on_timeout, spare ? 1 : 0);
+}
 
 /**
  * command_child_setup:
@@ -307,13 +334,67 @@ on_command_exited(GPid pid, gint wait_status, gpointer user_data)
 }
 
 /**
+ * on_command_reap_grace:
+ * @user_data: the #CommandWait
+ *
+ * The killed command has not been reaped within
+ * %CLAWT_SECRET_COMMAND_REAP_GRACE_SECONDS; stop waiting for it.
+ *
+ * Returns: %G_SOURCE_REMOVE
+ */
+static gboolean
+on_command_reap_grace(gpointer user_data)
+{
+	CommandWait *wait = user_data;
+
+	wait->grace_expired = TRUE;
+	return G_SOURCE_REMOVE;
+}
+
+/**
+ * command_kill:
+ * @wait: the resolution to end
+ *
+ * SIGKILL the command's process group and the command itself, close stdout
+ * rather than drain it (an escaped descendant may hold it open), and start
+ * the reap grace on the private context.
+ */
+static void
+command_kill(CommandWait *wait)
+{
+	/*
+	 * The test hook leaves the command running, so the grace below runs out
+	 * as it would for a child stuck in uninterruptible sleep.
+	 */
+	if (!g_atomic_int_get(&spare_on_timeout)) {
+		/* Kill descendants too, including when the child already exited. */
+		(void)kill(-wait->pid, SIGKILL);
+		/*
+		 * And the child itself, in case it left the group.  Until its watch
+		 * has reaped it the pid cannot have been reused.
+		 */
+		if (!wait->exited)
+			(void)kill(wait->pid, SIGKILL);
+	}
+	command_close_stdout(wait);
+
+	if (wait->grace_source == NULL) {
+		wait->grace_source = g_timeout_source_new(0);
+		g_source_set_ready_time(wait->grace_source, g_get_monotonic_time() +
+			(gint64)CLAWT_SECRET_COMMAND_REAP_GRACE_SECONDS * G_USEC_PER_SEC);
+		g_source_set_callback(wait->grace_source, on_command_reap_grace,
+			wait, NULL);
+		g_source_attach(wait->grace_source, wait->context);
+	}
+}
+
+/**
  * on_command_timeout:
  * @user_data: the #CommandWait
  *
- * Kill the command's process group and stop reading.  An escaped descendant
- * may retain stdout, so the read end is closed rather than drained.  The
- * direct child is still reaped by its watch before resolve_command()
- * returns; SIGKILL cannot be caught, so that wait is short.
+ * The deadline passed: kill the command and stop reading.  The direct child
+ * is then reaped by its watch before resolve_command() returns -- unless it
+ * cannot be reaped within the grace, see resolve_command().
  *
  * Returns: %G_SOURCE_REMOVE
  */
@@ -323,16 +404,24 @@ on_command_timeout(gpointer user_data)
 	CommandWait *wait = user_data;
 
 	wait->timed_out = TRUE;
-	/* Kill descendants too, including when the direct child already exited. */
-	(void)kill(-wait->pid, SIGKILL);
-	/*
-	 * And the child itself, in case it left the group.  Until its watch has
-	 * reaped it the pid cannot have been reused.
-	 */
-	if (!wait->exited)
-		(void)kill(wait->pid, SIGKILL);
-	command_close_stdout(wait);
+	command_kill(wait);
 	return G_SOURCE_REMOVE;
+}
+
+/**
+ * on_abandoned_command_exited:
+ * @pid: a command resolve_command() stopped waiting for
+ * @wait_status: unused
+ * @user_data: unused
+ *
+ * Reap, on the default main context, a command whose reap grace ran out.
+ */
+static void
+on_abandoned_command_exited(GPid pid, gint wait_status, gpointer user_data)
+{
+	(void)wait_status;
+	(void)user_data;
+	g_spawn_close_pid(pid);
 }
 
 /*
@@ -350,6 +439,13 @@ on_command_timeout(gpointer user_data)
  * and the deadline are all sources on the private context, so every
  * descriptor the call opened is closed on the calling thread before it
  * returns.
+ *
+ * One exception.  A command killed at its deadline is normally reaped at
+ * once, but a process in uninterruptible sleep is not reaped until that
+ * sleep ends.  After %CLAWT_SECRET_COMMAND_REAP_GRACE_SECONDS this stops
+ * waiting -- the timeout must still bound startup -- and hands the pid to
+ * a child watch on the global default context, which reaps it whenever the
+ * kernel lets it go.  Until then that watch owns the command's pidfd.
  */
 static gchar *
 resolve_command(const gchar *locator,
@@ -375,6 +471,7 @@ resolve_command(const gchar *locator,
 	 * stdin; stderr silenced; PATH searched; and the pipe's read end
 	 * close-on-exec, so no other child inherits it.
 	 */
+	wait.context = NULL;
 	wait.pid = 0;
 	wait.stdout_fd = -1;
 	if (!g_spawn_async_with_pipes_and_fds(NULL, (const gchar * const *)argv,
@@ -392,9 +489,11 @@ resolve_command(const gchar *locator,
 	wait.output = output;
 	wait.stdout_source = NULL;
 	wait.child_source = NULL;
+	wait.grace_source = NULL;
 	wait.wait_status = 0;
 	wait.exited = FALSE;
 	wait.timed_out = FALSE;
+	wait.grace_expired = FALSE;
 	wait.read_errno = 0;
 
 	/*
@@ -402,14 +501,13 @@ resolve_command(const gchar *locator,
 	 * we wait -- the daemon may be inside a callback of the default one.
 	 */
 	context = g_main_context_new();
+	wait.context = context;
 	g_main_context_push_thread_default(context);
 
 	if (!g_unix_set_fd_nonblocking(wait.stdout_fd, TRUE, NULL)) {
 		/* A blocking read would ignore the deadline; never risk it. */
 		wait.read_errno = errno != 0 ? errno : EIO;
-		(void)close(wait.stdout_fd);
-		wait.stdout_fd = -1;
-		(void)kill(-wait.pid, SIGKILL);
+		command_kill(&wait);
 	} else {
 		wait.stdout_source = g_unix_fd_source_new(wait.stdout_fd,
 			G_IO_IN | G_IO_HUP | G_IO_ERR);
@@ -442,18 +540,35 @@ resolve_command(const gchar *locator,
 	/*
 	 * Done when the child has been reaped and stdout is closed: at end of
 	 * file normally, or by the deadline when a descendant holds it open.
-	 * A timed-out child is still reaped here, after its SIGKILL.
+	 * A killed child is reaped here too, unless the reap grace runs out.
 	 */
-	while (!wait.exited || wait.stdout_fd >= 0)
+	while ((!wait.exited || wait.stdout_fd >= 0) && !wait.grace_expired)
 		g_main_context_iteration(context, TRUE);
 
 	/* Release every source while the context is still ours to iterate. */
 	if (timeout_source != NULL)
 		g_source_destroy(timeout_source);
+	if (wait.grace_source != NULL) {
+		g_source_destroy(wait.grace_source);
+		g_clear_pointer(&wait.grace_source, g_source_unref);
+	}
 	command_close_stdout(&wait);
 	g_source_destroy(wait.child_source);
 	g_clear_pointer(&wait.child_source, g_source_unref);
 	g_main_context_pop_thread_default(context);
+
+	/*
+	 * Not reaped within the grace: the private watch is gone, so give the
+	 * pid to one on the global default context rather than leave a zombie.
+	 * The locator names it; the output is never logged.
+	 */
+	if (!wait.exited) {
+		g_child_watch_add(wait.pid, on_abandoned_command_exited, NULL);
+		g_warning("secret command (pid %" G_PID_FORMAT ") was not reaped "
+		          "%d seconds after SIGKILL; the main loop will reap it "
+		          "when it exits: %s", wait.pid,
+		          CLAWT_SECRET_COMMAND_REAP_GRACE_SECONDS, locator);
+	}
 
 	if (wait.timed_out) {
 		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT,
