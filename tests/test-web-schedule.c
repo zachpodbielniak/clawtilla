@@ -53,25 +53,6 @@ clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtPage view)
 	return HTMX_ELEMENT(htmx_div_new());
 }
 
-/* The same box web-fleet.c draws; the page uses it for a refusal. */
-HtmxDiv *
-clawt_web_notice(const gchar *text, const gchar *tone)
-{
-	g_autoptr(HtmxDiv) box = htmx_div_new();
-
-	htmx_element_add_class(HTMX_ELEMENT(box), "notice");
-
-	if (tone != NULL && *tone != '\0') {
-		g_autofree gchar *css = g_strdup_printf("notice-%s", tone);
-
-		htmx_element_add_class(HTMX_ELEMENT(box), css);
-	}
-
-	htmx_node_set_text_content(HTMX_NODE(box), text != NULL ? text : "");
-
-	return (HtmxDiv *)g_steal_pointer(&box);
-}
-
 /* ── Canned replies ──────────────────────────────────────────────── */
 
 static JsonNode *
