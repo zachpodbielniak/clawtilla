@@ -137,4 +137,34 @@ gboolean clawt_policy_provider_gates_native_tools(const gchar *provider);
  */
 gboolean clawt_policy_native_is_clawtilla(const gchar *tool);
 
+/**
+ * clawt_policy_tool_reads_locally:
+ * @tool: a tool name as Claude Code reports it
+ *
+ * Whether @tool only reads this machine's files: Read, Glob, Grep and
+ * LS.  Not WebFetch or WebSearch, which are classed as reads but reach
+ * the network, and not Bash, which can do anything.
+ *
+ * Returns: %TRUE for a local read
+ */
+gboolean clawt_policy_tool_reads_locally(const gchar *tool);
+
+/**
+ * clawt_policy_agent_reads_without_daemon:
+ * @agent: the agent the hook is written for
+ *
+ * Whether the policy hook may let @agent's local reads
+ * (clawt_policy_tool_reads_locally()) run when it cannot reach the
+ * daemon to ask.
+ *
+ * Only when the answer is already known: every one of those tools is
+ * allowed by @agent's rules, so the daemon would have said yes anyway.
+ * A rule that asks about or refuses any of them, or a fleet with
+ * federation on -- where a linked fleet's grant can cap a turn by
+ * something only the daemon knows -- keeps them failing closed.
+ *
+ * Returns: %TRUE when an unreachable daemon may be answered locally
+ */
+gboolean clawt_policy_agent_reads_without_daemon(ClawtAgentConfig *agent);
+
 G_END_DECLS

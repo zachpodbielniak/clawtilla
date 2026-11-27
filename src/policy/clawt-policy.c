@@ -236,3 +236,44 @@ clawt_policy_native_is_clawtilla(const gchar *tool)
 {
     return tool != NULL && g_str_has_prefix(tool, "mcp__clawtilla__");
 }
+
+/*
+ * The tools that read this machine and nothing else.  Kept apart from
+ * NATIVE_TOOLS on purpose: that table says what class a tool is, this
+ * one says which of a class may be answered without the daemon, and
+ * WebFetch is a read that is not on it.
+ */
+static const gchar *const LOCAL_READS[] = { "Read", "Glob", "Grep", "LS" };
+
+gboolean
+clawt_policy_tool_reads_locally(const gchar *tool)
+{
+    gsize i;
+
+    for (i = 0; tool != NULL && i < G_N_ELEMENTS(LOCAL_READS); i++)
+        if (g_strcmp0(LOCAL_READS[i], tool) == 0)
+            return TRUE;
+
+    return FALSE;
+}
+
+gboolean
+clawt_policy_agent_reads_without_daemon(ClawtAgentConfig *agent)
+{
+    ClawtConfig *fleet;
+    gsize i;
+
+    if (agent == NULL)
+        return FALSE;
+
+    fleet = clawt_agent_config_get_config(agent);
+    if (fleet != NULL && clawt_config_get_boolean(fleet, "federation.enabled"))
+        return FALSE;
+
+    for (i = 0; i < G_N_ELEMENTS(LOCAL_READS); i++)
+        if (clawt_policy_mode_for(agent, LOCAL_READS[i], CLAWT_ACTION_READ,
+                                  NULL) != CLAWT_POLICY_ALLOW)
+            return FALSE;
+
+    return TRUE;
+}

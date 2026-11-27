@@ -1069,6 +1069,47 @@ clawt_client_connect(ClawtClient *self, GError **error)
     return TRUE;
 }
 
+/* ── Connecting, again, for a moment ─────────────────────────────── */
+
+/* A connect failure that a short wait can cure. */
+static gboolean
+connect_error_is_transient(const GError *error)
+{
+    return g_error_matches(error, G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK) ||
+           g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CONNECTION_REFUSED) ||
+           g_error_matches(error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND);
+}
+
+gboolean
+clawt_client_connect_with_retry(ClawtClient *self, guint budget_ms,
+                                GError **error)
+{
+    gint64 deadline;
+    gulong wait_ms = 50;
+
+    g_return_val_if_fail(CLAWT_IS_CLIENT(self), FALSE);
+
+    deadline = g_get_monotonic_time() + (gint64)budget_ms * 1000;
+
+    for (;;) {
+        g_autoptr(GError) attempt = NULL;
+        gint64 left_us;
+
+        if (clawt_client_connect(self, &attempt))
+            return TRUE;
+
+        left_us = deadline - g_get_monotonic_time();
+
+        if (!connect_error_is_transient(attempt) || left_us <= 0) {
+            g_propagate_error(error, g_steal_pointer(&attempt));
+            return FALSE;
+        }
+
+        g_usleep(MIN((gint64)wait_ms * 1000, left_us));
+        wait_ms = MIN(wait_ms * 2, 1000);
+    }
+}
+
 /* ── Connecting without blocking ─────────────────────────────────── */
 
 /*

@@ -164,6 +164,30 @@ const gchar *clawt_client_get_device_id(ClawtClient *self);
  * Returns: %TRUE if connected
  */
 gboolean clawt_client_connect(ClawtClient *self, GError **error);
+
+/**
+ * clawt_client_connect_with_retry:
+ * @self: a #ClawtClient
+ * @budget_ms: how long to keep trying, in milliseconds; 0 tries once
+ * @error: (out) (optional): return location for a #GError
+ *
+ * clawt_client_connect(), tried again while the failure is one that a
+ * moment's wait can cure: %G_IO_ERROR_WOULD_BLOCK, which is a daemon
+ * whose listen backlog is full because its loop is behind, and
+ * %G_IO_ERROR_CONNECTION_REFUSED or %G_IO_ERROR_NOT_FOUND, which is a
+ * socket between one daemon and the next.  The wait starts at 50 ms and
+ * doubles to at most a second.  Any other failure -- a refused token, a
+ * hello that timed out -- is returned at once: trying it again would
+ * only repeat it.
+ *
+ * For a short-lived caller that must have an answer, such as the policy
+ * hook.  A long-lived client wants clawt_client_set_auto_reconnect().
+ *
+ * Returns: %TRUE if connected
+ */
+gboolean clawt_client_connect_with_retry(ClawtClient *self,
+                                         guint        budget_ms,
+                                         GError     **error);
 /*
  * The non-blocking form, for a host that has lent us its main loop.
  *

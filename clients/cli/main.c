@@ -3491,7 +3491,20 @@ account_login(const gchar *provider, const gchar *config_dir)
  * call -- blocks rather than allows: the hook exists because somebody
  * wrote a rule, and a rule that lapses when the daemon restarts is not
  * one. The daemon writes the settings that run this; nobody types it.
+ *
+ * Two allowances, both for a daemon that is alive but behind, which is
+ * not the same as a daemon that is gone.  The connect is tried again for
+ * a few seconds while it fails the way a full listen backlog or a
+ * restart fails (clawt_client_connect_with_retry()), so a loop that is a
+ * second late costs a second rather than a refused call.  And with
+ * --offline-reads, which the daemon writes only for an agent whose rules
+ * already allow every local read, Read, Glob, Grep and LS run when the
+ * daemon still cannot be reached: the answer is known, and an agent that
+ * cannot even read cannot look into why its daemon is not answering.
+ * Everything else still fails closed.
  */
+#define POLICY_HOOK_CONNECT_BUDGET_MS 5000
+
 static gint
 cmd_policy_hook(int argc, char *argv[])
 {
@@ -3506,10 +3519,13 @@ cmd_policy_hook(int argc, char *argv[])
     g_autoptr(ClawtClient) client = NULL;
     g_autoptr(JsonNode) reply = NULL;
     g_autoptr(JsonBuilder) builder = json_builder_new();
+    gboolean offline_reads = FALSE;
     GOptionEntry hook_entries[] = {
         { "agent", 0, 0, G_OPTION_ARG_STRING, &agent, "Which agent", "ID" },
         { "token-file", 0, 0, G_OPTION_ARG_FILENAME, &token_file, "The agent's token", "PATH" },
         { "socket", 0, 0, G_OPTION_ARG_FILENAME, &socket_path, "The daemon's socket", "PATH" },
+        { "offline-reads", 0, 0, G_OPTION_ARG_NONE, &offline_reads,
+          "Let local reads run when the daemon cannot be reached", NULL },
         { NULL, 0, 0, G_OPTION_ARG_NONE, NULL, NULL, NULL }
     };
     g_autoptr(GOptionContext) context = g_option_context_new("- judge one tool call");
@@ -3563,10 +3579,18 @@ cmd_policy_hook(int argc, char *argv[])
     }
 
     client = clawt_client_new(socket_path);
-    if (!clawt_client_connect(client, &error)) {
-        g_printerr("Blocked: the policy hook could not reach the clawtilla daemon (%s), "
-                   "and a rule that lapses when the daemon is away is not a rule.\n",
-                   error->message);
+    if (!clawt_client_connect_with_retry(client, POLICY_HOOK_CONNECT_BUDGET_MS, &error)) {
+        if (offline_reads && clawt_policy_tool_reads_locally(tool)) {
+            g_printerr("clawtilla policy-hook: the daemon could not be reached (%s); "
+                       "%s runs because this agent's rules allow every local read.\n",
+                       error->message, tool);
+            return 0;
+        }
+
+        g_printerr("Blocked: the policy hook could not reach the clawtilla daemon (%s) "
+                   "after trying for %d seconds, and a rule that lapses when the daemon "
+                   "is away is not a rule.\n",
+                   error->message, POLICY_HOOK_CONNECT_BUDGET_MS / 1000);
         return 2;
     }
 

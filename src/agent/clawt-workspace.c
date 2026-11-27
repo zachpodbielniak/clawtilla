@@ -1132,10 +1132,17 @@ write_claude_settings(ClawtAgentConfig *agent, const gchar *daemon_socket,
         g_autofree gchar *q_token = g_shell_quote(token_file);
         g_autofree gchar *q_socket = daemon_socket != NULL ? g_shell_quote(daemon_socket) : NULL;
 
-        command = g_strdup_printf("%s policy-hook --agent %s --token-file %s%s%s",
+        /*
+         * --offline-reads only when the rules already allow every local
+         * read, so the hook's answer without the daemon is the one the
+         * daemon would have given (clawt_policy_agent_reads_without_daemon).
+         */
+        command = g_strdup_printf("%s policy-hook --agent %s --token-file %s%s%s%s",
                                   q_cli, q_agent, q_token,
                                   q_socket != NULL ? " --socket " : "",
-                                  q_socket != NULL ? q_socket : "");
+                                  q_socket != NULL ? q_socket : "",
+                                  clawt_policy_agent_reads_without_daemon(agent)
+                                      ? " --offline-reads" : "");
     }
 
     /* Long enough for a person to answer an `ask`, then a margin. */

@@ -615,12 +615,77 @@ test_hook_settings_follow_rules(void)
     clawt_test_remove_tree(dir);
 }
 
+/*
+ * The settings carry --offline-reads only for an agent whose rules
+ * already allow every local read, so the hook's answer with no daemon to
+ * ask is the one the daemon would have given.  A rule on reads, a rule on
+ * one of them by name, or federation -- whose caps only the daemon knows
+ * -- leave the flag off, and the hook fails closed as before.
+ */
+static gchar *
+hook_command_for(const gchar *yaml_tail, const gchar *agent_id)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-policy-o-XXXXXX", NULL);
+    g_autofree gchar *yaml = g_strdup_printf(
+        "defaults:\n  workspace_root: \"%s/agents\"\n%s", dir, yaml_tail);
+    g_autoptr(ClawtConfig) config = load(yaml);
+    g_autofree gchar *state = g_build_filename(dir, "state", agent_id, NULL);
+    g_autofree gchar *settings = clawt_workspace_claude_settings_path(state);
+    ClawtAgentConfig *agent = clawt_config_get_agent(config, agent_id);
+    gchar *contents = NULL;
+
+    g_assert_nonnull(agent);
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_true(clawt_workspace_write_mcp_config(config, agent, "/run/d.sock",
+                                                   state, &error));
+    g_assert_no_error(error);
+    g_assert_true(g_file_get_contents(settings, &contents, NULL, NULL));
+
+    clawt_test_remove_tree(dir);
+    return contents;
+}
+
+static void
+test_hook_reads_offline_only_when_rules_allow(void)
+{
+    const gchar *agents =
+        "agents:\n"
+        "  - id: plain\n    policy:\n      rules: [\"exec=ask\"]\n"
+        "  - id: careful\n    policy:\n      rules: [\"read=ask\"]\n"
+        "  - id: no-grep\n    policy:\n      rules: [\"Grep=deny\", \"exec=ask\"]\n"
+        "  - id: web-only\n    policy:\n      rules: [\"WebFetch=deny\"]\n";
+    g_autofree gchar *plain = hook_command_for(agents, "plain");
+    g_autofree gchar *careful = hook_command_for(agents, "careful");
+    g_autofree gchar *no_grep = hook_command_for(agents, "no-grep");
+    g_autofree gchar *web_only = hook_command_for(agents, "web-only");
+    g_autofree gchar *federated_yaml = g_strdup_printf(
+        "federation:\n  enabled: true\n  name: \"here\"\n  owner: \"Owner\"\n%s",
+        agents);
+    g_autofree gchar *federated = hook_command_for(federated_yaml, "plain");
+
+    g_assert_nonnull(strstr(plain, "policy-hook --agent 'plain'"));
+    g_assert_nonnull(strstr(plain, "--offline-reads"));
+
+    /* A rule on a network read is not a rule on a local one. */
+    g_assert_nonnull(strstr(web_only, "--offline-reads"));
+
+    g_assert_nonnull(strstr(careful, "policy-hook --agent 'careful'"));
+    g_assert_null(strstr(careful, "--offline-reads"));
+    g_assert_null(strstr(no_grep, "--offline-reads"));
+
+    g_assert_nonnull(strstr(federated, "policy-hook --agent 'plain'"));
+    g_assert_null(strstr(federated, "--offline-reads"));
+}
+
 gint
 main(gint argc, gchar *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/policy/parse-rule", test_parse_rule);
+    g_test_add_func("/policy/hook-reads-offline-only-when-rules-allow",
+                    test_hook_reads_offline_only_when_rules_allow);
     g_test_add_func("/policy/first-match-and-fallback", test_first_match_and_fallback);
     g_test_add_func("/policy/bad-rule-shadows", test_bad_rule_shadows);
     g_test_add_func("/policy/native-classes", test_native_classes);
