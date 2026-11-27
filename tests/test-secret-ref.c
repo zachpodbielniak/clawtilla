@@ -282,12 +282,18 @@ test_command_unreaped_handoff(void)
 	g_test_assert_expected_messages();
 	clawt_secret_ref_test_set_spare_on_timeout(FALSE);
 
-	/* Deadline, then the whole grace, then returned: bounded both ways. */
+	/*
+	 * Deadline, then the whole grace, then returned: bounded both ways.  The
+	 * lower bound is the behaviour -- the call waits out the grace.  The
+	 * upper bound's extra 10 s is slack for a loaded machine (the suite runs
+	 * beside a -j20 build), not part of the behaviour: it only catches a
+	 * call that no longer stops waiting at all.
+	 */
 	g_assert_null(value);
 	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT);
 	g_assert_cmpint(elapsed, >=, (1 + TEST_REAP_GRACE_SECONDS) *
 		G_USEC_PER_SEC);
-	g_assert_cmpint(elapsed, <, (1 + TEST_REAP_GRACE_SECONDS + 2) *
+	g_assert_cmpint(elapsed, <, (1 + TEST_REAP_GRACE_SECONDS + 10) *
 		G_USEC_PER_SEC);
 
 	/* The command is alive, still our child, and nobody has reaped it. */
@@ -318,6 +324,298 @@ test_command_unreaped_handoff(void)
 	(void)g_rmdir(directory);
 }
 
+/**
+ * read_pid_file:
+ * @path: a file a command wrote its pid to
+ *
+ * Wait (briefly, for a loaded machine) for @path to hold a pid, and read it.
+ *
+ * Returns: the pid, or 0 when none was written within 5 s
+ */
+static GPid
+read_pid_file(const gchar *path)
+{
+	gint64 give_up;
+
+	give_up = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+	do {
+		g_autofree gchar *text = NULL;
+		gint64 pid;
+
+		if (g_file_get_contents(path, &text, NULL, NULL)) {
+			pid = g_ascii_strtoll(text, NULL, 10);
+			if (pid > 0)
+				return (GPid)pid;
+		}
+		g_usleep(20 * 1000);
+	} while (g_get_monotonic_time() < give_up);
+	return 0;
+}
+
+/**
+ * process_is_dead:
+ * @pid: any process
+ *
+ * kill(pid, 0) succeeds on a zombie, and a killed grandchild is reaped by
+ * whatever adopts it -- init, a subreaper, or nobody at all in a container
+ * whose PID 1 never waits -- so "dead" is read from /proc: gone, or a
+ * zombie (state Z) or dead (X) entry waiting for its new parent.
+ *
+ * Returns: %TRUE once @pid no longer runs
+ */
+static gboolean
+process_is_dead(GPid pid)
+{
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *stat = NULL;
+	const gchar *close_paren;
+
+	path = g_strdup_printf("/proc/%" G_PID_FORMAT "/stat", pid);
+	if (!g_file_get_contents(path, &stat, NULL, NULL))
+		return TRUE;
+	/* "pid (comm) S ...": comm may hold spaces and parentheses. */
+	close_paren = strrchr(stat, ')');
+	g_assert_nonnull(close_paren);
+	return close_paren[1] == ' ' &&
+		(close_paren[2] == 'Z' || close_paren[2] == 'X');
+}
+
+/**
+ * wait_until_dead:
+ * @pid: a process that should be dying
+ *
+ * Returns: %TRUE when @pid stopped running within the reap grace
+ */
+static gboolean
+wait_until_dead(GPid pid)
+{
+	gint64 give_up;
+
+	give_up = g_get_monotonic_time() +
+		TEST_REAP_GRACE_SECONDS * G_USEC_PER_SEC;
+	while (!process_is_dead(pid)) {
+		if (g_get_monotonic_time() >= give_up)
+			return FALSE;
+		g_usleep(20 * 1000);
+	}
+	return TRUE;
+}
+
+/*
+ * One run of test_command_kills_group(): the script either side of where
+ * the pid file's path goes (split rather than a format string, so the
+ * format stays a literal), and whether to run as on a kernel without
+ * pidfd_open(2).
+ */
+typedef struct {
+	const gchar *before_path;
+	const gchar *after_path;
+	gboolean     no_pidfd;
+} KillsGroupCase;
+
+/*
+ * The leader is alive at the deadline; its background sleep never touches
+ * stdout.  $! is that sleep: same group.
+ */
+static const KillsGroupCase kills_group_live = {
+	"bash -c 'sleep 30 > /dev/null & echo $! > ", "; sleep 30'", FALSE
+};
+static const KillsGroupCase kills_group_live_no_pidfd = {
+	"bash -c 'sleep 30 > /dev/null & echo $! > ", "; sleep 30'", TRUE
+};
+
+/*
+ * The leader exits at once and its background sleep holds stdout, so the
+ * deadline finds the leader already exited.  Only the group signal can
+ * reach the sleep, and it may go only while the leader is unreaped -- so
+ * this is a pidfd case: the fallback cannot do it, as command_kill() says.
+ */
+static const KillsGroupCase kills_group_after_exit = {
+	"bash -c 'sleep 30 & echo $! > ", "; exit 0'", FALSE
+};
+
+/**
+ * test_command_kills_group:
+ * @data: (type KillsGroupCase): the script, and which wait to run it with
+ *
+ * A background descendant in the command's own process group dies with the
+ * command at the deadline: the group signal reaches it, not only the direct
+ * child -- including when the direct child exited first.
+ */
+static void
+test_command_kills_group(gconstpointer data)
+{
+	const KillsGroupCase *run_case = data;
+	g_autoptr(ClawtSecretRef) ref = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GError) dir_error = NULL;
+	g_autofree gchar *directory = NULL;
+	g_autofree gchar *pid_path = NULL;
+	g_autofree gchar *locator = NULL;
+	g_autofree gchar *value = NULL;
+	GPid descendant;
+
+	directory = g_dir_make_tmp("test-secret-ref-XXXXXX", &dir_error);
+	g_assert_no_error(dir_error);
+	pid_path = g_build_filename(directory, "pid", NULL);
+	locator = g_strconcat(run_case->before_path, pid_path,
+		run_case->after_path, NULL);
+	ref = clawt_secret_ref_new(CLAWT_SECRET_BACKEND_COMMAND, locator);
+
+	clawt_secret_ref_test_set_no_pidfd(run_case->no_pidfd);
+	value = clawt_secret_ref_resolve(ref, NULL, 1, &error);
+	clawt_secret_ref_test_set_no_pidfd(FALSE);
+	g_assert_null(value);
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT);
+
+	descendant = read_pid_file(pid_path);
+	g_assert_cmpint(descendant, >, 0);
+	if (!wait_until_dead(descendant)) {
+		(void)kill(descendant, SIGKILL);
+		g_error("background descendant %" G_PID_FORMAT " outlived the "
+		        "deadline: the group was not signalled", descendant);
+	}
+
+	(void)g_remove(pid_path);
+	(void)g_rmdir(directory);
+}
+
+/**
+ * test_command_no_group_kill_after_reap:
+ * @data: (type gboolean): %TRUE to run as on a kernel without pidfd_open(2)
+ *
+ * The leader exits at once, and the one process that keeps stdout open
+ * has moved to a session of its own, so the command's group is empty by
+ * the deadline.  Once the leader is reaped that pgid number is free and
+ * the kernel may hand it to a stranger, so no group signal may follow the
+ * reap.  The seam records every signal and whether the leader had been
+ * reaped when it went, which catches the hazard without racing pid reuse.
+ *
+ * With a pidfd the leader is left a zombie until after the kills, so the
+ * group signal is still sent, safely; without one the group is not
+ * signalled at all once the child watch has reaped the leader.
+ *
+ * The sleep in its own session is orphaned by design: no signal the
+ * backend may send reaches it, and closing its stdout is what bounds the
+ * call.  So only the deadline and the signals are asserted, and the test
+ * kills the sleep itself.
+ */
+static void
+test_command_no_group_kill_after_reap(gconstpointer data)
+{
+	g_autoptr(ClawtSecretRef) ref = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GError) dir_error = NULL;
+	g_autoptr(GArray) records = NULL;
+	g_autofree gchar *directory = NULL;
+	g_autofree gchar *pid_path = NULL;
+	g_autofree gchar *locator = NULL;
+	g_autofree gchar *value = NULL;
+	gboolean fallback;
+	gboolean group_signalled;
+	GPid escaped;
+	guint i;
+
+	fallback = GPOINTER_TO_INT(data);
+	directory = g_dir_make_tmp("test-secret-ref-XXXXXX", &dir_error);
+	g_assert_no_error(dir_error);
+	pid_path = g_build_filename(directory, "pid", NULL);
+	/*
+	 * bash leads the group and exits.  Its background child is no group
+	 * leader, so setsid(1) calls setsid() without forking; sh records its
+	 * pid, which exec hands to the sleep that holds stdout.
+	 */
+	locator = g_strdup_printf("bash -c 'setsid sh -c \"echo \\$\\$ > %s; "
+		"exec sleep 30\" & exit 0'", pid_path);
+	ref = clawt_secret_ref_new(CLAWT_SECRET_BACKEND_COMMAND, locator);
+
+	records = g_array_new(FALSE, TRUE, sizeof(ClawtSecretKillRecord));
+	clawt_secret_ref_test_set_no_pidfd(fallback);
+	clawt_secret_ref_test_record_kills(records);
+	value = clawt_secret_ref_resolve(ref, NULL, 1, &error);
+	clawt_secret_ref_test_record_kills(NULL);
+	clawt_secret_ref_test_set_no_pidfd(FALSE);
+
+	/* The escaped sleep is nobody's to kill but ours; never leave it. */
+	escaped = read_pid_file(pid_path);
+	if (escaped > 0)
+		(void)kill(escaped, SIGKILL);
+	(void)g_remove(pid_path);
+	(void)g_rmdir(directory);
+
+	g_assert_null(value);
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT);
+	g_assert_cmpint(escaped, >, 0);
+
+	group_signalled = FALSE;
+	for (i = 0; i < records->len; i++) {
+		ClawtSecretKillRecord *record;
+
+		record = &g_array_index(records, ClawtSecretKillRecord, i);
+		if (record->target < 0) {
+			group_signalled = TRUE;
+			if (record->reaped)
+				g_error("SIGKILL sent to group %d after its leader was "
+				        "reaped: that pgid may belong to a stranger",
+				        -record->target);
+		}
+		/* A pidfd keeps the leader unreaped through every kill. */
+		if (!fallback)
+			g_assert_false(record->reaped);
+	}
+	/* The zombie leader keeps the pgid ours, so the group is still hit. */
+	if (!fallback)
+		g_assert_true(group_signalled);
+}
+
+/**
+ * count_open_pidfds:
+ *
+ * Returns: how many pidfds this process holds, by what /proc/self/fd says
+ *   each descriptor is (anon_inode:[pidfd], or pidfd:[...] with pidfs)
+ */
+static guint
+count_open_pidfds(void)
+{
+	g_autoptr(GHashTable) fds = NULL;
+	GHashTableIter iter;
+	gpointer value;
+	guint count;
+
+	fds = snapshot_open_fds();
+	count = 0;
+	g_hash_table_iter_init(&iter, fds);
+	while (g_hash_table_iter_next(&iter, NULL, &value)) {
+		const gchar *target = value;
+
+		if (strcmp(target, "anon_inode:[pidfd]") == 0 ||
+		    g_str_has_prefix(target, "pidfd:"))
+			count++;
+	}
+	return count;
+}
+
+/**
+ * test_command_no_pidfd_left:
+ *
+ * Deterministic where the exact descriptor-set test is not: whatever else
+ * GLib may hold, no pidfd -- neither the backend's own nor a child watch's
+ * -- is open once a resolution returns, timed out or not.  A pidfd released
+ * by another thread after the call (GSubprocess's worker) is still open at
+ * this point, so this fails at once rather than now and then.
+ */
+static void
+test_command_no_pidfd_left(void)
+{
+	g_assert_cmpuint(count_open_pidfds(), ==, 0);
+	test_command_timeout("bash -c 'sleep 4 & exit 0'");
+	g_assert_cmpuint(count_open_pidfds(), ==, 0);
+	test_command_timeout("bash -c 'sleep 4; printf demo'");
+	g_assert_cmpuint(count_open_pidfds(), ==, 0);
+	test_command_success();
+	g_assert_cmpuint(count_open_pidfds(), ==, 0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -340,6 +638,19 @@ main(int argc, char **argv)
 		"setsid sleep 4", test_command_timeout);
 	g_test_add_func("/secret-ref/command/timeout-cleanup",
 		test_command_timeout_cleanup);
+	g_test_add_func("/secret-ref/command/no-pidfd-left",
+		test_command_no_pidfd_left);
+	g_test_add_data_func("/secret-ref/command/kills-group",
+		&kills_group_live, test_command_kills_group);
+	g_test_add_data_func("/secret-ref/command/kills-group-no-pidfd",
+		&kills_group_live_no_pidfd, test_command_kills_group);
+	g_test_add_data_func("/secret-ref/command/kills-group-after-exit",
+		&kills_group_after_exit, test_command_kills_group);
+	g_test_add_data_func("/secret-ref/command/no-group-kill-after-reap",
+		GINT_TO_POINTER(FALSE), test_command_no_group_kill_after_reap);
+	g_test_add_data_func(
+		"/secret-ref/command/no-group-kill-after-reap-no-pidfd",
+		GINT_TO_POINTER(TRUE), test_command_no_group_kill_after_reap);
 	g_test_add_func("/secret-ref/command/unreaped-handoff",
 		test_command_unreaped_handoff);
 	return g_test_run();

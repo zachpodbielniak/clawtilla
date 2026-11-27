@@ -17,6 +17,8 @@
 #include <errno.h>
 #include <signal.h>
 #include <unistd.h>
+#include <sys/pidfd.h>
+#include <sys/wait.h>
 
 struct _ClawtSecretRef {
     ClawtSecretBackend  backend;
@@ -216,29 +218,80 @@ static gint spare_on_timeout = 0;
 
 /*
  * The state of one command resolution.  Everything that can hold a
- * descriptor -- the stdout pipe's source, the child watch's pidfd and the
- * deadline -- is attached to the private context that owns this, so the
+ * descriptor -- the stdout pipe and its source, the command's pidfd and
+ * its source (or the fallback's child watch), and the deadline -- is
+ * attached to the private context that owns this or held here, so the
  * calling thread releases all of it before resolve_command() returns.
+ *
+ * @exited and @reaped are different on purpose.  With a pidfd the command
+ * is seen to exit (status recorded, zombie left in place) long before it
+ * is reaped, and only a reaped pid -- one whose number the kernel may give
+ * to somebody else -- is unsafe to signal.  On the child-watch fallback
+ * the two happen together.
  */
 typedef struct {
 	GMainContext *context;
 	GPid          pid;
+	gint          pidfd;
 	gint          stdout_fd;
 	GSource      *stdout_source;
-	GSource      *child_source;
+	GSource      *exit_source;
 	GSource      *grace_source;
 	GString      *output;
 	gint          wait_status;
 	gboolean      exited;
+	gboolean      reaped;
 	gboolean      timed_out;
 	gboolean      grace_expired;
 	gint          read_errno;
 } CommandWait;
 
+/* Test only: where command_signal() records what it sent, or NULL. */
+static GArray *kill_records = NULL;
+
+/* Test only: behave as though pidfd_open(2) failed with ENOSYS. */
+static gint force_no_pidfd = 0;
+
 void
 clawt_secret_ref_test_set_spare_on_timeout(gboolean spare)
 {
 	g_atomic_int_set(&spare_on_timeout, spare ? 1 : 0);
+}
+
+void
+clawt_secret_ref_test_record_kills(GArray *records)
+{
+	g_atomic_pointer_set(&kill_records, records);
+}
+
+void
+clawt_secret_ref_test_set_no_pidfd(gboolean no_pidfd)
+{
+	g_atomic_int_set(&force_no_pidfd, no_pidfd ? 1 : 0);
+}
+
+/**
+ * command_signal:
+ * @wait: the resolution the command belongs to
+ * @target: what to SIGKILL: the command's pid, or its negation for its group
+ *
+ * Send one SIGKILL, and note it for the test seam if that is recording.
+ */
+static void
+command_signal(CommandWait *wait, gint target)
+{
+	GArray *records;
+
+	(void)kill((pid_t)target, SIGKILL);
+
+	records = g_atomic_pointer_get(&kill_records);
+	if (records != NULL) {
+		ClawtSecretKillRecord record;
+
+		record.target = target;
+		record.reaped = wait->reaped;
+		g_array_append_val(records, record);
+	}
 }
 
 /**
@@ -316,12 +369,92 @@ on_command_stdout(gint fd, GIOCondition condition, gpointer user_data)
 }
 
 /**
+ * command_status_from_siginfo:
+ * @info: what waitid(2) reported for an exited command
+ *
+ * Returns: the same exit as a waitpid(2)-style status, for
+ *   g_spawn_check_wait_status()
+ */
+static gint
+command_status_from_siginfo(const siginfo_t *info)
+{
+	switch (info->si_code) {
+	case CLD_EXITED:
+		return W_EXITCODE(info->si_status, 0);
+	case CLD_KILLED:
+		return info->si_status;
+	case CLD_DUMPED:
+		return info->si_status | WCOREFLAG;
+	default:
+		/* Only WEXITED is asked for; anything else is not a success. */
+		return W_EXITCODE(255, 0);
+	}
+}
+
+/**
+ * on_command_pidfd:
+ * @fd: the command's pidfd
+ * @condition: what the poll saw
+ * @user_data: the #CommandWait
+ *
+ * The pidfd is readable: the command has exited.  Record how, without
+ * reaping it.
+ *
+ * Returns: %G_SOURCE_REMOVE once the exit is recorded
+ */
+static gboolean
+on_command_pidfd(gint fd, GIOCondition condition, gpointer user_data)
+{
+	CommandWait *wait = user_data;
+	siginfo_t info;
+
+	(void)condition;
+	/*
+	 * WNOWAIT: take the exit status but leave the zombie where it is.  An
+	 * unreaped zombie keeps its pid, and with it the number of the process
+	 * group it led, from being given to any other process -- so the
+	 * deadline's kill(-pid) and kill(pid) are safe for as long as we have
+	 * not reaped it, however long ago it exited.  That matters for a
+	 * command whose leader exits at once while something that left the
+	 * group holds stdout until the deadline (setsid sleep 4): reaped here,
+	 * its now empty pgid would be free for the kernel to reuse, and the
+	 * deadline would SIGKILL a stranger's group.  resolve_command() reaps
+	 * it last, after every kill.
+	 */
+	memset(&info, 0, sizeof(info));
+	if (waitid(P_PIDFD, (id_t)fd, &info, WEXITED | WNOHANG | WNOWAIT) != 0) {
+		if (errno == EINTR)
+			return G_SOURCE_CONTINUE;
+		/*
+		 * ECHILD: something else in the process reaped our child behind
+		 * our back.  Its pid is no longer ours, so never signal it again,
+		 * and do not treat whatever it printed as a credential.
+		 */
+		g_debug("secret command (pid %" G_PID_FORMAT ") was reaped by "
+		        "someone else: %s", wait->pid, g_strerror(errno));
+		wait->wait_status = W_EXITCODE(255, 0);
+		wait->exited = TRUE;
+		wait->reaped = TRUE;
+		return G_SOURCE_REMOVE;
+	}
+	/* Readable but not yet waitable; poll again. */
+	if (info.si_pid == 0)
+		return G_SOURCE_CONTINUE;
+
+	wait->wait_status = command_status_from_siginfo(&info);
+	wait->exited = TRUE;
+	/* The pidfd stays readable from now on; stop polling it, keep the fd. */
+	return G_SOURCE_REMOVE;
+}
+
+/**
  * on_command_exited:
  * @pid: the command's process
  * @wait_status: its wait status
  * @user_data: the #CommandWait
  *
- * The child watch has reaped the command on the calling thread.
+ * The fallback child watch has reaped the command, so its pid is no
+ * longer ours to signal.
  */
 static void
 on_command_exited(GPid pid, gint wait_status, gpointer user_data)
@@ -330,7 +463,29 @@ on_command_exited(GPid pid, gint wait_status, gpointer user_data)
 
 	wait->wait_status = wait_status;
 	wait->exited = TRUE;
+	wait->reaped = TRUE;
 	g_spawn_close_pid(pid);
+}
+
+/**
+ * command_note_no_pidfd:
+ * @saved_errno: why pidfd_open(2) failed
+ *
+ * Say once, at debug, that commands are waited for the old way and what
+ * that costs.
+ */
+static void
+command_note_no_pidfd(gint saved_errno)
+{
+	static gsize noted = 0;
+
+	if (g_once_init_enter(&noted)) {
+		g_debug("pidfd_open: %s; secret commands are waited for with a "
+		        "child watch, which cannot kill a background descendant "
+		        "once the command itself has exited",
+		        g_strerror(saved_errno));
+		g_once_init_leave(&noted, 1);
+	}
 }
 
 /**
@@ -358,6 +513,17 @@ on_command_reap_grace(gpointer user_data)
  * SIGKILL the command's process group and the command itself, close stdout
  * rather than drain it (an escaped descendant may hold it open), and start
  * the reap grace on the private context.
+ *
+ * Neither signal is sent to a pid we have reaped.  With a pidfd that never
+ * happens before this point -- the command is left a zombie until
+ * resolve_command() has finished killing -- so the group is signalled even
+ * when the command already exited, which is what kills a background
+ * descendant such as the sleep in bash -c 'sleep 4 & exit 0'.  On the
+ * child-watch fallback an exited command has been reaped, and its group
+ * is then left alone: the fallback cannot kill a background descendant
+ * once the leader is gone.  (GLib's watch without a pidfd reaps on its
+ * worker thread before the callback marks it reaped here, so even that
+ * leaves a narrow window; only a pre-5.3 kernel takes this path.)
  */
 static void
 command_kill(CommandWait *wait)
@@ -367,14 +533,15 @@ command_kill(CommandWait *wait)
 	 * as it would for a child stuck in uninterruptible sleep.
 	 */
 	if (!g_atomic_int_get(&spare_on_timeout)) {
-		/* Kill descendants too, including when the child already exited. */
-		(void)kill(-wait->pid, SIGKILL);
+		/* Descendants first: the group number is ours until the reap. */
+		if (!wait->reaped)
+			command_signal(wait, -wait->pid);
 		/*
-		 * And the child itself, in case it left the group.  Until its watch
-		 * has reaped it the pid cannot have been reused.
+		 * Then the command itself, in case it left the group.  An exited
+		 * one is a zombie (or gone) and has nothing left to kill.
 		 */
 		if (!wait->exited)
-			(void)kill(wait->pid, SIGKILL);
+			command_signal(wait, wait->pid);
 	}
 	command_close_stdout(wait);
 
@@ -393,8 +560,8 @@ command_kill(CommandWait *wait)
  * @user_data: the #CommandWait
  *
  * The deadline passed: kill the command and stop reading.  The direct child
- * is then reaped by its watch before resolve_command() returns -- unless it
- * cannot be reaped within the grace, see resolve_command().
+ * is then reaped before resolve_command() returns -- unless it cannot be
+ * reaped within the grace, see resolve_command().
  *
  * Returns: %G_SOURCE_REMOVE
  */
@@ -435,17 +602,25 @@ on_abandoned_command_exited(GPid pid, gint wait_status, gpointer user_data)
  * It is spawned with g_spawn rather than GSubprocess because GSubprocess
  * reaps on GLib's worker thread: its child-watch pidfd, and the last
  * reference to any task holding this call's private context, are dropped
- * there some time after the call returns.  Here the child watch, the pipe
- * and the deadline are all sources on the private context, so every
+ * there some time after the call returns.  Here the command's pidfd, the
+ * pipe and the deadline are all sources on the private context, so every
  * descriptor the call opened is closed on the calling thread before it
  * returns.
+ *
+ * The command is watched through a pidfd of our own rather than a GLib
+ * child watch, because a child watch reaps as soon as the command exits,
+ * and the deadline may still have to signal the command's process group
+ * after that (see on_command_pidfd() and command_kill()).  The command is
+ * reaped here, last.  On a kernel without pidfd_open(2) a child watch is
+ * used after all, with the cost command_kill() describes.
  *
  * One exception.  A command killed at its deadline is normally reaped at
  * once, but a process in uninterruptible sleep is not reaped until that
  * sleep ends.  After %CLAWT_SECRET_COMMAND_REAP_GRACE_SECONDS this stops
- * waiting -- the timeout must still bound startup -- and hands the pid to
- * a child watch on the global default context, which reaps it whenever the
- * kernel lets it go.  Until then that watch owns the command's pidfd.
+ * waiting -- the timeout must still bound startup -- closes its pidfd, and
+ * hands the pid to a child watch on the global default context, which
+ * reaps it whenever the kernel lets it go.  Until then that watch owns a
+ * pidfd of its own for the command.
  */
 static gchar *
 resolve_command(const gchar *locator,
@@ -473,6 +648,7 @@ resolve_command(const gchar *locator,
 	 */
 	wait.context = NULL;
 	wait.pid = 0;
+	wait.pidfd = -1;
 	wait.stdout_fd = -1;
 	if (!g_spawn_async_with_pipes_and_fds(NULL, (const gchar * const *)argv,
 			NULL, G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD |
@@ -488,10 +664,11 @@ resolve_command(const gchar *locator,
 	output = g_string_new(NULL);
 	wait.output = output;
 	wait.stdout_source = NULL;
-	wait.child_source = NULL;
+	wait.exit_source = NULL;
 	wait.grace_source = NULL;
 	wait.wait_status = 0;
 	wait.exited = FALSE;
+	wait.reaped = FALSE;
 	wait.timed_out = FALSE;
 	wait.grace_expired = FALSE;
 	wait.read_errno = 0;
@@ -504,6 +681,30 @@ resolve_command(const gchar *locator,
 	wait.context = context;
 	g_main_context_push_thread_default(context);
 
+	/*
+	 * Watch for the exit first: the stdout failure below already kills, and
+	 * a kill must know whether the command can still be signalled.  The
+	 * pid cannot have been reused yet -- nothing has reaped it -- so the
+	 * pidfd is for our command.  pidfd_open() descriptors are close-on-exec.
+	 */
+	if (g_atomic_int_get(&force_no_pidfd)) {
+		errno = ENOSYS;
+		wait.pidfd = -1;
+	} else {
+		wait.pidfd = pidfd_open(wait.pid, 0);
+	}
+	if (wait.pidfd >= 0) {
+		wait.exit_source = g_unix_fd_source_new(wait.pidfd, G_IO_IN);
+		g_source_set_callback(wait.exit_source,
+			G_SOURCE_FUNC(on_command_pidfd), &wait, NULL);
+	} else {
+		command_note_no_pidfd(errno);
+		wait.exit_source = g_child_watch_source_new(wait.pid);
+		g_source_set_callback(wait.exit_source,
+			G_SOURCE_FUNC(on_command_exited), &wait, NULL);
+	}
+	g_source_attach(wait.exit_source, context);
+
 	if (!g_unix_set_fd_nonblocking(wait.stdout_fd, TRUE, NULL)) {
 		/* A blocking read would ignore the deadline; never risk it. */
 		wait.read_errno = errno != 0 ? errno : EIO;
@@ -515,11 +716,6 @@ resolve_command(const gchar *locator,
 			G_SOURCE_FUNC(on_command_stdout), &wait, NULL);
 		g_source_attach(wait.stdout_source, context);
 	}
-
-	wait.child_source = g_child_watch_source_new(wait.pid);
-	g_source_set_callback(wait.child_source,
-		G_SOURCE_FUNC(on_command_exited), &wait, NULL);
-	g_source_attach(wait.child_source, context);
 
 	/*
 	 * Attached to the context we pushed, not added with
@@ -538,9 +734,9 @@ resolve_command(const gchar *locator,
 	}
 
 	/*
-	 * Done when the child has been reaped and stdout is closed: at end of
-	 * file normally, or by the deadline when a descendant holds it open.
-	 * A killed child is reaped here too, unless the reap grace runs out.
+	 * Done when the child has exited and stdout is closed: at end of file
+	 * normally, or by the deadline when a descendant holds it open.  A
+	 * killed child is waited for too, unless the reap grace runs out.
 	 */
 	while ((!wait.exited || wait.stdout_fd >= 0) && !wait.grace_expired)
 		g_main_context_iteration(context, TRUE);
@@ -553,14 +749,37 @@ resolve_command(const gchar *locator,
 		g_clear_pointer(&wait.grace_source, g_source_unref);
 	}
 	command_close_stdout(&wait);
-	g_source_destroy(wait.child_source);
-	g_clear_pointer(&wait.child_source, g_source_unref);
+	g_source_destroy(wait.exit_source);
+	g_clear_pointer(&wait.exit_source, g_source_unref);
 	g_main_context_pop_thread_default(context);
 
 	/*
-	 * Not reaped within the grace: the private watch is gone, so give the
-	 * pid to one on the global default context rather than leave a zombie.
-	 * The locator names it; the output is never logged.
+	 * Every kill is behind us, so the zombie has done its job of holding
+	 * the pid and pgid numbers: reap it now.  It has exited, so this does
+	 * not block.  Then the pidfd goes, on every path -- including the one
+	 * below that hands an unreaped command to the default context, whose
+	 * child watch opens a pidfd of its own.
+	 */
+	if (wait.pidfd >= 0) {
+		if (wait.exited && !wait.reaped) {
+			siginfo_t info;
+			gint rc;
+
+			do {
+				memset(&info, 0, sizeof(info));
+				rc = waitid(P_PIDFD, (id_t)wait.pidfd, &info, WEXITED);
+			} while (rc != 0 && errno == EINTR);
+			wait.reaped = TRUE;
+		}
+		(void)close(wait.pidfd);
+		wait.pidfd = -1;
+	}
+
+	/*
+	 * Not exited within the grace, so never reaped: our pidfd and watch are
+	 * gone, so give the pid to a child watch on the global default context
+	 * rather than leave a zombie.  The locator names it; the output is
+	 * never logged.
 	 */
 	if (!wait.exited) {
 		g_child_watch_add(wait.pid, on_abandoned_command_exited, NULL);
