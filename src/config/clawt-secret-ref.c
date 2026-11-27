@@ -12,6 +12,8 @@
 
 #include <yaml-glib.h>
 #include <string.h>
+#include <glib-unix.h>
+#include <errno.h>
 #include <signal.h>
 #include <unistd.h>
 
@@ -194,15 +196,22 @@ resolve_env(const gchar *locator, GError **error)
     return g_strdup(value);
 }
 
+/*
+ * The state of one command resolution.  Everything that can hold a
+ * descriptor -- the stdout pipe's source, the child watch's pidfd and the
+ * deadline -- is attached to the private context that owns this, so the
+ * calling thread releases all of it before resolve_command() returns.
+ */
 typedef struct {
-    GSubprocess *proc;
-    GMainLoop   *loop;
-    gboolean     timed_out;
-    GSource     *timeout_source;
-	GAsyncResult *result;
-	GCancellable *cancellable;
-	pid_t process_group;
-	gboolean result_released;
+	GPid      pid;
+	gint      stdout_fd;
+	GSource  *stdout_source;
+	GSource  *child_source;
+	GString  *output;
+	gint      wait_status;
+	gboolean  exited;
+	gboolean  timed_out;
+	gint      read_errno;
 } CommandWait;
 
 /**
@@ -220,188 +229,277 @@ command_child_setup(gpointer user_data)
 		_exit(127);
 }
 
-static gboolean
-on_command_timeout(gpointer user_data)
-{
-    CommandWait *wait = user_data;
-
-    wait->timed_out = TRUE;
-	/* Kill descendants too, including when the direct child already exited. */
-	if (wait->process_group > 0)
-		(void)kill(-wait->process_group, SIGKILL);
-    g_subprocess_force_exit(wait->proc);
-	/* An escaped descendant may retain stdout; cancellation bounds the read. */
-	g_cancellable_cancel(wait->cancellable);
-
-    return G_SOURCE_REMOVE;
-}
-
+/**
+ * command_close_stdout:
+ * @wait: the resolution whose stdout pipe is finished with
+ *
+ * Detach the stdout source and close the read end.  Safe to call twice.
+ */
 static void
-on_command_done(GObject *source, GAsyncResult *result, gpointer user_data)
+command_close_stdout(CommandWait *wait)
 {
-    CommandWait *wait = user_data;
-
-    (void)source;
-	/* The callback's borrowed result must outlive this callback. */
-	wait->result = g_object_ref(result);
-
-    g_main_loop_quit(wait->loop);
+	if (wait->stdout_source != NULL) {
+		g_source_destroy(wait->stdout_source);
+		g_clear_pointer(&wait->stdout_source, g_source_unref);
+	}
+	if (wait->stdout_fd >= 0) {
+		(void)close(wait->stdout_fd);
+		wait->stdout_fd = -1;
+	}
 }
 
 /**
- * on_command_result_released:
- * @user_data: command whose cancelled operations are settling
- * @object: finalized completion result
+ * on_command_stdout:
+ * @fd: the non-blocking read end of the command's stdout
+ * @condition: what the poll saw
+ * @user_data: the #CommandWait
  *
- * Communicate may report its first error before its sibling read/wait
- * callbacks finish. Those callbacks retain the result; keep their private
- * context running until the final reference is released. Cancellation
- * covers both operations, so this never waits for a descendant's pipe EOF.
+ * Drain whatever is readable.  End of file closes the pipe here, on the
+ * calling thread, so no descriptor outlives the resolution.
+ *
+ * Returns: %G_SOURCE_CONTINUE while the pipe is open
+ */
+static gboolean
+on_command_stdout(gint fd, GIOCondition condition, gpointer user_data)
+{
+	CommandWait *wait = user_data;
+	gchar buffer[4096];
+	gssize n;
+
+	(void)condition;
+	for (;;) {
+		n = read(fd, buffer, sizeof(buffer));
+		if (n > 0) {
+			g_string_append_len(wait->output, buffer, n);
+			continue;
+		}
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			return G_SOURCE_CONTINUE;
+		break;
+	}
+
+	/* End of file, or a read error worth reporting. */
+	if (n < 0)
+		wait->read_errno = errno;
+	/* Destroying the dispatching source is safe; the context holds a ref. */
+	command_close_stdout(wait);
+	return G_SOURCE_REMOVE;
+}
+
+/**
+ * on_command_exited:
+ * @pid: the command's process
+ * @wait_status: its wait status
+ * @user_data: the #CommandWait
+ *
+ * The child watch has reaped the command on the calling thread.
  */
 static void
-on_command_result_released(gpointer user_data, GObject *object)
+on_command_exited(GPid pid, gint wait_status, gpointer user_data)
 {
 	CommandWait *wait = user_data;
 
-	(void)object;
-	wait->result_released = TRUE;
-	g_main_loop_quit(wait->loop);
+	wait->wait_status = wait_status;
+	wait->exited = TRUE;
+	g_spawn_close_pid(pid);
+}
+
+/**
+ * on_command_timeout:
+ * @user_data: the #CommandWait
+ *
+ * Kill the command's process group and stop reading.  An escaped descendant
+ * may retain stdout, so the read end is closed rather than drained.  The
+ * direct child is still reaped by its watch before resolve_command()
+ * returns; SIGKILL cannot be caught, so that wait is short.
+ *
+ * Returns: %G_SOURCE_REMOVE
+ */
+static gboolean
+on_command_timeout(gpointer user_data)
+{
+	CommandWait *wait = user_data;
+
+	wait->timed_out = TRUE;
+	/* Kill descendants too, including when the direct child already exited. */
+	(void)kill(-wait->pid, SIGKILL);
+	/*
+	 * And the child itself, in case it left the group.  Until its watch has
+	 * reaped it the pid cannot have been reused.
+	 */
+	if (!wait->exited)
+		(void)kill(wait->pid, SIGKILL);
+	command_close_stdout(wait);
+	return G_SOURCE_REMOVE;
 }
 
 /*
  * Runs a command and takes its stdout.
  *
- * The timeout is the whole point of doing this the long way rather than
- * with g_subprocess_communicate_utf8(): `pass show ...` against a locked
- * keyring waits for a passphrase that will never come on a daemon with no
- * terminal, and without a bound it would hang startup rather than failing.
+ * The timeout is the whole point of doing this the long way: `pass show ...`
+ * against a locked keyring waits for a passphrase that will never come on a
+ * daemon with no terminal, and without a bound it would hang startup rather
+ * than failing.
+ *
+ * It is spawned with g_spawn rather than GSubprocess because GSubprocess
+ * reaps on GLib's worker thread: its child-watch pidfd, and the last
+ * reference to any task holding this call's private context, are dropped
+ * there some time after the call returns.  Here the child watch, the pipe
+ * and the deadline are all sources on the private context, so every
+ * descriptor the call opened is closed on the calling thread before it
+ * returns.
  */
 static gchar *
 resolve_command(const gchar *locator,
                 guint        timeout_seconds,
                 GError     **error)
 {
-    g_autoptr(GSubprocess) proc = NULL;
-	g_autoptr(GSubprocessLauncher) launcher = NULL;
-	g_autoptr(GCancellable) cancellable = NULL;
-    g_autoptr(GMainContext) context = NULL;
-    g_autoptr(GMainLoop) loop = NULL;
-	g_autoptr(GAsyncResult) result = NULL;
-	g_autoptr(GError) command_error = NULL;
-    g_autofree gchar *stdout_buf = NULL;
-    g_auto(GStrv) argv = NULL;
-    CommandWait wait;
-    gsize length;
-	gboolean communicated;
-	const gchar *identifier;
+	g_autoptr(GMainContext) context = NULL;
+	g_autoptr(GSource) timeout_source = NULL;
+	g_autoptr(GString) output = NULL;
+	g_auto(GStrv) argv = NULL;
+	g_autoptr(GError) spawn_error = NULL;
+	CommandWait wait;
+	gsize length;
 
-    if (!g_shell_parse_argv(locator, NULL, &argv, error)) {
-        g_prefix_error(error, "secret command is not parseable: ");
-        return NULL;
-    }
+	if (!g_shell_parse_argv(locator, NULL, &argv, error)) {
+		g_prefix_error(error, "secret command is not parseable: ");
+		return NULL;
+	}
 
-	launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
-		G_SUBPROCESS_FLAGS_STDERR_SILENCE);
-	g_subprocess_launcher_set_child_setup(launcher, command_child_setup,
-		NULL, NULL);
-	proc = g_subprocess_launcher_spawnv(launcher,
-		(const gchar * const *)argv, error);
-    if (proc == NULL) {
-        g_prefix_error(error, "secret command failed to start: ");
-        return NULL;
-    }
+	/*
+	 * The same spawn GSubprocess made for us before: stdin from /dev/null,
+	 * so a command that prompts reads end of file instead of the daemon's
+	 * stdin; stderr silenced; PATH searched; and the pipe's read end
+	 * close-on-exec, so no other child inherits it.
+	 */
+	wait.pid = 0;
+	wait.stdout_fd = -1;
+	if (!g_spawn_async_with_pipes_and_fds(NULL, (const gchar * const *)argv,
+			NULL, G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD |
+			G_SPAWN_STDERR_TO_DEV_NULL |
+			G_SPAWN_CLOEXEC_PIPES, command_child_setup, NULL,
+			-1, -1, -1, NULL, NULL, 0,
+			&wait.pid, NULL, &wait.stdout_fd, NULL, &spawn_error)) {
+		g_propagate_prefixed_error(error, g_steal_pointer(&spawn_error),
+			"secret command failed to start: ");
+		return NULL;
+	}
 
-    context = g_main_context_new();
-    g_main_context_push_thread_default(context);
-    loop = g_main_loop_new(context, FALSE);
+	output = g_string_new(NULL);
+	wait.output = output;
+	wait.stdout_source = NULL;
+	wait.child_source = NULL;
+	wait.wait_status = 0;
+	wait.exited = FALSE;
+	wait.timed_out = FALSE;
+	wait.read_errno = 0;
 
-    wait.proc = proc;
-	cancellable = g_cancellable_new();
-	wait.cancellable = cancellable;
-	/* An already-reaped child has no identifier; never signal group zero. */
-	identifier = g_subprocess_get_identifier(proc);
-	wait.process_group = identifier != NULL ?
-		(pid_t)g_ascii_strtoll(identifier, NULL, 10) : 0;
-    wait.loop = loop;
-    wait.timed_out = FALSE;
-    wait.timeout_source = NULL;
-	wait.result = NULL;
-	wait.result_released = FALSE;
+	/*
+	 * A private context, so nothing else the caller has attached runs while
+	 * we wait -- the daemon may be inside a callback of the default one.
+	 */
+	context = g_main_context_new();
+	g_main_context_push_thread_default(context);
 
-    /*
-     * Attached to the context we pushed, not added with
-     * g_timeout_add_seconds().  That helper attaches to the DEFAULT main
-     * context, which this loop is not running -- so the timeout would never
-     * fire, and a locked password manager would hang startup exactly as it
-     * would have with no timeout at all.
-     */
-    if (timeout_seconds > 0) {
+	if (!g_unix_set_fd_nonblocking(wait.stdout_fd, TRUE, NULL)) {
+		/* A blocking read would ignore the deadline; never risk it. */
+		wait.read_errno = errno != 0 ? errno : EIO;
+		(void)close(wait.stdout_fd);
+		wait.stdout_fd = -1;
+		(void)kill(-wait.pid, SIGKILL);
+	} else {
+		wait.stdout_source = g_unix_fd_source_new(wait.stdout_fd,
+			G_IO_IN | G_IO_HUP | G_IO_ERR);
+		g_source_set_callback(wait.stdout_source,
+			G_SOURCE_FUNC(on_command_stdout), &wait, NULL);
+		g_source_attach(wait.stdout_source, context);
+	}
+
+	wait.child_source = g_child_watch_source_new(wait.pid);
+	g_source_set_callback(wait.child_source,
+		G_SOURCE_FUNC(on_command_exited), &wait, NULL);
+	g_source_attach(wait.child_source, context);
+
+	/*
+	 * Attached to the context we pushed, not added with
+	 * g_timeout_add_seconds().  That helper attaches to the DEFAULT main
+	 * context, which this loop is not iterating -- so the timeout would
+	 * never fire, and a locked password manager would hang startup exactly
+	 * as it would have with no timeout at all.
+	 */
+	if (timeout_seconds > 0) {
 		/* Use an exact monotonic deadline without seconds-source coalescing. */
-		wait.timeout_source = g_timeout_source_new(0);
-		g_source_set_ready_time(wait.timeout_source,
+		timeout_source = g_timeout_source_new(0);
+		g_source_set_ready_time(timeout_source,
 			g_get_monotonic_time() + (gint64)timeout_seconds * G_USEC_PER_SEC);
-        g_source_set_callback(wait.timeout_source, on_command_timeout,
-                              &wait, NULL);
-        g_source_attach(wait.timeout_source, context);
-    }
+		g_source_set_callback(timeout_source, on_command_timeout, &wait, NULL);
+		g_source_attach(timeout_source, context);
+	}
 
-    g_subprocess_communicate_utf8_async(proc, NULL, cancellable,
-                                        on_command_done, &wait);
-    g_main_loop_run(loop);
+	/*
+	 * Done when the child has been reaped and stdout is closed: at end of
+	 * file normally, or by the deadline when a descendant holds it open.
+	 * A timed-out child is still reaped here, after its SIGKILL.
+	 */
+	while (!wait.exited || wait.stdout_fd >= 0)
+		g_main_context_iteration(context, TRUE);
 
-    if (wait.timeout_source != NULL) {
-        g_source_destroy(wait.timeout_source);
-        g_source_unref(wait.timeout_source);
-    }
-
-	result = g_steal_pointer(&wait.result);
-	/* Finish every completed operation once, including timed-out commands. */
-	communicated = g_subprocess_communicate_utf8_finish(proc, result,
-		&stdout_buf, NULL, &command_error);
-	/* Do not abandon the context while cancelled sibling tasks still own it. */
-	g_object_weak_ref(G_OBJECT(result), on_command_result_released, &wait);
-	g_clear_object(&result);
-	if (!wait.result_released)
-		g_main_loop_run(loop);
+	/* Release every source while the context is still ours to iterate. */
+	if (timeout_source != NULL)
+		g_source_destroy(timeout_source);
+	command_close_stdout(&wait);
+	g_source_destroy(wait.child_source);
+	g_clear_pointer(&wait.child_source, g_source_unref);
 	g_main_context_pop_thread_default(context);
 
-    if (wait.timed_out) {
-        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT,
-                    "secret command did not finish within %u seconds: %s",
-                    timeout_seconds, locator);
-        return NULL;
-    }
+	if (wait.timed_out) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT,
+		            "secret command did not finish within %u seconds: %s",
+		            timeout_seconds, locator);
+		return NULL;
+	}
 
-    if (!communicated) {
-		g_propagate_error(error, g_steal_pointer(&command_error));
-        g_prefix_error(error, "secret command failed: ");
-        return NULL;
-    }
+	if (wait.read_errno != 0) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_SECRET,
+		            "secret command failed: reading its output: %s: %s",
+		            g_strerror(wait.read_errno), locator);
+		return NULL;
+	}
 
-    if (!g_subprocess_get_successful(proc)) {
-        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_SECRET,
-                    "secret command exited non-zero: %s", locator);
-        return NULL;
-    }
+	if (!g_spawn_check_wait_status(wait.wait_status, NULL)) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_SECRET,
+		            "secret command exited non-zero: %s", locator);
+		return NULL;
+	}
 
-    if (stdout_buf == NULL) {
-        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_SECRET,
-                    "secret command produced no output: %s", locator);
-        return NULL;
-    }
+	if (output->len == 0) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_SECRET,
+		            "secret command produced no output: %s", locator);
+		return NULL;
+	}
 
-    length = strlen(stdout_buf);
-    while (length > 0 &&
-           (stdout_buf[length - 1] == '\n' || stdout_buf[length - 1] == '\r'))
-        length--;
+	/* An embedded NUL is invalid here too, so strlen() below is exact. */
+	if (!g_utf8_validate_len(output->str, output->len, NULL)) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_SECRET,
+		            "secret command output is not valid UTF-8: %s", locator);
+		return NULL;
+	}
 
-    if (length == 0) {
-        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_SECRET,
-                    "secret command produced only whitespace: %s", locator);
-        return NULL;
-    }
+	length = output->len;
+	while (length > 0 &&
+	       (output->str[length - 1] == '\n' || output->str[length - 1] == '\r'))
+		length--;
 
-    return g_strndup(stdout_buf, length);
+	if (length == 0) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_SECRET,
+		            "secret command produced only whitespace: %s", locator);
+		return NULL;
+	}
+
+	return g_strndup(output->str, length);
 }
 
 gchar *
