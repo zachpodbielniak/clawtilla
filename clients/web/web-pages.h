@@ -123,6 +123,21 @@ HtmxElement *clawt_web_computer_view_body(ClawtWebApp       *app,
 HtmxElement *clawt_web_routines_body(ClawtWebApp *app, const gchar *agent_id);
 
 /**
+ * clawt_web_schedule_body:
+ * @app: a #ClawtWebApp
+ * @agent_id: (nullable): the agent being looked at
+ * @request: (nullable): the request, for ?view, ?date, ?agent and
+ *   ?disabled; %NULL draws today's Day view
+ *
+ * The Schedule page: day, week, month and upcoming runs, built from the
+ * lrg schedule model so the three clients draw the same cards.
+ *
+ * Returns: (transfer full): the view
+ */
+HtmxElement *clawt_web_schedule_body(ClawtWebApp *app, const gchar *agent_id,
+                                     HtmxRequest *request);
+
+/**
  * clawt_web_triggers_body:
  * @app: a #ClawtWebApp
  * @agent_id: (nullable): the selected agent, which triggers ignore

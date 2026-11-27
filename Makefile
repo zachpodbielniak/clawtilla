@@ -765,6 +765,8 @@ GTK_SOURCES    = $(wildcard $(GTK_SRCDIR)/*.c)
 # GTK and lrg cannot disagree about a card.  It includes no libregnum.
 GTK_SOURCES   += $(LRG_SRCDIR)/lrg-schedule-model.c
 WEB_SOURCES    = $(wildcard $(WEB_SRCDIR)/*.c)
+# The Schedule page draws the same cards as GTK and lrg: one model.
+WEB_SOURCES   += $(LRG_SRCDIR)/lrg-schedule-model.c
 LRG_SOURCES    = $(wildcard $(LRG_SRCDIR)/*.c)
 OFFICE_SRCDIR  = clients/office
 # The scene and the feed are shared with the lrg client's Office view;
@@ -902,7 +904,7 @@ $(CLI_BIN_TARGET): $(CLI_SOURCES) $(LIB_STATIC) $(DEFAULT_CONFIG_H) | $(OUTDIR) 
 
 $(WEB_BIN_TARGET): $(WEB_SOURCES) $(LIB_STATIC) | $(OUTDIR) $(OUTDIR)/clawt-version.h
 	@echo "Building $(WEB_BIN_NAME)..."
-	$(CC) $(CFLAGS) -I$(WEB_SRCDIR) $(WEB_SOURCES) -o $@ $(LIB_STATIC) $(LDFLAGS)
+	$(CC) $(CFLAGS) -I$(WEB_SRCDIR) -I$(LRG_SRCDIR) $(WEB_SOURCES) -o $@ $(LIB_STATIC) $(LDFLAGS)
 
 # The GTK client is skipped -- loudly, once -- when libadwaita is absent,
 # rather than failing the whole build.  Everything else here is headless
