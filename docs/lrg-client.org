@@ -743,8 +743,11 @@ Every boolean is read as a JSON boolean, falling back to the schema's own defaul
 
 Schema options the editor has no dedicated control for are walked from =routines.*= in the schema and drawn under "More" as a switch, number or text field typed by the schema. Today that is =isolate=, which GTK's hand-written editor never offered.
 
+** Schedule
+The Automation section's calendar (~clients/lrg/lrg-schedule.c~, the same page as ~clients/gtk/gtk-schedule.c~).  Day, Week and Month ask ~routine.occurrences~ for the visible range; Month sets =collapse= so a short repeat is one card per day.  Upcoming asks ~routine.upcoming~ with limit 10.  Previous, Today and Next move the anchor.  Agent, team and "Show turned-off routines" are the frame's =agent=, =team= and =include_disabled=.  Times are labelled in the reply's =time_zone=.  A card's badge is the status; a libreclaw cron says so, and a past one stays "unknown, not tracked by clawtilla".  The jitter window, reason and detail are under the card.  A past run with a task opens it (~task.show~); a future routine opens the editor; a libreclaw cron does not.  A collapsed day expands in place.  A month cell past three cards says "+N more".  A refused window (past 62 days, or past 5000 occurrences) is the daemon's sentence in the banner.  The page re-reads on ~routine.ran~, ~routine.changed~, ~routine.turned_off~, and on ~task.changed~ for a task a visible card shows.  What a row says is ~lrg-schedule-model.c~, shared with GTK and checked by ~tests/test-lrg-models-schedule.c~.
+
 ** Triggers
-The Automation section's second page: a lede on what a trigger is, a banner when the daemon says =receiving= is false (the webhook receiver is not running, so nothing can arrive), the triggers, and the recent deliveries. Opening the page and any =trigger.*= event while it shows re-read both.
+The Automation section's third page: a lede on what a trigger is, a banner when the daemon says =receiving= is false (the webhook receiver is not running, so nothing can arrive), the triggers, and the recent deliveries. Opening the page and any =trigger.*= event while it shows re-read both.
 
 Each trigger's card shows its description or id, "agent — provider", any additional recipients and the runs still unfinished, and a state badge chosen in priority order by the model: no secret (bad), waiting for its first delivery (warn), off, on (good). A trigger with an endpoint gets a Copy address button that copies the whole URL (the receiver's first =listening= base plus =/hooks/<endpoint>=).
 
@@ -1319,6 +1322,8 @@ A colour this client reads but the palette leaves out falls back to libadwaita's
 | ~lrg-hold.c~ | pausing and resuming the fleet; the daemon's version | ~gtk-hold.c~ |
 | ~lrg-agent-model.c~, ~clawt-lrg-agent-model.h~ | the agent section's and computer's decisions | -- |
 | ~lrg-routines.c~ | Routines and the routine editor | ~gtk-routines.c~ |
+| ~lrg-schedule.c~ | Schedule: Day, Week, Month, Upcoming | ~gtk-schedule.c~ |
+| ~lrg-schedule-model.c~, ~clawt-lrg-schedule-model.h~ | the calendar's rows, window and refused sentence | ~gtk-schedule.c~ (compiled in) |
 | ~lrg-triggers.c~ | Triggers, the editor, the secret shown once, capture | ~gtk-triggers.c~ |
 | ~lrg-tasks.c~ | delegated work, as a tree | ~gtk-tasks.c~ |
 | ~lrg-decisions.c~ | the decisions inbox | ~gtk-decisions.c~ |

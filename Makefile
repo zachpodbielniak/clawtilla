@@ -761,6 +761,9 @@ DAEMON_SOURCES = $(wildcard $(DAEMON_SRCDIR)/*.c)
 CLI_SOURCES    = $(wildcard $(CLI_SRCDIR)/*.c)
 MCP_SOURCES    = $(wildcard $(MCP_SRCDIR)/*.c)
 GTK_SOURCES    = $(wildcard $(GTK_SRCDIR)/*.c)
+# The Schedule page's rows are the lrg model, compiled in here too so
+# GTK and lrg cannot disagree about a card.  It includes no libregnum.
+GTK_SOURCES   += $(LRG_SRCDIR)/lrg-schedule-model.c
 WEB_SOURCES    = $(wildcard $(WEB_SRCDIR)/*.c)
 LRG_SOURCES    = $(wildcard $(LRG_SRCDIR)/*.c)
 OFFICE_SRCDIR  = clients/office

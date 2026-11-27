@@ -98,6 +98,7 @@ clawt_lrg_page_for(ClawtPage page)
     case CLAWT_PAGE_MAILBOX:   return clawt_lrg_mailbox_page();
     case CLAWT_PAGE_COMPUTER:  return clawt_lrg_computer_page();
     case CLAWT_PAGE_ROUTINES:  return clawt_lrg_routines_page();
+    case CLAWT_PAGE_SCHEDULE:  return clawt_lrg_schedule_page();
     case CLAWT_PAGE_TRIGGERS:  return clawt_lrg_triggers_page();
     case CLAWT_PAGE_TASKS:     return clawt_lrg_tasks_page();
     case CLAWT_PAGE_DECISIONS: return clawt_lrg_decisions_page();

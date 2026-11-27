@@ -2189,6 +2189,7 @@ static const struct {
     { CLAWT_PAGE_MAILBOX,   CLAWT_SECTION_AGENT,      "mailbox",   "Mailbox" },
     { CLAWT_PAGE_COMPUTER,  CLAWT_SECTION_COMPUTER,   "computer",  "Computer" },
     { CLAWT_PAGE_ROUTINES,  CLAWT_SECTION_AUTOMATION, "routines",  "Routines" },
+    { CLAWT_PAGE_SCHEDULE,  CLAWT_SECTION_AUTOMATION, "schedule",  "Schedule" },
     { CLAWT_PAGE_TRIGGERS,  CLAWT_SECTION_AUTOMATION, "triggers",  "Triggers" },
     { CLAWT_PAGE_TASKS,     CLAWT_SECTION_WORK,       "tasks",     "Tasks" },
     { CLAWT_PAGE_DECISIONS, CLAWT_SECTION_WORK,       "decisions", "Decisions" },

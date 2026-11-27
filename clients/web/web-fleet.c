@@ -1500,6 +1500,29 @@ clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtPage view)
     return g_steal_pointer(&bar);
 }
 
+/*
+ * The web calendar is the other half of VENTURE #35, written after this
+ * change.  The route is already this case: a view that says the calendar
+ * is not drawn here yet.  clawt_web_empty() is the wrong shape for that.
+ * It is how a list says it has no rows, and a Schedule tab that used it
+ * would read as a calendar with nothing on it.
+ */
+static HtmxElement *
+schedule_not_yet(void)
+{
+    g_autoptr(HtmxDiv) view = htmx_div_new();
+    g_autoptr(HtmxDiv) pad = htmx_div_new();
+
+    htmx_element_add_class(HTMX_ELEMENT(view), "view");
+    htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
+    clawt_web_add(pad, clawt_web_section_title("Schedule"));
+    clawt_web_add(pad, clawt_web_text(
+        "The web client does not draw this calendar yet.", "lede"));
+    htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
+
+    return HTMX_ELEMENT(g_steal_pointer(&view));
+}
+
 /* ── Dispatch ────────────────────────────────────────────────────── */
 HtmxElement *
 clawt_web_view_body(ClawtWebApp *app, const gchar *agent_id, ClawtPage view)
@@ -1521,6 +1544,8 @@ clawt_web_view_body(ClawtWebApp *app, const gchar *agent_id, ClawtPage view)
         return clawt_web_computer_body(app, agent_id);
     case CLAWT_PAGE_ROUTINES:
         return clawt_web_routines_body(app, agent_id);
+    case CLAWT_PAGE_SCHEDULE:
+        return schedule_not_yet();
     case CLAWT_PAGE_TRIGGERS:
         return clawt_web_triggers_body(app, agent_id);
     case CLAWT_PAGE_TASKS:

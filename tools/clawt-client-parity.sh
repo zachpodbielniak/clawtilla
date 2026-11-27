@@ -89,6 +89,8 @@ DAEMON_SOURCES=("${ROOT}"/src/core/clawt-daemon.c "${ROOT}"/src/core/daemon-*.c)
 # shellcheck disable=SC2034
 declare -A WEB_MAY_LACK=(
     ["config.render"]="reading a rendered libreclaw config is a debugging step; \`clawtilla config render\` is the surface for it"
+    ["routine.occurrences"]="the web Schedule page is the other half of VENTURE #35 and is not this commit; GTK and lrg draw the calendar, the web case is a placeholder so -Wswitch still builds"
+    ["routine.upcoming"]="the same page's second read; the web client gains it with the Schedule page, not before"
 )
 
 # shellcheck disable=SC2034

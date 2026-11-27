@@ -394,8 +394,11 @@ const ClawtLrgPage *clawt_lrg_agent_page(void);      /* lrg-inspector.c */
 const ClawtLrgPage *clawt_lrg_mailbox_page(void);    /* lrg-mailbox.c */
 const ClawtLrgPage *clawt_lrg_computer_page(void);   /* lrg-computer.c */
 const ClawtLrgPage *clawt_lrg_routines_page(void);   /* lrg-routines.c */
+void clawt_lrg_routines_edit(ClawtLrgApp *app, const gchar *id);
+const ClawtLrgPage *clawt_lrg_schedule_page(void);   /* lrg-schedule.c */
 const ClawtLrgPage *clawt_lrg_triggers_page(void);   /* lrg-triggers.c */
 const ClawtLrgPage *clawt_lrg_tasks_page(void);      /* lrg-tasks.c */
+void clawt_lrg_tasks_show(ClawtLrgApp *app, const gchar *task_id);
 const ClawtLrgPage *clawt_lrg_decisions_page(void);  /* lrg-decisions.c */
 const ClawtLrgPage *clawt_lrg_flow_page(void);       /* lrg-flow.c */
 /* lrg-flow.c: opens one conversation on the Flow page -- what a

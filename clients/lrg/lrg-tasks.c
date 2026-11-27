@@ -997,6 +997,20 @@ on_task_shown(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     }
 }
 
+void
+clawt_lrg_tasks_show(ClawtLrgApp *app, const gchar *task_id)
+{
+    if (app == NULL || task_id == NULL || *task_id == '\0')
+        return;
+
+    tasks.app = app;
+    clawt_lrg_request(app, "task.show",
+                      clawt_ipc_payload_new("task", task_id, "journal", "true",
+                                            NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_task_shown,
+                      g_strdup(task_id), g_free);
+}
+
 static void
 on_details_clicked(LrgButton *button, gpointer user_data)
 {
@@ -1007,11 +1021,7 @@ on_details_clicked(LrgButton *button, gpointer user_data)
     if (id == NULL)
         return;
 
-    clawt_lrg_request(tasks.app, "task.show",
-                      clawt_ipc_payload_new("task", id, "journal", "true",
-                                            NULL),
-                      CLAWT_LRG_REQUEST_NONE, on_task_shown, g_strdup(id),
-                      g_free);
+    clawt_lrg_tasks_show(tasks.app, id);
 }
 
 /* A card button carrying its task's id. */

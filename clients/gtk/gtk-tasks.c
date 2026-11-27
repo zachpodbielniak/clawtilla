@@ -639,8 +639,14 @@ dated_row(const gchar *title, gint64 at, const gchar *body)
 static void
 on_task_details(GtkButton *button, gpointer user_data)
 {
-    ClawtWindow *self = user_data;
     const gchar *task_id = g_object_get_data(G_OBJECT(button), "task-id");
+
+    clawt_gtk_show_task(user_data, task_id);
+}
+
+void
+clawt_gtk_show_task(ClawtWindow *self, const gchar *task_id)
+{
     g_autoptr(JsonNode) reply = NULL;
     JsonObject *root;
     JsonObject *task;
@@ -655,6 +661,9 @@ on_task_details(GtkButton *button, gpointer user_data)
     GtkWidget *prompt;
     g_autofree gchar *who = NULL;
     guint i;
+
+    if (self == NULL || task_id == NULL || *task_id == '\0')
+        return;
 
     reply = clawt_window_request(self, "task.show",
                                  clawt_build_payload("task", task_id,

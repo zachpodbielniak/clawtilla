@@ -687,14 +687,14 @@ posts as the operator; an agent writing it reaches nobody.
 
 *** Six sections, not eleven tabs
 
-There are eleven pages and a header bar is not eleven buttons wide.  An
+There are twelve pages and a header bar is not twelve buttons wide.  An
 =AdwViewSwitcher= pinned to =ADW_VIEW_SWITCHER_POLICY_WIDE= does not
 ellipsise, does not grow an overflow menu and logs nothing when it runs
 out of room -- it is simply clipped.  So below roughly 1500 logical
 pixels the pages a person could reach depended on the monitor, and on a
 wide enough screen there was nothing to see.
 
-The eleven are grouped into six, and a section holding more than one
+The twelve are grouped into six, and a section holding more than one
 page draws its own row of tabs underneath -- the same shape the Computer
 page already had for its four halves.
 
@@ -703,7 +703,7 @@ page already had for its four halves.
 | Chat | the transcript and composer |
 | Agent | Overview, Mailbox |
 | Computer | one page, which draws its own Shell / Screen / Mounts / Exchange / Browser row |
-| Automation | Routines, Triggers |
+| Automation | Routines, Schedule, Triggers |
 | Work | Tasks, Decisions, Flow, Activity, Fleet |
 | Library | Skills, Memory |
 
@@ -2079,6 +2079,8 @@ The Schedule page -- Day, Week and Month views of the fleet's routines, with an 
 - *Upcoming runs* is ~routine.upcoming~ with =limit= 10: title, when, agent avatar.  Its first run of each routine is that routine's =next_run= in ~routine.list~, so the panel and the routine list never disagree.
 - *Refreshing.*  Neither frame publishes anything.  Ask again on ~routine.ran~, ~routine.changed~ and ~routine.turned_off~, and on ~task.changed~ for a task a visible card shows.
 - *Errors are for showing.*  A window past a bound is refused with a sentence naming the bound (and, for too many occurrences, the routine that holds most); show it, do not retry smaller behind the person's back.
+
+GTK draws this in ~clients/gtk/gtk-schedule.c~, lrg in ~clients/lrg/lrg-schedule.c~.  Both call ~clients/lrg/lrg-schedule-model.c~ for the rows, the window and the refused sentence (~tests/test-lrg-models-schedule.c~).  The web page is the other half of the same story.  Its dispatch case is a view that says the calendar is not drawn there yet, so the tab does not look like an empty calendar; the following change replaces that body.
 
 *** The Computer tab has five views
 
