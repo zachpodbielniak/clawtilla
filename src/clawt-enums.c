@@ -1291,6 +1291,54 @@ clawt_run_state_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtRunOutcome as a GLib enum type */
+GType
+clawt_run_outcome_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_RUN_OUTCOME_STARTED, "CLAWT_RUN_OUTCOME_STARTED", "started" },
+            { CLAWT_RUN_OUTCOME_FAILED, "CLAWT_RUN_OUTCOME_FAILED", "failed" },
+            { CLAWT_RUN_OUTCOME_REFUSED, "CLAWT_RUN_OUTCOME_REFUSED", "refused" },
+            { CLAWT_RUN_OUTCOME_MISSED, "CLAWT_RUN_OUTCOME_MISSED", "missed" },
+            { CLAWT_RUN_OUTCOME_CAUGHT_UP, "CLAWT_RUN_OUTCOME_CAUGHT_UP",
+              "caught-up" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtRunOutcome",
+                                                        values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/* Register ClawtOccurrenceStatus as a GLib enum type */
+GType
+clawt_occurrence_status_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_OCCURRENCE_UPCOMING, "CLAWT_OCCURRENCE_UPCOMING",
+              "upcoming" },
+            { CLAWT_OCCURRENCE_DUE, "CLAWT_OCCURRENCE_DUE", "due" },
+            { CLAWT_OCCURRENCE_RUNNING, "CLAWT_OCCURRENCE_RUNNING", "running" },
+            { CLAWT_OCCURRENCE_OK, "CLAWT_OCCURRENCE_OK", "ok" },
+            { CLAWT_OCCURRENCE_FAILED, "CLAWT_OCCURRENCE_FAILED", "failed" },
+            { CLAWT_OCCURRENCE_SKIPPED, "CLAWT_OCCURRENCE_SKIPPED", "skipped" },
+            { CLAWT_OCCURRENCE_UNKNOWN, "CLAWT_OCCURRENCE_UNKNOWN", "unknown" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static(
+            "ClawtOccurrenceStatus", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 
 /* Register ClawtGuestFlavour as a GLib enum type */
 GType

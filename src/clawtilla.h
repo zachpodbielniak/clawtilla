@@ -132,6 +132,7 @@
 #include "task/clawt-handoff.h"
 #include "task/clawt-handoff-store.h"
 #include "task/clawt-routine-runner.h"
+#include "task/clawt-routine-calendar.h"
 #include "task/clawt-incident.h"
 
 #include "trigger/clawt-trigger-event.h"

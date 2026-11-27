@@ -28,6 +28,20 @@
  */
 #define MAX_JITTER_SECONDS (3600)
 
+/*
+ * The most history entries kept per routine, whatever
+ * `daemon.routine_history_days` says.
+ *
+ * A routine every five minutes makes 288 a day, and the history is
+ * rewritten with the rest of the state on every run -- so a count as well
+ * as an age, or one busy routine makes every save of every routine slow.
+ * 2,000 is an hourly routine for twelve weeks, a daily one for five years.
+ */
+#define HISTORY_MAX_ENTRIES (2000)
+
+/* `daemon.routine_history_days` when the config does not say. */
+#define HISTORY_DEFAULT_DAYS (62)
+
 typedef struct {
     gint64         last_run;     /* Unix time */
     ClawtRunState  state;
@@ -69,6 +83,20 @@ typedef struct {
      */
     gint64         edited_at_us;
     gchar         *fingerprint;
+
+    /*
+     * What happened at each scheduled time, oldest first, as
+     * #ClawtRunEntry -- bounded by age and count (prune_history()).
+     *
+     * `last_run` answers "how did it go last time" and nothing earlier,
+     * which is not enough for a calendar: a failed run on Tuesday is
+     * overwritten by Wednesday's success, and the week view would show a
+     * tick on a day something broke.
+     */
+    GPtrArray     *history;
+
+    /* The scheduled time a pending jitter is for, while one is armed. */
+    gint64         jitter_slot;
 } RunRecord;
 
 /*
@@ -101,7 +129,60 @@ run_record_free(RunRecord *self)
     g_free(self->task_id);
     g_free(self->off_error);
     g_free(self->fingerprint);
+    g_clear_pointer(&self->history, g_ptr_array_unref);
     g_free(self);
+}
+
+/* ── History ─────────────────────────────────────────────────────── */
+
+ClawtRunEntry *
+clawt_run_entry_copy(
+	const ClawtRunEntry *self
+){
+	ClawtRunEntry *copy;
+
+	g_return_val_if_fail(self != NULL, NULL);
+
+	copy = g_new0(ClawtRunEntry, 1);
+	*copy = *self;
+	copy->detail = g_strdup(self->detail);
+	copy->task_id = g_strdup(self->task_id);
+
+	return copy;
+}
+
+void
+clawt_run_entry_free(
+	ClawtRunEntry *self
+){
+	if (self == NULL)
+		return;
+
+	g_free(self->detail);
+	g_free(self->task_id);
+	g_free(self);
+}
+
+G_DEFINE_BOXED_TYPE(ClawtRunEntry, clawt_run_entry, clawt_run_entry_copy,
+                    clawt_run_entry_free)
+
+/* The time an entry stands at on a calendar: its slot, or its start. */
+static gint64
+entry_time(
+	const ClawtRunEntry *entry
+){
+	return (entry->slot > 0) ? entry->slot : entry->at;
+}
+
+static GPtrArray *
+history_of(
+	RunRecord *record
+){
+	if (record->history == NULL)
+		record->history = g_ptr_array_new_with_free_func(
+			(GDestroyNotify)clawt_run_entry_free);
+
+	return record->history;
 }
 
 struct _ClawtRoutineRunner {
@@ -243,6 +324,65 @@ load_state(ClawtRoutineRunner *self)
         if (node != NULL)
             record->fingerprint = g_strdup(yaml_node_get_string(node));
 
+        /*
+         * The history, absent in a file from before 0.78.0.  An entry
+         * that cannot be read is dropped rather than failing the file:
+         * the rest of the state is worth more than one line of it.
+         */
+        node = yaml_mapping_get_member(fields, "history");
+        if (node != NULL &&
+            yaml_node_get_node_type(node) == YAML_NODE_SEQUENCE) {
+            YamlSequence *sequence = yaml_node_get_sequence(node);
+            guint n = yaml_sequence_get_length(sequence);
+            guint k;
+
+            for (k = 0; k < n; k++) {
+                YamlNode *item = yaml_sequence_get_element(sequence, k);
+                YamlMapping *line;
+                YamlNode *value;
+                ClawtRunEntry *kept;
+                gint outcome = 0;
+
+                if (item == NULL ||
+                    yaml_node_get_node_type(item) != YAML_NODE_MAPPING)
+                    continue;
+
+                line = yaml_node_get_mapping(item);
+                value = yaml_mapping_get_member(line, "outcome");
+
+                if (value == NULL ||
+                    !clawt_enum_from_nick(CLAWT_TYPE_RUN_OUTCOME,
+                                          yaml_node_get_string(value),
+                                          &outcome))
+                    continue;
+
+                kept = g_new0(ClawtRunEntry, 1);
+                kept->outcome = (ClawtRunOutcome)outcome;
+
+                value = yaml_mapping_get_member(line, "slot");
+                if (value != NULL)
+                    kept->slot = yaml_node_get_int(value);
+
+                value = yaml_mapping_get_member(line, "at");
+                if (value != NULL)
+                    kept->at = yaml_node_get_int(value);
+
+                value = yaml_mapping_get_member(line, "by_hand");
+                if (value != NULL)
+                    kept->by_hand = yaml_node_get_boolean(value);
+
+                value = yaml_mapping_get_member(line, "detail");
+                if (value != NULL)
+                    kept->detail = g_strdup(yaml_node_get_string(value));
+
+                value = yaml_mapping_get_member(line, "task");
+                if (value != NULL)
+                    kept->task_id = g_strdup(yaml_node_get_string(value));
+
+                g_ptr_array_add(history_of(record), kept);
+            }
+        }
+
         g_hash_table_insert(self->records, g_strdup(id), record);
     }
 
@@ -326,6 +466,52 @@ save_state(ClawtRoutineRunner *self)
             yaml_mapping_set_member(fields, "fingerprint", fingerprint);
         }
 
+        if (record->history != NULL && record->history->len > 0) {
+            g_autoptr(YamlNode) history = yaml_node_new_sequence(NULL);
+            YamlSequence *sequence = yaml_node_get_sequence(history);
+            guint k;
+
+            for (k = 0; k < record->history->len; k++) {
+                ClawtRunEntry *kept = g_ptr_array_index(record->history, k);
+                g_autoptr(YamlNode) item = yaml_node_new_mapping(NULL);
+                YamlMapping *line = yaml_node_get_mapping(item);
+                g_autoptr(YamlNode) slot = yaml_node_new_int(kept->slot);
+                g_autoptr(YamlNode) at = yaml_node_new_int(kept->at);
+                g_autoptr(YamlNode) outcome = yaml_node_new_string(
+                    clawt_enum_to_nick(CLAWT_TYPE_RUN_OUTCOME,
+                                       (gint)kept->outcome));
+
+                yaml_mapping_set_member(line, "slot", slot);
+                yaml_mapping_set_member(line, "at", at);
+                yaml_mapping_set_member(line, "outcome", outcome);
+
+                /* Only what is set, as above. */
+                if (kept->by_hand) {
+                    g_autoptr(YamlNode) by_hand = yaml_node_new_boolean(TRUE);
+
+                    yaml_mapping_set_member(line, "by_hand", by_hand);
+                }
+
+                if (kept->detail != NULL) {
+                    g_autoptr(YamlNode) detail =
+                        yaml_node_new_string(kept->detail);
+
+                    yaml_mapping_set_member(line, "detail", detail);
+                }
+
+                if (kept->task_id != NULL) {
+                    g_autoptr(YamlNode) task =
+                        yaml_node_new_string(kept->task_id);
+
+                    yaml_mapping_set_member(line, "task", task);
+                }
+
+                yaml_sequence_add_element(sequence, item);
+            }
+
+            yaml_mapping_set_member(fields, "history", history);
+        }
+
         yaml_mapping_set_member(yaml_node_get_mapping(root), key, entry);
     }
 
@@ -358,6 +544,76 @@ record_for(ClawtRoutineRunner *self, const gchar *routine_id)
     g_hash_table_insert(self->records, g_strdup(routine_id), record);
 
     return record;
+}
+
+/* `daemon.routine_history_days`, with a typo of 0 or less read as the
+ * default rather than as "keep nothing". */
+static gint64
+history_days(
+	ClawtRoutineRunner *self
+){
+	gint64 configured = (self->config != NULL)
+		? clawt_config_get_int(self->config, "daemon.routine_history_days")
+		: 0;
+
+	return (configured > 0) ? configured : HISTORY_DEFAULT_DAYS;
+}
+
+/*
+ * Drops what is older than `daemon.routine_history_days` and anything
+ * past HISTORY_MAX_ENTRIES, oldest first.
+ */
+static void
+prune_history(
+	ClawtRoutineRunner *self,
+	RunRecord          *record,
+	gint64              now
+){
+	gint64 cutoff;
+	guint drop = 0;
+
+	if (record->history == NULL)
+		return;
+
+	cutoff = now - history_days(self) * 86400;
+
+	while (drop < record->history->len &&
+	       entry_time(g_ptr_array_index(record->history, drop)) < cutoff)
+		drop++;
+
+	if (record->history->len - drop > HISTORY_MAX_ENTRIES)
+		drop = record->history->len - HISTORY_MAX_ENTRIES;
+
+	if (drop > 0)
+		g_ptr_array_remove_range(record->history, 0, drop);
+}
+
+/*
+ * Adds one line to a routine's history.  The caller saves: every path
+ * that records something already writes the state file once.
+ */
+static void
+note_history(
+	ClawtRoutineRunner *self,
+	RunRecord          *record,
+	gint64              slot,
+	ClawtRunOutcome     outcome,
+	gboolean            by_hand,
+	const gchar        *detail,
+	const gchar        *task_id
+){
+	ClawtRunEntry *entry = g_new0(ClawtRunEntry, 1);
+	gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+
+	entry->slot = slot;
+	entry->at = now;
+	entry->outcome = outcome;
+	entry->by_hand = by_hand;
+	entry->detail = g_strdup(detail);
+	entry->task_id = g_strdup(task_id);
+
+	g_ptr_array_add(history_of(record), entry);
+	prune_history(self, record, now);
 }
 
 /* ── Edits ───────────────────────────────────────────────────────── */
@@ -647,11 +903,25 @@ GDateTime *
 clawt_routine_runner_next_run(ClawtRoutineRunner *self,
                               const gchar        *routine_id)
 {
-    ClawtRoutine *routine;
-    g_autoptr(ClawtCron) cron = NULL;
     g_autoptr(GDateTime) now = NULL;
 
     g_return_val_if_fail(CLAWT_IS_ROUTINE_RUNNER(self), NULL);
+
+    now = g_date_time_new_now_local();
+
+    return clawt_routine_runner_next_run_after(self, routine_id, now);
+}
+
+GDateTime *
+clawt_routine_runner_next_run_after(ClawtRoutineRunner *self,
+                                    const gchar        *routine_id,
+                                    GDateTime          *after)
+{
+    ClawtRoutine *routine;
+    g_autoptr(ClawtCron) cron = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_ROUTINE_RUNNER(self), NULL);
+    g_return_val_if_fail(after != NULL, NULL);
 
     routine = clawt_config_get_routine(self->config, routine_id);
 
@@ -669,9 +939,54 @@ clawt_routine_runner_next_run(ClawtRoutineRunner *self,
     if (cron == NULL)
         return NULL;
 
-    now = g_date_time_new_now_local();
+    return clawt_cron_next(cron, after);
+}
 
-    return clawt_cron_next(cron, now);
+GPtrArray *
+clawt_routine_runner_get_history(
+	ClawtRoutineRunner *self,
+	const gchar        *routine_id,
+	gint64              from,
+	gint64              to
+){
+	GPtrArray *out;
+	RunRecord *record;
+	guint i;
+
+	g_return_val_if_fail(CLAWT_IS_ROUTINE_RUNNER(self), NULL);
+
+	out = g_ptr_array_new_with_free_func((GDestroyNotify)clawt_run_entry_free);
+	record = (routine_id != NULL)
+		? g_hash_table_lookup(self->records, routine_id) : NULL;
+
+	if (record == NULL || record->history == NULL)
+		return out;
+
+	for (i = 0; i < record->history->len; i++) {
+		ClawtRunEntry *entry = g_ptr_array_index(record->history, i);
+		gint64 when = entry_time(entry);
+
+		if (when >= from && when < to)
+			g_ptr_array_add(out, clawt_run_entry_copy(entry));
+	}
+
+	return out;
+}
+
+gint64
+clawt_routine_runner_get_pending_slot(
+	ClawtRoutineRunner *self,
+	const gchar        *routine_id
+){
+	RunRecord *record;
+
+	g_return_val_if_fail(CLAWT_IS_ROUTINE_RUNNER(self), 0);
+
+	record = (routine_id != NULL)
+		? g_hash_table_lookup(self->records, routine_id) : NULL;
+
+	return (record != NULL && record->jitter != NULL) ? record->jitter_slot
+	                                                   : 0;
 }
 
 gint64
@@ -771,9 +1086,13 @@ build_prompt(ClawtRoutine *routine)
     return g_string_free(out, FALSE);
 }
 
+/*
+ * @slot is the scheduled time the run is for, as a Unix time, or 0 for
+ * one nothing scheduled.  Every outcome lands in the history.
+ */
 static const gchar *
 start_run(ClawtRoutineRunner *self, ClawtRoutine *routine, gboolean by_hand,
-          GError **error)
+          gint64 slot, GError **error)
 {
     g_autofree gchar *prompt = NULL;
     RunRecord *record;
@@ -790,6 +1109,7 @@ start_run(ClawtRoutineRunner *self, ClawtRoutine *routine, gboolean by_hand,
      * one nobody asked for.
      */
     clear_jitter(record);
+    record->jitter_slot = 0;
 
     record->last_run = g_get_real_time() / G_USEC_PER_SEC;
     g_clear_pointer(&record->detail, g_free);
@@ -798,6 +1118,8 @@ start_run(ClawtRoutineRunner *self, ClawtRoutine *routine, gboolean by_hand,
     if (self->run_func == NULL) {
         record->state = CLAWT_RUN_FAILED;
         record->detail = g_strdup("nothing is wired up to run routines");
+        note_history(self, record, slot, CLAWT_RUN_OUTCOME_FAILED, by_hand,
+                     record->detail, NULL);
         save_state(self);
 
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
@@ -808,6 +1130,8 @@ start_run(ClawtRoutineRunner *self, ClawtRoutine *routine, gboolean by_hand,
     if (agent == NULL || *agent == '\0') {
         record->state = CLAWT_RUN_FAILED;
         record->detail = g_strdup("no agent is set");
+        note_history(self, record, slot, CLAWT_RUN_OUTCOME_FAILED, by_hand,
+                     record->detail, NULL);
         save_state(self);
 
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
@@ -820,9 +1144,24 @@ start_run(ClawtRoutineRunner *self, ClawtRoutine *routine, gboolean by_hand,
                              error);
 
     if (task_id == NULL) {
+        /*
+         * A guard's refusal -- the loop guard, a spending cap -- is kept
+         * apart from a failure in the history, as the daemon keeps it
+         * apart by cancelling the task rather than failing it: a refusal
+         * is an answer, and a calendar showing it as a cross would send
+         * somebody looking for a fault.
+         */
+        gboolean refused = error != NULL && *error != NULL &&
+                           g_error_matches(*error, CLAWT_ERROR,
+                                           CLAWT_ERROR_LOOP_LIMIT);
+
         record->state = CLAWT_RUN_FAILED;
         record->detail = g_strdup((error != NULL && *error != NULL)
                                   ? (*error)->message : "it did not start");
+        note_history(self, record, slot,
+                     refused ? CLAWT_RUN_OUTCOME_REFUSED
+                             : CLAWT_RUN_OUTCOME_FAILED,
+                     by_hand, record->detail, NULL);
         save_state(self);
 
         return NULL;
@@ -830,6 +1169,8 @@ start_run(ClawtRoutineRunner *self, ClawtRoutine *routine, gboolean by_hand,
 
     record->state = CLAWT_RUN_OK;
     record->task_id = g_strdup(task_id);
+    note_history(self, record, slot, CLAWT_RUN_OUTCOME_STARTED, by_hand, NULL,
+                 task_id);
     save_state(self);
 
     g_message("routine '%s' started as task %s", id, task_id);
@@ -870,7 +1211,7 @@ clawt_routine_runner_run_unscheduled(ClawtRoutineRunner  *self,
      * disabled routine by hand is the point: it is how somebody tries
      * one before trusting it with a schedule.
      */
-    return start_run(self, routine, by_hand, error);
+    return start_run(self, routine, by_hand, 0, error);
 }
 
 /*
@@ -884,6 +1225,7 @@ clawt_routine_runner_run_unscheduled(ClawtRoutineRunner  *self,
 typedef struct {
     ClawtRoutineRunner *runner;
     gchar              *id;
+    gint64              slot;    /* the scheduled time it is for */
 } JitterArm;
 
 static void
@@ -929,7 +1271,7 @@ on_jitter_elapsed(gpointer user_data)
     if (routine == NULL || !clawt_routine_get_boolean(routine, "enabled"))
         return G_SOURCE_REMOVE;
 
-    if (start_run(self, routine, FALSE, &error) == NULL)
+    if (start_run(self, routine, FALSE, arm->slot, &error) == NULL)
         g_warning("routine '%s': %s", arm->id,
                   error != NULL ? error->message : "it did not start");
 
@@ -951,7 +1293,8 @@ on_jitter_elapsed(gpointer user_data)
  * all, since the routine would simply stop running.
  */
 static void
-arm_jitter(ClawtRoutineRunner *self, const gchar *id, guint jitter_seconds)
+arm_jitter(ClawtRoutineRunner *self, const gchar *id, guint jitter_seconds,
+           gint64 slot)
 {
     RunRecord *record = record_for(self, id);
     JitterArm *arm = g_new0(JitterArm, 1);
@@ -959,12 +1302,104 @@ arm_jitter(ClawtRoutineRunner *self, const gchar *id, guint jitter_seconds)
 
     arm->runner = self;
     arm->id = g_strdup(id);
+    arm->slot = slot;
+    record->jitter_slot = slot;
 
     record->jitter = clawt_timeout_add_seconds_full(delay, on_jitter_elapsed,
                                                     arm, jitter_arm_free);
 
     g_debug("routine '%s' is due; holding it %u second%s for jitter", id,
             delay, delay == 1 ? "" : "s");
+}
+
+/*
+ * How far the walk in settle_slot() goes before it stops looking.  A
+ * minutely routine after a fortnight asleep is 20,160 times; past that
+ * the run is put down against the last time the walk reached, which is
+ * an approximation in a case where every other answer is too.
+ */
+#define MISSED_WALK_MAX (20000)
+
+/*
+ * Which scheduled time a run that is due now is for, noting every
+ * earlier one it stands in for as @outcome.
+ *
+ * @due is the first time after the last run, and is not necessarily the
+ * last one: a daemon that was down, or a machine that slept through
+ * several, finds a routine due with more than one time behind it.  It
+ * still runs once -- that has always been the rule -- and the run is put
+ * down against the latest time, the one it actually answers; the others
+ * go in the history as missed (or, for a `catch_up` routine, as folded
+ * into the run), so a calendar shows them for what they were rather than
+ * as gaps.
+ *
+ * Times before the routine was last edited are not noted.  An edit may
+ * have been the schedule itself, and a routine turned back on after a
+ * month did not "miss" the month it was off.  Nor is anything older
+ * than the history keeps.
+ *
+ * Returns: the scheduled time for the run, as a Unix time
+ */
+static gint64
+settle_slot(
+	ClawtRoutineRunner *self,
+	RunRecord          *record,
+	ClawtCron          *cron,
+	GDateTime          *due,
+	GDateTime          *now,
+	ClawtRunOutcome     outcome,
+	const gchar        *detail,
+	guint              *out_noted
+){
+	g_autoptr(GArray) slots = g_array_new(FALSE, FALSE, sizeof(gint64));
+	g_autoptr(GDateTime) cursor = NULL;
+	gint64 due_s = g_date_time_to_unix(due);
+	gint64 now_s = g_date_time_to_unix(now);
+	gint64 start = due_s;
+	gint64 latest;
+	guint first;
+	guint walked = 0;
+	guint i;
+
+	if (out_noted != NULL)
+		*out_noted = 0;
+
+	start = MAX(start, record->edited_at_us / G_USEC_PER_SEC);
+	start = MAX(start, now_s - history_days(self) * 86400);
+	cursor = g_date_time_new_from_unix_local(start - 1);
+
+	while (cursor != NULL && walked++ < MISSED_WALK_MAX) {
+		g_autoptr(GDateTime) next = clawt_cron_next(cron, cursor);
+		gint64 when;
+
+		if (next == NULL || g_date_time_compare(next, now) > 0)
+			break;
+
+		when = g_date_time_to_unix(next);
+		g_array_append_val(slots, when);
+		g_date_time_unref(cursor);
+		cursor = g_steal_pointer(&next);
+	}
+
+	/*
+	 * Nothing since the edit: the run is the one @due made due, which is
+	 * what turning a routine back on has always done.
+	 */
+	if (slots->len == 0)
+		return due_s;
+
+	latest = g_array_index(slots, gint64, slots->len - 1);
+	first = (slots->len - 1 > HISTORY_MAX_ENTRIES)
+		? slots->len - 1 - HISTORY_MAX_ENTRIES : 0;
+
+	for (i = first; i + 1 < slots->len; i++)
+		note_history(self, record, g_array_index(slots, gint64, i), outcome,
+		             FALSE, detail, NULL);
+
+	if (out_noted != NULL)
+		*out_noted = slots->len - 1 - first;
+
+	return latest;
 }
 
 void
@@ -987,6 +1422,8 @@ clawt_routine_runner_tick(ClawtRoutineRunner *self)
         g_autoptr(GError) error = NULL;
         RunRecord *record;
         gint64 jitter;
+        gint64 slot;
+        guint noted = 0;
         const gchar *id = clawt_routine_get_id(routine);
 
         if (!clawt_routine_get_boolean(routine, "enabled"))
@@ -1018,14 +1455,22 @@ clawt_routine_runner_tick(ClawtRoutineRunner *self)
         if (due == NULL || g_date_time_compare(due, now) > 0)
             continue;
 
-        jitter = clawt_routine_get_int(routine, "jitter_seconds");
+        slot = settle_slot(self, record_for(self, id), cron, due, now,
+                           CLAWT_RUN_OUTCOME_MISSED,
+                           "its time passed while the daemon was busy or "
+                           "the machine was asleep", &noted);
+        jitter = clawt_routine_jitter_seconds(routine);
 
         if (jitter > 0) {
-            arm_jitter(self, id, (guint)MIN(jitter, MAX_JITTER_SECONDS));
+            arm_jitter(self, id, (guint)jitter, slot);
+
+            /* start_run() saves; a held run has not got there yet. */
+            if (noted > 0)
+                save_state(self);
             continue;
         }
 
-        if (start_run(self, routine, FALSE, &error) == NULL)
+        if (start_run(self, routine, FALSE, slot, &error) == NULL)
             g_warning("routine '%s': %s", id,
                       error != NULL ? error->message : "it did not start");
     }
@@ -1146,13 +1591,29 @@ clawt_routine_runner_catch_up(ClawtRoutineRunner *self)
             /*
              * Once, however many were missed.  A laptop opened after a
              * long weekend should not deliver a stack of good mornings.
+             * The run is the latest time; the ones before it are in the
+             * history as folded into it.
              */
-            if (start_run(self, routine, FALSE, &error) == NULL)
+            gint64 slot = settle_slot(self, record, cron, due, now,
+                                      CLAWT_RUN_OUTCOME_CAUGHT_UP,
+                                      "folded into the one run catch_up "
+                                      "makes for everything it missed",
+                                      NULL);
+
+            if (start_run(self, routine, FALSE, slot, &error) == NULL)
                 g_warning("routine '%s': %s", id,
                           error != NULL ? error->message
                                         : "it did not start");
             continue;
         }
+
+        /* Every missed time, the latest included, is in the history. */
+        note_history(self, record,
+                     settle_slot(self, record, cron, due, now,
+                                 CLAWT_RUN_OUTCOME_MISSED,
+                                 "the daemon was not running", NULL),
+                     CLAWT_RUN_OUTCOME_MISSED, FALSE,
+                     "the daemon was not running", NULL);
 
         record->last_run = g_get_real_time() / G_USEC_PER_SEC;
         record->state = CLAWT_RUN_MISSED;
@@ -1165,6 +1626,23 @@ clawt_routine_runner_catch_up(ClawtRoutineRunner *self)
 }
 
 /* ── Computers that did not start ────────────────────────────────── */
+
+guint
+clawt_routine_jitter_seconds(
+	ClawtRoutine *routine
+){
+	gint64 jitter;
+
+	g_return_val_if_fail(routine != NULL, 0);
+
+	jitter = clawt_routine_get_int(routine, "jitter_seconds");
+
+	if (jitter <= 0)
+		return 0;
+
+	return (guint)MIN(jitter, MAX_JITTER_SECONDS);
+}
+
 
 guint
 clawt_routine_max_start_failures(

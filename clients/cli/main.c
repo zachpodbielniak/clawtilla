@@ -11888,6 +11888,10 @@ print_routine_usage(gboolean asked_for)
         "  set <id> [key=value ...]       change one\n"
         "  rm <id>                        remove it\n"
         "  run <id>                       run it now, schedule or not\n"
+        "  calendar [--from D] [--to D] [--agent A] [--team T]\n"
+        "           [--disabled] [--expand] [--ics [-o FILE]]\n"
+        "                                 every routine's runs in a window:\n"
+        "                                 what ran, how, and what is next\n"
         "\n"
         "Schedules: manual, hourly, daily, weekdays, weekly, custom.\n"
         "\n"
@@ -11898,9 +11902,345 @@ print_routine_usage(gboolean asked_for)
         "      schedule=weekdays at=09:00\n"
         "  clawtilla routine add sweep researcher schedule=custom \\\n"
         "      cron=\"0 */6 * * *\" instructions=\"Check the queue.\"\n"
-        "  clawtilla routine run standup\n";
+        "  clawtilla routine run standup\n"
+        "  clawtilla routine calendar                  # this week\n"
+        "  clawtilla routine calendar --from 2026-11-23 --to 2026-11-30 \\\n"
+        "      --team forge\n"
+        "  clawtilla routine calendar --ics -o ~/routines.ics\n";
 
     print_usage_text(text, asked_for);
+}
+
+/*
+ * One line of the calendar table: an occurrence, or a group of one
+ * routine's runs on one day.  Sorted together by their first time.
+ */
+typedef struct {
+    gint64      at;
+    JsonObject *object;    /* borrowed from the reply */
+    gboolean    group;
+} CalendarRow;
+
+static gint
+calendar_row_compare(gconstpointer a, gconstpointer b)
+{
+    const CalendarRow *left = a;
+    const CalendarRow *right = b;
+
+    if (left->at != right->at)
+        return (left->at < right->at) ? -1 : 1;
+
+    return g_strcmp0(member_or(left->object, "routine", ""),
+                     member_or(right->object, "routine", ""));
+}
+
+/* A reply's UTC time as a Unix time, or 0. */
+static gint64
+calendar_unix(JsonObject *object, const gchar *key)
+{
+    g_autoptr(GDateTime) parsed = NULL;
+    const gchar *text = member_or(object, key, NULL);
+
+    parsed = (text != NULL) ? g_date_time_new_from_iso8601(text, NULL) : NULL;
+
+    return (parsed != NULL) ? g_date_time_to_unix(parsed) : 0;
+}
+
+/* A Unix time in the daemon's zone -- this process's, which is the same
+ * machine's for a local daemon -- formatted. */
+static gchar *
+calendar_local(gint64 when, const gchar *format)
+{
+    g_autoptr(GDateTime) local = g_date_time_new_from_unix_local(when);
+
+    return g_date_time_format(local, format);
+}
+
+/*
+ * `clawtilla routine calendar`: routine.occurrences as a table, or as an
+ * iCalendar file with --ics.
+ *
+ * The table is folded (`collapse`) unless --expand, so an hourly routine
+ * is one line a day rather than eleven.  The export is never folded: a
+ * calendar application has no use for a group, and wants every run.
+ */
+static gint
+cmd_routine_calendar(int argc, char *argv[])
+{
+    g_autoptr(GOptionContext) context = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(JsonBuilder) builder = NULL;
+    g_autoptr(GArray) rows = NULL;
+    g_autofree gchar *from = NULL;
+    g_autofree gchar *to = NULL;
+    g_autofree gchar *agent = NULL;
+    g_autofree gchar *team = NULL;
+    g_autofree gchar *output = NULL;
+    g_autofree gchar *last_day = NULL;
+    gboolean disabled = FALSE;
+    gboolean expand = FALSE;
+    gboolean ics = FALSE;
+    gboolean license = FALSE;
+    JsonObject *object;
+    JsonArray *list;
+    guint i;
+    GOptionEntry options[] = {
+        { "from", 0, 0, G_OPTION_ARG_STRING, &from,
+          "Start of the window: a date or an ISO 8601 time (default: today)",
+          "WHEN" },
+        { "to", 0, 0, G_OPTION_ARG_STRING, &to,
+          "End of the window, exclusive (default: a week after --from)",
+          "WHEN" },
+        { "agent", 0, 0, G_OPTION_ARG_STRING, &agent,
+          "Only this agent's routines and crons", "AGENT" },
+        { "team", 0, 0, G_OPTION_ARG_STRING, &team,
+          "Only the routines of this team's agents", "TEAM" },
+        { "disabled", 0, 0, G_OPTION_ARG_NONE, &disabled,
+          "Include routines and crons that are turned off", NULL },
+        { "expand", 0, 0, G_OPTION_ARG_NONE, &expand,
+          "One line per run, rather than one per busy routine a day", NULL },
+        { "ics", 0, 0, G_OPTION_ARG_NONE, &ics,
+          "Write iCalendar (RFC 5545) instead of a table", NULL },
+        { "output", 'o', 0, G_OPTION_ARG_FILENAME, &output,
+          "With --ics, write to FILE rather than standard output", "FILE" },
+        { "license", 0, 0, G_OPTION_ARG_NONE, &license,
+          "Print the license", NULL },
+        { NULL }
+    };
+
+    context = g_option_context_new("- every routine's runs in a window");
+    g_option_context_add_main_entries(context, options, NULL);
+    g_option_context_set_description(context,
+        "Past runs say how they went (ok, failed, skipped, running) and\n"
+        "future ones are upcoming. libreclaw crons from an agent's\n"
+        "libreclaw: block are listed too, marked [libreclaw]. Times are in\n"
+        "the daemon's zone, which the first line names.\n"
+        "\n"
+        "Examples:\n"
+        "  clawtilla routine calendar\n"
+        "  clawtilla routine calendar --from 2026-11-23 --to 2026-11-30\n"
+        "  clawtilla routine calendar --agent hornbill --expand\n"
+        "  clawtilla routine calendar --team forge --disabled\n"
+        "  clawtilla routine calendar --ics -o ~/routines.ics\n");
+
+    argc -= 2;
+    argv += 2;
+
+    if (!g_option_context_parse(context, &argc, &argv, &error)) {
+        g_printerr("clawtilla: %s\n", error->message);
+        return EXIT_FAILURE;
+    }
+
+    if (license) {
+        print_license();
+        return EXIT_SUCCESS;
+    }
+
+    if (argc != 1) {
+        g_printerr("clawtilla: routine calendar takes no arguments, only "
+                   "options (see --help)\n");
+        return EXIT_FAILURE;
+    }
+
+    if (output != NULL && !ics) {
+        g_printerr("clawtilla: --output is for --ics\n");
+        return EXIT_FAILURE;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    builder = json_builder_new();
+    json_builder_begin_object(builder);
+
+    if (from != NULL) {
+        json_builder_set_member_name(builder, "from");
+        json_builder_add_string_value(builder, from);
+    }
+
+    if (to != NULL) {
+        json_builder_set_member_name(builder, "to");
+        json_builder_add_string_value(builder, to);
+    }
+
+    if (agent != NULL) {
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, agent);
+    }
+
+    if (team != NULL) {
+        json_builder_set_member_name(builder, "team");
+        json_builder_add_string_value(builder, team);
+    }
+
+    json_builder_set_member_name(builder, "include_disabled");
+    json_builder_add_boolean_value(builder, disabled);
+    json_builder_set_member_name(builder, "collapse");
+    json_builder_add_boolean_value(builder, !ics && !expand);
+    json_builder_end_object(builder);
+
+    reply = call(client, "routine.occurrences",
+                 json_builder_get_root(builder));
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    object = json_node_get_object(reply);
+
+    /* ── --ics ── */
+    if (ics) {
+        g_autofree gchar *text = clawt_routine_calendar_to_ics(object, NULL);
+
+        if (output == NULL) {
+            fwrite(text, 1, strlen(text), stdout);
+            return EXIT_SUCCESS;
+        }
+
+        if (!g_file_set_contents(output, text, -1, &error)) {
+            g_printerr("clawtilla: %s\n", error->message);
+            return EXIT_FAILURE;
+        }
+
+        g_printerr("Wrote %" G_GINT64_FORMAT " runs to %s.\n",
+                   json_object_get_int_member(object, "count"), output);
+        return EXIT_SUCCESS;
+    }
+
+    /* ── the table ── */
+    {
+        g_autofree gchar *span_from = calendar_local(
+            calendar_unix(object, "from"), "%a %d %b %H:%M");
+        g_autofree gchar *span_to = calendar_local(
+            calendar_unix(object, "to"), "%a %d %b %H:%M");
+
+        g_print("Times in %s, %s to %s.\n",
+                member_or(object, "time_zone", "local time"), span_from,
+                span_to);
+    }
+
+    rows = g_array_new(FALSE, FALSE, sizeof(CalendarRow));
+    list = json_object_get_array_member(object, "occurrences");
+
+    for (i = 0; list != NULL && i < json_array_get_length(list); i++) {
+        CalendarRow row;
+
+        row.object = json_array_get_object_element(list, i);
+        row.at = calendar_unix(row.object, "at");
+        row.group = FALSE;
+        g_array_append_val(rows, row);
+    }
+
+    list = json_object_has_member(object, "groups")
+        ? json_object_get_array_member(object, "groups") : NULL;
+
+    for (i = 0; list != NULL && i < json_array_get_length(list); i++) {
+        CalendarRow row;
+
+        row.object = json_array_get_object_element(list, i);
+        row.at = calendar_unix(row.object, "first");
+        row.group = TRUE;
+        g_array_append_val(rows, row);
+    }
+
+    if (rows->len == 0) {
+        g_print("Nothing runs in this window.\n");
+        return EXIT_SUCCESS;
+    }
+
+    g_array_sort(rows, calendar_row_compare);
+
+    for (i = 0; i < rows->len; i++) {
+        CalendarRow *row = &g_array_index(rows, CalendarRow, i);
+        g_autofree gchar *day = calendar_local(row->at, "%a %d %b");
+        g_autofree gchar *when = NULL;
+        g_autofree gchar *status = NULL;
+        g_autofree gchar *about = NULL;
+        gboolean libreclaw = g_strcmp0(member_or(row->object, "source", ""),
+                                       CLAWT_CALENDAR_SOURCE_LIBRECLAW_CRON)
+                             == 0;
+
+        if (g_strcmp0(day, last_day) != 0) {
+            g_print("\n%s\n", day);
+            g_free(last_day);
+            last_day = g_steal_pointer(&day);
+        }
+
+        if (row->group) {
+            g_autofree gchar *first = calendar_local(row->at, "%H:%M");
+            g_autofree gchar *last = calendar_local(
+                calendar_unix(row->object, "last"), "%H:%M");
+            JsonObject *statuses = json_object_get_object_member(row->object,
+                                                                 "statuses");
+            GString *counts = g_string_new(NULL);
+            GList *members = (statuses != NULL)
+                ? json_object_get_members(statuses) : NULL;
+            GList *l;
+
+            /* the counts as "ok 5, upcoming 6", in the reply's order */
+            for (l = members; l != NULL; l = l->next)
+                g_string_append_printf(counts, "%s%s %" G_GINT64_FORMAT,
+                                       counts->len > 0 ? ", " : "",
+                                       (const gchar *)l->data,
+                                       json_object_get_int_member(
+                                           statuses, l->data));
+            g_list_free(members);
+
+            when = g_strdup_printf("%s-%s", first, last);
+            status = g_strdup(member_or(row->object, "status", "?"));
+            about = g_strdup_printf("%s: %s (%s)%s",
+                                    member_or(row->object, "title", ""),
+                                    member_or(row->object, "label", ""),
+                                    counts->str,
+                                    libreclaw ? " [libreclaw]" : "");
+            g_string_free(counts, TRUE);
+        } else {
+            const gchar *reason = member_or(row->object, "reason", NULL);
+            const gchar *detail = member_or(row->object, "detail", NULL);
+            const gchar *task = member_or(row->object, "task", NULL);
+
+            when = calendar_local(row->at, "%H:%M");
+            status = (reason != NULL)
+                ? g_strdup_printf("%s (%s)",
+                                  member_or(row->object, "status", "?"),
+                                  reason)
+                : g_strdup(member_or(row->object, "status", "?"));
+            about = g_strdup_printf(
+                "%s%s%s%s%s%s%s",
+                member_or(row->object, "title", ""),
+                g_strcmp0(member_or(row->object, "kind", ""), "manual") == 0
+                    ? " [run by hand]" : "",
+                libreclaw ? " [libreclaw]" : "",
+                task != NULL ? " -- " : "", task != NULL ? task : "",
+                detail != NULL ? ": " : "", detail != NULL ? detail : "");
+        }
+
+        g_print("  %-11s  %-14s  %-18s  %-24s  %s\n", when,
+                member_or(row->object, "agent", "?"),
+                member_or(row->object, "routine", "?"), status, about);
+    }
+
+    list = json_object_get_array_member(object, "unscheduled");
+
+    for (i = 0; list != NULL && i < json_array_get_length(list); i++) {
+        JsonObject *job = json_array_get_object_element(list, i);
+
+        if (i == 0)
+            g_print("\nNot on the calendar:\n");
+
+        if (json_object_has_member(job, "interval_seconds"))
+            g_print("  %-14s  %-18s  every %" G_GINT64_FORMAT
+                    " seconds from when the agent started [libreclaw]\n",
+                    member_or(job, "agent", "?"), member_or(job, "id", "?"),
+                    json_object_get_int_member(job, "interval_seconds"));
+        else
+            g_print("  %-14s  %-18s  %s [libreclaw]\n",
+                    member_or(job, "agent", "?"), member_or(job, "id", "?"),
+                    member_or(job, "problem", "no schedule"));
+    }
+
+    return EXIT_SUCCESS;
 }
 
 static gint
@@ -11917,6 +12257,10 @@ cmd_routine(int argc, char *argv[])
         print_routine_usage(TRUE);
         return EXIT_SUCCESS;
     }
+
+    /* Its own options, parsed before connecting so --help needs no daemon. */
+    if (g_strcmp0(verb, "calendar") == 0)
+        return cmd_routine_calendar(argc, argv);
 
     client = connect_to_daemon();
     if (client == NULL)

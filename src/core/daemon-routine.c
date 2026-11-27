@@ -10,6 +10,7 @@
 #include "clawtilla.h"
 
 #include <glib/gstdio.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "core/clawt-daemon.h"
@@ -477,6 +478,212 @@ clawt_daemon_routine_starts_teardown(
 	g_clear_pointer(&self->routine_waking, g_hash_table_unref);
 }
 
+/* ── The calendar: routine.occurrences, routine.upcoming ─────────── */
+
+/* A run's task, for the calendar's past-run join. */
+static gboolean
+calendar_task(
+	const gchar     *task_id,
+	ClawtTaskState  *out_state,
+	gchar          **out_room,
+	gchar          **out_reason,
+	gpointer         user_data
+){
+	ClawtDaemon *self = user_data;
+	ClawtTask *task = (self->tasks != NULL && task_id != NULL)
+		? clawt_task_manager_get(self->tasks, task_id) : NULL;
+
+	if (task == NULL)
+		return FALSE;
+
+	*out_state = clawt_task_get_state(task);
+	*out_room = g_strdup(clawt_task_get_room(task));
+	*out_reason = g_strdup(clawt_task_get_reason(task));
+
+	return TRUE;
+}
+
+/*
+ * Whether an agent is working through its mailbox: starting counts, so a
+ * run waiting for an agent that is on its way up is not "skipped".
+ */
+static gboolean
+calendar_agent_up(
+	const gchar *agent_id,
+	gpointer     user_data
+){
+	ClawtDaemon *self = user_data;
+	ClawtAgent *agent = (self->agents != NULL)
+		? clawt_agent_manager_get(self->agents, agent_id) : NULL;
+	ClawtAgentState state;
+
+	if (agent == NULL)
+		return FALSE;
+
+	state = clawt_agent_get_state(agent);
+
+	return state == CLAWT_AGENT_STATE_STARTING ||
+	       state == CLAWT_AGENT_STATE_RUNNING ||
+	       state == CLAWT_AGENT_STATE_DEGRADED;
+}
+
+/* A calendar over this daemon's config, runner, tasks and agents. */
+static ClawtRoutineCalendar *
+daemon_calendar(
+	ClawtDaemon *self
+){
+	ClawtRoutineCalendar *calendar;
+
+	calendar = clawt_routine_calendar_new(self->config, self->routines);
+
+	/* Not reffed: the calendar lives only as long as the request. */
+	clawt_routine_calendar_set_task_func(calendar, calendar_task, self, NULL);
+	clawt_routine_calendar_set_agent_func(calendar, calendar_agent_up, self,
+	                                      NULL);
+
+	return calendar;
+}
+
+/*
+ * A time from a payload: ISO 8601 with an offset (one without is UTC),
+ * or a bare `YYYY-MM-DD` meaning the start of that day in the daemon's
+ * zone -- what a client sending "this week" most likely has.
+ *
+ * Returns: (transfer full) (nullable): the time; %NULL with no error
+ *   when the key is absent
+ */
+static GDateTime *
+payload_time(
+	JsonObject   *payload,
+	const gchar  *key,
+	GError      **error
+){
+	const gchar *text = clawt_ipc_payload_string(payload, key);
+	g_autoptr(GTimeZone) utc = NULL;
+	GDateTime *parsed;
+	guint year = 0;
+	guint month = 0;
+	guint day = 0;
+	gchar tail = '\0';
+
+	if (text == NULL || *text == '\0')
+		return NULL;
+
+	utc = g_time_zone_new_utc();
+	parsed = g_date_time_new_from_iso8601(text, utc);
+
+	if (parsed != NULL)
+		return parsed;
+
+	if (sscanf(text, "%4u-%2u-%2u%c", &year, &month, &day, &tail) == 3) {
+		parsed = g_date_time_new_local((gint)year, (gint)month, (gint)day,
+		                               0, 0, 0.0);
+		if (parsed != NULL)
+			return parsed;
+	}
+
+	g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+	            "'%s' is not a time: give ISO 8601, such as "
+	            "2026-11-24T09:00:00-05:00, or a date, 2026-11-24", key);
+	return NULL;
+}
+
+/* An integer that may have arrived as a string, as CLI payloads do. */
+static gint64
+payload_count(
+	JsonObject  *payload,
+	const gchar *key,
+	gint64       fallback
+){
+	const gchar *text = clawt_ipc_payload_string(payload, key);
+	gchar *end = NULL;
+	gint64 value;
+
+	if (text == NULL)
+		return clawt_ipc_payload_int(payload, key, fallback);
+
+	value = g_ascii_strtoll(text, &end, 10);
+
+	return (end != text && *end == '\0') ? value : -1;
+}
+
+/*
+ * routine.occurrences: the window's occurrences, built by
+ * #ClawtRoutineCalendar.  `from` defaults to the start of today and `to`
+ * to a week after `from`, both in the daemon's zone.
+ */
+static JsonNode *
+handle_occurrences(
+	ClawtDaemon *self,
+	JsonNode    *request,
+	JsonObject  *payload
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = g_date_time_new_now_local();
+	g_autoptr(GDateTime) from = NULL;
+	g_autoptr(GDateTime) to = NULL;
+	g_autoptr(ClawtRoutineCalendar) calendar = NULL;
+	JsonNode *reply;
+
+	from = payload_time(payload, "from", &error);
+	if (error == NULL)
+		to = payload_time(payload, "to", &error);
+
+	if (error != NULL)
+		return clawt_ipc_error_new(request, error->code, error->message);
+
+	if (from == NULL)
+		from = g_date_time_new_local(g_date_time_get_year(now),
+		                             g_date_time_get_month(now),
+		                             g_date_time_get_day_of_month(now),
+		                             0, 0, 0.0);
+
+	if (to == NULL)
+		to = g_date_time_add_days(from, 7);
+
+	calendar = daemon_calendar(self);
+	reply = clawt_routine_calendar_occurrences(
+		calendar, from, to, now,
+		clawt_ipc_payload_string(payload, "agent"),
+		clawt_ipc_payload_string(payload, "team"),
+		clawt_ipc_payload_boolean(payload, "include_disabled", FALSE),
+		clawt_ipc_payload_boolean(payload, "collapse", FALSE), &error);
+
+	if (reply == NULL)
+		return clawt_ipc_error_new(request, error->code, error->message);
+
+	return clawt_ipc_response_new(request, reply);
+}
+
+/* routine.upcoming: the next `limit` runs, fleet-wide. */
+static JsonNode *
+handle_upcoming(
+	ClawtDaemon *self,
+	JsonNode    *request,
+	JsonObject  *payload
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = g_date_time_new_now_local();
+	g_autoptr(ClawtRoutineCalendar) calendar = NULL;
+	gint64 limit = payload_count(payload, "limit", 0);
+	JsonNode *reply;
+
+	if (limit < 0)
+		return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+		                           "'limit' is a number of runs");
+
+	calendar = daemon_calendar(self);
+	reply = clawt_routine_calendar_upcoming(
+		calendar, now, (guint)MIN(limit, (gint64)G_MAXUINT),
+		clawt_ipc_payload_string(payload, "agent"),
+		clawt_ipc_payload_string(payload, "team"), &error);
+
+	if (reply == NULL)
+		return clawt_ipc_error_new(request, error->code, error->message);
+
+	return clawt_ipc_response_new(request, reply);
+}
+
 JsonNode *
 clawt_daemon_handle_routine(
     ClawtDaemon  *self,
@@ -669,6 +876,12 @@ clawt_daemon_handle_routine(
 
         return clawt_ipc_response_new(request, NULL);
     }
+
+    if (g_strcmp0(kind, "routine.occurrences") == 0)
+        return handle_occurrences(self, request, payload);
+
+    if (g_strcmp0(kind, "routine.upcoming") == 0)
+        return handle_upcoming(self, request, payload);
 
     if (g_strcmp0(kind, "routine.run") == 0) {
         const gchar *id = clawt_ipc_payload_string(payload, "id");

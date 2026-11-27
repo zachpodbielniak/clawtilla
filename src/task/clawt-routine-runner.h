@@ -50,6 +50,53 @@ typedef const gchar *(*ClawtRoutineRunFunc)(const gchar  *routine_id,
                                             gpointer      user_data,
                                             GError      **error);
 
+/**
+ * ClawtRunEntry:
+ * @slot: the scheduled time it was for, as a Unix time; 0 for a run
+ *   nothing scheduled -- a person's Run now, or an automation
+ * @at: when it was recorded, as a Unix time: the start, or for a missed
+ *   time the moment the daemon noticed
+ * @outcome: what happened
+ * @by_hand: whether a person started it
+ * @detail: (nullable): why, when it failed, was refused or was missed
+ * @task_id: (nullable): the task the run became
+ *
+ * One line of a routine's history (since 0.78.0).
+ *
+ * The runner keeps these beside `last_run`, bounded by
+ * `daemon.routine_history_days` and a fixed count per routine, so a
+ * calendar can say what happened at a time that has passed rather than
+ * only what happened last.
+ */
+typedef struct {
+    gint64           slot;
+    gint64           at;
+    ClawtRunOutcome  outcome;
+    gboolean         by_hand;
+    gchar           *detail;
+    gchar           *task_id;
+} ClawtRunEntry;
+
+#define CLAWT_TYPE_RUN_ENTRY (clawt_run_entry_get_type())
+
+GType clawt_run_entry_get_type(void) G_GNUC_CONST;
+
+/**
+ * clawt_run_entry_copy:
+ * @self: a #ClawtRunEntry
+ *
+ * Returns: (transfer full): a copy
+ */
+ClawtRunEntry *clawt_run_entry_copy(const ClawtRunEntry *self);
+
+/**
+ * clawt_run_entry_free:
+ * @self: (nullable): a #ClawtRunEntry
+ */
+void clawt_run_entry_free(ClawtRunEntry *self);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtRunEntry, clawt_run_entry_free)
+
 #define CLAWT_TYPE_ROUTINE_RUNNER (clawt_routine_runner_get_type())
 
 G_DECLARE_FINAL_TYPE(ClawtRoutineRunner, clawt_routine_runner,
@@ -132,6 +179,56 @@ void clawt_routine_runner_tick(ClawtRoutineRunner *self);
  */
 GDateTime *clawt_routine_runner_next_run(ClawtRoutineRunner *self,
                                          const gchar        *routine_id);
+
+/**
+ * clawt_routine_runner_next_run_after:
+ * @self: a #ClawtRoutineRunner
+ * @routine_id: which routine
+ * @after: the time to search from, exclusive
+ *
+ * When it is next due after @after -- clawt_routine_runner_next_run()
+ * with the clock passed in, so two answers asked for at one moment are
+ * the same answer (since 0.78.0).  `routine.list`'s `next_run` and
+ * `routine.upcoming` both come from here.
+ *
+ * Returns: (transfer full) (nullable): the time, or %NULL for a manual
+ *   or disabled routine
+ */
+GDateTime *clawt_routine_runner_next_run_after(ClawtRoutineRunner *self,
+                                               const gchar        *routine_id,
+                                               GDateTime          *after);
+
+/**
+ * clawt_routine_runner_get_history:
+ * @self: a #ClawtRoutineRunner
+ * @routine_id: which routine
+ * @from: the start, as a Unix time, inclusive
+ * @to: the end, as a Unix time, exclusive
+ *
+ * What the runner remembers of a routine's runs whose time falls in
+ * [@from, @to): its scheduled time, or when it started for one nothing
+ * scheduled (since 0.78.0).
+ *
+ * Returns: (transfer full) (element-type ClawtRunEntry): the entries,
+ *   oldest first
+ */
+GPtrArray *clawt_routine_runner_get_history(ClawtRoutineRunner *self,
+                                            const gchar        *routine_id,
+                                            gint64              from,
+                                            gint64              to);
+
+/**
+ * clawt_routine_runner_get_pending_slot:
+ * @self: a #ClawtRoutineRunner
+ * @routine_id: which routine
+ *
+ * The scheduled time a routine is waiting out its jitter for, if it is
+ * (since 0.78.0).
+ *
+ * Returns: the time as a Unix time, or 0 when nothing is pending
+ */
+gint64 clawt_routine_runner_get_pending_slot(ClawtRoutineRunner *self,
+                                             const gchar        *routine_id);
 
 /**
  * clawt_routine_runner_last_run:
@@ -271,6 +368,19 @@ gboolean clawt_routine_runner_get_turned_off(
 	guint               *out_failures,
 	const gchar        **out_error
 );
+
+/**
+ * clawt_routine_jitter_seconds:
+ * @routine: a #ClawtRoutine
+ *
+ * The longest a scheduled run of @routine is held back, in seconds:
+ * `jitter_seconds`, clamped to an hour and with a negative value read as
+ * none (since 0.78.0).  One copy, so the scheduler and a calendar's
+ * jitter window cannot disagree.
+ *
+ * Returns: the jitter, 0 for none
+ */
+guint clawt_routine_jitter_seconds(ClawtRoutine *routine);
 
 /**
  * clawt_routine_max_start_failures:

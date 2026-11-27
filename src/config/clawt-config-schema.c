@@ -179,6 +179,37 @@ static const ClawtSchemaEntry schema[] = {
   "replayed into every context rebuild, so a leaked key in one would be\n"
   "permanent.", "0.1.0" },
 
+{ "daemon.routine_history_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "62", NULL,
+  "How many days of each routine's run history to keep: what happened at\n"
+  "every scheduled time -- started (and which task), failed, refused,\n"
+  "missed while the daemon was down, or folded into a catch-up run.\n"
+  "\n"
+  "This is what lets the Schedule calendar put a tick or a cross on a\n"
+  "time that has passed (routine.occurrences). It lives in the routine\n"
+  "state file beside last_run, never in this config. Each routine also\n"
+  "keeps at most 2,000 entries whatever this says, because the state file\n"
+  "is rewritten on every run. 0 or less means the default.", "0.78.0" },
+
+{ "daemon.calendar_max_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "62", NULL,
+  "The longest window one routine.occurrences request may ask for, in\n"
+  "days. A longer one is refused with this number in the error.\n"
+  "\n"
+  "62 covers a month grid with the weeks either side of it. The bound\n"
+  "exists because expanding a schedule costs time per run, and a client\n"
+  "asking for a year of an every-minute routine would hold the daemon's\n"
+  "loop while it did. 0 or less means the default.", "0.78.0" },
+
+{ "daemon.calendar_max_occurrences", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "5000", NULL,
+  "The most occurrences one routine.occurrences request may return,\n"
+  "across every routine and libreclaw cron in the window. Past it the\n"
+  "request is refused, naming the routine that contributes most, rather\n"
+  "than answered with a calendar that silently stops part-way through a\n"
+  "week. Narrow the window or filter by agent or team. 0 or less means\n"
+  "the default.", "0.78.0" },
+
 { "daemon.allow_unconfined_host", CLAWT_SCHEMA_BOOLEAN,
   CLAWT_SCHEMA_FLAG_DANGEROUS, "false", NULL,
   "Permit agents to use computer.host.confine: none.\n"
