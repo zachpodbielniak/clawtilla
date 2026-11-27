@@ -3892,6 +3892,60 @@ static const ClawtSchemaEntry schema[] = {
   "This is libreclaw's own value (its session.max_sessions); the daemon\n"
   "renders this straight through.", "0.77.2" },
 
+{ "agents.session.max_wait_queue_depth", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "32", NULL,
+  "How many channel messages may wait for a session slot when every\n"
+  "session is busy.\n"
+  "\n"
+  "Past this depth the newest message is refused, not the oldest: the\n"
+  "oldest has waited longest and keeps its place. The sender is told the\n"
+  "agent is busy. 0 does not wait at all -- a message that finds every\n"
+  "session busy is refused at once, and the sender still gets the notice.\n"
+  "\n"
+  "This is not libreclaw's session.max_queue_depth, which is the message\n"
+  "queue inside one session while its turn runs.\n"
+  "\n"
+  "A whole number from 0 to 2147483647. `clawtilla config validate`\n"
+  "rejects a negative number or one too large for libreclaw, and if one\n"
+  "reaches the daemon anyway it is reported with a warning and replaced\n"
+  "with 32 in the rendered config.\n"
+  "\n"
+  "This is libreclaw's own value (its session.max_wait_queue_depth); the\n"
+  "daemon renders this straight through.", "0.78.0" },
+
+{ "agents.session.max_queue_wait_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "300", NULL,
+  "How many seconds a channel message may wait for a session slot.\n"
+  "\n"
+  "A waiting message older than this is refused, with the same busy\n"
+  "notice as one refused for want of room in the line. 0 is no age\n"
+  "limit.\n"
+  "\n"
+  "A whole number from 0 to 2147483647. `clawtilla config validate`\n"
+  "rejects a negative number or one too large for libreclaw, and if one\n"
+  "reaches the daemon anyway it is reported with a warning and replaced\n"
+  "with 300 in the rendered config.\n"
+  "\n"
+  "This is libreclaw's own value (its session.max_queue_wait_seconds);\n"
+  "the daemon renders this straight through.", "0.78.0" },
+
+{ "agents.session.max_parked", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "0", NULL,
+  "How many parked conversations libreclaw keeps for this agent.\n"
+  "\n"
+  "A conversation is parked when max_sessions makes libreclaw give up its\n"
+  "live session; it is resumed when its room speaks again. Past this\n"
+  "count the oldest parked conversation is forgotten. 0 keeps all of\n"
+  "them.\n"
+  "\n"
+  "A whole number from 0 to 2147483647. `clawtilla config validate`\n"
+  "rejects a negative number or one too large for libreclaw, and if one\n"
+  "reaches the daemon anyway it is reported with a warning and replaced\n"
+  "with 0 in the rendered config.\n"
+  "\n"
+  "This is libreclaw's own value (its session.max_parked); the daemon\n"
+  "renders this straight through.", "0.78.0" },
+
 { "agents.runtime", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "How this agent's libreclaw instance is hosted.", "0.1.0" },
 

@@ -4614,6 +4614,22 @@ validate_session_max_sessions(gint64 value, const gchar *key, GError **error)
 	return FALSE;
 }
 
+/*
+ * libreclaw reads session.max_wait_queue_depth, max_queue_wait_seconds and
+ * max_parked as non-negative gints and returns its default for a negative
+ * one.  0 is a real setting for all three, so it is valid.
+ */
+static gboolean
+validate_session_non_negative(gint64 value, const gchar *key, GError **error)
+{
+	if (value >= 0 && value <= G_MAXINT)
+		return TRUE;
+	g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+		"%s must be a whole number from 0 to %d; got %" G_GINT64_FORMAT,
+		key, G_MAXINT, value);
+	return FALSE;
+}
+
 /* Thresholds must have one exact value; reject signs, fractions and overflow. */
 static gboolean
 validate_daily_limit(const gchar *value, const gchar *key, GError **error)
@@ -4853,6 +4869,23 @@ clawt_config_validate(ClawtConfig *self, GError **error)
 		if (!validate_session_max_sessions(clawt_agent_config_get_int(agent,
 			"session.max_sessions"), max_sessions_key, error))
 			return FALSE;
+		{
+			static const gchar *const non_negative_keys[] = {
+				"session.max_wait_queue_depth",
+				"session.max_queue_wait_seconds",
+				"session.max_parked"
+			};
+			guint k;
+
+			for (k = 0; k < G_N_ELEMENTS(non_negative_keys); k++) {
+				g_autofree gchar *nn_key = g_strdup_printf("agent %s %s",
+					clawt_agent_config_get_id(agent), non_negative_keys[k]);
+				if (!validate_session_non_negative(
+					clawt_agent_config_get_int(agent, non_negative_keys[k]),
+					nn_key, error))
+					return FALSE;
+			}
+		}
 	}
 
 	/*

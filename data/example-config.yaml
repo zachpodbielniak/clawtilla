@@ -3586,6 +3586,57 @@ agents:
       # renders this straight through.
       max_sessions: 10
 
+      # How many channel messages may wait for a session slot when every
+      # session is busy.
+      #
+      # Past this depth the newest message is refused, not the oldest: the
+      # oldest has waited longest and keeps its place. The sender is told the
+      # agent is busy. 0 does not wait at all -- a message that finds every
+      # session busy is refused at once, and the sender still gets the notice.
+      #
+      # This is not libreclaw's session.max_queue_depth, which is the message
+      # queue inside one session while its turn runs.
+      #
+      # A whole number from 0 to 2147483647. `clawtilla config validate`
+      # rejects a negative number or one too large for libreclaw, and if one
+      # reaches the daemon anyway it is reported with a warning and replaced
+      # with 32 in the rendered config.
+      #
+      # This is libreclaw's own value (its session.max_wait_queue_depth); the
+      # daemon renders this straight through.
+      max_wait_queue_depth: 32
+
+      # How many seconds a channel message may wait for a session slot.
+      #
+      # A waiting message older than this is refused, with the same busy
+      # notice as one refused for want of room in the line. 0 is no age
+      # limit.
+      #
+      # A whole number from 0 to 2147483647. `clawtilla config validate`
+      # rejects a negative number or one too large for libreclaw, and if one
+      # reaches the daemon anyway it is reported with a warning and replaced
+      # with 300 in the rendered config.
+      #
+      # This is libreclaw's own value (its session.max_queue_wait_seconds);
+      # the daemon renders this straight through.
+      max_queue_wait_seconds: 300
+
+      # How many parked conversations libreclaw keeps for this agent.
+      #
+      # A conversation is parked when max_sessions makes libreclaw give up its
+      # live session; it is resumed when its room speaks again. Past this
+      # count the oldest parked conversation is forgotten. 0 keeps all of
+      # them.
+      #
+      # A whole number from 0 to 2147483647. `clawtilla config validate`
+      # rejects a negative number or one too large for libreclaw, and if one
+      # reaches the daemon anyway it is reported with a warning and replaced
+      # with 0 in the rendered config.
+      #
+      # This is libreclaw's own value (its session.max_parked); the daemon
+      # renders this straight through.
+      max_parked: 0
+
     # How this agent's libreclaw instance is hosted.
     runtime:
 

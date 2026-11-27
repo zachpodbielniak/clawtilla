@@ -557,6 +557,9 @@ see security.md).
 | `agents.session.routing_mode` | enum | `sender-room` |  | How many context windows this agent is. |
 | `agents.session.timeout_minutes` | integer | `30` |  | Minutes of inactivity before libreclaw drops this agent's session. |
 | `agents.session.max_sessions` | integer | `10` |  | How many sessions this agent keeps live at once. |
+| `agents.session.max_wait_queue_depth` | integer | `32` |  | How many channel messages may wait for a session slot when every session is busy. |
+| `agents.session.max_queue_wait_seconds` | integer | `300` |  | How many seconds a channel message may wait for a session slot. |
+| `agents.session.max_parked` | integer | `0` |  | How many parked conversations libreclaw keeps for this agent. |
 | `agents.runtime` | section |  |  | How this agent's libreclaw instance is hosted. |
 | `agents.runtime.type` | enum | `process` |  | process or embedded. |
 | `agents.runtime.confine` | enum |  |  | Run this agent's own CLI inside a bubblewrap sandbox: none or bwrap. Defaults to defaults.confine. |
