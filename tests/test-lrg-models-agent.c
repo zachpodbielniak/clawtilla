@@ -1149,6 +1149,75 @@ test_state_and_lifecycle_text(void)
     g_assert_nonnull(strstr(c, "builds a fresh one"));
 }
 
+static void
+test_state_includes_container_use(void)
+{
+    g_autoptr(JsonNode) agent = parse(
+        "{\"computer\":\"container\",\"caps\":\"computer\","
+        "\"container_limits\":{\"cpus\":{\"value\":\"4\",\"written\":\"4\","
+        "\"source\":\"team\",\"team\":\"forge\",\"own\":\"\"}},"
+        "\"container_usage\":{\"cpu_percent\":12.5,\"memory_used\":1024,"
+        "\"memory_limit\":2048,\"pids\":3,\"at_memory_limit\":false}}");
+    g_autoptr(JsonNode) status = parse("{\"state\":\"running\"}");
+    g_autofree gchar *text = clawt_lrg_computer_state_text(
+        json_node_get_object(agent), status);
+
+    g_assert_nonnull(strstr(text, "container \xe2\x80\x94 running"));
+    g_assert_nonnull(strstr(text, "cpus 4 (team forge)"));
+    g_assert_nonnull(strstr(text, "CPU 12.5%"));
+    g_assert_nonnull(strstr(text, "3 pids"));
+    g_assert_null(strstr(text, "at its memory limit"));
+}
+
+static void
+test_container_limit_fields(void)
+{
+    g_autoptr(JsonNode) bare = parse("{\"id\":\"kudu\"}");
+    g_autoptr(JsonNode) box = parse(
+        "{\"id\":\"kudu\",\"container_cpus\":\"\",\"container_cpu_weight\":\"\","
+        "\"container_cpuset\":\"\"}");
+    g_autoptr(JsonNode) settings = parse(
+        "{\"computer.container.cpu_weight\":\"0\","
+        "\"computer.container.cpus\":\"\","
+        "\"computer.container.pids_limit\":\"2048\"}");
+    g_autoptr(GPtrArray) groups =
+        clawt_lrg_agent_form(json_node_get_object(settings));
+    g_autoptr(GPtrArray) untouched = posted(
+        "computer.container.cpu_weight", "",
+        "computer.container.cpus", "", NULL);
+    g_autoptr(GPtrArray) changed = posted(
+        "computer.container.cpu_weight", "100", NULL);
+    g_autoptr(GPtrArray) quiet =
+        clawt_lrg_agent_save_plan(untouched, json_node_get_object(settings));
+    g_autoptr(GPtrArray) plan =
+        clawt_lrg_agent_save_plan(changed, json_node_get_object(settings));
+    ClawtLrgAgentField *weight = find_field(groups,
+                                            "computer.container.cpu_weight",
+                                            NULL);
+    ClawtLrgAgentField *cpus = find_field(groups,
+                                          "computer.container.cpus", NULL);
+
+    g_assert_false(clawt_lrg_agent_field_applies(
+        "computer.container.cpus", json_node_get_object(bare)));
+    g_assert_false(clawt_lrg_agent_field_applies(
+        "computer.container.cpus", NULL));
+    g_assert_true(clawt_lrg_agent_field_applies(
+        "computer.container.cpus", json_node_get_object(box)));
+    g_assert_true(clawt_lrg_agent_field_applies(
+        "computer.container.cpu_weight", json_node_get_object(box)));
+    g_assert_cmpstr(weight->label, ==, "CPU weight");
+    g_assert_cmpstr(cpus->label, ==, "CPUs");
+    g_assert_cmpstr(weight->value, ==, "");
+    g_assert_cmpstr(find_field(groups, "computer.container.pids_limit",
+                               NULL)->value, ==, "2048");
+    g_assert_cmpuint(quiet->len, ==, 0);
+    g_assert_cmpuint(plan->len, ==, 1);
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(plan, 0))->key,
+                    ==, "computer.container.cpu_weight");
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(plan, 0))->value,
+                    ==, "100");
+}
+
 /* ── Hold ─────────────────────────────────────────────────────────── */
 
 static void
@@ -1311,6 +1380,10 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg-agent/computer/input", test_input_payload);
     g_test_add_func("/lrg-agent/computer/exec",
                     test_exec_output_and_exchange);
+    g_test_add_func("/lrg-agent/computer/state-limits",
+                    test_state_includes_container_use);
+    g_test_add_func("/lrg-agent/form/container-limits",
+                    test_container_limit_fields);
     g_test_add_func("/lrg-agent/computer/state",
                     test_state_and_lifecycle_text);
     g_test_add_func("/lrg-agent/hold", test_hold);

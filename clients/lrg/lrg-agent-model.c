@@ -939,6 +939,12 @@ clawt_lrg_agent_field_applies(const gchar *key, JsonObject *agent)
 
     if (g_strcmp0(key, "computer.start") == 0)
         member = "computer_start";
+    else if (g_strcmp0(key, "computer.container.cpus") == 0)
+        member = "container_cpus";
+    else if (g_strcmp0(key, "computer.container.cpu_weight") == 0)
+        member = "container_cpu_weight";
+    else if (g_strcmp0(key, "computer.container.cpuset") == 0)
+        member = "container_cpuset";
     else if (g_strcmp0(key, "computer.container.pids_limit") == 0)
         member = "container_pids_limit";
     else if (g_strcmp0(key, "computer.container.memory") == 0)
@@ -1061,6 +1067,7 @@ field_free(gpointer data)
     g_free(field->key);
     g_free(field->label);
     g_free(field->hint);
+    g_free(field->placeholder);
     g_free(field->value);
     g_free(field);
 }
@@ -1117,6 +1124,13 @@ friendly_field(const gchar *key, gchar **label, gchar **hint)
           "On first use leaves the machine off until the agent first runs "
           "a command in it; the agent's own tools run on the host either "
           "way." },
+        { "computer.container.cpus", "CPUs",
+          "Empty for no cap. A suggestion from the host's size is the "
+          "placeholder, not the value." },
+        { "computer.container.cpu_weight", "CPU weight",
+          "1 to 10000. Empty for the default." },
+        { "computer.container.cpuset", "CPU set",
+          "A CPU list, for example 0-3. Empty for every CPU." },
         { "computer.container.pids_limit", "Process limit",
           "e.g. 2048 -- empty for podman's default, -1 for no limit." },
         { "computer.container.memory", "Memory",
@@ -1247,6 +1261,18 @@ clawt_lrg_agent_form(JsonObject *settings)
             field->hint = first_line(entry->doc);
         }
         field->value = g_strdup(string_or(settings, key, ""));
+
+        /*
+         * An unset int is stored as "0" and reported on the agent as "".
+         * The field shows "", which is what a save compares against, so
+         * opening the page does not pin 0 onto the agent.
+         */
+        if ((g_strcmp0(key, "computer.container.cpu_weight") == 0 ||
+             g_strcmp0(key, "computer.container.pids_limit") == 0) &&
+            g_strcmp0(field->value, "0") == 0) {
+            g_free(field->value);
+            field->value = g_strdup("");
+        }
         field->kind = clawt_lrg_agent_field_kind(key, entry);
         field->enum_type = (entry->enum_type != NULL) ? entry->enum_type()
                                                       : G_TYPE_INVALID;
@@ -1291,6 +1317,23 @@ clawt_lrg_agent_setting_free(gpointer data)
     g_free(setting->key);
     g_free(setting->value);
     g_free(setting);
+}
+
+/*
+ * What "unchanged" means for a limit. cpu_weight and pids_limit are
+ * stored as the decimal "0" when unset, while the field shows "".
+ */
+static const gchar *
+stored_baseline(JsonObject *settings, const gchar *key)
+{
+    const gchar *stored = string_or(settings, key, "");
+
+    if ((g_strcmp0(key, "computer.container.cpu_weight") == 0 ||
+         g_strcmp0(key, "computer.container.pids_limit") == 0) &&
+        g_strcmp0(stored, "0") == 0)
+        return "";
+
+    return stored;
 }
 
 static const gchar *
@@ -1462,7 +1505,7 @@ clawt_lrg_agent_save_plan(GPtrArray *posted, JsonObject *settings)
          * is a default that no longer follows the fleet.
          */
         if (g_strcmp0(setting->value,
-                      string_or(settings, setting->key, "")) == 0)
+                      stored_baseline(settings, setting->key)) == 0)
             continue;
 
         g_ptr_array_add(plan, clawt_lrg_agent_setting_new(setting->key,
@@ -2097,6 +2140,7 @@ gchar *
 clawt_lrg_computer_state_text(JsonObject *agent, JsonNode *status)
 {
     const gchar *type = string_or(agent, "computer", "none");
+    g_autofree gchar *base = NULL;
 
     if (agent == NULL)
         return g_strdup("No agent selected.");
@@ -2110,12 +2154,21 @@ clawt_lrg_computer_state_text(JsonObject *agent, JsonNode *status)
      * object to report on, which is said rather than left blank.
      */
     if (status == NULL)
-        return g_strdup_printf("%s \xe2\x80\x94 built when the agent starts",
+        base = g_strdup_printf("%s \xe2\x80\x94 built when the agent starts",
                                type);
+    else
+        base = g_strdup_printf("%s \xe2\x80\x94 %s", type,
+                               string_or(clawt_ipc_reply_object(status),
+                                         "state", "unknown"));
 
-    return g_strdup_printf("%s \xe2\x80\x94 %s", type,
-                           string_or(clawt_ipc_reply_object(status), "state",
-                                     "unknown"));
+    {
+        g_autofree gchar *detail = clawt_container_agent_detail(agent);
+
+        if (detail == NULL)
+            return g_steal_pointer(&base);
+
+        return g_strdup_printf("%s\n%s", base, detail);
+    }
 }
 
 gchar *

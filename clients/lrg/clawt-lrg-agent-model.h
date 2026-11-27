@@ -241,6 +241,7 @@ typedef struct {
     gchar             *key;
     gchar             *label;
     gchar             *hint;
+    gchar             *placeholder; /* suggestion; not submitted */
     gchar             *value;
     ClawtLrgAgentFieldKind  kind;
     GType              enum_type;

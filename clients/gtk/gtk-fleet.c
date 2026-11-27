@@ -97,9 +97,57 @@ on_stop_idle(GtkButton *button, gpointer user_data)
     adw_dialog_present(ADW_DIALOG(confirm), GTK_WIDGET(self));
 }
 
+static JsonObject *
+listed_agent(JsonArray *agents, const gchar *id)
+{
+    guint i;
+
+    if (agents == NULL || id == NULL)
+        return NULL;
+
+    for (i = 0; i < json_array_get_length(agents); i++) {
+        JsonObject *one = json_array_get_object_element(agents, i);
+
+        if (g_strcmp0(clawt_json_string(one, "id", NULL), id) == 0)
+            return one;
+    }
+
+    return NULL;
+}
+
+static void
+append_oom_rows(GtkListBox *list, JsonNode *reply)
+{
+    JsonObject *root = (reply != NULL) ? clawt_payload_of(reply) : NULL;
+    JsonArray *incidents = (root != NULL &&
+                            json_object_has_member(root, "incidents"))
+        ? json_object_get_array_member(root, "incidents") : NULL;
+    guint i;
+
+    for (i = 0; incidents != NULL && i < json_array_get_length(incidents);
+         i++) {
+        g_autofree gchar *text = clawt_container_oom_notice(
+            json_array_get_object_element(incidents, i));
+        GtkWidget *row;
+
+        if (text == NULL)
+            continue;
+
+        row = adw_action_row_new();
+        adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                      "Out of memory");
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), text);
+        adw_action_row_add_prefix(
+            ADW_ACTION_ROW(row),
+            gtk_image_new_from_icon_name("dialog-warning-symbolic"));
+        gtk_list_box_append(list, row);
+    }
+}
+
 static GtkWidget *
-agent_row(ClawtWindow *self, JsonObject *agent, gint64 total, gint64 now,
-          GPtrArray *stoppable)
+agent_row(ClawtWindow *self, JsonObject *agent, JsonObject *machine,
+          gint64 total, gint64 now, GPtrArray *stoppable)
 {
     GtkWidget *row = adw_action_row_new();
     const gchar *id = clawt_json_string(agent, "id", NULL);
@@ -109,13 +157,25 @@ agent_row(ClawtWindow *self, JsonObject *agent, gint64 total, gint64 now,
     const gchar *state = clawt_json_string(agent, "state", NULL);
     gint64 cost = clawt_json_int(agent, "cost_micros", 0);
     g_autofree gchar *subtitle = clawt_usage_fleet_row_subtitle(agent, now);
+    g_autofree gchar *detail = clawt_container_agent_detail(machine);
+    g_autofree gchar *pressure = clawt_container_memory_pressure_text(
+        id, machine);
+    g_autofree gchar *shown = NULL;
     g_autofree gchar *money = clawt_usage_format_cost(cost);
     g_autofree gchar *share = clawt_usage_share_label(cost, total);
     g_autofree gchar *cost_text = g_strdup_printf("%s \xc2\xb7 %s", money, share);
     GtkWidget *value;
     GtkWidget *fleet_fallback;
 
-    clawt_gtk_set_row_text(row, name != NULL ? name : "?", subtitle);
+    if (detail != NULL)
+        shown = g_strdup_printf("%s\n%s", subtitle, detail);
+
+    clawt_gtk_set_row_text(row, name != NULL ? name : "?",
+                           shown != NULL ? shown : subtitle);
+
+    if (pressure != NULL)
+        adw_action_row_add_prefix(ADW_ACTION_ROW(row),
+            clawt_gtk_badge("memory", "warning", pressure));
 
     if (idle != NULL)
         adw_action_row_add_prefix(ADW_ACTION_ROW(row),
@@ -343,6 +403,12 @@ refresh_fleet_once(ClawtWindow *self)
         teams = clawt_window_request(self, "team.list", NULL);
         if (teams != NULL)
             clawt_gtk_append_warning_rows(self->fleet_warnings, teams);
+        {
+            g_autoptr(JsonNode) incidents =
+                clawt_window_request(self, "incident.list", NULL);
+
+            append_oom_rows(self->fleet_warnings, incidents);
+        }
         gtk_widget_set_visible(GTK_WIDGET(self->fleet_warnings),
             gtk_widget_get_first_child(GTK_WIDGET(self->fleet_warnings)) != NULL);
     }
@@ -375,10 +441,25 @@ refresh_fleet_once(ClawtWindow *self)
     }
 
     agents = json_object_get_array_member(root, "agents");
-    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++)
-        gtk_list_box_append(self->fleet_list,
-            agent_row(self, json_array_get_object_element(agents, i), total, now,
-                      stoppable));
+    {
+        g_autoptr(JsonNode) listed =
+            clawt_window_request(self, "agent.list", NULL);
+        JsonObject *listed_root = (listed != NULL) ? clawt_payload_of(listed)
+                                                   : NULL;
+        JsonArray *machines = (listed_root != NULL &&
+                               json_object_has_member(listed_root, "agents"))
+            ? json_object_get_array_member(listed_root, "agents") : NULL;
+
+        for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
+            JsonObject *agent = json_array_get_object_element(agents, i);
+
+            gtk_list_box_append(self->fleet_list,
+                agent_row(self, agent,
+                          listed_agent(machines,
+                                       clawt_json_string(agent, "id", NULL)),
+                          total, now, stoppable));
+        }
+    }
 
     {
         g_autofree gchar *label = g_strdup_printf("Stop the idle ones (%u)",

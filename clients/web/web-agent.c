@@ -355,6 +355,12 @@ reported_member(const gchar *key)
 {
     if (g_strcmp0(key, "computer.start") == 0)
         return "computer_start";
+    if (g_strcmp0(key, "computer.container.cpus") == 0)
+        return "container_cpus";
+    if (g_strcmp0(key, "computer.container.cpu_weight") == 0)
+        return "container_cpu_weight";
+    if (g_strcmp0(key, "computer.container.cpuset") == 0)
+        return "container_cpuset";
     if (g_strcmp0(key, "computer.container.pids_limit") == 0)
         return "container_pids_limit";
     if (g_strcmp0(key, "computer.container.memory") == 0)
@@ -505,9 +511,41 @@ daemon_choices(ClawtWebApp *app, const gchar *key, const gchar *label,
         (const gchar *const *)names->pdata, value));
 }
 
+/* The short name of a podman limit key, or NULL. */
+static const gchar *
+limit_key(const gchar *key)
+{
+    static const gchar prefix[] = "computer.container.";
+    const gchar *short_key;
+
+    if (key == NULL || !g_str_has_prefix(key, prefix))
+        return NULL;
+
+    short_key = key + sizeof(prefix) - 1;
+
+    if (g_strcmp0(short_key, "cpus") == 0 ||
+        g_strcmp0(short_key, "cpu_weight") == 0 ||
+        g_strcmp0(short_key, "cpuset") == 0 ||
+        g_strcmp0(short_key, "memory") == 0 ||
+        g_strcmp0(short_key, "memory_swap") == 0 ||
+        g_strcmp0(short_key, "pids_limit") == 0)
+        return short_key;
+
+    return NULL;
+}
+
+static JsonObject *
+agent_limits(JsonObject *agent)
+{
+    if (agent == NULL || !json_object_has_member(agent, "container_limits"))
+        return NULL;
+
+    return json_object_get_object_member(agent, "container_limits");
+}
+
 static HtmxElement *
 control_for(ClawtWebApp *app, const gchar *agent_id, const ClawtSchemaEntry *entry,
-            const gchar *key, const gchar *value)
+            const gchar *key, const gchar *value, JsonObject *agent)
 {
     g_autofree gchar *label = key_label(key);
     g_autofree gchar *doc = first_line(entry->doc);
@@ -645,21 +683,27 @@ control_for(ClawtWebApp *app, const gchar *agent_id, const ClawtSchemaEntry *ent
      * rather than as keys -- "container · memory swap" does not say that
      * it is the total, which is the thing people get wrong.
      */
-    if (g_strcmp0(key, "computer.container.pids_limit") == 0)
-        return HTMX_ELEMENT(clawt_web_field(
-            "Process limit", field_name, value,
-            "e.g. 2048 -- empty for podman's default, -1 for no limit"));
+    if (limit_key(key) != NULL) {
+        g_autofree gchar *placeholder = clawt_container_limits_field_placeholder(
+            limit_key(key), agent_limits(agent));
+        const gchar *title = label;
 
-    if (g_strcmp0(key, "computer.container.memory") == 0)
-        return HTMX_ELEMENT(clawt_web_field(
-            "Memory", field_name, value,
-            "e.g. 512m or 4g -- empty for no limit"));
+        if (g_strcmp0(key, "computer.container.cpus") == 0)
+            title = "CPUs";
+        else if (g_strcmp0(key, "computer.container.cpu_weight") == 0)
+            title = "CPU weight";
+        else if (g_strcmp0(key, "computer.container.cpuset") == 0)
+            title = "CPU set";
+        else if (g_strcmp0(key, "computer.container.pids_limit") == 0)
+            title = "Process limit";
+        else if (g_strcmp0(key, "computer.container.memory") == 0)
+            title = "Memory";
+        else if (g_strcmp0(key, "computer.container.memory_swap") == 0)
+            title = "Memory + swap";
 
-    if (g_strcmp0(key, "computer.container.memory_swap") == 0)
-        return HTMX_ELEMENT(clawt_web_field(
-            "Memory + swap", field_name, value,
-            "memory and swap together, e.g. 8g; equal to Memory for no "
-            "swap, -1 for unlimited swap"));
+        return HTMX_ELEMENT(clawt_web_field(title, field_name, value,
+                                            placeholder));
+    }
 
     /*
      * One command line, not the comma list a string list gets: the
@@ -1430,7 +1474,8 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
                     continue;
 
                 clawt_web_add(group_body,
-                              control_for(app, agent_id, entry, key, value));
+                              control_for(app, agent_id, entry, key, value,
+                                          agent));
 
                 /*
                  * What sandboxing does, and -- when the daemon cannot
@@ -1491,6 +1536,16 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
                         "On first use leaves the machine off until the agent "
                         "first runs a command in it; the agent's own tools "
                         "run on the host either way.", "small muted"));
+
+                if (limit_key(key) != NULL) {
+                    g_autofree gchar *inherit =
+                        clawt_container_limits_inherit_for(agent_limits(agent),
+                                                           limit_key(key));
+
+                    if (inherit != NULL)
+                        clawt_web_add(group_body,
+                                      clawt_web_text(inherit, "small muted"));
+                }
 
                 if (g_strcmp0(key, "computer.container.memory_swap") == 0)
                     clawt_web_add(group_body, clawt_web_text(

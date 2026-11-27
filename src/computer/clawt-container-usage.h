@@ -22,6 +22,7 @@
 #endif
 
 #include <glib-object.h>
+#include <json-glib/json-glib.h>
 
 G_BEGIN_DECLS
 
@@ -251,6 +252,167 @@ clawt_container_usage_oom_reason(
 gchar *
 clawt_container_usage_format_bytes(
 	gint64 bytes
+);
+
+/**
+ * clawt_container_limits_suggest_cpus:
+ * @host_cpus: how many CPUs the host has
+ *
+ * A quarter of the host, as text a cpus field accepts. A whole number
+ * when the quarter is integral ("5" from 20), otherwise the shortest
+ * decimal ("0.5" from 2).
+ *
+ * Returns: (transfer full) (nullable): the suggestion, or %NULL when
+ *   @host_cpus is 0
+ */
+gchar *
+clawt_container_limits_suggest_cpus(
+	guint host_cpus
+);
+
+/**
+ * clawt_container_limits_suggest_memory:
+ * @host_memory: the host's memory, in bytes
+ *
+ * A quarter of the host, in the same units as
+ * clawt_container_usage_format_bytes().
+ *
+ * Returns: (transfer full) (nullable): the suggestion, or %NULL when
+ *   @host_memory is not positive
+ */
+gchar *
+clawt_container_limits_suggest_memory(
+	gint64 host_memory
+);
+
+/**
+ * clawt_container_limits_inherit_text:
+ * @source: (nullable): "agent", "team", "defaults" or "empty"
+ * @team: (nullable): the team name when @source is "team"
+ * @written: (nullable): the value as written at that level
+ *
+ * The sentence under a field the agent leaves empty: where the value
+ * comes from, and that leaving the field empty keeps it. Nothing when
+ * the agent sets the value itself, or when nothing is written.
+ *
+ * Returns: (transfer full) (nullable): the sentence
+ */
+gchar *
+clawt_container_limits_inherit_text(
+	const gchar *source,
+	const gchar *team,
+	const gchar *written
+);
+
+/**
+ * clawt_container_limits_inherit_for:
+ * @limits: (nullable): the container_limits object
+ * @key: one of cpus, cpu_weight, cpuset, memory, memory_swap, pids_limit
+ *
+ * clawt_container_limits_inherit_text() for one key of @limits. An
+ * agent that sets its own value gets nothing, so the field stays empty
+ * rather than showing a value a save would pin.
+ *
+ * Returns: (transfer full) (nullable): the sentence
+ */
+gchar *
+clawt_container_limits_inherit_for(
+	JsonObject  *limits,
+	const gchar *key
+);
+
+/**
+ * clawt_container_limits_field_placeholder:
+ * @key: one of the six limit keys
+ * @limits: (nullable): the container_limits object, for host_cpus and
+ *   host_memory
+ *
+ * The suggestion a field shows and does not submit. cpus and memory
+ * are about a quarter of the host when that size is known; the others
+ * are the examples the three clients already used.
+ *
+ * Returns: (transfer full): the placeholder
+ */
+gchar *
+clawt_container_limits_field_placeholder(
+	const gchar *key,
+	JsonObject  *limits
+);
+
+/**
+ * clawt_container_limits_summary:
+ * @limits: (nullable): the container_limits object
+ *
+ * The effective limits in the CLI's words: "cpus 4 (team forge),
+ * memory 8g (agent)". Empty when nothing is set.
+ *
+ * Returns: (transfer full): the line, possibly empty
+ */
+gchar *
+clawt_container_limits_summary(
+	JsonObject *limits
+);
+
+/**
+ * clawt_container_usage_summary:
+ * @usage: (nullable): the container_usage object
+ *
+ * "CPU 12.5%, memory 3.1g of 8.0g, 143 pids", with " -- at its memory
+ * limit" when at_memory_limit is set. Empty when @usage is %NULL.
+ *
+ * Returns: (transfer full): the line, possibly empty
+ */
+gchar *
+clawt_container_usage_summary(
+	JsonObject *usage
+);
+
+/**
+ * clawt_container_agent_detail:
+ * @agent: (nullable): an agent.list or agent.show object
+ *
+ * The limits line and the usage line, separated by a newline. %NULL
+ * when the agent has neither, so a state line without a sample stays
+ * the sentence it was.
+ *
+ * Returns: (transfer full) (nullable): the text
+ */
+gchar *
+clawt_container_agent_detail(
+	JsonObject *agent
+);
+
+/**
+ * clawt_container_memory_pressure_text:
+ * @agent_id: (nullable): the agent
+ * @agent: (nullable): an agent.list or agent.show object
+ *
+ * "agent forge is at its memory limit: 7.8g of 8g used" when
+ * container_usage.at_memory_limit is set. The daemon says the same
+ * sentence on team.list; this is the one a row can show from the
+ * agent object alone.
+ *
+ * Returns: (transfer full) (nullable): the sentence
+ */
+gchar *
+clawt_container_memory_pressure_text(
+	const gchar *agent_id,
+	JsonObject  *agent
+);
+
+/**
+ * clawt_container_oom_notice:
+ * @incident: (nullable): one incident.list object
+ *
+ * "agent forge: killed: out of memory ..." for an unresolved incident
+ * of kind out-of-memory. Anything else, including a resolved one, is
+ * %NULL.
+ *
+ * Returns: (transfer full) (nullable): the sentence
+ */
+gchar *
+clawt_container_oom_notice(
+	JsonObject *incident
 );
 
 G_END_DECLS

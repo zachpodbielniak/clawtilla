@@ -3318,11 +3318,45 @@ test_fed_filter_cookie(void)
     g_assert_cmpstr(bad[1], ==, "online");
 }
 
+/*
+ * Limits and the memory warning are in the HTML. A hostile team name
+ * is text, and the page does not need a script to say any of it.
+ */
+static void
+test_container_limits_block(void)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(HtmxDiv) block = NULL;
+    g_autofree gchar *html = NULL;
+    const gchar *json =
+        "{\"id\":\"forge\","
+        "\"container_limits\":{"
+        "\"cpus\":{\"value\":\"4\",\"written\":\"4\",\"source\":\"team\","
+        "\"team\":\"<script>\",\"own\":\"\"}},"
+        "\"container_usage\":{\"cpu_percent\":10,\"memory_used\":1024,"
+        "\"memory_limit\":2048,\"pids\":2,\"at_memory_limit\":true}}";
+
+    g_assert_true(json_parser_load_from_data(parser, json, -1, NULL));
+    block = clawt_web_container_limits_block(
+        json_node_get_object(json_parser_get_root(parser)));
+    html = htmx_element_render(HTMX_ELEMENT(block));
+
+    g_assert_nonnull(strstr(html, "container-limits"));
+    g_assert_nonnull(strstr(html, "cpus 4 (team "));
+    g_assert_nonnull(strstr(html, "&lt;script&gt;"));
+    g_assert_nonnull(strstr(html, "CPU 10.0%"));
+    g_assert_nonnull(strstr(html, "class=\"notice\""));
+    g_assert_nonnull(strstr(html, "at its memory limit"));
+    g_assert_null(strstr(html, "<script>"));
+    g_assert_null(strstr(html, "<script"));
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/web/navigation-result", test_navigation_result);
+    g_test_add_func("/web/container-limits-block", test_container_limits_block);
     g_test_add_func("/web/row-menu-read-and-mute",
                     test_the_row_menu_offers_read_and_mute);
     g_test_add_func("/web/notifications-sections",

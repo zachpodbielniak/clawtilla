@@ -1082,6 +1082,100 @@ test_oom_reason(
 	                ==, "out-of-memory");
 }
 
+/* What the three clients say, from the same IPC the daemon sends. */
+static void
+test_client_sentences(void)
+{
+	g_autoptr(JsonParser) agent_parser = json_parser_new();
+	g_autoptr(JsonParser) incident_parser = json_parser_new();
+	g_autoptr(JsonParser) resolved_parser = json_parser_new();
+	JsonObject *agent;
+	JsonObject *incident;
+	JsonObject *resolved;
+	g_autofree gchar *cpus = clawt_container_limits_suggest_cpus(20);
+	g_autofree gchar *half = clawt_container_limits_suggest_cpus(2);
+	g_autofree gchar *memory = clawt_container_limits_suggest_memory(
+		(gint64)4 * ((gint64)7 * 1024 * 1024 * 1024 + 800 * 1024 * 1024));
+	g_autofree gchar *from_team = NULL;
+	g_autofree gchar *from_fleet = NULL;
+	g_autofree gchar *summary = NULL;
+	g_autofree gchar *usage = NULL;
+	g_autofree gchar *detail = NULL;
+	g_autofree gchar *pressure = NULL;
+	g_autofree gchar *oom = NULL;
+	g_autofree gchar *placeholder = NULL;
+	const gchar *agent_json =
+		"{\"id\":\"forge\","
+		"\"container_limits\":{"
+		"\"cpus\":{\"value\":\"4\",\"written\":\"4\",\"source\":\"team\","
+		"\"team\":\"forge\",\"own\":\"\"},"
+		"\"memory\":{\"value\":\"8g\",\"written\":\"8g\",\"source\":\"agent\","
+		"\"team\":\"\",\"own\":\"8g\"},"
+		"\"host_cpus\":20,\"host_memory\":8589934592},"
+		"\"container_usage\":{\"cpu_percent\":12.5,\"memory_used\":7516192768,"
+		"\"memory_limit\":8589934592,\"pids\":3,\"at_memory_limit\":true}}";
+	const gchar *incident_json =
+		"{\"kind\":\"out-of-memory\",\"resolved\":false,\"agent\":\"forge\","
+		"\"reason\":\"killed: out of memory at 8g (container clawt-forge, "
+		"1 process killed). The limit is computer.container.memory\"}";
+	const gchar *resolved_json =
+		"{\"kind\":\"out-of-memory\",\"resolved\":true,\"agent\":\"forge\","
+		"\"reason\":\"killed: out of memory at 8g\"}";
+
+	g_assert_cmpstr(cpus, ==, "5");
+	g_assert_cmpstr(half, ==, "0.5");
+	g_assert_null(clawt_container_limits_suggest_cpus(0));
+	g_assert_cmpstr(memory, ==, "7.8g");
+	g_assert_null(clawt_container_limits_suggest_memory(0));
+
+	from_team = clawt_container_limits_inherit_text("team", "forge", "4");
+	from_fleet = clawt_container_limits_inherit_text("defaults", NULL, "2");
+	g_assert_cmpstr(from_team, ==,
+	                "Inherited from team forge: 4. Leave empty to keep it.");
+	g_assert_cmpstr(from_fleet, ==,
+	                "Inherited from the fleet: 2. Leave empty to keep it.");
+	g_assert_null(clawt_container_limits_inherit_text("agent", NULL, "4"));
+	g_assert_null(clawt_container_limits_inherit_text("team", "forge", ""));
+
+	g_assert_true(json_parser_load_from_data(agent_parser, agent_json, -1,
+	                                        NULL));
+	agent = json_node_get_object(json_parser_get_root(agent_parser));
+	summary = clawt_container_limits_summary(
+		json_object_get_object_member(agent, "container_limits"));
+	usage = clawt_container_usage_summary(
+		json_object_get_object_member(agent, "container_usage"));
+	detail = clawt_container_agent_detail(agent);
+	pressure = clawt_container_memory_pressure_text("forge", agent);
+	placeholder = clawt_container_limits_field_placeholder(
+		"cpus", json_object_get_object_member(agent, "container_limits"));
+
+	g_assert_nonnull(strstr(summary, "cpus 4 (team forge)"));
+	g_assert_nonnull(strstr(summary, "memory 8g (agent)"));
+	g_assert_true(g_str_has_prefix(usage, "CPU 12.5%, memory "));
+	g_assert_nonnull(strstr(usage, "3 pids -- at its memory limit"));
+	g_assert_nonnull(strstr(detail, "cpus 4 (team forge)"));
+	g_assert_nonnull(strstr(detail, "at its memory limit"));
+	g_assert_cmpstr(pressure, ==,
+	                "agent forge is at its memory limit: 7.0g of 8g used");
+	g_assert_nonnull(strstr(placeholder, "5"));
+	g_assert_null(clawt_container_limits_inherit_for(
+		json_object_get_object_member(agent, "container_limits"), "memory"));
+	g_assert_nonnull(clawt_container_limits_inherit_for(
+		json_object_get_object_member(agent, "container_limits"), "cpus"));
+	g_assert_null(clawt_container_agent_detail(NULL));
+
+	g_assert_true(json_parser_load_from_data(incident_parser, incident_json,
+	                                        -1, NULL));
+	g_assert_true(json_parser_load_from_data(resolved_parser, resolved_json,
+	                                        -1, NULL));
+	incident = json_node_get_object(json_parser_get_root(incident_parser));
+	resolved = json_node_get_object(json_parser_get_root(resolved_parser));
+	oom = clawt_container_oom_notice(incident);
+	g_assert_true(g_str_has_prefix(oom, "agent forge: killed: out of memory at 8g"));
+	g_assert_null(clawt_container_oom_notice(resolved));
+	g_assert_null(clawt_container_oom_notice(NULL));
+}
+
 gint
 main(
 	gint    argc,
@@ -1130,6 +1224,8 @@ main(
 	                test_cgroups_and_oom_counter);
 	g_test_add_func("/cpu-limits/usage/take", test_take_usage);
 	g_test_add_func("/cpu-limits/usage/oom-reason", test_oom_reason);
+	g_test_add_func("/cpu-limits/usage/client-sentences",
+	                test_client_sentences);
 
 	status = g_test_run();
 

@@ -32,9 +32,44 @@ period_of(const gchar *text)
     return n < clawt_usage_period_count() ? (guint)n : CLAWT_USAGE_PERIOD_DEFAULT;
 }
 
+static JsonObject *
+listed_agent(JsonArray *agents, const gchar *id)
+{
+    guint i;
+
+    if (agents == NULL || id == NULL)
+        return NULL;
+
+    for (i = 0; i < json_array_get_length(agents); i++) {
+        JsonObject *one = json_array_get_object_element(agents, i);
+
+        if (g_strcmp0(clawt_web_member(one, "id", NULL), id) == 0)
+            return one;
+    }
+
+    return NULL;
+}
+
+static void
+add_oom_notices(HtmxElement *parent, JsonNode *reply)
+{
+    JsonArray *incidents = clawt_web_member_array(clawt_web_root(reply),
+                                                  "incidents");
+    guint i;
+
+    for (i = 0; incidents != NULL && i < json_array_get_length(incidents);
+         i++) {
+        g_autofree gchar *text = clawt_container_oom_notice(
+            json_array_get_object_element(incidents, i));
+
+        if (text != NULL)
+            clawt_web_add(parent, clawt_web_notice(text, "bad"));
+    }
+}
+
 /* One agent: what it spent and its share, its recency, Stop when idle. */
 static HtmxElement *
-agent_element(JsonObject *agent, gint64 total, gint64 now)
+agent_element(JsonObject *agent, JsonObject *machine, gint64 total, gint64 now)
 {
     g_autoptr(HtmxDiv) row = htmx_div_new();
     g_autoptr(HtmxDiv) head = htmx_div_new();
@@ -75,6 +110,8 @@ agent_element(JsonObject *agent, gint64 total, gint64 now)
     htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(head));
 
     clawt_web_add(row, clawt_web_text(subtitle, "list-item-sub"));
+    if (machine != NULL)
+        clawt_web_add(row, clawt_web_container_limits_block(machine));
 
     if (clawt_usage_fleet_row_stoppable(agent)) {
         g_autoptr(HtmxDiv) actions = htmx_div_new();
@@ -263,6 +300,15 @@ fleet_panel(ClawtWebApp *app, guint period)
     JsonObject *root = clawt_web_root(reply);
     guint i;
 
+    {
+        g_autoptr(JsonNode) teams = clawt_web_app_call(app, "team.list", NULL);
+        g_autoptr(JsonNode) incidents =
+            clawt_web_app_call(app, "incident.list", NULL);
+
+        clawt_web_warnings(HTMX_ELEMENT(panel), teams);
+        add_oom_notices(HTMX_ELEMENT(panel), incidents);
+    }
+
     htmx_element_set_id(HTMX_ELEMENT(panel), "fleet-usage-panel");
     htmx_element_set_attribute(HTMX_ELEMENT(panel), "hx-get", self_url);
     /* a turn is a cost; a minute is fine-grained enough for a bill */
@@ -330,9 +376,22 @@ fleet_panel(ClawtWebApp *app, guint period)
         }
 
         htmx_element_add_class(HTMX_ELEMENT(list), "list");
-        for (i = 0; agents != NULL && i < json_array_get_length(agents); i++)
-            htmx_node_add_child(HTMX_NODE(list), HTMX_NODE(
-                agent_element(json_array_get_object_element(agents, i), total_cost, now)));
+        {
+            g_autoptr(JsonNode) listed = clawt_web_app_call(app, "agent.list",
+                                                           NULL);
+            JsonArray *machines = clawt_web_member_array(clawt_web_root(listed),
+                                                         "agents");
+
+            for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
+                JsonObject *one = json_array_get_object_element(agents, i);
+
+                htmx_node_add_child(HTMX_NODE(list), HTMX_NODE(
+                    agent_element(one,
+                                  listed_agent(machines,
+                                               clawt_web_member(one, "id", NULL)),
+                                  total_cost, now)));
+            }
+        }
         htmx_node_add_child(HTMX_NODE(panel), HTMX_NODE(list));
     }
 

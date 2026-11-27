@@ -903,6 +903,8 @@ on_fleet(HtmxRequest *request, GHashTable *params, gpointer user_data)
     ClawtWebApp *app = user_data;
     g_autoptr(JsonNode) reply = clawt_web_app_call(app, "agent.list", NULL);
     g_autoptr(JsonNode) teams = clawt_web_app_call(app, "team.list", NULL);
+    g_autoptr(JsonNode) incidents = clawt_web_app_call(app, "incident.list",
+                                                      NULL);
     JsonArray *agents = clawt_web_member_array(clawt_web_root(reply),
                                                "agents");
     g_autoptr(HtmxDiv) view = htmx_div_new();
@@ -921,6 +923,19 @@ on_fleet(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     clawt_web_add(pad, clawt_web_section_title("The fleet"));
     clawt_web_warnings(HTMX_ELEMENT(pad), teams);
+    {
+        JsonArray *open = clawt_web_member_array(clawt_web_root(incidents),
+                                                 "incidents");
+        guint n;
+
+        for (n = 0; open != NULL && n < json_array_get_length(open); n++) {
+            g_autofree gchar *text = clawt_container_oom_notice(
+                json_array_get_object_element(open, n));
+
+            if (text != NULL)
+                clawt_web_add(pad, clawt_web_notice(text, "bad"));
+        }
+    }
 
     {
         g_autoptr(HtmxTr) tr = htmx_tr_new();
@@ -930,6 +945,8 @@ on_fleet(HtmxRequest *request, GHashTable *params, gpointer user_data)
         clawt_web_add(tr, htmx_th_new_with_text("Team"));
         clawt_web_add(tr, htmx_th_new_with_text("Model"));
         clawt_web_add(tr, htmx_th_new_with_text("Computer"));
+        clawt_web_add(tr, htmx_th_new_with_text("Limits"));
+        clawt_web_add(tr, htmx_th_new_with_text("Use"));
         clawt_web_add(tr, htmx_th_new_with_text("Queue"));
         htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(tr));
     }
@@ -970,6 +987,21 @@ on_fleet(HtmxRequest *request, GHashTable *params, gpointer user_data)
             clawt_web_member(agent, "model", "—")));
         clawt_web_add(tr, htmx_td_new_with_text(
             clawt_web_member(agent, "computer", "none")));
+        {
+            g_autofree gchar *limits = clawt_container_limits_summary(
+                json_object_has_member(agent, "container_limits")
+                    ? json_object_get_object_member(agent, "container_limits")
+                    : NULL);
+            g_autofree gchar *use = clawt_container_usage_summary(
+                json_object_has_member(agent, "container_usage")
+                    ? json_object_get_object_member(agent, "container_usage")
+                    : NULL);
+
+            clawt_web_add(tr, htmx_td_new_with_text(
+                (limits != NULL && *limits != '\0') ? limits : "—"));
+            clawt_web_add(tr, htmx_td_new_with_text(
+                (use != NULL && *use != '\0') ? use : "—"));
+        }
 
         {
             g_autoptr(HtmxTd) cell = htmx_td_new_with_text(depth);

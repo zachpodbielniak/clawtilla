@@ -47,7 +47,47 @@ static struct {
     guint        generation;
     gboolean     in_flight;
     gboolean     again;
+    JsonNode    *summary_reply; /* usage.summary, ref'd */
+    JsonNode    *agents_reply;  /* agent.list, ref'd */
+    JsonNode    *incidents_reply;
+    JsonNode    *teams_reply;
+    guint        side_generation;
 } fleet;
+
+static void paint_rows(ClawtLrgApp *app);
+static void paint_warnings(ClawtLrgApp *app);
+
+static void
+keep_reply(JsonNode **slot, JsonNode *reply)
+{
+    if (*slot == reply)
+        return;
+
+    if (*slot != NULL)
+        json_node_unref(*slot);
+
+    *slot = (reply != NULL) ? json_node_ref(reply) : NULL;
+}
+
+static JsonObject *
+listed_agent(const gchar *id)
+{
+    JsonArray *agents = clawt_lrg_settings_member_array(
+        clawt_ipc_reply_object(fleet.agents_reply), "agents");
+    guint i;
+
+    if (id == NULL)
+        return NULL;
+
+    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
+        JsonObject *one = json_array_get_object_element(agents, i);
+
+        if (g_strcmp0(clawt_ipc_payload_string(one, "id"), id) == 0)
+            return one;
+    }
+
+    return NULL;
+}
 
 static void request_fleet(ClawtLrgApp *app);
 
@@ -104,8 +144,13 @@ agent_row(ClawtLrgApp *app, JsonObject *agent, gint64 total, gint64 now)
 {
     const gchar *id = clawt_ipc_payload_string(agent, "id");
     const gchar *name = clawt_ipc_payload_string(agent, "name");
+    JsonObject *machine = listed_agent(id);
     gint64 cost = clawt_ipc_payload_int(agent, "cost_micros", 0);
     g_autofree gchar *subtitle = clawt_usage_fleet_row_subtitle(agent, now);
+    g_autofree gchar *detail = clawt_container_agent_detail(machine);
+    g_autofree gchar *pressure = clawt_container_memory_pressure_text(id,
+                                                                      machine);
+    g_autofree gchar *shown = NULL;
     g_autofree gchar *money = clawt_usage_format_cost(cost);
     g_autofree gchar *share = clawt_usage_share_label(cost, total);
     g_autofree gchar *cost_text = g_strdup_printf("%s \xc2\xb7 %s", money, share);
@@ -114,10 +159,17 @@ agent_row(ClawtLrgApp *app, JsonObject *agent, gint64 total, gint64 now)
     const gchar *state = clawt_ipc_payload_string(agent, "state");
     LrgWidget *row;
 
+    if (detail != NULL)
+        shown = g_strdup_printf("%s\n%s", subtitle, detail);
+
     if (name == NULL || *name == '\0')
         name = id;
 
-    row = clawt_lrg_row(name != NULL ? name : "?", subtitle);
+    row = clawt_lrg_row(name != NULL ? name : "?",
+                        shown != NULL ? shown : subtitle);
+
+    if (pressure != NULL)
+        clawt_lrg_row_add_prefix(row, clawt_lrg_badge("memory", "warn"));
 
     if (idle != NULL)
         clawt_lrg_row_add_prefix(row, clawt_lrg_badge(idle, tone != NULL ? tone : "neutral"));
@@ -152,52 +204,67 @@ agent_row(ClawtLrgApp *app, JsonObject *agent, gint64 total, gint64 now)
 }
 
 static void
-on_summary(ClawtLrgApp *app, JsonNode *reply, const GError *error,
-           gpointer user_data)
+paint_rows(ClawtLrgApp *app)
 {
-    JsonObject *root = clawt_ipc_reply_object(reply);
+    JsonObject *root = clawt_ipc_reply_object(fleet.summary_reply);
     JsonArray *agents = NULL;
     gint64 total = 0;
     gint64 now = g_get_real_time() / G_USEC_PER_SEC;
     guint i;
+    g_autofree gchar *summary = NULL;
+    g_autofree gchar *budget = NULL;
+    g_autofree gchar *strip = NULL;
+    g_autofree gchar *stop_label = NULL;
+
+    if (root == NULL || fleet.list == NULL)
+        return;
+
+    summary = clawt_usage_fleet_summary(root);
+    budget = clawt_usage_fleet_budget_line(root);
+    strip = clawt_usage_fleet_strip(root);
+
+    if (json_object_has_member(root, "now"))
+        now = json_object_get_int_member(root, "now");
+    if (json_object_has_member(root, "total") &&
+        JSON_NODE_HOLDS_OBJECT(json_object_get_member(root, "total")))
+        total = clawt_ipc_payload_int(
+            json_object_get_object_member(root, "total"), "cost_micros", 0);
+    agents = clawt_lrg_settings_member_array(root, "agents");
+
+    lrg_label_set_text(LRG_LABEL(fleet.summary), summary);
+    lrg_label_set_text(LRG_LABEL(fleet.strip), strip);
+    lrg_label_set_text(LRG_LABEL(fleet.budget), budget != NULL ? budget : "");
+    lrg_widget_set_visible(fleet.budget, budget != NULL);
+
+    g_ptr_array_set_size(fleet.stoppable, 0);
+    clawt_lrg_clear(fleet.list);
+
+    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
+        LrgWidget *row = agent_row(app, json_array_get_object_element(agents, i),
+                                   total, now);
+
+        clawt_lrg_appear(app, row, i);
+        clawt_lrg_take(fleet.list, row);
+    }
+
+    stop_label = g_strdup_printf("Stop the idle ones (%u)", fleet.stoppable->len);
+    lrg_button_set_text(LRG_BUTTON(fleet.stop_idle), stop_label);
+    lrg_widget_set_enabled(fleet.stop_idle, fleet.stoppable->len > 0);
+    clawt_lrg_app_wake(app);
+}
+
+static void
+on_summary(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+           gpointer user_data)
+{
+    JsonObject *root = clawt_ipc_reply_object(reply);
 
     fleet.in_flight = FALSE;
 
     if (GPOINTER_TO_UINT(user_data) == fleet.generation && root != NULL &&
         fleet.list != NULL) {
-        g_autofree gchar *summary = clawt_usage_fleet_summary(root);
-        g_autofree gchar *budget = clawt_usage_fleet_budget_line(root);
-        g_autofree gchar *strip = clawt_usage_fleet_strip(root);
-        g_autofree gchar *stop_label = NULL;
-
-        if (json_object_has_member(root, "now"))
-            now = json_object_get_int_member(root, "now");
-        if (json_object_has_member(root, "total") &&
-            JSON_NODE_HOLDS_OBJECT(json_object_get_member(root, "total")))
-            total = clawt_ipc_payload_int(
-                json_object_get_object_member(root, "total"), "cost_micros", 0);
-        agents = clawt_lrg_settings_member_array(root, "agents");
-
-        lrg_label_set_text(LRG_LABEL(fleet.summary), summary);
-        lrg_label_set_text(LRG_LABEL(fleet.strip), strip);
-        lrg_label_set_text(LRG_LABEL(fleet.budget), budget != NULL ? budget : "");
-        lrg_widget_set_visible(fleet.budget, budget != NULL);
-
-        g_ptr_array_set_size(fleet.stoppable, 0);
-        clawt_lrg_clear(fleet.list);
-
-        for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
-            LrgWidget *row = agent_row(app, json_array_get_object_element(agents, i),
-                                       total, now);
-
-            clawt_lrg_appear(app, row, i);
-            clawt_lrg_take(fleet.list, row);
-        }
-
-        stop_label = g_strdup_printf("Stop the idle ones (%u)", fleet.stoppable->len);
-        lrg_button_set_text(LRG_BUTTON(fleet.stop_idle), stop_label);
-        lrg_widget_set_enabled(fleet.stop_idle, fleet.stoppable->len > 0);
-        clawt_lrg_app_wake(app);
+        keep_reply(&fleet.summary_reply, reply);
+        paint_rows(app);
     }
 
     /* an event that arrived while this was in flight asked for a re-read */
@@ -336,21 +403,71 @@ static void
 on_warnings(ClawtLrgApp *app, JsonNode *reply, const GError *error,
             gpointer user_data)
 {
-    g_autoptr(GPtrArray) texts = NULL;
-    guint i;
-
-    if (GPOINTER_TO_UINT(user_data) != fleet.warnings_generation ||
+    if (GPOINTER_TO_UINT(user_data) != fleet.side_generation ||
         fleet.warnings == NULL || reply == NULL ||
         clawt_ipc_reply_object(reply) == NULL)
         return;
 
-    texts = clawt_lrg_fleet_warnings(reply);
+    (void)error;
+    keep_reply(&fleet.teams_reply, reply);
+    paint_warnings(app);
+}
+
+static void
+on_incidents(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+             gpointer user_data)
+{
+    if (GPOINTER_TO_UINT(user_data) != fleet.side_generation || reply == NULL)
+        return;
+
+    (void)error;
+    keep_reply(&fleet.incidents_reply, reply);
+    paint_warnings(app);
+}
+
+static void
+on_agents(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+          gpointer user_data)
+{
+    if (GPOINTER_TO_UINT(user_data) != fleet.side_generation || reply == NULL)
+        return;
+
+    (void)error;
+    keep_reply(&fleet.agents_reply, reply);
+    paint_rows(app);
+}
+
+static void
+paint_warnings(ClawtLrgApp *app)
+{
+    g_autoptr(GPtrArray) texts = clawt_lrg_fleet_warnings(fleet.teams_reply);
+    JsonArray *incidents = clawt_lrg_settings_member_array(
+        clawt_ipc_reply_object(fleet.incidents_reply), "incidents");
+    guint i;
+
+    if (fleet.warnings == NULL)
+        return;
+
     clawt_lrg_clear(fleet.warnings);
 
     for (i = 0; i < texts->len; i++) {
         LrgWidget *row = clawt_lrg_row("Worth fixing",
                                        g_ptr_array_index(texts, i));
 
+        clawt_lrg_row_add_prefix(row, clawt_lrg_badge("!", "warn"));
+        clawt_lrg_take(fleet.warnings, row);
+    }
+
+    for (i = 0; incidents != NULL && i < json_array_get_length(incidents);
+         i++) {
+        g_autofree gchar *text = clawt_container_oom_notice(
+            json_array_get_object_element(incidents, i));
+        LrgWidget *row;
+
+        if (text == NULL)
+            continue;
+
+        row = clawt_lrg_row("Out of memory", text);
         clawt_lrg_row_add_prefix(row, clawt_lrg_badge("!", "warn"));
         clawt_lrg_take(fleet.warnings, row);
     }
@@ -364,9 +481,13 @@ request_warnings(ClawtLrgApp *app)
     if (fleet.warnings == NULL)
         return;
 
-    fleet.warnings_generation++;
+    fleet.side_generation++;
     clawt_lrg_request(app, "team.list", NULL, CLAWT_LRG_QUIET, on_warnings,
-                      GUINT_TO_POINTER(fleet.warnings_generation), NULL);
+                      GUINT_TO_POINTER(fleet.side_generation), NULL);
+    clawt_lrg_request(app, "incident.list", NULL, CLAWT_LRG_QUIET, on_incidents,
+                      GUINT_TO_POINTER(fleet.side_generation), NULL);
+    clawt_lrg_request(app, "agent.list", NULL, CLAWT_LRG_QUIET, on_agents,
+                      GUINT_TO_POINTER(fleet.side_generation), NULL);
 }
 
 static void

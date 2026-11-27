@@ -769,6 +769,8 @@ clawt_web_computer_view_body(ClawtWebApp       *app,
             clawt_web_add(body, clawt_web_row(
                 "Detail", clawt_web_member(root, "detail", NULL)));
 
+        clawt_web_add(body, clawt_web_container_limits_block(agent));
+
         htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
     }
 

@@ -583,6 +583,9 @@ struct _ClawtWindow {
     GtkWidget         *container_pids_row;
     GtkWidget         *container_memory_row;
     GtkWidget         *container_swap_row;
+    GtkWidget         *container_cpus_row;
+    GtkWidget         *container_cpu_weight_row;
+    GtkWidget         *container_cpuset_row;
     GtkWidget         *ssh_wake_row;
     GtkWidget         *mount_source_row;
     GtkWidget         *mount_target_row;

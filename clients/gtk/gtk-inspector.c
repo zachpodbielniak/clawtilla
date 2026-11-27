@@ -1953,6 +1953,86 @@ remembering_entry_changed(GtkWidget *row)
 }
 
 /*
+ * The six podman limits, beside the image.
+ *
+ * Drawn only when the daemon reported a container_* member, which it
+ * does for a container or a distrobox and not for anything else. The
+ * text is the agent's own value -- empty when it sets none -- so a
+ * save of an untouched field writes nothing. The suggestion and the
+ * inherited team or fleet value are the hint, not the text.
+ */
+static void
+container_limit_rows(ClawtWindow *self, GtkWidget *group, JsonObject *agent)
+{
+    JsonObject *limits = json_object_has_member(agent, "container_limits")
+        ? json_object_get_object_member(agent, "container_limits") : NULL;
+    static const struct {
+        const gchar *title;
+        const gchar *key;
+        const gchar *member;
+    } rows[] = {
+        { "CPUs", "cpus", "container_cpus" },
+        { "CPU weight", "cpu_weight", "container_cpu_weight" },
+        { "CPU set", "cpuset", "container_cpuset" },
+        { "Process limit", "pids_limit", "container_pids_limit" },
+        { "Memory", "memory", "container_memory" },
+        { "Memory + swap", "memory_swap", "container_memory_swap" }
+    };
+    GtkWidget **slots[] = {
+        &self->container_cpus_row,
+        &self->container_cpu_weight_row,
+        &self->container_cpuset_row,
+        &self->container_pids_row,
+        &self->container_memory_row,
+        &self->container_swap_row
+    };
+    guint i;
+
+    self->container_cpus_row = NULL;
+    self->container_cpu_weight_row = NULL;
+    self->container_cpuset_row = NULL;
+    self->container_pids_row = NULL;
+    self->container_memory_row = NULL;
+    self->container_swap_row = NULL;
+
+    if (!json_object_has_member(agent, "container_cpus") &&
+        !json_object_has_member(agent, "container_memory"))
+        return;
+
+    for (i = 0; i < G_N_ELEMENTS(rows); i++) {
+        g_autofree gchar *placeholder =
+            clawt_container_limits_field_placeholder(rows[i].key, limits);
+        g_autofree gchar *inherit =
+            clawt_container_limits_inherit_for(limits, rows[i].key);
+        g_autofree gchar *hint = (inherit != NULL)
+            ? g_strdup_printf("%s %s", placeholder, inherit)
+            : g_strdup(placeholder);
+        GtkWidget *row;
+
+        row = remembering_entry_row(
+            rows[i].title,
+            clawt_json_string(agent, rows[i].member, ""),
+            hint);
+        *slots[i] = row;
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+    }
+
+    {
+        GtkWidget *note = info_row("Limits",
+            "CPUs, for example 2 or 0.5 (empty: no cap). CPU weight is "
+            "1 to 10000 (empty: the default). CPU set is a list, for "
+            "example 0-3. Process limit e.g. 2048 (empty: podman's "
+            "default, -1: none). Memory e.g. 512m or 4g (empty: none). "
+            "Memory + swap is the two together. A change reaches a "
+            "running machine in place with podman update; nothing is "
+            "rebuilt. Leave a field empty to keep a team or fleet value.");
+
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(note), 0);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), note);
+    }
+}
+
+/*
  * When the machine starts, walked from the library's enumeration so a
  * choice added there is offered here, with the library's own labels.
  * The index it opened on is kept: the row is written only when moved,
@@ -2013,9 +2093,24 @@ apply_computer_limits(ClawtWindow *self)
     }
 
     {
+        g_autofree gchar *cpus =
+            remembering_entry_changed(self->container_cpus_row);
+        g_autofree gchar *weight =
+            remembering_entry_changed(self->container_cpu_weight_row);
+        g_autofree gchar *cpuset =
+            remembering_entry_changed(self->container_cpuset_row);
         g_autofree gchar *pids =
             remembering_entry_changed(self->container_pids_row);
 
+        if (cpus != NULL)
+            ok &= clawt_gtk_apply_setting(
+                self, "computer.container.cpus", cpus);
+        if (weight != NULL)
+            ok &= clawt_gtk_apply_setting(
+                self, "computer.container.cpu_weight", weight);
+        if (cpuset != NULL)
+            ok &= clawt_gtk_apply_setting(
+                self, "computer.container.cpuset", cpuset);
         if (pids != NULL)
             ok &= clawt_gtk_apply_setting(
                 self, "computer.container.pids_limit", pids);
@@ -3802,6 +3897,21 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
         self->inspector_image.row = NULL;
 
     /*
+     * CPU and memory, in the same group as the image.  A shared machine
+     * does not draw them: those keys belong to the machine.
+     */
+    if (*use_row_value(self) == '\0')
+        container_limit_rows(self, group, agent);
+    else {
+        self->container_cpus_row = NULL;
+        self->container_cpu_weight_row = NULL;
+        self->container_cpuset_row = NULL;
+        self->container_pids_row = NULL;
+        self->container_memory_row = NULL;
+        self->container_swap_row = NULL;
+    }
+
+    /*
      * The VM's disk, size and address.  Only shown for a VM: no other
      * backend reads these, and a row that quietly does nothing is worse
      * than no row.
@@ -3936,9 +4046,6 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
      * machine: those keys are the machine's.
      */
     self->computer_start_row = NULL;
-    self->container_pids_row = NULL;
-    self->container_memory_row = NULL;
-    self->container_swap_row = NULL;
     self->ssh_wake_row = NULL;
 
     if (*use_row_value(self) == '\0' &&
@@ -3947,47 +4054,6 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
             clawt_json_string(agent, "computer_start", NULL));
         adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                                   self->computer_start_row);
-    }
-
-    if (*use_row_value(self) == '\0' &&
-        json_object_has_member(agent, "container_memory")) {
-        GtkWidget *note;
-
-        self->container_pids_row = remembering_entry_row(
-            "Process limit",
-            clawt_json_string(agent, "container_pids_limit", ""),
-            "e.g. 2048 -- empty for podman's default, -1 for no limit");
-        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
-                                  self->container_pids_row);
-
-        self->container_memory_row = remembering_entry_row(
-            "Memory",
-            clawt_json_string(agent, "container_memory", ""),
-            "e.g. 512m or 4g -- empty for no limit");
-        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
-                                  self->container_memory_row);
-
-        self->container_swap_row = remembering_entry_row(
-            "Memory + swap",
-            clawt_json_string(agent, "container_memory_swap", ""),
-            "memory and swap together, e.g. 8g; equal to Memory for no "
-            "swap, -1 for unlimited swap");
-        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
-                                  self->container_swap_row);
-
-        /*
-         * Said in a row, not only in the tooltips: an entry row has no
-         * subtitle, and "will this rebuild my machine?" is the question
-         * somebody has before touching a limit at all.
-         */
-        note = info_row("Limits",
-            "Process limit e.g. 2048 (empty: podman's default, -1: none). "
-            "Memory e.g. 512m or 4g (empty: none). Memory + swap is the "
-            "two together, e.g. 8g -- equal to Memory for no swap, -1 for "
-            "unlimited. A change reaches a running machine in place with "
-            "podman update; nothing is rebuilt.");
-        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(note), 0);
-        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), note);
     }
 
     if (*use_row_value(self) == '\0' &&

@@ -639,6 +639,60 @@ clawt_web_text(const gchar *text, const gchar *css_class)
 }
 
 HtmxDiv *
+clawt_web_notice(const gchar *text, const gchar *tone)
+{
+    g_autoptr(HtmxDiv) box = htmx_div_new();
+
+    htmx_element_add_class(HTMX_ELEMENT(box), "notice");
+
+    if (tone != NULL && *tone != '\0') {
+        g_autofree gchar *css = g_strdup_printf("notice-%s", tone);
+
+        htmx_element_add_class(HTMX_ELEMENT(box), css);
+    }
+
+    htmx_node_set_text_content(HTMX_NODE(box), text != NULL ? text : "");
+
+    return (HtmxDiv *)g_steal_pointer(&box);
+}
+
+static const gchar *
+limits_block_id(JsonObject *agent)
+{
+    JsonNode *node;
+
+    if (agent == NULL || !json_object_has_member(agent, "id"))
+        return NULL;
+
+    node = json_object_get_member(agent, "id");
+
+    if (node == NULL || !JSON_NODE_HOLDS_VALUE(node) ||
+        json_node_get_value_type(node) != G_TYPE_STRING)
+        return NULL;
+
+    return json_node_get_string(node);
+}
+
+HtmxDiv *
+clawt_web_container_limits_block(JsonObject *agent)
+{
+    g_autoptr(HtmxDiv) box = htmx_div_new();
+    g_autofree gchar *detail = clawt_container_agent_detail(agent);
+    g_autofree gchar *pressure = clawt_container_memory_pressure_text(
+        limits_block_id(agent), agent);
+
+    htmx_element_add_class(HTMX_ELEMENT(box), "container-limits");
+
+    if (detail != NULL)
+        clawt_web_add(box, clawt_web_text(detail, "small"));
+
+    if (pressure != NULL)
+        clawt_web_add(box, clawt_web_notice(pressure, ""));
+
+    return (HtmxDiv *)g_steal_pointer(&box);
+}
+
+HtmxDiv *
 clawt_web_card(const gchar *title, const gchar *subtitle)
 {
     g_autoptr(HtmxDiv) card = htmx_div_new();

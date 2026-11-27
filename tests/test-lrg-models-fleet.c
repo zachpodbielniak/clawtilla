@@ -820,6 +820,24 @@ test_fleet_warnings(void)
     g_assert_cmpuint(null_reply->len, ==, 0);
 }
 
+/* An open out-of-memory incident is the Fleet page's warning line. */
+static void
+test_fleet_oom_notice(void)
+{
+    g_autoptr(JsonNode) open = parse(
+        "{\"kind\":\"out-of-memory\",\"resolved\":false,\"agent\":\"forge\","
+        "\"reason\":\"killed: out of memory at 8g\"}");
+    g_autoptr(JsonNode) done = parse(
+        "{\"kind\":\"out-of-memory\",\"resolved\":true,\"agent\":\"forge\","
+        "\"reason\":\"killed: out of memory at 8g\"}");
+    g_autofree gchar *text = clawt_container_oom_notice(
+        json_node_get_object(open));
+
+    g_assert_cmpstr(text, ==, "agent forge: killed: out of memory at 8g");
+    g_assert_null(clawt_container_oom_notice(json_node_get_object(done)));
+    g_assert_null(clawt_container_oom_notice(NULL));
+}
+
 gint
 main(gint argc, gchar **argv)
 {
@@ -852,6 +870,7 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg/fleet/memory/operator", test_operator);
     g_test_add_func("/lrg/fleet/memory/agent", test_agent_memories);
     g_test_add_func("/lrg/fleet/warnings", test_fleet_warnings);
+    g_test_add_func("/lrg/fleet/oom-notice", test_fleet_oom_notice);
 
     return g_test_run();
 }

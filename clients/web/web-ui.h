@@ -592,6 +592,18 @@ HtmxHeading *clawt_web_section_title(const gchar *text);
 HtmxP *clawt_web_text(const gchar *text, const gchar *css_class);
 
 /**
+ * clawt_web_container_limits_block:
+ * @agent: (nullable): an agent.list object
+ *
+ * The effective limits, the latest sample, and a warning when the
+ * machine is at its memory limit. Static HTML: nothing here needs a
+ * script. Empty when the agent has no container limits.
+ *
+ * Returns: (transfer full): the block
+ */
+HtmxDiv *clawt_web_container_limits_block(JsonObject *agent);
+
+/**
  * clawt_web_add:
  * @parent: (transfer none): where it goes
  * @child: (transfer full): what to add

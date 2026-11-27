@@ -791,6 +791,8 @@ For a container or distrobox agent, ~agent.list~ (and ~agent.show~) carry:
 
 ~team.list~ gives each team a ~container_limits~ object of the keys it sets, as written, and its ~warnings~ carry the refusals, restarts required and machines at their memory limit.
 
+*What the three clients show (VENTURE #26).* The agent editor draws the six keys beside the container image, and only when the daemon reported the ~container_*~ members -- a container or a distrobox, not a shared computer. Each field is the agent's own value, empty when unset, so saving does not pin an inherited one. The placeholder is about a quarter of ~host_cpus~ or ~host_memory~ for CPUs and memory; a line under the field names the team or fleet value being kept. Saving writes the agent's own keys through ~agent.set~, the same path as the image. The Fleet page and the Computer tab show the effective limits and the latest sample (CPU percent, memory used of the limit, process count) from ~container_limits~ and ~container_usage~. A machine at its memory limit, and an unresolved ~out-of-memory~ incident from ~incident.list~, are warnings on the Fleet page. The web pages are ordinary HTML; they do not need a script to say this.
+
 The same keys apply to a [[#distrobox-limits][distrobox]], which is a podman container underneath; its usage is not sampled.
 
 *** Across daemon restarts: adopted, not recreated

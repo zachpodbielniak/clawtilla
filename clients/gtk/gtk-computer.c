@@ -659,10 +659,16 @@ clawt_gtk_refresh_computer(ClawtWindow *self, JsonObject *agent)
 
     gtk_widget_set_sensitive(GTK_WIDGET(self->exec_entry), has_computer);
 
-    gtk_label_set_text(self->computer_state,
-                       has_computer
-                           ? clawt_json_string(agent, "computer", "none")
-                           : "This agent has no computer.");
+    {
+        const gchar *base = has_computer
+            ? clawt_json_string(agent, "computer", "none")
+            : "This agent has no computer.";
+        g_autofree gchar *detail = clawt_container_agent_detail(agent);
+        g_autofree gchar *shown = (detail != NULL)
+            ? g_strdup_printf("%s\n%s", base, detail) : NULL;
+
+        gtk_label_set_text(self->computer_state, shown != NULL ? shown : base);
+    }
 
     sync_screen_tab(self, agent);
     clawt_gtk_browser_set_agent(self, agent);
@@ -703,8 +709,12 @@ clawt_gtk_refresh_computer(ClawtWindow *self, JsonObject *agent)
                 clawt_json_string(agent, "computer", "none"),
                 clawt_json_string(clawt_payload_of(status), "state",
                                   "unknown"));
+            g_autofree gchar *detail = clawt_container_agent_detail(agent);
+            g_autofree gchar *shown = (detail != NULL)
+                ? g_strdup_printf("%s\n%s", said, detail) : NULL;
 
-            gtk_label_set_text(self->computer_state, said);
+            gtk_label_set_text(self->computer_state,
+                               shown != NULL ? shown : said);
         }
     }
 }
@@ -883,7 +893,11 @@ clawt_gtk_build_computer_page(ClawtWindow *self)
     guint i;
 
     self->computer_state = GTK_LABEL(gtk_label_new("No agent selected."));
+    gtk_label_set_wrap(self->computer_state, TRUE);
+    gtk_label_set_xalign(self->computer_state, 0.0f);
     gtk_widget_set_margin_top(GTK_WIDGET(self->computer_state), 12);
+    gtk_widget_set_margin_start(GTK_WIDGET(self->computer_state), 12);
+    gtk_widget_set_margin_end(GTK_WIDGET(self->computer_state), 12);
 
     mounts = build_list_view(&self->computer_mount_list,
                              "No mounts of its own. Every computer still "

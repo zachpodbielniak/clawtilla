@@ -58,24 +58,6 @@ clawt_web_form_flag(HtmxRequest *request, const gchar *name)
                              g_strcmp0(value, "1") == 0);
 }
 
-HtmxDiv *
-clawt_web_notice(const gchar *text, const gchar *tone)
-{
-    g_autoptr(HtmxDiv) box = htmx_div_new();
-
-    htmx_element_add_class(HTMX_ELEMENT(box), "notice");
-
-    if (tone != NULL && *tone != '\0') {
-        g_autofree gchar *css = g_strdup_printf("notice-%s", tone);
-
-        htmx_element_add_class(HTMX_ELEMENT(box), css);
-    }
-
-    htmx_node_set_text_content(HTMX_NODE(box), text != NULL ? text : "");
-
-    return (HtmxDiv *)g_steal_pointer(&box);
-}
-
 guint
 clawt_web_warnings(HtmxElement *parent, JsonNode *reply)
 {

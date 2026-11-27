@@ -1263,6 +1263,66 @@ build_fallbacks(ClawtLrgApp *app, guint index)
 
 /* ── The settings form ────────────────────────────────────────────── */
 
+/* The short name of a podman limit, or NULL. */
+static const gchar *
+limit_short_key(const gchar *key)
+{
+    static const gchar prefix[] = "computer.container.";
+    const gchar *short_key;
+
+    if (key == NULL || !g_str_has_prefix(key, prefix))
+        return NULL;
+
+    short_key = key + sizeof(prefix) - 1;
+
+    if (g_strcmp0(short_key, "cpus") == 0 ||
+        g_strcmp0(short_key, "cpu_weight") == 0 ||
+        g_strcmp0(short_key, "cpuset") == 0 ||
+        g_strcmp0(short_key, "memory") == 0 ||
+        g_strcmp0(short_key, "memory_swap") == 0 ||
+        g_strcmp0(short_key, "pids_limit") == 0)
+        return short_key;
+
+    return NULL;
+}
+
+/*
+ * Placeholder from the host's size, and the inherited team or fleet
+ * value as a hint. The entry text stays the agent's own value.
+ */
+static void
+annotate_limit(ClawtLrgAgentField *field, JsonObject *agent)
+{
+    const gchar *short_key = limit_short_key(field->key);
+    JsonObject *limits = NULL;
+    g_autofree gchar *inherit = NULL;
+
+    if (short_key == NULL)
+        return;
+
+    if (agent != NULL && json_object_has_member(agent, "container_limits"))
+        limits = json_object_get_object_member(agent, "container_limits");
+
+    g_free(field->placeholder);
+    field->placeholder = clawt_container_limits_field_placeholder(short_key,
+                                                                  limits);
+    inherit = clawt_container_limits_inherit_for(limits, short_key);
+
+    if (inherit == NULL)
+        return;
+
+    {
+        gchar *hint = g_strdup_printf("%s%s%s",
+                                      field->hint != NULL ? field->hint : "",
+                                      (field->hint != NULL &&
+                                       *field->hint != '\0') ? " " : "",
+                                      inherit);
+
+        g_free(field->hint);
+        field->hint = hint;
+    }
+}
+
 /* The control for one field, drawn before any chooser's reply lands. */
 static void
 build_control(FieldView *view)
@@ -1272,7 +1332,7 @@ build_control(FieldView *view)
 
     switch (field->kind) {
     case CLAWT_LRG_AGENT_FIELD_ENTRY:
-        view->control = clawt_lrg_entry(field->value, NULL);
+        view->control = clawt_lrg_entry(field->value, field->placeholder);
         break;
 
     case CLAWT_LRG_AGENT_FIELD_LIST:
@@ -1652,6 +1712,8 @@ build_form(ClawtLrgApp *app, guint index)
             if (!clawt_lrg_agent_field_applies(field->key,
                                                shown_object("agent")))
                 continue;
+
+            annotate_limit(field, shown_object("agent"));
 
             view = g_new0(FieldView, 1);
             outer = clawt_lrg_vbox(4.0f);

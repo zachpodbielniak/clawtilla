@@ -355,3 +355,392 @@ clawt_container_usage_oom_reason(
 	                       "computer.container.memory set -- the host itself "
 	                       "ran short", container, count);
 }
+
+/* ── What the clients say ─────────────────────────────────────────── */
+
+static const gchar *
+usage_json_string(
+	JsonObject  *object,
+	const gchar *key
+){
+	JsonNode *node;
+	const gchar *text;
+
+	if (object == NULL || key == NULL ||
+	    !json_object_has_member(object, key))
+		return "";
+
+	node = json_object_get_member(object, key);
+
+	if (node == NULL || !JSON_NODE_HOLDS_VALUE(node) ||
+	    json_node_get_value_type(node) != G_TYPE_STRING)
+		return "";
+
+	text = json_node_get_string(node);
+
+	return text != NULL ? text : "";
+}
+
+static gboolean
+usage_json_bool(
+	JsonObject  *object,
+	const gchar *key
+){
+	JsonNode *node;
+
+	if (object == NULL || key == NULL ||
+	    !json_object_has_member(object, key))
+		return FALSE;
+
+	node = json_object_get_member(object, key);
+
+	if (node == NULL || !JSON_NODE_HOLDS_VALUE(node) ||
+	    json_node_get_value_type(node) != G_TYPE_BOOLEAN)
+		return FALSE;
+
+	return json_node_get_boolean(node);
+}
+
+static gint64
+usage_json_int(
+	JsonObject  *object,
+	const gchar *key
+){
+	JsonNode *node;
+
+	if (object == NULL || key == NULL ||
+	    !json_object_has_member(object, key))
+		return 0;
+
+	node = json_object_get_member(object, key);
+
+	if (node == NULL || !JSON_NODE_HOLDS_VALUE(node))
+		return 0;
+
+	if (json_node_get_value_type(node) == G_TYPE_INT64)
+		return json_node_get_int(node);
+
+	if (json_node_get_value_type(node) == G_TYPE_DOUBLE)
+		return (gint64)json_node_get_double(node);
+
+	return 0;
+}
+
+static gdouble
+usage_json_double(
+	JsonObject  *object,
+	const gchar *key
+){
+	JsonNode *node;
+
+	if (object == NULL || key == NULL ||
+	    !json_object_has_member(object, key))
+		return 0.0;
+
+	node = json_object_get_member(object, key);
+
+	if (node == NULL || !JSON_NODE_HOLDS_VALUE(node))
+		return 0.0;
+
+	if (json_node_get_value_type(node) == G_TYPE_DOUBLE)
+		return json_node_get_double(node);
+
+	if (json_node_get_value_type(node) == G_TYPE_INT64)
+		return (gdouble)json_node_get_int(node);
+
+	return 0.0;
+}
+
+static JsonObject *
+usage_json_object(
+	JsonObject  *object,
+	const gchar *key
+){
+	JsonNode *node;
+
+	if (object == NULL || key == NULL ||
+	    !json_object_has_member(object, key))
+		return NULL;
+
+	node = json_object_get_member(object, key);
+
+	if (node == NULL || !JSON_NODE_HOLDS_OBJECT(node))
+		return NULL;
+
+	return json_node_get_object(node);
+}
+
+gchar *
+clawt_container_limits_suggest_cpus(
+	guint host_cpus
+){
+	gchar number[G_ASCII_DTOSTR_BUF_SIZE];
+	gchar *end;
+
+	if (host_cpus == 0)
+		return NULL;
+
+	/*
+	 * A whole quarter stays a whole number: "5", not "5.0". Anything
+	 * else keeps the shortest decimal g_ascii_formatd will give, so a
+	 * two-CPU host suggests "0.5".
+	 */
+	g_ascii_formatd(number, sizeof(number), "%.4f",
+	                (gdouble)host_cpus / 4.0);
+	end = number + strlen(number);
+
+	while (end > number && end[-1] == '0')
+		*--end = '\0';
+
+	if (end > number && end[-1] == '.')
+		end[-1] = '\0';
+
+	return g_strdup(number);
+}
+
+gchar *
+clawt_container_limits_suggest_memory(
+	gint64 host_memory
+){
+	if (host_memory <= 0)
+		return NULL;
+
+	return clawt_container_usage_format_bytes(host_memory / 4);
+}
+
+gchar *
+clawt_container_limits_inherit_text(
+	const gchar *source,
+	const gchar *team,
+	const gchar *written
+){
+	if (written == NULL || *written == '\0')
+		return NULL;
+
+	if (g_strcmp0(source, "team") == 0)
+		return g_strdup_printf(
+			"Inherited from team %s: %s. Leave empty to keep it.",
+			(team != NULL && *team != '\0') ? team : "?", written);
+
+	if (g_strcmp0(source, "defaults") == 0)
+		return g_strdup_printf(
+			"Inherited from the fleet: %s. Leave empty to keep it.",
+			written);
+
+	return NULL;
+}
+
+gchar *
+clawt_container_limits_inherit_for(
+	JsonObject  *limits,
+	const gchar *key
+){
+	JsonObject *entry = usage_json_object(limits, key);
+	const gchar *own;
+
+	if (entry == NULL)
+		return NULL;
+
+	own = usage_json_string(entry, "own");
+
+	if (*own != '\0')
+		return NULL;
+
+	return clawt_container_limits_inherit_text(
+		usage_json_string(entry, "source"),
+		usage_json_string(entry, "team"),
+		usage_json_string(entry, "written"));
+}
+
+gchar *
+clawt_container_limits_field_placeholder(
+	const gchar *key,
+	JsonObject  *limits
+){
+	g_autofree gchar *suggest = NULL;
+
+	if (g_strcmp0(key, "cpus") == 0) {
+		suggest = clawt_container_limits_suggest_cpus(
+			(guint)usage_json_int(limits, "host_cpus"));
+
+		if (suggest != NULL)
+			return g_strdup_printf(
+				"e.g. %s -- a quarter of this host", suggest);
+
+		return g_strdup("e.g. 2 -- empty for no cap");
+	}
+
+	if (g_strcmp0(key, "memory") == 0) {
+		suggest = clawt_container_limits_suggest_memory(
+			usage_json_int(limits, "host_memory"));
+
+		if (suggest != NULL)
+			return g_strdup_printf(
+				"e.g. %s -- a quarter of this host", suggest);
+
+		return g_strdup("e.g. 512m or 4g -- empty for no limit");
+	}
+
+	if (g_strcmp0(key, "cpu_weight") == 0)
+		return g_strdup("1 to 10000 -- empty for the default");
+
+	if (g_strcmp0(key, "cpuset") == 0)
+		return g_strdup("e.g. 0-3 -- empty for every CPU");
+
+	if (g_strcmp0(key, "memory_swap") == 0)
+		return g_strdup(
+			"memory and swap together, e.g. 8g; equal to Memory for no "
+			"swap, -1 for unlimited swap");
+
+	if (g_strcmp0(key, "pids_limit") == 0)
+		return g_strdup(
+			"e.g. 2048 -- empty for podman's default, -1 for no limit");
+
+	return g_strdup("");
+}
+
+gchar *
+clawt_container_limits_summary(
+	JsonObject *limits
+){
+	static const gchar *const keys[] = {
+		"cpus", "cpu_weight", "cpuset", "memory", "memory_swap",
+		"pids_limit", NULL
+	};
+	GString *line = g_string_new(NULL);
+	guint i;
+
+	for (i = 0; keys[i] != NULL; i++) {
+		JsonObject *entry = usage_json_object(limits, keys[i]);
+		const gchar *written;
+		const gchar *source;
+		const gchar *team;
+		g_autofree gchar *from = NULL;
+
+		if (entry == NULL)
+			continue;
+
+		written = usage_json_string(entry, "written");
+
+		if (*written == '\0')
+			continue;
+
+		source = usage_json_string(entry, "source");
+		team = usage_json_string(entry, "team");
+		from = (g_strcmp0(source, "team") == 0 && *team != '\0')
+			? g_strdup_printf("team %s", team) : g_strdup(source);
+
+		g_string_append_printf(
+			line, "%s%s %s (%s%s)",
+			line->len > 0 ? ", " : "", keys[i], written, from,
+			*usage_json_string(entry, "value") == '\0' ? ", refused" : "");
+	}
+
+	return g_string_free(line, FALSE);
+}
+
+gchar *
+clawt_container_usage_summary(
+	JsonObject *usage
+){
+	gint64 used;
+	gint64 limit;
+	g_autofree gchar *used_text = NULL;
+	g_autofree gchar *limit_text = NULL;
+
+	if (usage == NULL)
+		return g_strdup("");
+
+	used = usage_json_int(usage, "memory_used");
+	limit = usage_json_int(usage, "memory_limit");
+	used_text = clawt_container_usage_format_bytes(used);
+	limit_text = clawt_container_usage_format_bytes(limit);
+
+	return g_strdup_printf(
+		"CPU %.1f%%, memory %s of %s, %" G_GINT64_FORMAT " pids%s",
+		usage_json_double(usage, "cpu_percent"), used_text, limit_text,
+		usage_json_int(usage, "pids"),
+		usage_json_bool(usage, "at_memory_limit")
+			? " -- at its memory limit" : "");
+}
+
+gchar *
+clawt_container_agent_detail(
+	JsonObject *agent
+){
+	g_autofree gchar *limits = NULL;
+	g_autofree gchar *usage = NULL;
+
+	if (agent == NULL)
+		return NULL;
+
+	limits = clawt_container_limits_summary(
+		usage_json_object(agent, "container_limits"));
+	usage = clawt_container_usage_summary(
+		usage_json_object(agent, "container_usage"));
+
+	if (*limits == '\0' && *usage == '\0')
+		return NULL;
+
+	if (*usage == '\0')
+		return g_steal_pointer(&limits);
+
+	if (*limits == '\0')
+		return g_steal_pointer(&usage);
+
+	return g_strdup_printf("%s\n%s", limits, usage);
+}
+
+gchar *
+clawt_container_memory_pressure_text(
+	const gchar *agent_id,
+	JsonObject  *agent
+){
+	JsonObject *usage = usage_json_object(agent, "container_usage");
+	JsonObject *memory;
+	const gchar *written;
+	g_autofree gchar *used = NULL;
+
+	if (usage == NULL || !usage_json_bool(usage, "at_memory_limit"))
+		return NULL;
+
+	memory = usage_json_object(
+		usage_json_object(agent, "container_limits"), "memory");
+	written = usage_json_string(memory, "written");
+
+	if (*written == '\0')
+		written = "?";
+
+	used = clawt_container_usage_format_bytes(
+		usage_json_int(usage, "memory_used"));
+
+	return g_strdup_printf(
+		"agent %s is at its memory limit: %s of %s used",
+		(agent_id != NULL && *agent_id != '\0') ? agent_id : "?",
+		used, written);
+}
+
+gchar *
+clawt_container_oom_notice(
+	JsonObject *incident
+){
+	const gchar *reason;
+	const gchar *agent;
+
+	if (incident == NULL || usage_json_bool(incident, "resolved"))
+		return NULL;
+
+	if (g_strcmp0(usage_json_string(incident, "kind"),
+	              "out-of-memory") != 0)
+		return NULL;
+
+	reason = usage_json_string(incident, "reason");
+
+	if (*reason == '\0')
+		return NULL;
+
+	agent = usage_json_string(incident, "agent");
+
+	return g_strdup_printf("agent %s: %s",
+	                       *agent != '\0' ? agent : "?", reason);
+}
