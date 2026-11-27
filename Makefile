@@ -841,6 +841,16 @@ $(OUTDIR)/tests/test-web-office: $(WEB_SRCDIR)/web-office-view.c \
                                  $(WEB_SRCDIR)/web-ui.h $(WEB_SRCDIR)/web-pages.h \
                                  $(WEB_SRCDIR)/clawt-web.h
 
+# test-web-schedule.c #includes the Schedule page, the lrg model it draws
+# cards from, and what the page is drawn with, for the same reason.
+$(OUTDIR)/tests/test-web-schedule: $(WEB_SRCDIR)/web-schedule.c \
+                                   $(LRG_SRCDIR)/lrg-schedule-model.c \
+                                   $(LRG_SRCDIR)/clawt-lrg-schedule-model.h \
+                                   $(WEB_SRCDIR)/web-app.c $(WEB_SRCDIR)/web-files.c \
+                                   $(WEB_SRCDIR)/web-ui.c $(WEB_SRCDIR)/web-style.c \
+                                   $(WEB_SRCDIR)/web-ui.h $(WEB_SRCDIR)/web-pages.h \
+                                   $(WEB_SRCDIR)/clawt-web.h
+
 $(OUTDIR)/tests/test-web-render: $(WEB_SRCDIR)/web-ui.c \
                                  $(WEB_SRCDIR)/web-navigation.c \
                                  $(WEB_SRCDIR)/web-style.c \

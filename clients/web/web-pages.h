@@ -126,11 +126,13 @@ HtmxElement *clawt_web_routines_body(ClawtWebApp *app, const gchar *agent_id);
  * clawt_web_schedule_body:
  * @app: a #ClawtWebApp
  * @agent_id: (nullable): the agent being looked at
- * @request: (nullable): the request, for ?view, ?date, ?agent and
- *   ?disabled; %NULL draws today's Day view
+ * @request: (nullable): the request, for ?view, ?date, ?agent, ?team,
+ *   ?disabled, ?more and ?expand; %NULL draws this week
  *
- * The Schedule page: day, week, month and upcoming runs, built from the
- * lrg schedule model so the three clients draw the same cards.
+ * The Schedule page: Day, Week and Month grids and the upcoming runs,
+ * built from the lrg schedule model so the three clients draw the same
+ * cards.  Every control is a link or a GET form, so it works with
+ * JavaScript off.
  *
  * Returns: (transfer full): the view
  */
@@ -227,6 +229,18 @@ void clawt_web_register_activity(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_fleet_usage(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_grok(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_office(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_register_schedule:
+ * @router: the router
+ * @app: a #ClawtWebApp
+ *
+ * The Schedule page's routes: /f/schedule, the panel alone, which the
+ * page's links ask for through htmx, and /schedule, which sends the
+ * browser to the first agent's Schedule tab.  The page itself is
+ * /a/:id/schedule, reached through the view route like every tab.
+ */
+void clawt_web_register_schedule(HtmxRouter *router, ClawtWebApp *app);
 
 /**
  * clawt_web_register_triggers:
