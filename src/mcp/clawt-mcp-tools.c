@@ -7214,6 +7214,60 @@ task_refusal_for(ClawtMcpTools *self, const gchar *task_id,
         origin != NULL ? origin : "somebody");
 }
 
+/*
+ * The first few lines of a finished task's result, for its status.
+ *
+ * Only the start: the status is a summary, and a result can be a whole
+ * report -- clawtilla_task_result is where it is read in full, and the
+ * excerpt says so when it has left anything out.  Cut at a line, or at a
+ * character boundary when one line alone is long, never mid-character.
+ */
+#define TASK_STATUS_RESULT_LINES 5
+#define TASK_STATUS_RESULT_BYTES 600
+
+static void
+append_result_excerpt(GString *out, const gchar *result)
+{
+    const gchar *end = result;
+    const gchar *stop;
+    guint lines = 0;
+    gboolean cut;
+
+    while (*end != '\0' && lines < TASK_STATUS_RESULT_LINES) {
+        const gchar *newline = strchr(end, '\n');
+
+        lines++;
+        if (newline == NULL || lines == TASK_STATUS_RESULT_LINES) {
+            end = (newline != NULL) ? newline : end + strlen(end);
+            break;
+        }
+
+        end = newline + 1;
+    }
+
+    if ((gsize) (end - result) > TASK_STATUS_RESULT_BYTES) {
+        stop = g_utf8_find_prev_char(result,
+                                     result + TASK_STATUS_RESULT_BYTES + 1);
+        end = (stop != NULL) ? stop : result;
+    }
+
+    /* A trailing newline before the cut is the line's, not a rest. */
+    stop = end;
+    while (*stop == '\n' || *stop == '\r' || *stop == ' ' || *stop == '\t')
+        stop++;
+    cut = (*stop != '\0');
+
+    while (end > result && (end[-1] == '\n' || end[-1] == '\r'))
+        end--;
+
+    g_string_append(out, "\nResult:\n");
+    g_string_append_len(out, result, end - result);
+
+    if (cut)
+        g_string_append(out, "\n[...] clawtilla_task_result has the whole "
+                             "of it.");
+}
+
 static gchar *
 tool_task_status(ClawtMcpTools *self, const gchar *agent_id,
                  JsonObject *arguments, gboolean *is_error)
@@ -7316,10 +7370,27 @@ tool_task_status(ClawtMcpTools *self, const gchar *agent_id,
                                    children == 1 ? "is" : "are");
     }
 
-    if (clawt_task_get_progress_note(task) != NULL)
+    /*
+     * A finished task leads with what it came to, and its progress note
+     * is no longer the latest word.  Printed as "Latest from" after the
+     * end, the note read as where the work had got to: a task completed
+     * with its PR open said "completed" and then "Next: failing host
+     * tests", and the result -- the answer -- was not shown at all.
+     */
+    if (clawt_task_is_finished(task)) {
+        if (clawt_task_get_result(task) != NULL)
+            append_result_excerpt(out, clawt_task_get_result(task));
+
+        if (clawt_task_get_progress_note(task) != NULL)
+            g_string_append_printf(out, "\nLast progress note from %s, "
+                                        "from before it finished: %s",
+                                   clawt_task_get_assignee(task),
+                                   clawt_task_get_progress_note(task));
+    } else if (clawt_task_get_progress_note(task) != NULL) {
         g_string_append_printf(out, "\nLatest from %s: %s",
                                clawt_task_get_assignee(task),
                                clawt_task_get_progress_note(task));
+    }
 
     if (clawt_task_get_waiting_on(task) != NULL)
         g_string_append_printf(out, "\nWaiting on %s%s%s",

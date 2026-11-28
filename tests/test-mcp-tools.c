@@ -3713,6 +3713,175 @@ test_only_the_assignee_reports_progress(void)
 }
 
 /*
+ * A finished task's status leads with its result, and its progress note
+ * is labelled as what it was: the last word from before it finished.
+ *
+ * The note was printed as "Latest from <assignee>: ..." whatever the
+ * state, and the result never at all, so a task completed with its PR
+ * open read "completed" and then, as the freshest thing said about it,
+ * "Next: failing host tests" -- as if it were still at that step.
+ */
+static void
+test_finished_status_shows_the_result(void)
+{
+    Fixture fixture = { 0 };
+    static const gchar *result =
+        "PR #29 is open and mergeable.\n"
+        "line two\nline three\nline four\nline five\n"
+        "line six is past the excerpt\nline seven";
+    ClawtTask *task;
+    g_autofree gchar *arguments = NULL;
+    const gchar *text;
+    gboolean is_error = TRUE;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: worker\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "worker",
+                                     "fix the host tests", NULL, NULL);
+    g_assert_nonnull(task);
+    g_assert_true(clawt_task_manager_note_progress(
+        fixture.tasks, clawt_task_get_id(task), "Next: failing host tests"));
+
+    arguments = g_strdup_printf("{\"task_id\":\"%s\"}",
+                                clawt_task_get_id(task));
+
+    /* Not finished: exactly as before. */
+    {
+        g_autoptr(JsonNode) status = call_tool(&fixture, "chief",
+                                               "clawtilla_task_status",
+                                               arguments);
+
+        text = response_text(status, &is_error);
+        g_assert_false(is_error);
+        g_assert_nonnull(strstr(text, "\nLatest from worker: "
+                                      "Next: failing host tests"));
+        g_assert_null(strstr(text, "Result"));
+    }
+
+    g_assert_true(clawt_task_manager_complete(fixture.tasks,
+                                              clawt_task_get_id(task),
+                                              result));
+
+    {
+        g_autoptr(JsonNode) status = call_tool(&fixture, "chief",
+                                               "clawtilla_task_status",
+                                               arguments);
+        const gchar *shown_result;
+        const gchar *shown_note;
+
+        is_error = TRUE;
+        text = response_text(status, &is_error);
+        g_assert_false(is_error);
+
+        /* The result's first lines, and where the rest is. */
+        shown_result = strstr(text, "PR #29 is open and mergeable.\n"
+                                    "line two\nline three\nline four\n"
+                                    "line five");
+        g_assert_nonnull(shown_result);
+        g_assert_null(strstr(text, "line six"));
+        g_assert_nonnull(strstr(text, "clawtilla_task_result"));
+
+        /* The note, no longer passed off as the latest word. */
+        g_assert_null(strstr(text, "Latest from"));
+        shown_note = strstr(text, "Last progress note from worker, from "
+                                  "before it finished: Next: failing host "
+                                  "tests");
+        g_assert_nonnull(shown_note);
+        g_assert_true(shown_result < shown_note);
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A short result is shown whole, with no pointer to a rest there is not.
+ */
+static void
+test_finished_status_shows_a_short_result_whole(void)
+{
+    Fixture fixture = { 0 };
+    ClawtTask *task;
+    g_autofree gchar *arguments = NULL;
+    g_autoptr(JsonNode) status = NULL;
+    const gchar *text;
+    gboolean is_error = TRUE;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: worker\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "worker",
+                                     "count the rows", NULL, NULL);
+    g_assert_true(clawt_task_manager_complete(fixture.tasks,
+                                              clawt_task_get_id(task),
+                                              "There are 12 rows."));
+
+    arguments = g_strdup_printf("{\"task_id\":\"%s\"}",
+                                clawt_task_get_id(task));
+    status = call_tool(&fixture, "chief", "clawtilla_task_status", arguments);
+    text = response_text(status, &is_error);
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "\nResult:\nThere are 12 rows."));
+    g_assert_null(strstr(text, "clawtilla_task_result"));
+    g_assert_null(strstr(text, "progress note"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * One long line is cut too, and on a character boundary: a result that is
+ * a single paragraph is as much a report as one with many lines.
+ */
+static void
+test_finished_status_cuts_a_long_line(void)
+{
+    Fixture fixture = { 0 };
+    ClawtTask *task;
+    g_autoptr(GString) result = g_string_new(NULL);
+    g_autofree gchar *arguments = NULL;
+    g_autoptr(JsonNode) status = NULL;
+    const gchar *text;
+    const gchar *start;
+    const gchar *pointer;
+    gboolean is_error = TRUE;
+    guint n;
+
+    /*
+     * One byte, then three-byte characters: every character then starts
+     * one past a multiple of three, so a plain cut at the byte cap lands
+     * in the middle of one.
+     */
+    g_string_append_c(result, 'x');
+    for (n = 0; n < 1000; n++)
+        g_string_append(result, "\xe2\x82\xac");
+    g_string_append(result, "END-OF-RESULT");
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: worker\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "worker",
+                                     "write it up", NULL, NULL);
+    g_assert_true(clawt_task_manager_complete(fixture.tasks,
+                                              clawt_task_get_id(task),
+                                              result->str));
+
+    arguments = g_strdup_printf("{\"task_id\":\"%s\"}",
+                                clawt_task_get_id(task));
+    status = call_tool(&fixture, "chief", "clawtilla_task_status", arguments);
+    text = response_text(status, &is_error);
+    g_assert_false(is_error);
+    g_assert_true(g_utf8_validate(text, -1, NULL));
+    g_assert_null(strstr(text, "END-OF-RESULT"));
+
+    start = strstr(text, "\nResult:\n");
+    g_assert_nonnull(start);
+    start += strlen("\nResult:\n");
+    pointer = strstr(start, "\n[...] clawtilla_task_result has the whole");
+    g_assert_nonnull(pointer);
+    g_assert_cmpuint((guint) (pointer - start), >, 0);
+    g_assert_cmpuint((guint) (pointer - start), <=, 600);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * clawtilla_message_agent takes an agent id, and a room id is not one.
  *
  * The argument went to the router unchecked and the router resolves a
@@ -4592,6 +4761,12 @@ main(int argc, char *argv[])
                     test_the_two_parties_can_read_their_own_task);
     g_test_add_func("/mcp-tools/task/progress-is-the-assignees",
                     test_only_the_assignee_reports_progress);
+    g_test_add_func("/mcp/task-status/finished-shows-result",
+                    test_finished_status_shows_the_result);
+    g_test_add_func("/mcp/task-status/short-result-whole",
+                    test_finished_status_shows_a_short_result_whole);
+    g_test_add_func("/mcp/task-status/long-line-cut",
+                    test_finished_status_cuts_a_long_line);
     g_test_add_func("/mcp-tools/message-agent/not-a-room",
                     test_message_agent_will_not_address_a_room);
     g_test_add_func("/mcp-tools/turn-room/idle-room-buys-nothing",

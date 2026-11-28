@@ -196,7 +196,7 @@ What each agent may call is decided by the ~tools/list~ gate; the =# BEGIN clawt
 |----------------------------+--------------------------------------------------------------------------|
 | ~clawtilla_delegate~       | hands work to another agent and returns a task id; takes ~after~, ~review~, ~repo~, ~base~, ~project~ |
 | ~clawtilla_task_list~      | what the agent delegated and was delegated, and what those turned into   |
-| ~clawtilla_task_status~    | one task, with the last five comments                                    |
+| ~clawtilla_task_status~    | one task, with the last five comments; a finished one opens with the first lines of its result, and its last progress note is labelled as from before it finished |
 | ~clawtilla_task_result~    | a finished task's result                                                 |
 | ~clawtilla_task_cancel~    | cancels a task it delegated, with everything under it                    |
 | ~clawtilla_task_complete~  | reports its own task done (to ~review~ when it has a reviewer)           |
