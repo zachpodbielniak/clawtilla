@@ -475,6 +475,18 @@ struct _ClawtDaemon {
     gpointer           notify_sink_data;
 
     /*
+     * Held agents (daemon-held.c): an agent whose every turn is refused,
+     * by its own agent.failover "held".  held_wakes is agent id -> the
+     * GSource that drains its mailbox when the hold runs out;
+     * held_accounts is account key -> the pending or sent alert for it.
+     * held_alert_delay_ms is how long an account must stay held before
+     * it is alerted about; 0 is the default, two minutes.
+     */
+    GHashTable        *held_wakes;
+    GHashTable        *held_accounts;
+    guint              held_alert_delay_ms;
+
+    /*
      * Conditions agents asked to be told about, checked by code rather
      * than by waking the model.  One record per wait under
      * <state_dir>/waits, so they survive a restart.  See daemon-wait.c.
@@ -1274,6 +1286,20 @@ clawt_daemon_handle_hold(ClawtDaemon  *self,
                          JsonObject   *payload,
                          gboolean     *handled);
 void clawt_daemon_triggers_stop(ClawtDaemon *self);
+
+/*
+ * clawt_daemon_held_changed:
+ * @self: the daemon
+ * @agent: an agent whose agent.failover state was just set or cleared
+ *
+ * Arms the drain for when its hold runs out, and keeps its account's
+ * alert: one ERROR notification per account, once the account has had
+ * an agent held for the alert delay, and none for a shorter blip.
+ */
+void clawt_daemon_held_changed(ClawtDaemon *self, ClawtAgent *agent);
+
+/* Every held-agent timer cancelled, for the daemon's stop. */
+void clawt_daemon_held_stop(ClawtDaemon *self);
 
 /*
  * clawt_daemon_triggers_task_settled:

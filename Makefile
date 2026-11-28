@@ -569,6 +569,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/clawt-update.c \
 	$(SRCDIR)/agent/clawt-hold.c \
 	$(SRCDIR)/core/daemon-hold.c \
+	$(SRCDIR)/core/daemon-held.c \
 	$(SRCDIR)/core/daemon-device.c
 
 # Object files

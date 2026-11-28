@@ -264,6 +264,16 @@ clawt_failover_is_active(JsonObject *failover)
                      "fallback") == 0;
 }
 
+gboolean
+clawt_failover_is_held(JsonObject *failover)
+{
+    if (failover == NULL || !json_object_has_member(failover, "state"))
+        return FALSE;
+
+    return g_strcmp0(json_object_get_string_member(failover, "state"),
+                     "held") == 0;
+}
+
 /*
  * "codex-cli gpt-5.5" out of a {provider, model} member.
  */
@@ -320,6 +330,23 @@ clawt_failover_badge(JsonObject *failover)
 {
     g_autofree gchar *active = NULL;
 
+    if (clawt_failover_is_held(failover)) {
+        const gchar *reason = json_object_get_string_member_with_default(
+            failover, "reason", NULL);
+
+        /* a badge's few words, where the sentence has a verb */
+        if (g_strcmp0(reason, "signed-out") == 0)
+            return g_strdup("Held: signed out");
+        if (g_strcmp0(reason, "usage-limit") == 0)
+            return g_strdup("Held: usage limit");
+        if (g_strcmp0(reason, "rate-limit") == 0)
+            return g_strdup("Held: rate limited");
+        if (g_strcmp0(reason, "unavailable") == 0)
+            return g_strdup("Held: provider unavailable");
+
+        return g_strdup("Held");
+    }
+
     if (!clawt_failover_is_active(failover))
         return NULL;
 
@@ -331,6 +358,9 @@ clawt_failover_badge(JsonObject *failover)
 gchar *
 clawt_failover_sidebar_badge(JsonObject *failover)
 {
+    if (clawt_failover_is_held(failover))
+        return g_strdup("Held");
+
     return clawt_failover_is_active(failover) ? g_strdup("On fallback")
                                               : NULL;
 }
@@ -349,6 +379,37 @@ clawt_failover_describe(const gchar *agent,
 
     if (failover == NULL)
         return NULL;
+
+    /*
+     * Held: no backend can take a turn, so there is no "on" to say.  The
+     * refusal's own words follow, because "signed out" is the class and
+     * the CLI's sentence is what tells a person what to do about it.
+     */
+    if (clawt_failover_is_held(failover)) {
+        const gchar *message = json_object_get_string_member_with_default(
+            failover, "message", NULL);
+
+        retry_at = json_object_get_int_member_with_default(failover,
+                                                           "retry_at", 0);
+        out = g_string_new(NULL);
+        g_string_append_printf(out, "%s is held: every turn is refused "
+                               "because it %s", who,
+                               clawt_failover_reason_phrase(
+                                   json_object_get_string_member_with_default(
+                                       failover, "reason", NULL)));
+        if (retry_at > 0 && (back = clock_label(retry_at)) != NULL)
+            g_string_append_printf(out, ", until %s", back);
+        if (message != NULL && *message != '\0')
+            g_string_append_printf(out, " (%s)", message);
+
+        return g_string_free(out, FALSE);
+    }
+
+    if (g_strcmp0(json_object_get_string_member_with_default(failover,
+                                                             "state", ""),
+                  "primary") == 0 &&
+        !json_object_has_member(failover, "primary"))
+        return g_strdup_printf("%s is answered again", who);
 
     primary = backend_label(failover, "primary");
 

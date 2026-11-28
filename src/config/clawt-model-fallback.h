@@ -250,6 +250,19 @@ const gchar *clawt_failover_reason_phrase(const gchar *reason);
 gboolean clawt_failover_is_active(JsonObject *failover);
 
 /**
+ * clawt_failover_is_held:
+ * @failover: (nullable): an agent's `failover` object
+ *
+ * Whether the agent is held: libreclaw's `state: held`, every turn
+ * refused for a reason that is its account's (a login that is gone, a
+ * usage limit) with no fallback to take it.  Not "active" -- the agent
+ * is on no other backend -- and handled apart from it.
+ *
+ * Returns: %TRUE when held
+ */
+gboolean clawt_failover_is_held(JsonObject *failover);
+
+/**
  * clawt_failover_badge:
  * @failover: (nullable): an agent's `failover` object
  *

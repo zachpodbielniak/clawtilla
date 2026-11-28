@@ -10700,6 +10700,253 @@ test_an_agent_on_a_fallback_is_shown_and_announced(void)
     fixture_teardown(&fixture);
 }
 
+/* What the daemon would have pushed, collected rather than sent. */
+static void
+collect_notification(ClawtDaemon *daemon, ClawtNotification *notification,
+                     gpointer user_data)
+{
+    GPtrArray *seen = user_data;
+
+    (void)daemon;
+    g_ptr_array_add(seen, g_strdup_printf("%s | %s",
+                    notification->title != NULL ? notification->title : "",
+                    notification->body != NULL ? notification->body : ""));
+}
+
+static void
+pump_for(Fixture *fixture, guint ms)
+{
+    gint64 until = g_get_monotonic_time() + (gint64)ms * 1000;
+
+    while (g_get_monotonic_time() < until) {
+        g_main_context_iteration(fixture->context, FALSE);
+        g_usleep(1000);
+    }
+}
+
+static gchar *
+held_frame(const gchar *reason, gint64 retry_at, const gchar *message)
+{
+    return g_strdup_printf(
+        "{\"v\":1,\"kind\":\"agent.failover\",\"payload\":{"
+        "\"state\":\"held\",\"reason\":\"%s\",\"reset_at\":%" G_GINT64_FORMAT
+        ",\"retry_at\":%" G_GINT64_FORMAT ",\"context_lost\":false,"
+        "\"message\":\"%s\"}}\n", reason, retry_at, retry_at, message);
+}
+
+#define RELEASE_FRAME \
+    "{\"v\":1,\"kind\":\"agent.failover\",\"payload\":{" \
+    "\"state\":\"primary\",\"reason\":\"none\",\"reset_at\":0," \
+    "\"retry_at\":0,\"message\":\"its turns are answered again\"}}\n"
+
+/*
+ * An agent whose every turn is refused -- libreclaw's agent.failover
+ * state "held", here a login that is gone -- is degraded with the reason,
+ * and its mailbox is not fed until the frame's retry_at: delivery
+ * acknowledges an item as it reaches the socket, so feeding an agent
+ * that cannot answer would spend the queue.  At retry_at the queue is
+ * drained by itself, and the release puts the agent back to running.
+ * Before, "held" was not a state the daemon knew: the agent stayed
+ * running and every delivery went into the dead login.
+ */
+static void
+test_a_held_agent_is_degraded_and_not_fed(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *fake = g_build_filename(CLAWT_TEST_FIXTURES,
+                                              "fake-libreclaw", NULL);
+    g_autofree gchar *extra = NULL;
+    g_autofree gchar *frame = NULL;
+    g_autofree gchar *item_id = NULL;
+    g_autoptr(GSocketConnection) link = NULL;
+    g_autoptr(ClawtMailboxItem) item = NULL;
+    g_autoptr(JsonNode) shown = NULL;
+    g_autoptr(GError) error = NULL;
+    KindCount failovers = { "agent.failover", 0, CLAWT_ALERT_ROUTINE };
+    ClawtMailbox *mailbox;
+    JsonObject *agent_json;
+    ClawtAgent *agent;
+    gint64 retry_at;
+    guint spun;
+
+    if (!g_file_test(fake, G_FILE_TEST_IS_EXECUTABLE)) {
+        g_test_skip("the fake libreclaw fixture is not executable");
+        return;
+    }
+
+    extra = g_strdup_printf(
+        "  libreclaw_binary: \"%s\"\n"
+        "agents:\n"
+        "  - id: scout\n"
+        "    name: Scout\n"
+        "    enabled: true\n"
+        "    env:\n"
+        "      FAKE_LIBRECLAW_SLEEP: \"30\"\n"
+        "    computer:\n"
+        "      type: none\n", fake);
+
+    fixture_setup(&fixture, extra);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_kind_event), &failovers);
+    link = run_one_agent(&fixture, "scout");
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "scout");
+    mailbox = clawt_agent_get_mailbox(agent);
+    g_assert_cmpint(clawt_agent_get_state(agent), ==,
+                    CLAWT_AGENT_STATE_RUNNING);
+
+    retry_at = g_get_real_time() / G_USEC_PER_SEC + 3;
+    frame = held_frame("signed-out", retry_at,
+                       "Failed to authenticate: this login reached its "
+                       "time limit");
+    send_agent_frame(link, frame);
+    pump_until_seen(&fixture, &failovers, 1);
+
+    g_assert_cmpint(clawt_agent_get_state(agent), ==,
+                    CLAWT_AGENT_STATE_DEGRADED);
+    g_assert_nonnull(strstr(clawt_agent_get_status_detail(agent),
+                            "signed out"));
+    g_assert_cmpint(failovers.tier, ==, CLAWT_ALERT_NOTICE);
+
+    shown = request(&fixture, "agent.show", "{\"agent\":\"scout\"}");
+    agent_json = payload_of(shown);
+    if (json_object_has_member(agent_json, "agent"))
+        agent_json = json_object_get_object_member(agent_json, "agent");
+    g_assert_nonnull(strstr(
+        json_object_get_string_member(agent_json, "failover_message"),
+        "Scout is held: every turn is refused because it is signed out"));
+
+    /* Mail waits. */
+    item = clawt_mailbox_item_new("user", "scout", "are you there?");
+    item_id = clawt_mailbox_post(mailbox, item, &error);
+    g_assert_no_error(error);
+    g_assert_cmpuint(clawt_mailbox_router_drain(fixture.daemon->router,
+                                                "scout"), ==, 0);
+    pump_for(&fixture, 300);
+    g_assert_cmpuint(clawt_mailbox_depth(mailbox), ==, 1);
+
+    /* At retry_at it goes, with nothing else asking. */
+    for (spun = 0; spun < 6000 && clawt_mailbox_depth(mailbox) > 0; spun++) {
+        g_main_context_iteration(fixture.context, FALSE);
+        g_usleep(1000);
+    }
+    g_assert_cmpuint(clawt_mailbox_depth(mailbox), ==, 0);
+    g_assert_cmpint(g_get_real_time() / G_USEC_PER_SEC, >=, retry_at);
+
+    /* Answered again: running. */
+    send_agent_frame(link, RELEASE_FRAME);
+    pump_until_seen(&fixture, &failovers, 2);
+    g_assert_cmpint(clawt_agent_get_state(agent), ==,
+                    CLAWT_AGENT_STATE_RUNNING);
+    g_assert_null(clawt_agent_get_failover(agent));
+
+    g_signal_handlers_disconnect_by_data(
+        clawt_daemon_get_event_bus(fixture.daemon), &failovers);
+    fixture_teardown(&fixture);
+}
+
+/*
+ * One alert per account, and only for a hold that lasts.  Eight agents
+ * behind one dead login are one ERROR notification naming the account and
+ * how many agents it holds -- not eight "is degraded" ones -- and it is
+ * sent once the hold has lasted the alert delay.  An agent on another
+ * account held for less than that (a blip) is no alert at all.
+ */
+static void
+test_a_held_account_is_one_alert(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *fake = g_build_filename(CLAWT_TEST_FIXTURES,
+                                              "fake-libreclaw", NULL);
+    g_autofree gchar *frame = NULL;
+    g_autoptr(GPtrArray) notified = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) links = g_ptr_array_new_with_free_func(
+        g_object_unref);
+    g_autoptr(GSocketConnection) solo = NULL;
+    KindCount failovers = { "agent.failover", 0, CLAWT_ALERT_ROUTINE };
+    GString *extra;
+    guint i;
+
+    if (!g_file_test(fake, G_FILE_TEST_IS_EXECUTABLE)) {
+        g_test_skip("the fake libreclaw fixture is not executable");
+        return;
+    }
+
+    extra = g_string_new(NULL);
+    g_string_append_printf(extra,
+        "  libreclaw_binary: \"%s\"\n"
+        "accounts:\n"
+        "  - id: team-b\n"
+        "    provider: claude-code\n"
+        "    config_dir: /acct/claude-b\n"
+        "agents:\n", fake);
+    for (i = 0; i < 8; i++)
+        g_string_append_printf(extra,
+            "  - id: worker-%u\n"
+            "    enabled: true\n"
+            "    model:\n"
+            "      provider: claude-code\n"
+            "      account: team-b\n"
+            "    env:\n"
+            "      FAKE_LIBRECLAW_SLEEP: \"30\"\n"
+            "    computer:\n"
+            "      type: none\n", i);
+    g_string_append(extra,
+        "  - id: solo\n"
+        "    enabled: true\n"
+        "    env:\n"
+        "      FAKE_LIBRECLAW_SLEEP: \"30\"\n"
+        "    computer:\n"
+        "      type: none\n");
+
+    fixture_setup(&fixture, extra->str);
+    g_string_free(extra, TRUE);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+    fixture.daemon->notify_sink = collect_notification;
+    fixture.daemon->notify_sink_data = notified;
+    fixture.daemon->held_alert_delay_ms = 400;
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_kind_event), &failovers);
+
+    for (i = 0; i < 8; i++) {
+        g_autofree gchar *id = g_strdup_printf("worker-%u", i);
+
+        g_ptr_array_add(links, run_one_agent(&fixture, id));
+    }
+    solo = run_one_agent(&fixture, "solo");
+
+    frame = held_frame("signed-out", 0, "Not logged in");
+    for (i = 0; i < 8; i++)
+        send_agent_frame(g_ptr_array_index(links, i), frame);
+    send_agent_frame(solo, frame);
+    pump_until_seen(&fixture, &failovers, 9);
+
+    /* solo comes back inside the delay: a blip */
+    send_agent_frame(solo, RELEASE_FRAME);
+    pump_until_seen(&fixture, &failovers, 10);
+
+    /* nothing until the delay has passed */
+    g_assert_cmpuint(notified->len, ==, 0);
+    pump_for(&fixture, 900);
+
+    g_assert_cmpuint(notified->len, ==, 1);
+    g_assert_nonnull(strstr(g_ptr_array_index(notified, 0), "team-b"));
+    g_assert_nonnull(strstr(g_ptr_array_index(notified, 0), "8 agents"));
+    g_assert_nonnull(strstr(g_ptr_array_index(notified, 0), "Not logged in"));
+
+    /* and no second one while it lasts */
+    send_agent_frame(g_ptr_array_index(links, 0), frame);
+    pump_until_seen(&fixture, &failovers, 11);
+    pump_for(&fixture, 900);
+    g_assert_cmpuint(notified->len, ==, 1);
+
+    g_signal_handlers_disconnect_by_data(
+        clawt_daemon_get_event_bus(fixture.daemon), &failovers);
+    fixture.daemon->notify_sink = NULL;
+    fixture_teardown(&fixture);
+}
+
 /*
  * A fallback list is checked where it arrives.  Another sign-in to the
  * agent's own subscription is refused with the reason and nothing is
@@ -13422,6 +13669,10 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/usage/fleet-page-summary",
                     test_usage_summary_for_the_fleet_page);
+    g_test_add_func("/daemon/failover/held-agent-is-degraded-and-not-fed",
+                    test_a_held_agent_is_degraded_and_not_fed);
+    g_test_add_func("/daemon/failover/held-account-is-one-alert",
+                    test_a_held_account_is_one_alert);
     g_test_add_func("/daemon/failover/shown-and-announced",
                     test_an_agent_on_a_fallback_is_shown_and_announced);
     g_test_add_func("/daemon/failover/checked-where-they-arrive",

@@ -29,8 +29,9 @@ struct _ClawtAgent {
     gboolean           busy;
     gchar             *activity_peer;
 
-    /* On a fallback backend; see clawt_agent_set_failover(). */
+    /* On a fallback backend, or held; see clawt_agent_set_failover(). */
     JsonObject        *failover;
+    gint64             held_until;   /* Unix seconds; 0 when not held */
     ClawtAgentRuntime *runtime;
     ClawtComputer     *computer;
     ClawtDesktop      *desktop;
@@ -575,11 +576,25 @@ clawt_agent_set_failover(ClawtAgent *self,
     JsonObject *copy;
     GList *members;
     GList *l;
+    gboolean was_held;
 
     g_return_if_fail(CLAWT_IS_AGENT(self));
 
-    if (!clawt_failover_is_active(failover)) {
+    was_held = clawt_failover_is_held(self->failover);
+
+    if (!clawt_failover_is_active(failover) &&
+        !clawt_failover_is_held(failover)) {
         g_clear_pointer(&self->failover, json_object_unref);
+        self->held_until = 0;
+
+        /*
+         * Answered again.  Back to running only from the degraded state
+         * the hold put it in, and only with its link up: a hold cleared
+         * because the link went is a degraded agent for that reason.
+         */
+        if (was_held && self->state == CLAWT_AGENT_STATE_DEGRADED &&
+            self->link != NULL && clawt_link_is_open(self->link))
+            set_state(self, CLAWT_AGENT_STATE_RUNNING, NULL);
         return;
     }
 
@@ -606,6 +621,55 @@ clawt_agent_set_failover(ClawtAgent *self,
 
     g_clear_pointer(&self->failover, json_object_unref);
     self->failover = copy;
+
+    if (!clawt_failover_is_held(copy)) {
+        self->held_until = 0;
+        return;
+    }
+
+    /*
+     * Held until the reset the refusal named.  With none -- a login that
+     * is gone has none -- until a probe window from now, after which one
+     * delivery goes through: its turn is refused again and renews the
+     * hold, or it is answered and the agent sends the release.  Holding
+     * for ever on no reset would leave nothing able to notice the login
+     * came back.
+     */
+    {
+        gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+        gint64 retry_at = json_object_get_int_member_with_default(
+            copy, "retry_at", 0);
+
+        self->held_until = retry_at > now
+            ? retry_at : now + CLAWT_AGENT_HELD_PROBE_SECONDS;
+    }
+
+    if (self->state == CLAWT_AGENT_STATE_RUNNING ||
+        (self->state == CLAWT_AGENT_STATE_DEGRADED && was_held)) {
+        g_autofree gchar *why = g_strdup_printf(
+            "held: every turn is refused because it %s",
+            clawt_failover_reason_phrase(
+                json_object_get_string_member_with_default(copy, "reason",
+                                                           NULL)));
+
+        set_state(self, CLAWT_AGENT_STATE_DEGRADED, why);
+    }
+}
+
+gboolean
+clawt_agent_is_turn_held(ClawtAgent *self, gint64 now)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), FALSE);
+
+    return clawt_failover_is_held(self->failover) && now < self->held_until;
+}
+
+gint64
+clawt_agent_get_held_until(ClawtAgent *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), 0);
+
+    return clawt_failover_is_held(self->failover) ? self->held_until : 0;
 }
 
 JsonObject *

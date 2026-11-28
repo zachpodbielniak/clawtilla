@@ -2536,6 +2536,17 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
              clawt_agent_runtime_is_paused(
                  runtime, g_get_real_time() / G_USEC_PER_SEC)))
             return 0;
+
+        /*
+         * And a third, said by the agent rather than read from its log:
+         * every turn it takes is refused (agent.failover, state "held")
+         * -- a login that is gone has no reset for the pause above to
+         * read.  Fed again when the hold runs out; the daemon drains it
+         * then (daemon-held.c).
+         */
+        if (clawt_agent_is_turn_held(agent,
+                                     g_get_real_time() / G_USEC_PER_SEC))
+            return 0;
     }
 
     for (;;) {

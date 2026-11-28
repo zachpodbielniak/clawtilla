@@ -158,6 +158,36 @@ void              clawt_agent_set_failover(ClawtAgent *self,
                                            JsonObject *failover);
 
 /**
+ * CLAWT_AGENT_HELD_PROBE_SECONDS:
+ *
+ * How long a held agent whose refusal named no reset is left unfed
+ * before one delivery is let through to see whether it still is.
+ */
+#define CLAWT_AGENT_HELD_PROBE_SECONDS (15 * 60)
+
+/**
+ * clawt_agent_is_turn_held:
+ * @self: a #ClawtAgent
+ * @now: Unix seconds
+ *
+ * Whether the agent said it is held (agent.failover, state "held") and
+ * the hold has not run out: until the reset the refusal named, or for
+ * %CLAWT_AGENT_HELD_PROBE_SECONDS when it named none.  The router does
+ * not feed a held agent.
+ *
+ * Returns: %TRUE while held
+ */
+gboolean          clawt_agent_is_turn_held(ClawtAgent *self, gint64 now);
+
+/**
+ * clawt_agent_get_held_until:
+ * @self: a #ClawtAgent
+ *
+ * Returns: when the hold runs out, in Unix seconds, or 0 when not held
+ */
+gint64            clawt_agent_get_held_until(ClawtAgent *self);
+
+/**
  * clawt_agent_get_failover:
  * @self: a #ClawtAgent
  *

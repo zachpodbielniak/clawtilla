@@ -404,11 +404,19 @@ clawt_alert_tier_for_event(ClawtEvent *event)
      * another CLI with none of the conversation -- and it arrived while
      * nobody was watching.  The return is routine: it ends a condition
      * somebody was already told about.
+     *
+     * Held -- every turn refused, on no backend at all -- is a notice
+     * too, per agent.  The push a person gets for it is per account and
+     * comes later (daemon-held.c): a notice is the list a client shows,
+     * not a phone going off eight times for one dead login.
      */
-    if (g_strcmp0(kind, "agent.failover") == 0)
-        return (g_strcmp0(clawt_event_get_detail(event, "state"),
-                          "fallback") == 0)
+    if (g_strcmp0(kind, "agent.failover") == 0) {
+        const gchar *state = clawt_event_get_detail(event, "state");
+
+        return (g_strcmp0(state, "fallback") == 0 ||
+                g_strcmp0(state, "held") == 0)
                    ? CLAWT_ALERT_NOTICE : CLAWT_ALERT_ROUTINE;
+    }
 
     if (g_strcmp0(kind, "agent.state") == 0) {
         const gchar *state = clawt_event_get_detail(event, "state");

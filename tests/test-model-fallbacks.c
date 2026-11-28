@@ -412,6 +412,49 @@ test_describe(void)
 }
 
 /*
+ * Held: the agent is on no backend, so the sentence says what is refused
+ * and why, with the refusal's own words, and the badges say "Held".  The
+ * release libreclaw sends has no backends either, and reads as answered.
+ */
+static void
+test_describe_held(void)
+{
+    g_autoptr(JsonObject) held = json_object_new();
+    g_autoptr(JsonObject) released = json_object_new();
+    g_autoptr(ClawtEvent) event = clawt_event_new("agent.failover", "a");
+    g_autofree gchar *line = NULL;
+    g_autofree gchar *badge = NULL;
+    g_autofree gchar *brief = NULL;
+    g_autofree gchar *back = NULL;
+
+    json_object_set_string_member(held, "state", "held");
+    json_object_set_string_member(held, "reason", "signed-out");
+    json_object_set_int_member(held, "retry_at", 0);
+    json_object_set_string_member(held, "message", "Not logged in");
+    json_object_set_string_member(released, "state", "primary");
+    json_object_set_string_member(released, "reason", "none");
+
+    line = clawt_failover_describe("Scout", held);
+    badge = clawt_failover_badge(held);
+    brief = clawt_failover_sidebar_badge(held);
+    back = clawt_failover_describe("Scout", released);
+
+    g_assert_cmpstr(line, ==, "Scout is held: every turn is refused because "
+                              "it is signed out (Not logged in)");
+    g_assert_cmpstr(badge, ==, "Held: signed out");
+    g_assert_cmpstr(brief, ==, "Held");
+    g_assert_cmpstr(back, ==, "Scout is answered again");
+
+    g_assert_true(clawt_failover_is_held(held));
+    g_assert_false(clawt_failover_is_active(held));
+    g_assert_false(clawt_failover_is_held(released));
+    g_assert_false(clawt_failover_is_held(NULL));
+
+    clawt_event_set_detail(event, "state", "held");
+    g_assert_cmpint(clawt_alert_tier_for_event(event), ==, CLAWT_ALERT_NOTICE);
+}
+
+/*
  * The alert's tier follows the state: leaving is a notice, coming back
  * is routine.
  */
@@ -519,6 +562,7 @@ main(int argc, char *argv[])
                     test_bad_entries_are_shadow);
     g_test_add_func("/model-fallbacks/set-round-trips", test_set_round_trips);
     g_test_add_func("/model-fallbacks/describe", test_describe);
+    g_test_add_func("/model-fallbacks/describe-held", test_describe_held);
     g_test_add_func("/model-fallbacks/alert-tier", test_alert_tier);
     g_test_add_func("/model-fallbacks/account-fits", test_account_fits);
     g_test_add_func("/model-fallbacks/restore-plan", test_restore_plan);

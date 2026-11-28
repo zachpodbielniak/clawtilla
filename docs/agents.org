@@ -324,6 +324,14 @@ A routine's or a delegation's per-turn ~model~ names a model of the agent's own 
 - ~agent list~ marks the agent =[on fallback]=.  ~agent show~ prints the list and the sentence.  ~agent.list~ and ~agent.show~ carry ~failover~ and ~failover_message~ (see [[file:ipc-protocol.org][ipc-protocol.org]]), and the graphical clients show an "On fallback" badge.
 - The state belongs to the agent's process.  It is cleared when the agent's link goes.  An agent that reconnects while still on a fallback reports the state again, and a restarted agent starts on its primary.
 
+**** Held: every turn is refused
+An agent with nowhere to go -- no ~model.fallbacks~, or none free -- whose turns are refused for its account's reason (a login that is gone, a usage or rate limit, a provider that is down) says so: its libreclaw sends ~agent.failover~ with ~state~ =held=, the ~reason~, the refusal's own words as ~message~, and ~retry_at~ when the refusal named a reset.  This needs a libreclaw that classifies every failed turn, not only those a failover list routes; an older one never sends it.
+
+- The agent is =degraded=, with "held: every turn is refused because it is signed out" (or whichever reason) as its detail.  ~agent show~ and the clients' badge say "Held".
+- Its mailbox is not fed, as for a usage pause: delivery acknowledges a message as it reaches the agent, so feeding an agent that cannot answer would spend the queue.  Mail waits, and is delivered when the hold runs out -- at ~retry_at~, or after fifteen minutes when the refusal named no reset (a login that is gone names none).  That delivery is the check: refused again, and the agent says it is still held; answered, and it says it is back.
+- One alert per account, not per agent: an ERROR notification "account team-b cannot serve turns" with how many agents are held and why, sent once the account has had an agent held for two minutes.  A hold that ends sooner alerts nobody, and the alert is not repeated while the hold lasts.  The per-agent ~agent.failover~ event is a notice, as for a fallback.
+- The first answered turn ends it: ~state~ =primary=, the agent goes back to =running=, and its mail flows.  A restarted agent starts unheld; a reconnecting one repeats the state after its hello.
+
 **** Refused: another sign-in to the same subscription
 Rotating accounts to get past a provider's usage limit breaks the provider's terms and can get the accounts closed.  So a list is refused when any entry is another sign-in to a subscription that the agent or an earlier entry already uses: the same CLI family (=claude-code= and =claude-tmux= are one Claude login) on a different account.  The exception is an account marked ~pay_per_use: true~ (an API key that bills each use).  Another provider is always allowed, and so is the same login on another model.
 

@@ -416,6 +416,7 @@ on_link_failover(ClawtLinkServer *server, const gchar *agent_id,
                                              "name");
 
     clawt_agent_set_failover(agent, payload);
+    clawt_daemon_held_changed(self, agent);
     line = clawt_failover_describe(name != NULL ? name : agent_id, payload);
 
     g_message("agent %s: %s", agent_id, line);
@@ -481,8 +482,10 @@ on_link_removed(ClawtLinkServer *server, const gchar *agent_id,
      * that only lost its link repeats the state after it reconnects; a
      * restarted one starts on its primary and says so by saying nothing.
      */
-    if (agent != NULL)
+    if (agent != NULL) {
         clawt_agent_set_failover(agent, NULL);
+        clawt_daemon_held_changed(self, agent);
+    }
 
     clawt_event_bus_emit(self->bus, "agent.disconnected", agent_id);
 }
@@ -1605,6 +1608,20 @@ on_agent_state_changed(ClawtAgentManager *manager,
 
     if (self->notifier == NULL)
         return;
+
+    /*
+     * Degraded because it is held -- every turn refused for its
+     * account's reason -- is told once per account, in daemon-held.c,
+     * after the hold has lasted.  One per agent here would be eight
+     * notifications for one dead login.
+     */
+    if (state == CLAWT_AGENT_STATE_DEGRADED) {
+        ClawtAgent *held = clawt_agent_manager_get(self->agents, agent_id);
+
+        if (held != NULL &&
+            clawt_failover_is_held(clawt_agent_get_failover(held)))
+            return;
+    }
 
     config = clawt_config_get_agent(self->config, agent_id);
 
@@ -8606,6 +8623,7 @@ clawt_daemon_stop(ClawtDaemon *self)
         clawt_automation_stop(self->automation);
 
     clawt_daemon_grok_stop(self);
+    clawt_daemon_held_stop(self);
     clawt_daemon_triggers_stop(self);
     clawt_daemon_venture_stop(self);
 
