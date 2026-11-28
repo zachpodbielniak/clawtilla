@@ -800,6 +800,8 @@ Each team's *Problems to look at* room is a sidebar entry under the team (=clawt
 
 ~task.list~ carries no timestamp for a task, so no age is drawn; GTK draws none either.
 
+List is that page. Board and Timeline are the other two views (~clients/lrg/lrg-board.c~, the same switch as ~clients/gtk/gtk-board.c~). Board asks ~task.board~ for one agent, or for a team's lead, and draws the header strip, the seven columns and, when asked, a worker lane per teammate. Done starts collapsed. A card's title opens the task thread; its ticket link is separate. Timeline is a text bar per state span (~clawt_lrg_board_bar_cells()~), indented under its card, with "now" marked on a ruler. It does not draw cairo, a shared pixel axis, or a line through the rows. The Agent page's status card is the same header and an *Open board* button. A burst of ~task.*~, agent-state, mailbox, decision and wait events is one ~task.board~ on the next idle; ~turn.step~ rewrites the step line and does not ask again. What a row, a chip, a wait and a timeline span say is ~clients/lrg/lrg-board-model.c~ (and ~clients/lrg/clawt-lrg-board-model.h~), compiled into GTK as well, and checked by ~tests/test-lrg-models-board.c~.
+
 ** Decisions
 The Work section's inbox of questions agents are waiting on. Its tab carries the open count in the warn tone (=clawt_lrg_set_page_badge()=), set from the reply's =open= on every refresh here and by the shell on every =decision.*= event, so both ends of a decision -- asked and settled -- move the count. The column is clamped to the reading measure from the appearance settings (=clawt_measure_resolve_px()=), as GTK clamps it to the chat's.
 
@@ -1326,6 +1328,8 @@ A colour this client reads but the palette leaves out falls back to libadwaita's
 | ~lrg-schedule-model.c~, ~clawt-lrg-schedule-model.h~ | the calendar's rows, window and refused sentence | ~gtk-schedule.c~ (compiled in) |
 | ~lrg-triggers.c~ | Triggers, the editor, the secret shown once, capture | ~gtk-triggers.c~ |
 | ~lrg-tasks.c~ | delegated work, as a tree | ~gtk-tasks.c~ |
+| ~lrg-board.c~ | Tasks Board and Timeline, and the Agent status card | ~gtk-board.c~ |
+| ~lrg-board-model.c~, ~clawt-lrg-board-model.h~ | columns, chip lines, wait labels, timeline spans | ~gtk-board.c~ (compiled in) |
 | ~lrg-decisions.c~ | the decisions inbox | ~gtk-decisions.c~ |
 | ~lrg-navigation.c~ | Ctrl+K "Go to…" | ~gtk-navigation.c~ |
 | ~lrg-work-model.c~, ~clawt-lrg-work-model.h~ | automation's and work's decisions | -- |

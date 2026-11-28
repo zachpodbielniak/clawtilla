@@ -2169,6 +2169,12 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
     (void)client;
 
     /*
+     * Before the branches that return.  The board listens for agent
+     * and mailbox events those branches consume, and coalesces them.
+     */
+    clawt_gtk_board_on_event(self, event);
+
+    /*
      * The notification list is the daemon's (docs/clients.org,
      * "Notifications"), so nothing is recorded here: the panel and the
      * bell are asked for again when anything they count may have moved

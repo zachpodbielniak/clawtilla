@@ -3614,6 +3614,7 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
     const gchar *caps = clawt_json_string(agent, "caps", "");
     gboolean is_shadow = g_strcmp0(state, "shadow") == 0;
 
+    clawt_gtk_board_agent_reset(self);
     clawt_gtk_clear_box(self->inspector);
     g_clear_pointer(&self->inspector_models.catalog, json_node_unref);
 
@@ -3710,6 +3711,7 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
     }
 
     gtk_box_append(self->inspector, group);
+    clawt_gtk_board_mount_agent(self);
 
     build_avatar_group(self, agent);
 

@@ -1451,5 +1451,11 @@ clawt_gtk_build_task_page(ClawtWindow *self)
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
 
-    return scroll;
+    {
+        GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+
+        gtk_widget_set_vexpand(outer, TRUE);
+        clawt_gtk_board_install(self, outer, scroll);
+        return outer;
+    }
 }

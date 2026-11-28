@@ -1247,14 +1247,16 @@ build(ClawtLrgApp *app)
     LrgWidget *page = clawt_lrg_page_new(
         "Tasks", "What has been delegated, to whom, and whether it is still "
                  "going");
+    LrgWidget *host;
 
     tasks.app = app;
+    host = clawt_lrg_board_install(app, clawt_lrg_page_body(page));
     tasks.since = clawt_lrg_paragraph("", "muted");
     lrg_widget_set_visible(tasks.since, FALSE);
-    clawt_lrg_add(clawt_lrg_page_body(page), tasks.since);
+    clawt_lrg_add(host, tasks.since);
     g_object_unref(tasks.since);
     tasks.incidents = clawt_lrg_vbox(8.0f);
-    clawt_lrg_add(clawt_lrg_page_body(page), tasks.incidents);
+    clawt_lrg_add(host, tasks.incidents);
     g_object_unref(tasks.incidents);
     /* The way to write a task down, above the list. */
     {
@@ -1262,11 +1264,11 @@ build(ClawtLrgApp *app)
                                           G_CALLBACK(on_new_task_clicked),
                                           NULL);
 
-        clawt_lrg_take(clawt_lrg_page_body(page), add);
+        clawt_lrg_take(host, add);
     }
 
     tasks.list = clawt_lrg_vbox(8.0f);
-    clawt_lrg_add(clawt_lrg_page_body(page), tasks.list);
+    clawt_lrg_add(host, tasks.list);
     g_object_unref(tasks.list);
 
     return page;
@@ -1286,6 +1288,8 @@ event(ClawtLrgApp *app, ClawtEvent *ev)
 
     if (kind == NULL || app->page != CLAWT_PAGE_TASKS)
         return;
+
+    clawt_lrg_board_on_event(app, ev);
 
     /*
      * Filing an incident changes no task, so it has its own prefix:

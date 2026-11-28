@@ -773,6 +773,9 @@ GTK_SOURCES    = $(wildcard $(GTK_SRCDIR)/*.c)
 # The Schedule page's rows are the lrg model, compiled in here too so
 # GTK and lrg cannot disagree about a card.  It includes no libregnum.
 GTK_SOURCES   += $(LRG_SRCDIR)/lrg-schedule-model.c
+# The agent board's rows.  Web parses the same reply itself and is not
+# linked to this file.
+GTK_SOURCES   += $(LRG_SRCDIR)/lrg-board-model.c
 WEB_SOURCES    = $(wildcard $(WEB_SRCDIR)/*.c)
 # The Schedule page draws the same cards as GTK and lrg: one model.
 WEB_SOURCES   += $(LRG_SRCDIR)/lrg-schedule-model.c

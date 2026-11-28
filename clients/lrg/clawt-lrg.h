@@ -399,6 +399,13 @@ const ClawtLrgPage *clawt_lrg_schedule_page(void);   /* lrg-schedule.c */
 const ClawtLrgPage *clawt_lrg_triggers_page(void);   /* lrg-triggers.c */
 const ClawtLrgPage *clawt_lrg_tasks_page(void);      /* lrg-tasks.c */
 void clawt_lrg_tasks_show(ClawtLrgApp *app, const gchar *task_id);
+/* lrg-board.c: the Tasks page's Board and Timeline, and the agent card. */
+LrgWidget *clawt_lrg_board_install(ClawtLrgApp *app, LrgWidget *body);
+void clawt_lrg_board_mount_agent(ClawtLrgApp *app, LrgWidget *body,
+                                 const gchar *agent_id);
+void clawt_lrg_board_agent_reset(void);
+void clawt_lrg_board_on_event(ClawtLrgApp *app, ClawtEvent *event);
+void clawt_lrg_tasks_show_board(ClawtLrgApp *app, const gchar *agent_id);
 const ClawtLrgPage *clawt_lrg_decisions_page(void);  /* lrg-decisions.c */
 const ClawtLrgPage *clawt_lrg_flow_page(void);       /* lrg-flow.c */
 /* lrg-flow.c: opens one conversation on the Flow page -- what a

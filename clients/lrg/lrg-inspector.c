@@ -3256,6 +3256,7 @@ draw_all(ClawtLrgApp *app)
     guint index = 0;
     LrgWidget *glance_card;
 
+    clawt_lrg_board_agent_reset();
     clawt_lrg_clear(ins.body);
     ins.integrations = NULL;
     ins.mounts = NULL;
@@ -3290,6 +3291,7 @@ draw_all(ClawtLrgApp *app)
     clawt_lrg_appear(app, glance_card, index++);
     clawt_lrg_take(ins.body, glance_card);
     draw_glance(app, ins.shown);
+    clawt_lrg_board_mount_agent(app, ins.body, app->agent_id);
 
     build_avatar_group(app, agent, index++);
     draw_usage(app, index++);
@@ -3362,6 +3364,7 @@ refresh(ClawtLrgApp *app)
         ins.usage_total = NULL;
         ins.mount_source = NULL;
         clawt_lrg_page_set_subtitle(ins.page, NULL);
+        clawt_lrg_board_agent_reset();
         clawt_lrg_take(ins.body, clawt_lrg_empty_state(
             "No agent selected",
             "Pick an agent in the sidebar to see and change everything it "
@@ -3384,6 +3387,8 @@ event(ClawtLrgApp *app, ClawtEvent *ev)
     if (kind == NULL || app->page != CLAWT_PAGE_AGENT ||
         app->agent_id == NULL || ins.glance == NULL)
         return;
+
+    clawt_lrg_board_on_event(app, ev);
 
     /*
      * A typing frame is a level re-sent every 25 seconds; it changes

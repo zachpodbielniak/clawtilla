@@ -2069,6 +2069,14 @@ clawt_gtk_refresh_tasks(ClawtWindow *self);
 void
 clawt_gtk_show_task(ClawtWindow *self, const gchar *task_id);
 
+/* gtk-board.c: List | Board | Timeline, and the agent page's status card. */
+void clawt_gtk_board_install(ClawtWindow *self, GtkWidget *outer,
+                             GtkWidget *list_scroll);
+void clawt_gtk_board_on_event(ClawtWindow *self, ClawtEvent *event);
+void clawt_gtk_board_agent_reset(ClawtWindow *self);
+void clawt_gtk_board_mount_agent(ClawtWindow *self);
+void clawt_gtk_show_agent_board(ClawtWindow *self, const gchar *agent_id);
+
 
 /* Build the searchable destination picker and its window action. */
 void clawt_gtk_build_navigation(ClawtWindow *self, GtkWidget *parent);
