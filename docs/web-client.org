@@ -105,7 +105,7 @@ The same seven the GTK client's view switcher has, in the same order.
 | Mailbox  | what is waiting, what died, purge and requeue              |
 | Computer | exec console, the screen (for a ~display~ computer, its virtual display and which server draws it, from =clawt_display_status_line()=), mounts, the exchange, rebuild |
 | Routines | scheduled work, running one now, turning one back on       |
-| Tasks    | Problems to look at (settings, open incidents, Retry), delegated work, the budget, cancelling, retrying |
+| Tasks    | List (problems to look at, delegated work, the budget, cancelling, retrying), Board and Timeline ([[file:clients.org::*The agent board on the web client (since 0.78.0)][the agent board]]) |
 | Flow     | what the agents are saying to each other; each room's card carries the anchor a cross-talk summary's "View in Flow" links to |
 | Activity | every running turn, to stop or steer ([[file:clients.org::#activity-tab][the Activity tab]]) |
 | Fleet    | cost per agent, the last fourteen days, idle agents to stop ([[file:clients.org::#fleet-tab][the Fleet tab]]) |
@@ -1034,6 +1034,11 @@ is what the pages listen for.  Two reasons: the daemon's own kinds are
 dotted (~mailbox.queued~, ~agent.changed~) and a dot in an ~hx-trigger~
 is a class selector; and a client that enumerated them would quietly stop
 updating for whichever kind was added last.
+
+The agent board (Tasks, Board and Timeline) listens on this same
+stream and opens no other: one ~sse:fleet~ trigger, coalesced with
+~delay:~, on a host whose contents are swapped.  It starts no timer and no
+~every~ poller, which is what VENTURE #38's leak was.
 
 A comment goes down every idle stream twice a minute.  A quiet fleet can
 go hours without an event, and anything in between -- a proxy, a NAT

@@ -160,6 +160,46 @@ HtmxElement *clawt_web_triggers_body(ClawtWebApp *app, const gchar *agent_id);
  */
 HtmxElement *clawt_web_skills_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id);
+
+/**
+ * clawt_web_tasks_page:
+ * @app: a #ClawtWebApp
+ * @agent_id: (nullable): the agent whose Tasks page this is
+ * @request: (nullable): the request, for ?v=list|board|timeline, ?agent,
+ *   ?lanes, ?done and ?window; %NULL draws the List
+ *
+ * The Tasks page: the List (clawt_web_tasks_body()), the agent Board or
+ * the Timeline, drawn from task.board.  Every control is a link and the
+ * Timeline is a server-drawn SVG, so it works with JavaScript off; the
+ * live refresh rides the page's one existing event stream.
+ *
+ * Returns: (transfer full): the view
+ */
+HtmxElement *clawt_web_tasks_page(ClawtWebApp *app, const gchar *agent_id,
+                                  HtmxRequest *request);
+
+/**
+ * clawt_web_board_switcher:
+ * @page: (nullable): the agent whose Tasks page this is
+ * @current: "list", "board" or "timeline": the tab that is current
+ *
+ * The List | Board | Timeline links.
+ *
+ * Returns: (transfer full): the switcher
+ */
+HtmxElement *clawt_web_board_switcher(const gchar *page, const gchar *current);
+
+/**
+ * clawt_web_board_url:
+ * @page: (nullable): the agent whose Tasks page to open
+ * @agent: (nullable): whose board to show, or %NULL for @page's own
+ *
+ * Returns: (transfer full): the address of that agent's Board
+ */
+gchar *clawt_web_board_url(const gchar *page, const gchar *agent);
+
+/** clawt_web_register_board: registers /f/board, the live panel. */
+void clawt_web_register_board(HtmxRouter *router, ClawtWebApp *app);
 HtmxElement *clawt_web_flow_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_activity_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_fleet_usage_body(ClawtWebApp *app, const gchar *agent_id);

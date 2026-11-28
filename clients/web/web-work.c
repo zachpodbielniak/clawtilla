@@ -585,6 +585,7 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
     htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
 
     clawt_web_add(pad, clawt_web_section_title("Tasks"));
+    clawt_web_add(pad, clawt_web_board_switcher(agent_id, "list"));
 
     clawt_web_payload_set_bool(payload, "all", TRUE);
     reply = clawt_web_app_call(app, "task.list",

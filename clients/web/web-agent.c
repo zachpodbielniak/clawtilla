@@ -1167,6 +1167,32 @@ add_avatar_card(HtmxElement *parent, JsonObject *agent, const gchar *agent_id)
 }
 
 /*
+ * A card that opens this agent's board: the same board the Tasks page
+ * draws, filtered to this agent.  A link, so it works without a script.
+ */
+static void
+add_board_card(
+	HtmxElement *parent,
+	const gchar *agent_id
+){
+	g_autoptr(HtmxDiv) card = clawt_web_card(
+		"Board",
+		"Everything this agent has been given, column by column: "
+		"blocked, backlog, planning, delegated, in review, gating, done.");
+	HtmxElement *body = clawt_web_card_body(card);
+	g_autofree gchar *href = clawt_web_board_url(agent_id, agent_id);
+	g_autoptr(HtmxDiv) row = htmx_div_new();
+	g_autoptr(HtmxA) open = htmx_a_new_with_href(href);
+
+	htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+	htmx_element_add_class(HTMX_ELEMENT(open), "btn btn-default");
+	htmx_node_set_text_content(HTMX_NODE(open), "Open the board");
+	htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(open));
+	htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(row));
+	htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
+}
+
+/*
  * What this agent is waiting for: conditions clawtilla checks by code on
  * its behalf, each ending in one notice.  The schedule line is
  * clawt_wait_schedule_label()'s, so it reads as the GTK and libregnum
@@ -1383,6 +1409,7 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
     add_egress_card(HTMX_ELEMENT(pad),
                     clawt_web_member_object(root, "egress"));
     add_waits_card(app, HTMX_ELEMENT(pad), agent_id);
+    add_board_card(HTMX_ELEMENT(pad), agent_id);
     clawt_web_add_memory_review_card(app, HTMX_ELEMENT(pad), agent_id);
     clawt_web_add_memory_proposals_card(app, HTMX_ELEMENT(pad), agent_id);
     add_avatar_card(HTMX_ELEMENT(pad), agent, agent_id);

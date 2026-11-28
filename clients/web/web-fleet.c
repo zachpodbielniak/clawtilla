@@ -1759,6 +1759,9 @@ on_agent_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
     } else if (view == CLAWT_PAGE_SCHEDULE) {
         /* The window and filters are in the query, which only this has. */
         body = clawt_web_schedule_body(app, agent_id, request);
+    } else if (view == CLAWT_PAGE_TASKS) {
+        /* List, Board or Timeline: ?v= is in the query, which only this has. */
+        body = clawt_web_tasks_page(app, agent_id, request);
     } else {
         body = clawt_web_view_body(app, agent_id, view);
     }
