@@ -345,7 +345,7 @@ on_task_waiting(ClawtTaskManager *tasks, const gchar *task_id,
 
     body = g_strdup_printf(
         "%s cannot go on with task %s (\"%s\") until you answer:\n\n%s\n\n"
-        "[not from clawtilla] Reply here and %s gets your answer. The task is "
+        "[clawtilla] Reply here and %s gets your answer. The task is "
         "blocked on you until then.",
         assignee, task_id, what != NULL ? what : "",
         clawt_task_get_question(task) != NULL
