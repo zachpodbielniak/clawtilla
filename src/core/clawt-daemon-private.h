@@ -499,6 +499,14 @@ struct _ClawtDaemon {
     gulong             waits_changed_handler;
 
     /*
+     * What agent.activity last said of each agent (agent id -> a
+     * signature of activity, waits, label and since), so an event goes
+     * out only when a row would change.  Made on first use; see
+     * clawt_daemon_activity_refresh().
+     */
+    GHashTable        *activity_seen;
+
+    /*
      * libresearch clients, keyed on agent, url and token reference, so a
      * secret behind a password manager is resolved once rather than on
      * every tool listing -- and a changed integration is a new key, not a
@@ -851,8 +859,13 @@ typedef struct {
 
 /* ── Helpers the family files build their replies with ───────────── */
 
+/*
+ * @self may be NULL, which leaves out what only the daemon knows: the
+ * activity members (clawt_daemon_activity_add_members()).
+ */
 void
-clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent);
+clawt_daemon_add_agent_object(ClawtDaemon *self, JsonBuilder *builder,
+                              ClawtAgent *agent);
 
 void
 clawt_daemon_add_agent_settings(JsonBuilder *builder, ClawtAgent *agent);
@@ -2379,6 +2392,75 @@ void clawt_daemon_wait_setup(ClawtDaemon *self);
  * Idempotent.
  */
 void clawt_daemon_wait_teardown(ClawtDaemon *self);
+
+/**
+ * ClawtDaemonActivity:
+ * @activity: clawt_board_agent_activity() of the agent's busy flag and
+ *   its pending waits
+ * @waits_pending: how many waits it has pending
+ * @wait_label: (nullable): the newest one's clawt_wait_display_label()
+ * @waiting_since: when the oldest pending one was set, a Unix time in
+ *   seconds, or 0 for none
+ *
+ * What an agent is doing, as agent.list, agent.activity and the board's
+ * source report it (since 0.78.0).  clawt_daemon_activity_clear() frees
+ * @wait_label.
+ */
+typedef struct {
+    ClawtAgentActivity  activity;
+    guint               waits_pending;
+    gchar              *wait_label;
+    gint64              waiting_since;
+} ClawtDaemonActivity;
+
+/**
+ * clawt_daemon_activity_get:
+ * @self: a #ClawtDaemon
+ * @agent: an agent
+ * @out: (out caller-allocates): filled in
+ *
+ * One reading of @agent's activity, from what is true now: its busy flag
+ * and the wait manager's pending waits.  Nothing is remembered between
+ * readings except what clawt_daemon_activity_refresh() compares against.
+ */
+void clawt_daemon_activity_get(ClawtDaemon         *self,
+                               ClawtAgent          *agent,
+                               ClawtDaemonActivity *out);
+
+/**
+ * clawt_daemon_activity_clear:
+ * @activity: a #ClawtDaemonActivity
+ *
+ * Frees its label and zeroes it.
+ */
+void clawt_daemon_activity_clear(ClawtDaemonActivity *activity);
+
+/**
+ * clawt_daemon_activity_add_members:
+ * @self: a #ClawtDaemon
+ * @builder: inside an agent's object
+ * @agent: the agent
+ *
+ * `activity`, `waits_pending`, and -- while it has a wait pending --
+ * `wait_label` and `waiting_since`, on an agent.list / agent.show object.
+ */
+void clawt_daemon_activity_add_members(ClawtDaemon *self,
+                                       JsonBuilder *builder,
+                                       ClawtAgent  *agent);
+
+/**
+ * clawt_daemon_activity_refresh:
+ * @self: a #ClawtDaemon
+ * @agent_id: an agent whose busy flag or waits may have changed
+ *
+ * Reads @agent_id's activity again and, when it is not what the last
+ * agent.activity event said, publishes one (docs/ipc-protocol.org,
+ * "agent.activity").  Called where those inputs change -- a wait set,
+ * held, expired, cancelled or ended; a turn's agent edge; a turn ended
+ * by the daemon itself; a run-state change -- and nowhere else: no
+ * timer and no polling.  An agent no longer in the fleet is forgotten.
+ */
+void clawt_daemon_activity_refresh(ClawtDaemon *self, const gchar *agent_id);
 
 JsonNode *
 clawt_daemon_handle_wait(

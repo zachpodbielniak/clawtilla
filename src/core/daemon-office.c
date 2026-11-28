@@ -135,6 +135,15 @@ sync_roster(ClawtDaemon *self)
             config != NULL ? clawt_agent_config_get_string(config, "team") : NULL,
             ephemeral ? clawt_agent_config_get_ephemeral_string(config, "parent") : NULL,
             clawt_agent_get_state(agent) == CLAWT_AGENT_STATE_RUNNING, now);
+        /*
+         * Its waits, from the manager: a daemon that restarts picks up
+         * the waits left on disk, and no agent.activity says so until
+         * one of them changes.
+         */
+        clawt_office_presence_note_background(self->office, clawt_agent_get_id(agent),
+            self->waits != NULL ? clawt_wait_manager_count(self->waits,
+                                                           clawt_agent_get_id(agent))
+                                : 0);
         clawt_office_presence_set_role(self->office, clawt_agent_get_id(agent),
             clawt_agent_is_chief_of_staff(agent) ? "chief"
             : config != NULL && clawt_team_role_of(config) == CLAWT_TEAM_LEAD ? "lead" : NULL);
@@ -283,6 +292,12 @@ on_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
         clawt_office_presence_note_turn(self->office, id, subject, active, now);
         clawt_office_presence_note_waiting(self->office, id, subject,
                                            g_strcmp0(state, "needs_input") == 0);
+    } else if (g_strcmp0(seen, "agent.activity") == 0) {
+        /* its waits: at the desk while one is pending (since 0.78.0) */
+        const gchar *pending = clawt_event_get_detail(event, "waits_pending");
+
+        clawt_office_presence_note_background(self->office, subject,
+            pending != NULL ? (guint)g_ascii_strtoull(pending, NULL, 10) : 0);
     } else if (g_strcmp0(seen, "agent.removed") == 0) {
         ClawtOfficeActivity was = clawt_office_presence_resolve(self->office, subject,
                                                                 now, NULL, NULL, NULL);

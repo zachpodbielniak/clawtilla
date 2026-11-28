@@ -652,7 +652,7 @@ static const struct {
     const gchar *args;
     const gchar *summary;
 } agent_verbs[] = {
-    { "list", "", "every agent, its state and queue depth" },
+    { "list", "[--json]", "every agent, its state, work and queue depth" },
     { "show", "<agent>", "one agent in full" },
     { "new", "", "design one by answering questions" },
     { "create", "--id <id> [...]", "add one from flags, and start it" },
@@ -1080,6 +1080,14 @@ cmd_agent(int argc, char *argv[])
         if (reply == NULL)
             return EXIT_FAILURE;
 
+        /* The reply itself, every member, for a script (since 0.78.0). */
+        if (target != NULL && g_strcmp0(target, "--json") == 0) {
+            g_autofree gchar *text = json_to_string(reply, TRUE);
+
+            g_print("%s\n", text);
+            return EXIT_SUCCESS;
+        }
+
         agents = json_object_get_array_member(json_node_get_object(reply),
                                               "agents");
 
@@ -1115,11 +1123,28 @@ cmd_agent(int argc, char *argv[])
                 json_object_has_member(agent, "draining") &&
                     json_object_get_boolean_member(agent, "draining"));
             /*
+             * Waiting on its own background work, between turns: the
+             * daemon's `activity` (clawt_board_agent_activity()), so the
+             * column says `waiting` rather than nothing, and a line under
+             * the row says on what and for how long.
+             */
+            gboolean waiting = g_strcmp0(member_or(agent, "activity", NULL),
+                                         "waiting") == 0;
+            g_autofree gchar *waiting_line = waiting
+                ? clawt_board_waiting_label(
+                      member_or(agent, "wait_label", NULL),
+                      json_object_get_int_member_with_default(
+                          agent, "waiting_since", 0),
+                      g_get_real_time() / G_USEC_PER_SEC)
+                : NULL;
+            /*
              * A hold outranks what the agent is doing, because it
              * changes what "working" means: a draining agent is
              * finishing its last turn and will not start another.
              */
-            const gchar *work = (hold != NULL) ? hold : activity;
+            const gchar *work = (hold != NULL) ? hold
+                              : (activity != NULL) ? activity
+                              : waiting ? "waiting" : NULL;
             gboolean on_fallback = json_object_has_member(agent, "failover");
 
             /* a helper says whose it is, and when it is waiting to be reaped */
@@ -1142,6 +1167,9 @@ cmd_agent(int argc, char *argv[])
                     helper != NULL ? helper : "",
                     on_fallback ? "[on fallback] " : "",
                     member_or(agent, "description", ""));
+
+            if (waiting_line != NULL)
+                g_print("%-20s %s\n", "", waiting_line);
         }
 
         return EXIT_SUCCESS;

@@ -1601,6 +1601,12 @@ on_agent_state_changed(ClawtAgentManager *manager,
 
     clawt_event_bus_publish(self->bus, event);
 
+    /*
+     * A process ending clears its busy flag inside the agent, where no
+     * typing edge says so -- the activity is read again here.
+     */
+    clawt_daemon_activity_refresh(self, agent_id);
+
     note_agent_crash(self, agent_id, state, detail);
 
     /*
@@ -2243,6 +2249,13 @@ on_link_typing(ClawtLinkServer *server,
         clawt_agent_set_activity(agent,
                                  clawt_agent_get_typing_rooms(agent) > 0,
                                  NULL);
+
+    /*
+     * The agent's edge is the one that moves it between working and
+     * waiting or idle; a frame that changed nothing is not looked at.
+     */
+    if (agent != NULL && (edge & CLAWT_TYPING_EDGE_AGENT) != 0)
+        clawt_daemon_activity_refresh(self, agent_id);
 
     /*
      * A turn is starting, which is the moment that decides how far the
@@ -5826,6 +5839,7 @@ clawt_daemon_interrupt_agent(ClawtDaemon  *self,
      * says so itself. A later typing frame from libreclaw is idempotent.
      */
     clawt_agent_set_activity(agent, FALSE, NULL);
+    clawt_daemon_activity_refresh(self, clawt_agent_get_id(agent));
 
     /*
      * Handoffs first, and dropped rather than run.  A turn somebody
@@ -9514,7 +9528,8 @@ clawt_daemon_computer_stop_removes(ClawtAgentConfig *config)
 }
 
 void
-clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
+clawt_daemon_add_agent_object(ClawtDaemon *self, JsonBuilder *builder,
+                              ClawtAgent *agent)
 {
     ClawtAgentConfig *config = clawt_agent_get_config(agent);
     g_autofree gchar *caps = NULL;
@@ -10019,6 +10034,14 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
      */
     json_builder_set_member_name(builder, "busy");
     json_builder_add_boolean_value(builder, clawt_agent_get_busy(agent));
+
+    /*
+     * And what that comes to with its waits: working, waiting on
+     * something it set going, or idle (since 0.78.0).  Only the daemon
+     * holds the waits, so a caller without one gets `busy` alone.
+     */
+    if (self != NULL)
+        clawt_daemon_activity_add_members(self, builder, agent);
 
     /*
      * Which backend it is really running on, only while that is not its

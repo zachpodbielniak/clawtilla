@@ -772,6 +772,182 @@ on_waits_changed(
 	                                    : "ended");
 	clawt_event_bus_publish(self->bus, event);
 	clawt_event_free(event);
+
+	/*
+	 * And the agent's own row: a wait set or ended is what moves an agent
+	 * between waiting and idle on the Fleet.  A look that saw something
+	 * new changes neither the count nor the label, and the refresh
+	 * declines to repeat itself.
+	 */
+	clawt_daemon_activity_refresh(self, agent_id);
+}
+
+/* ── What an agent is doing (#71) ────────────────────────────────── */
+
+void
+clawt_daemon_activity_get(
+	ClawtDaemon         *self,
+	ClawtAgent          *agent,
+	ClawtDaemonActivity *out
+){
+	g_autoptr(GPtrArray) waits = NULL;
+	ClawtWaitSummary summary;
+
+	g_return_if_fail(out != NULL);
+
+	memset(out, 0, sizeof(*out));
+
+	if (agent == NULL)
+		return;
+
+	/*
+	 * The waits from the manager, now, rather than a count kept beside
+	 * it: a second count is one more thing that can disagree with the
+	 * "Waiting for" list the same reply's agent view draws.
+	 */
+	if (self != NULL && self->waits != NULL)
+		waits = clawt_wait_manager_list(self->waits,
+		                                clawt_agent_get_id(agent));
+
+	clawt_wait_summarize(waits, &summary);
+
+	out->waits_pending = summary.pending;
+	out->wait_label = g_strdup(summary.label);
+	out->waiting_since = (summary.since > 0)
+		? MAX(summary.since / G_USEC_PER_SEC, 1) : 0;
+	out->activity = clawt_board_agent_activity(clawt_agent_get_busy(agent),
+	                                           summary.pending);
+}
+
+void
+clawt_daemon_activity_clear(
+	ClawtDaemonActivity *activity
+){
+	if (activity == NULL)
+		return;
+
+	g_free(activity->wait_label);
+	memset(activity, 0, sizeof(*activity));
+}
+
+void
+clawt_daemon_activity_add_members(
+	ClawtDaemon *self,
+	JsonBuilder *builder,
+	ClawtAgent  *agent
+){
+	ClawtDaemonActivity activity;
+
+	clawt_daemon_activity_get(self, agent, &activity);
+
+	/*
+	 * Beside `state` and `busy`, never in place of them: `state` is the
+	 * process's, and every client parses it as a #ClawtAgentState --
+	 * the libregnum client refuses an unknown nickname outright, and
+	 * the Stop button is decided on it.  `waiting` there would have
+	 * broken both.  So it is a member of its own, the way `held` is.
+	 */
+	json_builder_set_member_name(builder, "activity");
+	json_builder_add_string_value(
+		builder, clawt_board_agent_activity_nick(activity.activity));
+
+	json_builder_set_member_name(builder, "waits_pending");
+	json_builder_add_int_value(builder, (gint64)activity.waits_pending);
+
+	/*
+	 * Whenever a wait is pending, also while it works: a working agent
+	 * with a build running behind it is both, and a client may say so.
+	 */
+	if (activity.waits_pending > 0) {
+		if (activity.wait_label != NULL) {
+			json_builder_set_member_name(builder, "wait_label");
+			json_builder_add_string_value(builder, activity.wait_label);
+		}
+
+		json_builder_set_member_name(builder, "waiting_since");
+		json_builder_add_int_value(builder, activity.waiting_since);
+	}
+
+	clawt_daemon_activity_clear(&activity);
+}
+
+void
+clawt_daemon_activity_refresh(
+	ClawtDaemon *self,
+	const gchar *agent_id
+){
+	ClawtAgent *agent;
+	ClawtDaemonActivity activity;
+	g_autofree gchar *signature = NULL;
+	g_autofree gchar *count = NULL;
+	g_autofree gchar *since = NULL;
+	const gchar *nick;
+	const gchar *seen;
+	ClawtEvent *event;
+
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (agent_id == NULL)
+		return;
+
+	if (self->activity_seen == NULL)
+		self->activity_seen = g_hash_table_new_full(g_str_hash, g_str_equal,
+		                                            g_free, g_free);
+
+	agent = (self->agents != NULL)
+	        ? clawt_agent_manager_get(self->agents, agent_id) : NULL;
+
+	/* Gone from the fleet: nothing to draw, and nothing to compare. */
+	if (agent == NULL) {
+		g_hash_table_remove(self->activity_seen, agent_id);
+		return;
+	}
+
+	clawt_daemon_activity_get(self, agent, &activity);
+	nick = clawt_board_agent_activity_nick(activity.activity);
+
+	/*
+	 * Everything a row draws from it, in one string.  The unit separator
+	 * cannot appear in a nickname or a number, and a label holding one
+	 * only makes two signatures differ that might have matched.
+	 */
+	signature = g_strdup_printf("%s\x1f%u\x1f%s\x1f%" G_GINT64_FORMAT,
+	                            nick, activity.waits_pending,
+	                            activity.wait_label != NULL
+	                                ? activity.wait_label : "",
+	                            activity.waiting_since);
+	seen = g_hash_table_lookup(self->activity_seen, agent_id);
+
+	if (g_strcmp0(seen, signature) == 0) {
+		clawt_daemon_activity_clear(&activity);
+		return;
+	}
+
+	g_hash_table_replace(self->activity_seen, g_strdup(agent_id),
+	                     g_steal_pointer(&signature));
+
+	if (self->bus == NULL) {
+		clawt_daemon_activity_clear(&activity);
+		return;
+	}
+
+	count = g_strdup_printf("%u", activity.waits_pending);
+	event = clawt_event_new("agent.activity", agent_id);
+	clawt_event_set_detail(event, "agent", agent_id);
+	clawt_event_set_detail(event, "activity", nick);
+	clawt_event_set_detail(event, "waits_pending", count);
+
+	if (activity.waits_pending > 0) {
+		since = g_strdup_printf("%" G_GINT64_FORMAT, activity.waiting_since);
+
+		if (activity.wait_label != NULL)
+			clawt_event_set_detail(event, "wait_label", activity.wait_label);
+		clawt_event_set_detail(event, "waiting_since", since);
+	}
+
+	clawt_event_bus_publish(self->bus, event);
+	clawt_event_free(event);
+	clawt_daemon_activity_clear(&activity);
 }
 
 /* ── Lifecycle ───────────────────────────────────────────────────── */
@@ -812,6 +988,22 @@ clawt_daemon_wait_setup(
 		clawt_mcp_tools_set_waits(self->mcp_tools, self->waits);
 
 	clawt_wait_manager_start(self->waits, self->main_context);
+
+	/*
+	 * The waits a previous daemon left are pending from the start, and
+	 * nothing will change to say so: each agent holding one is read once
+	 * now, so the first agent.activity a client sees is not the one that
+	 * ends the wait.
+	 */
+	{
+		g_autoptr(GPtrArray) left = clawt_wait_manager_list(self->waits,
+		                                                    NULL);
+		guint i;
+
+		for (i = 0; i < left->len; i++)
+			clawt_daemon_activity_refresh(
+				self, ((ClawtWait *)g_ptr_array_index(left, i))->agent_id);
+	}
 }
 
 void
@@ -841,6 +1033,7 @@ clawt_daemon_wait_teardown(
 	self->waits_changed_handler = 0;
 
 	g_clear_object(&self->waits);
+	g_clear_pointer(&self->activity_seen, g_hash_table_unref);
 }
 
 /* ── The client surface ──────────────────────────────────────────── */
@@ -865,6 +1058,12 @@ add_wait_object(
 	if (wait->note != NULL) {
 		json_builder_set_member_name(builder, "note");
 		json_builder_add_string_value(builder, wait->note);
+	}
+
+	/* The job the agent named, when it named one (since 0.78.0). */
+	if (wait->job != NULL) {
+		json_builder_set_member_name(builder, "job");
+		json_builder_add_string_value(builder, wait->job);
 	}
 
 	json_builder_set_member_name(builder, "kind");

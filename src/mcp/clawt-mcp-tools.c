@@ -907,6 +907,11 @@ static const ClawtParamInfo wait_until_params[] = {
 	{ "note", "string",
 	  "What to remind yourself of when it ends -- what you meant to do "
 	  "next. It comes back to you in the notice.", FALSE },
+	{ "job", "string",
+	  "Optional: the background job this waits on, in a few words -- "
+	  "\"gate g39 in clawt-oxpecker\". Your operator's Fleet shows you "
+	  "as waiting on it, instead of the label, until the wait ends.",
+	  FALSE },
 	{ "turn_room", "string",
 	  "Which of your conversations this call is part of, from the "
 	  "[clawtilla] line on the message you are handling. The notice "
@@ -9724,6 +9729,11 @@ tool_wait_until(
 	wait->label = g_strdup(label);
 	wait->note = g_strdup(argument_string(arguments, "note"));
 
+	/* An empty job is no job, so the label is what a person is shown. */
+	if (argument_string(arguments, "job") != NULL &&
+	    *argument_string(arguments, "job") != '\0')
+		wait->job = g_strdup(argument_string(arguments, "job"));
+
 	if (wait->room_id == NULL)
 		return g_strdup("There is no conversation to send the notice to.");
 
@@ -9798,6 +9808,9 @@ tool_wait_list(
 
 		g_string_append_printf(out, "- %s: %s -- %s\n  %s\n", wait->id,
 		                       wait->label, condition, schedule);
+
+		if (wait->job != NULL)
+			g_string_append_printf(out, "  job: %s\n", wait->job);
 
 		if (wait->last_result != NULL)
 			g_string_append_printf(out, "  last saw: %s\n",

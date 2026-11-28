@@ -316,7 +316,7 @@ clawt_daemon_handle_agent(
             }
 
             for (i = 0; i < ordered->len; i++)
-                clawt_daemon_add_agent_object(builder,
+                clawt_daemon_add_agent_object(self, builder,
                                               g_ptr_array_index(ordered, i));
         }
 
@@ -347,7 +347,7 @@ clawt_daemon_handle_agent(
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "agent");
-        clawt_daemon_add_agent_object(builder, agent);
+        clawt_daemon_add_agent_object(self, builder, agent);
 
         /*
          * Every settable key, so a client can build an editor from the

@@ -99,6 +99,20 @@ describe_agent(const gchar *agent_id, ClawtBoardAgent *out, gpointer data)
     out->mailbox = mailbox != NULL ? clawt_mailbox_depth(mailbox) : 0;
 
     /*
+     * Its waits, read the way agent.list reads them, so a lane and a
+     * Fleet row say the same thing of the same agent (since 0.78.0).
+     */
+    {
+        ClawtDaemonActivity activity;
+
+        clawt_daemon_activity_get(self, agent, &activity);
+        out->waits_pending = activity.waits_pending;
+        out->wait_label = g_steal_pointer(&activity.wait_label);
+        out->waiting_since = activity.waiting_since;
+        clawt_daemon_activity_clear(&activity);
+    }
+
+    /*
      * Its running turn: the newest of the rooms it is running in, as the
      * Activity page has them (the typing set).  The task that turn is on
      * is the header's current task.

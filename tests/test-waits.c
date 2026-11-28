@@ -450,6 +450,67 @@ add_file_wait(ManagerFixture *fixture, const gchar *agent, gint64 hours,
 	return wait;
 }
 
+/* A wait as the summary sees one: pending unless said otherwise. */
+static ClawtWait *
+summary_wait(const gchar *id, gint64 created_at, const gchar *label,
+             const gchar *job, ClawtWaitState state)
+{
+	ClawtWait *wait = clawt_wait_new(CLAWT_WAIT_FILE);
+
+	wait->id = g_strdup(id);
+	wait->created_at = created_at;
+	wait->label = g_strdup(label);
+	wait->job = g_strdup(job);
+	wait->state = state;
+
+	return wait;
+}
+
+/*
+ * One agent's waits, folded for its row (#71): how many are pending, the
+ * newest one's job (else its label), and since when it has had one.
+ * Ended waits do not count; a tie on the clock goes to the greater id,
+ * the order the manager lists them in.
+ */
+static void
+test_the_summary(void)
+{
+	g_autoptr(GPtrArray) waits = g_ptr_array_new_with_free_func(
+		(GDestroyNotify)clawt_wait_unref);
+	ClawtWaitSummary summary;
+
+	clawt_wait_summarize(NULL, &summary);
+	g_assert_cmpuint(summary.pending, ==, 0);
+	g_assert_null(summary.label);
+	g_assert_cmpint(summary.since, ==, 0);
+
+	g_ptr_array_add(waits, summary_wait("w-b", 300 * SECOND, "the tests pass",
+	                                    NULL, CLAWT_WAIT_PENDING));
+	g_ptr_array_add(waits, summary_wait("w-a", 100 * SECOND, "the build log",
+	                                    NULL, CLAWT_WAIT_PENDING));
+	g_ptr_array_add(waits, summary_wait("w-z", 900 * SECOND, "an old one",
+	                                    NULL, CLAWT_WAIT_SATISFIED));
+	clawt_wait_summarize(waits, &summary);
+	g_assert_cmpuint(summary.pending, ==, 2);
+	g_assert_cmpstr(summary.label, ==, "the tests pass");
+	g_assert_cmpint(summary.newest_at, ==, 300 * SECOND);
+	g_assert_cmpint(summary.since, ==, 100 * SECOND);
+
+	/* the same microsecond: the greater id is the newer; its job is shown */
+	g_ptr_array_add(waits, summary_wait("w-c", 300 * SECOND, "gate",
+	                                    "gate g39 in clawt-oxpecker",
+	                                    CLAWT_WAIT_PENDING));
+	clawt_wait_summarize(waits, &summary);
+	g_assert_cmpuint(summary.pending, ==, 3);
+	g_assert_cmpstr(summary.label, ==, "gate g39 in clawt-oxpecker");
+
+	/* an empty job is no job */
+	g_free(((ClawtWait *)g_ptr_array_index(waits, 3))->job);
+	((ClawtWait *)g_ptr_array_index(waits, 3))->job = g_strdup("");
+	clawt_wait_summarize(waits, &summary);
+	g_assert_cmpstr(summary.label, ==, "gate");
+}
+
 /* Every field survives the file, and the reopened manager has it. */
 static void
 test_a_wait_survives_a_restart(void)
@@ -477,6 +538,7 @@ test_a_wait_survives_a_restart(void)
 	url->url = g_strdup("https://example.com/release");
 	url->status = 200;
 	url->contains = g_strdup("shipped");
+	url->job = g_strdup("deploy 12 in clawt-kudu");
 	g_assert_true(clawt_wait_manager_add(fixture.manager, url, 0, 0, now + 1,
 	                                     &error));
 
@@ -500,6 +562,9 @@ test_a_wait_survives_a_restart(void)
 	g_assert_cmpstr(read->room_id, ==, "dm:kudu:user");
 	g_assert_cmpstr(read->label, ==, "the build log appears");
 	g_assert_cmpstr(read->note, ==, "then summarise it");
+	g_assert_null(read->job);
+	g_assert_cmpstr(clawt_wait_display_label(read), ==,
+	                "the build log appears");
 	g_assert_cmpstr(read->path, ==, "build/out.log");
 	g_assert_cmpint(read->created_at, ==, now);
 	g_assert_cmpint(read->expires_at, ==, now + 2 * HOUR);
@@ -513,6 +578,9 @@ test_a_wait_survives_a_restart(void)
 	g_assert_cmpint(read->status, ==, 200);
 	g_assert_cmpstr(read->contains, ==, "shipped");
 	g_assert_cmpstr(read->url, ==, "https://example.com/release");
+	g_assert_cmpstr(read->job, ==, "deploy 12 in clawt-kudu");
+	g_assert_cmpstr(clawt_wait_display_label(read), ==,
+	                "deploy 12 in clawt-kudu");
 	/* Backed off: the URL's second look is two minutes after its first. */
 	g_assert_cmpint(read->next_check_at - read->last_check_at, ==,
 	                120 * SECOND);
@@ -959,6 +1027,317 @@ test_a_satisfied_wait_is_a_mailbox_delivery(void)
 	daemon_teardown(&fixture);
 }
 
+/* @agent_id's object in an agent.list reply. */
+static JsonObject *
+listed_agent(JsonNode *reply, const gchar *agent_id)
+{
+	JsonArray *agents = json_object_get_array_member(
+		clawt_ipc_frame_get_payload(reply), "agents");
+	guint i;
+
+	for (i = 0; i < json_array_get_length(agents); i++) {
+		JsonObject *agent = json_array_get_object_element(agents, i);
+
+		if (g_strcmp0(json_object_get_string_member(agent, "id"),
+		              agent_id) == 0)
+			return agent;
+	}
+
+	g_error("agent.list has no %s", agent_id);
+	return NULL;
+}
+
+/* The agent.activity events published after @cursor, oldest first. */
+static GPtrArray *
+activity_events(DaemonFixture *fixture, guint64 cursor)
+{
+	g_autoptr(GPtrArray) all = clawt_event_bus_replay(fixture->daemon->bus,
+	                                                  cursor, NULL);
+	GPtrArray *out = g_ptr_array_new();
+	guint i;
+
+	for (i = 0; all != NULL && i < all->len; i++) {
+		ClawtEvent *event = g_ptr_array_index(all, i);
+
+		if (g_strcmp0(clawt_event_get_kind(event), "agent.activity") == 0)
+			g_ptr_array_add(out, event);
+	}
+
+	return out;
+}
+
+/* One event's activity and count, as "waiting/1". */
+static gchar *
+activity_of(ClawtEvent *event)
+{
+	return g_strdup_printf("%s/%s", clawt_event_get_detail(event, "activity"),
+	                       clawt_event_get_detail(event, "waits_pending"));
+}
+
+/*
+ * What an agent is doing, through a real daemon (#71).  agent.list
+ * carries activity, waits_pending, wait_label and waiting_since; one
+ * agent.activity event goes out when a wait is set, when one fires, is
+ * cancelled or expires -- each against the manager's own clock -- and
+ * when a turn starts or ends over it; and a look that changes nothing a
+ * row shows publishes nothing.
+ */
+static void
+test_the_agent_row_follows_its_waits(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autofree gchar *reply = NULL;
+	g_autofree gchar *first = NULL;
+	g_autofree gchar *second = NULL;
+	g_autofree gchar *workspace = NULL;
+	g_autofree gchar *file = NULL;
+	g_autofree gchar *text = NULL;
+	g_autoptr(JsonNode) listed = NULL;
+	g_autoptr(JsonNode) waits = NULL;
+	g_autoptr(GPtrArray) events = NULL;
+	JsonObject *kudu_row;
+	ClawtAgent *kudu;
+	ClawtWait *wait;
+	gboolean is_error = TRUE;
+	gint64 before;
+	guint64 cursor;
+
+	daemon_setup(&fixture);
+	workspace = workspace_of(&fixture, "kudu");
+	kudu = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+	                               "kudu");
+
+	/* Nothing pending: idle, a count of 0, and no wait members. */
+	listed = ipc(&fixture, "agent.list", NULL);
+	kudu_row = listed_agent(listed, "kudu");
+	g_assert_cmpstr(json_object_get_string_member(kudu_row, "state"), ==,
+	                "stopped");
+	g_assert_cmpstr(json_object_get_string_member(kudu_row, "activity"), ==,
+	                "idle");
+	g_assert_cmpint(json_object_get_int_member(kudu_row, "waits_pending"), ==,
+	                0);
+	g_assert_false(json_object_has_member(kudu_row, "wait_label"));
+	g_assert_false(json_object_has_member(kudu_row, "waiting_since"));
+	g_clear_pointer(&listed, json_node_unref);
+
+	/* A wait set, with a job: one event, and the row says waiting on it. */
+	cursor = clawt_event_bus_get_cursor(fixture.daemon->bus);
+	before = g_get_real_time() / G_USEC_PER_SEC;
+	reply = call_tool(&fixture, "kudu", "clawtilla_wait_until",
+		"{\"label\":\"the gate finishes\",\"kind\":\"file\","
+		"\"path\":\"gate.done\",\"job\":\"gate g39 in clawt-kudu\"}",
+		&is_error);
+	g_assert_false(is_error);
+	first = id_from_reply(reply);
+
+	events = activity_events(&fixture, cursor);
+	g_assert_cmpuint(events->len, ==, 1);
+	text = activity_of(g_ptr_array_index(events, 0));
+	g_assert_cmpstr(text, ==, "waiting/1");
+	g_clear_pointer(&text, g_free);
+	g_assert_cmpstr(clawt_event_get_subject(g_ptr_array_index(events, 0)), ==,
+	                "kudu");
+	g_assert_cmpstr(clawt_event_get_detail(g_ptr_array_index(events, 0),
+	                                       "wait_label"), ==,
+	                "gate g39 in clawt-kudu");
+	g_assert_nonnull(clawt_event_get_detail(g_ptr_array_index(events, 0),
+	                                        "waiting_since"));
+	g_clear_pointer(&events, g_ptr_array_unref);
+
+	listed = ipc(&fixture, "agent.list", NULL);
+	kudu_row = listed_agent(listed, "kudu");
+	g_assert_cmpstr(json_object_get_string_member(kudu_row, "activity"), ==,
+	                "waiting");
+	g_assert_cmpint(json_object_get_int_member(kudu_row, "waits_pending"), ==,
+	                1);
+	g_assert_cmpstr(json_object_get_string_member(kudu_row, "wait_label"), ==,
+	                "gate g39 in clawt-kudu");
+	g_assert_cmpint(json_object_get_int_member(kudu_row, "waiting_since"), >=,
+	                before);
+	g_assert_cmpint(json_object_get_int_member(kudu_row, "waiting_since"), <=,
+	                g_get_real_time() / G_USEC_PER_SEC);
+	/* the run state is untouched: still a #ClawtAgentState nickname */
+	g_assert_cmpstr(json_object_get_string_member(kudu_row, "state"), ==,
+	                "stopped");
+	g_clear_pointer(&listed, json_node_unref);
+
+	/* wait.list carries the job, and so does the agent's own list */
+	waits = ipc(&fixture, "wait.list", NULL);
+	g_assert_cmpstr(json_object_get_string_member(
+		json_array_get_object_element(json_object_get_array_member(
+			clawt_ipc_frame_get_payload(waits), "waits"), 0), "job"), ==,
+		"gate g39 in clawt-kudu");
+	text = call_tool(&fixture, "kudu", "clawtilla_wait_list", "{}", NULL);
+	g_assert_nonnull(strstr(text, "job: gate g39 in clawt-kudu"));
+	g_clear_pointer(&text, g_free);
+
+	/* A turn over it: working beats waiting, then back to waiting. */
+	cursor = clawt_event_bus_get_cursor(fixture.daemon->bus);
+	clawt_agent_set_activity(kudu, TRUE, NULL);
+	listed = ipc(&fixture, "agent.list", NULL);
+	g_assert_cmpstr(json_object_get_string_member(
+		listed_agent(listed, "kudu"), "activity"), ==, "working");
+	g_assert_cmpint(json_object_get_int_member(
+		listed_agent(listed, "kudu"), "waits_pending"), ==, 1);
+	g_clear_pointer(&listed, json_node_unref);
+	clawt_daemon_activity_refresh(fixture.daemon, "kudu");
+	clawt_agent_set_activity(kudu, FALSE, NULL);
+	clawt_daemon_activity_refresh(fixture.daemon, "kudu");
+	events = activity_events(&fixture, cursor);
+	g_assert_cmpuint(events->len, ==, 2);
+	text = activity_of(g_ptr_array_index(events, 0));
+	g_assert_cmpstr(text, ==, "working/1");
+	g_clear_pointer(&text, g_free);
+	text = activity_of(g_ptr_array_index(events, 1));
+	g_assert_cmpstr(text, ==, "waiting/1");
+	g_clear_pointer(&text, g_free);
+	g_clear_pointer(&events, g_ptr_array_unref);
+
+	/*
+	 * A look that saw "not there" for the first time publishes
+	 * wait.changed -- and no agent.activity, because nothing the row
+	 * shows moved.  Nor does a refresh that changes nothing.
+	 */
+	wait = clawt_wait_manager_get(fixture.daemon->waits, first);
+	g_assert_nonnull(wait);
+	cursor = clawt_event_bus_get_cursor(fixture.daemon->bus);
+	clawt_wait_manager_tick(fixture.daemon->waits,
+	                        wait->next_check_at + SECOND);
+	g_assert_cmpstr(wait->last_result, ==, "the file is not there");
+	clawt_daemon_activity_refresh(fixture.daemon, "kudu");
+	events = activity_events(&fixture, cursor);
+	g_assert_cmpuint(events->len, ==, 0);
+	g_clear_pointer(&events, g_ptr_array_unref);
+
+	/* It fires: idle, with the wait members gone. */
+	file = g_build_filename(workspace, "gate.done", NULL);
+	g_assert_true(g_file_set_contents(file, "rc=0", -1, NULL));
+	cursor = clawt_event_bus_get_cursor(fixture.daemon->bus);
+	clawt_wait_manager_tick(fixture.daemon->waits,
+	                        wait->next_check_at + SECOND);
+	g_assert_null(clawt_wait_manager_get(fixture.daemon->waits, first));
+	events = activity_events(&fixture, cursor);
+	g_assert_cmpuint(events->len, ==, 1);
+	text = activity_of(g_ptr_array_index(events, 0));
+	g_assert_cmpstr(text, ==, "idle/0");
+	g_clear_pointer(&text, g_free);
+	g_assert_null(clawt_event_get_detail(g_ptr_array_index(events, 0),
+	                                     "wait_label"));
+	g_clear_pointer(&events, g_ptr_array_unref);
+	listed = ipc(&fixture, "agent.list", NULL);
+	kudu_row = listed_agent(listed, "kudu");
+	g_assert_cmpstr(json_object_get_string_member(kudu_row, "activity"), ==,
+	                "idle");
+	g_assert_false(json_object_has_member(kudu_row, "wait_label"));
+	g_clear_pointer(&listed, json_node_unref);
+
+	/*
+	 * Two at once: the newest is the label.  Cancelling it falls back to
+	 * the older one's label -- an event, though the count is still not 0
+	 * -- and cancelling that one is idle.
+	 */
+	g_clear_pointer(&reply, g_free);
+	g_clear_pointer(&first, g_free);
+	reply = call_tool(&fixture, "kudu", "clawtilla_wait_until",
+		"{\"label\":\"the older one\",\"kind\":\"file\","
+		"\"path\":\"a.done\"}", &is_error);
+	g_assert_false(is_error);
+	first = id_from_reply(reply);
+	g_clear_pointer(&reply, g_free);
+	reply = call_tool(&fixture, "kudu", "clawtilla_wait_until",
+		"{\"label\":\"the newer one\",\"kind\":\"file\","
+		"\"path\":\"b.done\"}", &is_error);
+	g_assert_false(is_error);
+	second = id_from_reply(reply);
+	listed = ipc(&fixture, "agent.list", NULL);
+	kudu_row = listed_agent(listed, "kudu");
+	g_assert_cmpint(json_object_get_int_member(kudu_row, "waits_pending"), ==,
+	                2);
+	g_assert_cmpstr(json_object_get_string_member(kudu_row, "wait_label"), ==,
+	                "the newer one");
+	g_clear_pointer(&listed, json_node_unref);
+
+	cursor = clawt_event_bus_get_cursor(fixture.daemon->bus);
+	g_clear_pointer(&text, g_free);
+	{
+		g_autofree gchar *args = g_strdup_printf("{\"wait_id\":\"%s\"}",
+		                                         second);
+
+		text = call_tool(&fixture, "kudu", "clawtilla_wait_cancel", args,
+		                 &is_error);
+		g_assert_false(is_error);
+	}
+	events = activity_events(&fixture, cursor);
+	g_assert_cmpuint(events->len, ==, 1);
+	g_clear_pointer(&text, g_free);
+	text = activity_of(g_ptr_array_index(events, 0));
+	g_assert_cmpstr(text, ==, "waiting/1");
+	g_assert_cmpstr(clawt_event_get_detail(g_ptr_array_index(events, 0),
+	                                       "wait_label"), ==, "the older one");
+	g_clear_pointer(&events, g_ptr_array_unref);
+
+	/* The older one expires, on the manager's clock: idle. */
+	wait = clawt_wait_manager_get(fixture.daemon->waits, first);
+	g_assert_nonnull(wait);
+	cursor = clawt_event_bus_get_cursor(fixture.daemon->bus);
+	clawt_wait_manager_tick(fixture.daemon->waits, wait->expires_at);
+	g_assert_null(clawt_wait_manager_get(fixture.daemon->waits, first));
+	events = activity_events(&fixture, cursor);
+	g_assert_cmpuint(events->len, ==, 1);
+	g_clear_pointer(&text, g_free);
+	text = activity_of(g_ptr_array_index(events, 0));
+	g_assert_cmpstr(text, ==, "idle/0");
+	g_clear_pointer(&events, g_ptr_array_unref);
+
+	daemon_teardown(&fixture);
+}
+
+/*
+ * The operator's cancel, over IPC, is an event too; and an agent that
+ * was not touched hears nothing.
+ */
+static void
+test_an_operator_cancel_moves_the_row(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autofree gchar *reply = NULL;
+	g_autofree gchar *id = NULL;
+	g_autoptr(JsonNode) cancelled = NULL;
+	g_autoptr(GPtrArray) events = NULL;
+	g_autofree gchar *text = NULL;
+	JsonNode *payload;
+	gboolean is_error = TRUE;
+	guint64 cursor;
+	guint i;
+
+	daemon_setup(&fixture);
+	(void)workspace_of(&fixture, "kudu");
+
+	reply = call_tool(&fixture, "kudu", "clawtilla_wait_until",
+		"{\"label\":\"the deploy\",\"kind\":\"file\","
+		"\"path\":\"deployed\"}", &is_error);
+	g_assert_false(is_error);
+	id = id_from_reply(reply);
+
+	cursor = clawt_event_bus_get_cursor(fixture.daemon->bus);
+	payload = json_node_new(JSON_NODE_OBJECT);
+	json_node_take_object(payload, json_object_new());
+	json_object_set_string_member(json_node_get_object(payload), "wait", id);
+	cancelled = ipc(&fixture, "wait.cancel", payload);
+	g_assert_false(clawt_ipc_frame_is_error(cancelled));
+
+	events = activity_events(&fixture, cursor);
+	g_assert_cmpuint(events->len, ==, 1);
+	text = activity_of(g_ptr_array_index(events, 0));
+	g_assert_cmpstr(text, ==, "idle/0");
+
+	for (i = 0; i < events->len; i++)
+		g_assert_cmpstr(clawt_event_get_subject(g_ptr_array_index(events, i)),
+		                ==, "kudu");
+
+	daemon_teardown(&fixture);
+}
+
 /*
  * Waits persist under the state directory and a new daemon picks them
  * up -- listed over IPC, cancellable over IPC, and the cancel told to
@@ -1320,6 +1699,11 @@ main(int argc, char *argv[])
 	g_test_add_func("/waits/daemon/refusals",
 	                test_the_tool_refuses_with_sentences);
 	g_test_add_func("/waits/schedule-label", test_the_schedule_label);
+	g_test_add_func("/waits/summary", test_the_summary);
+	g_test_add_func("/waits/daemon/agent-row-follows-waits",
+	                test_the_agent_row_follows_its_waits);
+	g_test_add_func("/waits/daemon/operator-cancel-moves-the-row",
+	                test_an_operator_cancel_moves_the_row);
 
 	return g_test_run();
 }

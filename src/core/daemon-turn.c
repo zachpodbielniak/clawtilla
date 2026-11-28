@@ -129,6 +129,7 @@ on_grace_elapsed(gpointer data)
                   job->agent_id, self->turn_grace_seconds);
 
         clawt_agent_set_activity(agent, FALSE, NULL);
+        clawt_daemon_activity_refresh(self, job->agent_id);
         clawt_daemon_turn_settle(self, job->agent_id);
     }
 
