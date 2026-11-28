@@ -35,6 +35,7 @@ typedef struct {
     gchar      *delivery_to;
     gint64      delivery_at;
     GHashTable *waiting;        /* decision ids */
+    guint       background;     /* clawtilla waits pending */
     gchar      *error;
 
     /* what was last reported, for clawt_office_presence_changed_since() */
@@ -327,6 +328,21 @@ clawt_office_presence_note_waiting(ClawtOfficePresence *self, const gchar *id,
 }
 
 void
+clawt_office_presence_note_background(ClawtOfficePresence *self,
+                                      const gchar         *id,
+                                      guint                waits_pending)
+{
+    Participant *p;
+
+    g_return_if_fail(CLAWT_IS_OFFICE_PRESENCE(self));
+
+    p = lookup(self, id);
+    if (p == NULL)
+        return;
+    p->background = waits_pending;
+}
+
+void
 clawt_office_presence_note_error(ClawtOfficePresence *self, const gchar *id,
                                  const gchar *reason, gint64 now)
 {
@@ -412,8 +428,16 @@ clawt_office_presence_resolve(ClawtOfficePresence  *self,
         return CLAWT_OFFICE_DELIVERING;
     }
 
+    /*
+     * Below everything above, the one rule agent.list answers with
+     * (clawt_board_agent_activity()): a turn, then a wait the agent set
+     * going, then nothing.  Every value named, no default, so a value
+     * added to the enum is a -Wswitch warning here rather than an agent
+     * drawn in whatever pose a default gave it.
+     */
     turns = live_turns(self, p, now);
-    if (turns > 0) {
+    switch (clawt_board_agent_activity(turns > 0, p->background)) {
+    case CLAWT_AGENT_ACTIVITY_WORKING:
         if (p->station != CLAWT_OFFICE_STATION_NONE &&
             now - p->step_at <= CLAWT_OFFICE_STEP_SECONDS) {
             if (out_station != NULL)
@@ -421,6 +445,19 @@ clawt_office_presence_resolve(ClawtOfficePresence  *self,
             return CLAWT_OFFICE_WORKING;
         }
         return CLAWT_OFFICE_THINKING;
+
+    case CLAWT_AGENT_ACTIVITY_WAITING:
+        /*
+         * Its build is running somewhere and it is waiting to be told:
+         * at its own desk, working, not in the lounge -- an agent drawn
+         * idle is one somebody nudges, and it is not idle.
+         */
+        if (out_station != NULL)
+            *out_station = CLAWT_OFFICE_STATION_DESK;
+        return CLAWT_OFFICE_WORKING;
+
+    case CLAWT_AGENT_ACTIVITY_IDLE:
+        break;
     }
     if (p->arrived_at > 0 && now - p->arrived_at <= CLAWT_OFFICE_ARRIVAL_SECONDS)
         return CLAWT_OFFICE_ARRIVING;

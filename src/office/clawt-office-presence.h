@@ -247,6 +247,22 @@ void clawt_office_presence_note_waiting(ClawtOfficePresence *self, const gchar *
                                         const gchar *decision, gboolean open);
 
 /**
+ * clawt_office_presence_note_background:
+ * @self: the fold
+ * @id: the participant
+ * @waits_pending: how many clawtilla waits it has pending
+ *
+ * The background work it is waiting on (since 0.78.0).  Between turns an
+ * agent with a wait pending is at its desk working rather than in the
+ * lounge: clawt_board_agent_activity() decides, the same rule agent.list
+ * answers with.  A running turn still wins, and so does everything that
+ * outranks a turn.
+ */
+void clawt_office_presence_note_background(ClawtOfficePresence *self,
+                                           const gchar         *id,
+                                           guint                waits_pending);
+
+/**
  * clawt_office_presence_note_error:
  * @self: the fold
  * @id: the participant
@@ -276,8 +292,9 @@ void clawt_office_presence_note_leaving(ClawtOfficePresence *self, const gchar *
  * @out_room: (out) (optional) (transfer none): the meeting's room
  *
  * What to draw for @id now, by priority: waiting on you, error, in a
- * meeting, on a call, delivering, working or thinking, arriving, idle,
- * offline.  Stale edges have already decayed.
+ * meeting, on a call, delivering, working or thinking, working at the
+ * desk while a wait it set is pending, arriving, idle, offline.  Stale
+ * edges have already decayed.
  *
  * Returns: the activity
  */

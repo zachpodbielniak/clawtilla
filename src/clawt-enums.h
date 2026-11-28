@@ -1434,6 +1434,29 @@ typedef enum {
     CLAWT_BOARD_BLOCKED
 } ClawtBoardColumn;
 
+/**
+ * ClawtAgentActivity:
+ * @CLAWT_AGENT_ACTIVITY_IDLE: not in a turn, and no clawtilla wait
+ *   pending
+ * @CLAWT_AGENT_ACTIVITY_WAITING: not in a turn, with at least one
+ *   clawtilla wait pending: it set something going -- a build, a deploy,
+ *   a task -- and is waiting to be told it finished
+ * @CLAWT_AGENT_ACTIVITY_WORKING: a turn is running
+ *
+ * What an agent is doing (since 0.78.0), beside its run state rather
+ * than folded into it: #ClawtAgentState says whether the process is up,
+ * and every client reads it as exactly that.  A turn running beats a
+ * wait pending, which beats nothing; clawt_board_agent_activity() is the
+ * one place that says so, and agent.list, the agent board's header and
+ * lanes, `clawtilla agent list` and the office all ask it.  Appended to
+ * only: the nickname is what is sent.
+ */
+typedef enum {
+    CLAWT_AGENT_ACTIVITY_IDLE = 0,
+    CLAWT_AGENT_ACTIVITY_WAITING,
+    CLAWT_AGENT_ACTIVITY_WORKING
+} ClawtAgentActivity;
+
 /* GType registration */
 GType clawt_agent_state_get_type(void) G_GNUC_CONST;
 GType clawt_agent_caps_get_type(void) G_GNUC_CONST;
@@ -1490,6 +1513,8 @@ GType clawt_checkout_mode_get_type(void) G_GNUC_CONST;
 GType clawt_task_phase_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_BOARD_COLUMN (clawt_board_column_get_type())
 GType clawt_board_column_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_AGENT_ACTIVITY (clawt_agent_activity_get_type())
+GType clawt_agent_activity_get_type(void) G_GNUC_CONST;
 
 #define CLAWT_TYPE_AGENT_STATE      (clawt_agent_state_get_type())
 #define CLAWT_TYPE_AGENT_CAPS       (clawt_agent_caps_get_type())

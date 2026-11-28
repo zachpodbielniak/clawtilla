@@ -2476,3 +2476,23 @@ clawt_board_column_get_type(void)
     }
     return g_define_type_id__volatile;
 }
+
+/* Register ClawtAgentActivity as a GLib enum type */
+GType
+clawt_agent_activity_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_AGENT_ACTIVITY_IDLE, "CLAWT_AGENT_ACTIVITY_IDLE", "idle" },
+            { CLAWT_AGENT_ACTIVITY_WAITING, "CLAWT_AGENT_ACTIVITY_WAITING", "waiting" },
+            { CLAWT_AGENT_ACTIVITY_WORKING, "CLAWT_AGENT_ACTIVITY_WORKING", "working" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id =
+            g_enum_register_static("ClawtAgentActivity", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}

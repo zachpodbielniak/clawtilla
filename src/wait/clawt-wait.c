@@ -36,6 +36,7 @@ wait_clear(
 	g_free(self->room_id);
 	g_free(self->label);
 	g_free(self->note);
+	g_free(self->job);
 	g_free(self->url);
 	g_free(self->contains);
 	g_free(self->path);
@@ -465,6 +466,59 @@ clawt_wait_stat_in_workspace(
 
 /* ── Words ───────────────────────────────────────────────────────── */
 
+const gchar *
+clawt_wait_display_label(
+	ClawtWait *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+
+	if (self->job != NULL && *self->job != '\0')
+		return self->job;
+
+	return self->label;
+}
+
+void
+clawt_wait_summarize(
+	GPtrArray        *waits,
+	ClawtWaitSummary *out
+){
+	ClawtWait *newest = NULL;
+	guint i;
+
+	g_return_if_fail(out != NULL);
+
+	memset(out, 0, sizeof(*out));
+
+	for (i = 0; waits != NULL && i < waits->len; i++) {
+		ClawtWait *wait = g_ptr_array_index(waits, i);
+
+		/*
+		 * Only what is still being looked at.  The manager holds
+		 * nothing else, but an array built from another source -- a
+		 * test, a reply being redrawn -- might, and an ended wait is
+		 * not a reason the agent is waiting.
+		 */
+		if (wait == NULL || wait->state != CLAWT_WAIT_PENDING)
+			continue;
+
+		out->pending++;
+
+		if (out->since == 0 || wait->created_at < out->since)
+			out->since = wait->created_at;
+
+		if (newest == NULL || wait->created_at > newest->created_at ||
+		    (wait->created_at == newest->created_at &&
+		     g_strcmp0(wait->id, newest->id) > 0))
+			newest = wait;
+	}
+
+	if (newest != NULL) {
+		out->label = clawt_wait_display_label(newest);
+		out->newest_at = newest->created_at;
+	}
+}
+
 gchar *
 clawt_wait_describe(
 	ClawtWait *self
@@ -676,6 +730,7 @@ clawt_wait_to_json(
 	add_string(builder, "room", self->room_id);
 	add_string(builder, "label", self->label);
 	add_string(builder, "note", self->note);
+	add_string(builder, "job", self->job);
 	add_string(builder, "kind", clawt_wait_kind_nick(self->kind));
 	add_string(builder, "state", clawt_wait_state_nick(self->state));
 
@@ -798,6 +853,8 @@ clawt_wait_from_json(
 	wait->room_id = dup_member(object, "room");
 	wait->label = dup_member(object, "label");
 	wait->note = dup_member(object, "note");
+	/* absent in every record written before 0.78.0, which is no job */
+	wait->job = dup_member(object, "job");
 
 	wait->url = dup_member(object, "url");
 	wait->status = (gint)int_member(object, "status");

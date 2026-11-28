@@ -170,6 +170,53 @@ gboolean clawt_board_is_quiet(ClawtTask *task,
                               gint64    *quiet_at);
 
 /**
+ * clawt_board_agent_activity:
+ * @turn_running: whether the agent is in a turn
+ * @waits_pending: how many clawtilla waits it has pending
+ *
+ * What an agent is doing, the one rule every surface asks (since
+ * 0.78.0): a running turn is %CLAWT_AGENT_ACTIVITY_WORKING whatever is
+ * pending; otherwise a pending wait is %CLAWT_AGENT_ACTIVITY_WAITING --
+ * it started something in the background and is waiting to be told,
+ * which is not the same as having nothing to do; otherwise
+ * %CLAWT_AGENT_ACTIVITY_IDLE.  The run state is not an input: a stopped
+ * agent's waits are still looked at, and the notice waits in its
+ * mailbox, so the answer stands beside #ClawtAgentState rather than
+ * replacing it.
+ *
+ * Returns: the activity
+ */
+ClawtAgentActivity clawt_board_agent_activity(gboolean turn_running,
+                                              guint    waits_pending);
+
+/**
+ * clawt_board_agent_activity_nick:
+ * @activity: a #ClawtAgentActivity
+ *
+ * Returns: (transfer none): its spelling on the wire: `idle`, `waiting`
+ *   or `working`
+ */
+const gchar *clawt_board_agent_activity_nick(ClawtAgentActivity activity);
+
+/**
+ * clawt_board_waiting_label:
+ * @label: (nullable): what it waits for: the newest pending wait's `job`,
+ *   else its label
+ * @since: when it began waiting, a Unix time, or 0 for not known
+ * @now: the clock, a Unix time
+ *
+ * A waiting agent the way every surface writes it, in one spelling:
+ * `waiting: gate g39 in clawt-oxpecker (12m)`.  The age is how long the
+ * agent has had a wait pending without a break (`waiting_since` on
+ * agent.list), and is left off when @since is 0.
+ *
+ * Returns: (transfer full): the label
+ */
+gchar *clawt_board_waiting_label(const gchar *label,
+                                 gint64       since,
+                                 gint64       now);
+
+/**
  * clawt_board_column_nick:
  * @column: a #ClawtBoardColumn
  *
@@ -281,6 +328,11 @@ gchar *clawt_board_duration_label(gint64 seconds);
  * @last_active: when it was last seen doing anything, a Unix time, or 0
  *   for not known
  * @mailbox: how many items wait in its mailbox
+ * @waits_pending: how many clawtilla waits it has pending (since 0.78.0)
+ * @wait_label: (nullable): what the newest of them waits for: its `job`
+ *   when it was given one, else its label
+ * @waiting_since: since when it has had a wait pending without a break,
+ *   a Unix time, or 0 when it has none
  *
  * What the board shows of one agent, as a #ClawtBoardSource reports it.
  * The strings are owned by the struct; clawt_board_agent_clear() frees
@@ -297,6 +349,9 @@ typedef struct {
     gint64  turn_started;
     gint64  last_active;
     guint   mailbox;
+    guint   waits_pending;
+    gchar  *wait_label;
+    gint64  waiting_since;
 } ClawtBoardAgent;
 
 /**

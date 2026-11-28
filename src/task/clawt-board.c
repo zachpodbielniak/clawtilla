@@ -31,6 +31,51 @@
 
 /* ── Small pieces ──────────────────────────────────────────────────── */
 
+ClawtAgentActivity
+clawt_board_agent_activity(gboolean turn_running,
+                           guint    waits_pending)
+{
+    /*
+     * A turn first: whatever it has pending, an agent in a turn is doing
+     * something now, and a wait it set is a thing it will hear about
+     * later.  Then a wait, which is the agent's own word that it is not
+     * idle -- a build it started in its computer, a deploy, a task it
+     * handed on -- and the reason it went quiet.  Only with neither is it
+     * idle.  No other input: the run state is reported beside this, not
+     * folded into it (see ClawtAgentActivity).
+     */
+    if (turn_running)
+        return CLAWT_AGENT_ACTIVITY_WORKING;
+
+    if (waits_pending > 0)
+        return CLAWT_AGENT_ACTIVITY_WAITING;
+
+    return CLAWT_AGENT_ACTIVITY_IDLE;
+}
+
+const gchar *
+clawt_board_agent_activity_nick(ClawtAgentActivity activity)
+{
+    return clawt_enum_to_nick(CLAWT_TYPE_AGENT_ACTIVITY, activity);
+}
+
+gchar *
+clawt_board_waiting_label(const gchar *label,
+                          gint64       since,
+                          gint64       now)
+{
+    g_autofree gchar *age = NULL;
+    const gchar *what = (label != NULL && *label != '\0')
+        ? label : "something in the background";
+
+    if (since <= 0)
+        return g_strdup_printf("waiting: %s", what);
+
+    age = clawt_board_duration_label(now - since);
+
+    return g_strdup_printf("waiting: %s (%s)", what, age);
+}
+
 const gchar *
 clawt_board_column_nick(ClawtBoardColumn column)
 {
@@ -672,6 +717,7 @@ clawt_board_agent_clear(ClawtBoardAgent *agent)
     g_free(agent->step_text);
     g_free(agent->step_tool);
     g_free(agent->turn_task);
+    g_free(agent->wait_label);
     memset(agent, 0, sizeof(*agent));
 }
 
@@ -1251,6 +1297,23 @@ add_agent_live(JsonBuilder *builder, const Build *b, ClawtBoardAgent *info)
     add_string(builder, "name", info->name);
     add_string(builder, "state", info->state != NULL ? info->state : "unknown");
     add_string(builder, "team", info->team);
+
+    /*
+     * What it is doing, by the one rule (clawt_board_agent_activity()),
+     * with "in a turn" read the way busy_since below reads it.  The wait
+     * members ride whenever it has a wait pending -- also while it works,
+     * so a client that shows "and waiting on a build" has it -- and are
+     * absent otherwise, the same as agent.list (since 0.78.0).
+     */
+    add_string(builder, "activity", clawt_board_agent_activity_nick(
+        clawt_board_agent_activity(info->turn_started > 0,
+                                   info->waits_pending)));
+    add_int(builder, "waits_pending", (gint64)info->waits_pending);
+
+    if (info->waits_pending > 0) {
+        add_string(builder, "wait_label", info->wait_label);
+        add_time(builder, "waiting_since", info->waiting_since);
+    }
 
     if (info->step_text != NULL || info->step_tool != NULL) {
         json_builder_set_member_name(builder, "step");
@@ -1849,6 +1912,16 @@ render_live(GString *out, JsonObject *who, gint64 now, gint indent)
     JsonObject *step = member_object(who, "step");
     JsonObject *current = member_object(who, "current_task");
 
+    /* Not in a turn and waiting on its own background work: say on what. */
+    if (g_strcmp0(member_string(who, "activity"), "waiting") == 0) {
+        g_autofree gchar *raw = clawt_board_waiting_label(
+            member_string(who, "wait_label"), member_int(who, "waiting_since"),
+            now);
+        g_autofree gchar *line = one_line(raw, BOARD_NOTE_BYTES);
+
+        g_string_append_printf(out, "%*s%s\n", indent, "", line);
+    }
+
     if (current != NULL) {
         g_autofree gchar *title = one_line(member_string(current, "title"),
                                            BOARD_TITLE_BYTES);
@@ -1958,8 +2031,15 @@ clawt_board_render_text(JsonObject *board)
                                                                   "agent"),
                                    member_string(lane, "state") != NULL
                                        ? member_string(lane, "state") : "?");
+            /*
+             * A waiting worker is not idle: render_live() below says on
+             * what, so the lane line only says that it is.
+             */
             if (busy != NULL)
                 g_string_append_printf(out, "  busy %s", busy);
+            else if (g_strcmp0(member_string(lane, "activity"),
+                               "waiting") == 0)
+                g_string_append(out, "  waiting");
             else if (idle != NULL)
                 g_string_append_printf(out, "  idle %s", idle);
             if (queue != NULL)

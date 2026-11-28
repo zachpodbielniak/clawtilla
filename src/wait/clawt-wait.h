@@ -147,6 +147,9 @@ typedef struct _ClawtWait ClawtWait;
  * @room_id: the room it was set from, which is where the notice goes
  * @label: the agent's own words for what it is waiting for
  * @note: (nullable): what the agent asked to be reminded of when it ends
+ * @job: (nullable): the background job it is waiting on, as the agent
+ *   named it -- `gate g39 in clawt-oxpecker` -- which a person is shown
+ *   instead of @label when it is set (since 0.78.0)
  * @kind: what is looked at
  * @state: where it stands
  * @url: (nullable): for %CLAWT_WAIT_URL
@@ -183,6 +186,7 @@ struct _ClawtWait {
 	gchar           *room_id;
 	gchar           *label;
 	gchar           *note;
+	gchar           *job;
 	ClawtWaitKind    kind;
 	ClawtWaitState   state;
 
@@ -458,6 +462,57 @@ clawt_wait_stat_in_workspace(
 	gint64       *out_size,
 	gint64       *out_mtime,
 	GError      **error
+);
+
+/**
+ * clawt_wait_display_label:
+ * @self: a #ClawtWait
+ *
+ * What a person is shown for the wait in a row about its agent -- the
+ * Fleet, `clawtilla agent list`, the board's lanes: its `job` when the
+ * agent named one, else its label.  The notice the agent gets still
+ * heads with the label, which is the agent's own words for itself.
+ *
+ * Returns: (transfer none) (nullable): the label
+ */
+const gchar *
+clawt_wait_display_label(
+	ClawtWait *self
+);
+
+/**
+ * ClawtWaitSummary:
+ * @pending: how many of the waits are pending
+ * @label: (nullable): the newest pending wait's clawt_wait_display_label(),
+ *   borrowed from the array it was made from
+ * @newest_at: when that wait was set, in µs, or 0 for none
+ * @since: when the oldest pending wait was set, in µs, or 0 for none:
+ *   since then the agent has had a wait pending without a break, because
+ *   every wait counted is still pending
+ *
+ * One agent's waits, folded into what a row about the agent shows.
+ */
+typedef struct {
+	guint        pending;
+	const gchar *label;
+	gint64       newest_at;
+	gint64       since;
+} ClawtWaitSummary;
+
+/**
+ * clawt_wait_summarize:
+ * @waits: (element-type ClawtWait) (nullable): one agent's waits, in any
+ *   order, as clawt_wait_manager_list() gives them
+ * @out: (out caller-allocates): the summary
+ *
+ * Folds @waits into @out.  Ended waits are skipped.  Of two set in the
+ * same microsecond the one with the greater id is the newer, the order
+ * clawt_wait_manager_list() sorts them in.  Pure.
+ */
+void
+clawt_wait_summarize(
+	GPtrArray        *waits,
+	ClawtWaitSummary *out
 );
 
 /**

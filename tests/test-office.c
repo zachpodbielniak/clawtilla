@@ -408,6 +408,74 @@ test_director_places(void)
     g_assert_nonnull(strstr(json_object_get_string_member(p, "fallback"), "desk"));
 }
 
+/*
+ * Waiting on its own background work (#71): between turns, with a wait
+ * pending, an agent is at its desk working -- not in the lounge -- by the
+ * same rule agent.list answers with.  A turn still wins, a call still
+ * outranks it, and when the wait ends it is idle again.  The director
+ * seats it at its team's desks.
+ */
+static void
+test_waiting_sits_at_its_desk(void)
+{
+    g_autoptr(ClawtOfficePresence) presence = two_agents();
+    g_autofree gchar *dir = fixture("good");
+    g_autoptr(ClawtOfficeWorld) world = clawt_office_world_load(dir, NULL);
+    g_autoptr(ClawtOfficeChoreography) rules = clawt_office_choreography_new_default();
+    g_autoptr(JsonNode) snap = NULL;
+    g_autoptr(JsonNode) layout = NULL;
+    ClawtOfficeStation station = CLAWT_OFFICE_STATION_NONE;
+    JsonObject *p;
+
+    /* idle first: nothing running, nothing pending */
+    g_assert_cmpint(clawt_office_presence_resolve(presence, "kudu", T0, NULL,
+                                                  NULL, NULL), ==, CLAWT_OFFICE_IDLE);
+
+    /* a wait set, the turn over: at the desk, working */
+    clawt_office_presence_note_background(presence, "kudu", 1);
+    g_assert_cmpint(clawt_office_presence_resolve(presence, "kudu", T0 + 1, &station,
+                                                  NULL, NULL), ==, CLAWT_OFFICE_WORKING);
+    g_assert_cmpint(station, ==, CLAWT_OFFICE_STATION_DESK);
+    /* the other agent is not touched */
+    g_assert_cmpint(clawt_office_presence_resolve(presence, "oryx", T0 + 1, NULL,
+                                                  NULL, NULL), ==, CLAWT_OFFICE_IDLE);
+
+    snap = clawt_office_presence_snapshot(presence, T0 + 1);
+    layout = clawt_office_direct(world, rules, json_node_get_object(snap));
+    p = placement_of(layout, "kudu");
+    g_assert_cmpstr(json_object_get_string_member(p, "activity"), ==, "working");
+    g_assert_cmpstr(json_object_get_string_member(p, "zone"), ==, "core-desks");
+    p = placement_of(layout, "oryx");
+    g_assert_cmpstr(json_object_get_string_member(p, "activity"), ==, "idle");
+
+    /* a turn beats it: the turn's own pose, thinking with no tool in hand */
+    clawt_office_presence_note_turn(presence, "kudu", "dm", TRUE, T0 + 2);
+    g_assert_cmpint(clawt_office_presence_resolve(presence, "kudu", T0 + 3, NULL,
+                                                  NULL, NULL), ==, CLAWT_OFFICE_THINKING);
+    clawt_office_presence_note_turn(presence, "kudu", "dm", FALSE, T0 + 4);
+    g_assert_cmpint(clawt_office_presence_resolve(presence, "kudu", T0 + 5, NULL,
+                                                  NULL, NULL), ==, CLAWT_OFFICE_WORKING);
+
+    /* a call outranks it, as it outranks a turn */
+    clawt_office_presence_note_call(presence, "oryx", "kudu", T0 + 6);
+    g_assert_cmpint(clawt_office_presence_resolve(presence, "kudu", T0 + 7, NULL,
+                                                  NULL, NULL), ==, CLAWT_OFFICE_ON_CALL);
+    g_assert_cmpint(clawt_office_presence_resolve(presence, "kudu",
+                    T0 + 7 + CLAWT_OFFICE_CALL_SECONDS, NULL, NULL, NULL), ==,
+                    CLAWT_OFFICE_WORKING);
+
+    /* the wait fires (or is cancelled, or expires): idle again */
+    clawt_office_presence_note_background(presence, "kudu", 0);
+    g_assert_cmpint(clawt_office_presence_resolve(presence, "kudu",
+                    T0 + 8 + CLAWT_OFFICE_CALL_SECONDS, NULL, NULL, NULL), ==,
+                    CLAWT_OFFICE_IDLE);
+
+    /* and nobody it does not know is made up */
+    clawt_office_presence_note_background(presence, "nobody", 3);
+    g_assert_cmpint(clawt_office_presence_resolve(presence, "nobody", T0, NULL,
+                                                  NULL, NULL), ==, CLAWT_OFFICE_OFFLINE);
+}
+
 /* ── The daemon ─────────────────────────────────────────────────── */
 
 static guint presence_events;
@@ -837,6 +905,7 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office/discover-skips-refused", test_discover_skips_refused);
     g_test_add_func("/office/choreography-layers", test_choreography_layers);
     g_test_add_func("/office/director-places", test_director_places);
+    g_test_add_func("/office/waiting-sits-at-its-desk", test_waiting_sits_at_its_desk);
     g_test_add_func("/office/director-seats-a-visitor-from-another-fleet",
                     test_director_seats_a_visitor_from_another_fleet);
     g_test_add_func("/office/daemon", test_daemon_office);

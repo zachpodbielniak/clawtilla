@@ -755,6 +755,85 @@ test_window_and_durations(void)
 	g_assert_cmpstr(e, ==, "0s");
 }
 
+/* ── What an agent is doing (#71) ───────────────────────────────── */
+
+/*
+ * The one rule, as a table: a turn beats a wait, a wait beats nothing.
+ * The rows that matter most are the ones the Fleet got wrong before:
+ * not in a turn with a wait pending was drawn idle.  And the ends of a
+ * wait -- it fires, it is cancelled, it expires -- are all "the count
+ * went back to 0", which is idle again.
+ */
+static void
+test_agent_activity_table(void)
+{
+	static const struct {
+		gboolean            turn;
+		guint               waits;
+		ClawtAgentActivity  want;
+		const gchar        *nick;
+		const gchar        *why;
+	} rows[] = {
+		{ FALSE, 0, CLAWT_AGENT_ACTIVITY_IDLE, "idle",
+		  "no turn, no wait: idle" },
+		{ FALSE, 1, CLAWT_AGENT_ACTIVITY_WAITING, "waiting",
+		  "no turn, one wait: waiting, not idle" },
+		{ FALSE, 3, CLAWT_AGENT_ACTIVITY_WAITING, "waiting",
+		  "no turn, several waits: waiting" },
+		{ TRUE, 0, CLAWT_AGENT_ACTIVITY_WORKING, "working",
+		  "a turn, no wait: working" },
+		{ TRUE, 2, CLAWT_AGENT_ACTIVITY_WORKING, "working",
+		  "a turn beats its waits" },
+	};
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(rows); i++) {
+		ClawtAgentActivity got = clawt_board_agent_activity(rows[i].turn,
+		                                                    rows[i].waits);
+
+		if (got != rows[i].want)
+			g_error("row %u (%s): got %s, wanted %s", i, rows[i].why,
+			        clawt_board_agent_activity_nick(got), rows[i].nick);
+
+		g_assert_cmpstr(clawt_board_agent_activity_nick(got), ==,
+		                rows[i].nick);
+	}
+
+	/*
+	 * A wait that fires, and one that is cancelled: waiting while it is
+	 * pending, idle once the count is back to 0 -- and a turn the notice
+	 * starts is working, then idle when it ends with nothing set again.
+	 */
+	g_assert_cmpint(clawt_board_agent_activity(FALSE, 1), ==,
+	                CLAWT_AGENT_ACTIVITY_WAITING);
+	g_assert_cmpint(clawt_board_agent_activity(FALSE, 0), ==,
+	                CLAWT_AGENT_ACTIVITY_IDLE);
+	g_assert_cmpint(clawt_board_agent_activity(TRUE, 0), ==,
+	                CLAWT_AGENT_ACTIVITY_WORKING);
+
+	/* Every value has a nickname, which is what goes on the wire. */
+	g_assert_cmpstr(clawt_enum_to_nick(CLAWT_TYPE_AGENT_ACTIVITY,
+	                                   CLAWT_AGENT_ACTIVITY_WAITING), ==,
+	                "waiting");
+}
+
+/* "waiting: <label> (<age>)", in the one spelling every surface uses. */
+static void
+test_waiting_label(void)
+{
+	g_autofree gchar *a = clawt_board_waiting_label(
+		"gate g39 in clawt-oxpecker", NOW - 12 * MINUTE, NOW);
+	g_autofree gchar *b = clawt_board_waiting_label("the deploy", 0, NOW);
+	g_autofree gchar *c = clawt_board_waiting_label(NULL, NOW - 45, NOW);
+	g_autofree gchar *d = clawt_board_waiting_label("", NOW + 60, NOW);
+
+	g_assert_cmpstr(a, ==, "waiting: gate g39 in clawt-oxpecker (12m)");
+	g_assert_cmpstr(b, ==, "waiting: the deploy");
+	g_assert_cmpstr(c, ==, "waiting: something in the background (45s)");
+	/* a clock that went backwards is not a negative age */
+	g_assert_cmpstr(d, ==, "waiting: something in the background (0s)");
+}
+
 /* ── The acceptance case: a fixture store, a board, its text ─────── */
 
 typedef struct {
@@ -782,6 +861,13 @@ fake_describe(const gchar *agent_id, ClawtBoardAgent *out, gpointer data)
 		out->turn_started = NOW - 10 * MINUTE;
 	} else {
 		out->last_active = NOW - 7 * MINUTE;
+	}
+
+	/* leopard set two waits going and ended its turn (#71) */
+	if (g_strcmp0(agent_id, "leopard") == 0) {
+		out->waits_pending = 2;
+		out->wait_label = g_strdup("gate g39 in clawt-oxpecker");
+		out->waiting_since = NOW - 12 * MINUTE;
 	}
 
 	return TRUE;
@@ -1122,7 +1208,33 @@ test_board_acceptance(
 			json_array_get_object_element(lanes, 2), "agent"), ==, "leopard");
 		g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(
 			json_array_get_object_element(lanes, 2), "queue"), "queued"), ==, 1);
+
+		/*
+		 * What each is doing (#71): bufferlo between turns with nothing
+		 * pending is idle, with no wait members; leopard between turns
+		 * with two waits is waiting, on the newest one's label.
+		 */
+		g_assert_cmpstr(json_object_get_string_member(lane, "activity"), ==,
+		                "idle");
+		g_assert_cmpint(json_object_get_int_member(lane, "waits_pending"), ==,
+		                0);
+		g_assert_false(json_object_has_member(lane, "wait_label"));
+		g_assert_false(json_object_has_member(lane, "waiting_since"));
+
+		lane = json_array_get_object_element(lanes, 2);
+		g_assert_cmpstr(json_object_get_string_member(lane, "activity"), ==,
+		                "waiting");
+		g_assert_cmpint(json_object_get_int_member(lane, "waits_pending"), ==,
+		                2);
+		g_assert_cmpstr(json_object_get_string_member(lane, "wait_label"), ==,
+		                "gate g39 in clawt-oxpecker");
+		g_assert_cmpint(json_object_get_int_member(lane, "waiting_since"), ==,
+		                NOW - 12 * MINUTE);
 	}
+
+	/* The header: oxpecker is in a turn, so working. */
+	g_assert_cmpstr(json_object_get_string_member(header, "activity"), ==,
+	                "working");
 }
 
 /* A failed child or an operator decision pins that card under blocked. */
@@ -1353,6 +1465,11 @@ test_board_text_matches_json(
 	g_assert_nonnull(strstr(text, "\n== Lanes ==\n"));
 	g_assert_nonnull(strstr(text, "  bufferlo     running    idle 7m  queued 0, "
 	                              "running 1, mailbox 1\n"));
+
+	/* A waiting worker is not drawn idle, and says on what (#71). */
+	g_assert_nonnull(strstr(text, "  leopard      running    waiting  queued "));
+	g_assert_nonnull(strstr(text, "\n      waiting: gate g39 in clawt-oxpecker "
+	                              "(12m)\n"));
 	g_assert_true(g_str_has_suffix(text, "\n"));
 }
 
@@ -1371,6 +1488,8 @@ main(int argc, char *argv[])
 	g_test_add_func("/board/timeline/stamps", test_timeline_from_stamps);
 	g_test_add_func("/board/done/result-refs", test_result_refs);
 	g_test_add_func("/board/window-and-durations", test_window_and_durations);
+	g_test_add_func("/board/agent-activity/table", test_agent_activity_table);
+	g_test_add_func("/board/agent-activity/waiting-label", test_waiting_label);
 
 	g_test_add("/board/build/acceptance", BoardFixture, NULL, board_setup,
 	           test_board_acceptance, board_teardown);
