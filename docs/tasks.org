@@ -1,10 +1,10 @@
 #+title: Tasks
-#+description: The work model: task states, the task store and what a restart does, operator tasks, blockers, review, checkouts, projects and budgets, with the IPC, CLI and agent tools for each and what to do when a task is stuck
+#+description: The work model: task states, the task store and what a restart does, operator tasks, blockers, review, checkouts, projects and budgets, the agent board, with the IPC, CLI and agent tools for each and what to do when a task is stuck
 #+authors: Zach Podbielniak
 #+categories: clawtilla docs orchestration tasks
 #+created: [2026-11-16]
-#+updated: [2026-11-16]
-#+version: 0.50.0
+#+updated: [2026-11-28]
+#+version: 0.78.0
 
 * What a task is
 
@@ -137,6 +137,108 @@ A *project* (~projects:~) is a piece of work the fleet is pointed at: what it is
 - *What every agent finds.* The =# BEGIN clawtilla projects= region of =PROJECTS.org= lists the projects it works in (every project whose ~agents~ is empty or names it): name, goal, directory, reviewer and budget -- not this month's spend, which changes every turn and would keep an identity file from ever settling.  It sits above the agent's own text (after the =#+= header lines), is capped at 4 KiB, is rewritten on start and whenever a project changes, and is written only when its text changed.  The agent keeps the rest of the file.
 - *Managing them.* ~project.list~ (with ~month_spend_usd~ and ~stopped~), ~project.create~ / ~project.set~ / ~project.remove~; Settings → *Projects* in every client; ~clawtilla project list|create|set|rm~.  A removed project's tasks keep its name.  A task object carries ~project~; every client's task row shows it.
 
+* The agent board (since 0.78.0)
+:PROPERTIES:
+:CUSTOM_ID: agent-board
+:END:
+
+One view that answers "where is oxpecker right now, and what is still in front of him?" for one agent, or a team's lead with the team beside it.  The task tree, the states, the progress notes, the streamed steps, the mailbox and the VENTURE tickets already say all of it between them; the board puts them in one reply, ~task.board~ ([[file:ipc-protocol.org::#task-board][ipc-protocol.org, "task.board"]]), which the CLI (~clawtilla task board~), the GTK client and the web client all draw.  The board changes nothing: it reads the task manager and what the daemon already knows, and is asked again on the events that move it.
+
+** Cards
+
+A card is one of the agent's *top-level* tasks: a task assigned to it, in the live set (what ~task.list {agent}~ lists: everything unfinished and what finished in the last day), whose parent is not also the agent's own -- typically one per VENTURE ticket it was handed.  A task of its own under another of its own is drawn as a chip on that card, not as a second card.  For a window longer than a day, the completed tasks the store still holds for the rest of it are read back too (at most 1000).
+
+The tasks a card handed on -- its direct children, from the live set -- are its *chips*: worker, state, phase, elapsed time, and the ~after:~ links between siblings, so a client can draw "this waits for that" between chips.
+
+The reply's ~totals~ make the board add up to the list: ~listed~ (the agent's tasks in the live set) = ~cards~ + ~hidden~ (cancelled, or finished before the window) + ~nested~ (under another of its own) − ~from_history~ (done cards read back from the store).
+
+** Columns, and the rules that decide them
+
+Every card is in exactly one column, decided by =clawt_board_classify()=: a pure function of the task, its children, its phase, a clock and three facts the daemon supplies (open operator decisions on it or its children, whether the agent has a clawtilla wait pending, and the quiet window).  The rules are tried in this order; the first that matches wins.
+
+| # | Column       | When                                                                                                                                       |
+|---+--------------+--------------------------------------------------------------------------------------------------------------------------------------------|
+| 1 | (hidden)     | not this agent's; on the operator's backlog (~unassigned~); ~cancelled~; or finished before the window                                       |
+| 2 | ~done~       | ~completed~ inside the window                                                                                                               |
+| 3 | ~blocked~    | any of the reasons below -- pinned first                                                                                                    |
+| 4 | ~backlog~    | ~pending~ (not started, or sent back), or ~blocked~ on ~after:~ only (held until the tasks it waits for complete)                            |
+| 5 | ~review~     | ~review~: its own result waits for its reviewer                                                                                             |
+| 6 | (the phase)  | ~running~ with a reported phase: ~planning~ → planning, ~delegated~ → delegated, ~reviewing~ → review, ~gating~ and ~landing~ → gating      |
+| 7 | ~review~     | ~running~, and a child's result is in ~review~ with this agent as its reviewer -- the bottleneck signal                                    |
+| 8 | ~delegated~  | ~running~, with a child that has not finished                                                                                               |
+| 9 | ~planning~   | ~running~, and nothing it handed on is still going                                                                                          |
+
+The reasons for ~blocked~, any number at once, each with its wire spelling (=clawt_board_block_nick()=):
+
+| Reason           | When                                                                                                                         |
+|------------------+------------------------------------------------------------------------------------------------------------------------------|
+| ~failed~         | the task itself ~failed~ inside the window                                                                                   |
+| ~stalled~        | the task itself ~stalled~ (a limit stopped it) inside the window                                                             |
+| ~child_failed~   | a child ~failed~, and the card's assignee has not reported progress or a phase since it did                                  |
+| ~child_stalled~  | the same for a ~stalled~ child                                                                                               |
+| ~decision~       | an operator decision is open on the card or one of its children, or a child waits on =operator=                             |
+| ~waiting~        | the card itself waits on somebody it named (~clawtilla_task_progress~ ~waiting_on~: an agent, =operator= or =external:NAME=) |
+| ~quiet~          | the card has gone quiet (below)                                                                                              |
+| ~phase~          | its assignee reported the ~blocked~ phase                                                                                    |
+
+Three choices worth knowing:
+
+- *What needs somebody beats a phase.*  A card reported as ~gating~ whose child failed is under ~blocked~, not ~gating~: the phase is the agent's word about its own work, the failure is a fact about somebody else's.
+- *A report after a child's failure unpins it.*  The agent saying anything -- a progress note or a phase -- after a child failed is taken as it having seen the failure and gone on (delegated the part again, done it itself).  Without this a fan-out that replaced one failed child would stay blocked until the day dropped the failure out of memory.  Retrying the child unpins it too, since it is no longer failed.
+- *A card's own review is in the review column*, with ~review.waiting_for~ naming its reviewer, so the reader can tell "waits for oxpecker" (the bottleneck) from "oxpecker waits for chief".
+
+Within a column: the backlog in the order the agent will take the work -- what it was handed (~pending~) before what is held, oldest first within each, numbered from 1 (~position~) -- done newest first, everything else by how long it has been going.
+
+** Phase: what the agent says it is doing
+
+An optional ~phase~ on ~clawtilla_task_progress~ and ~clawtilla_task_complete~: one of ~planning~, ~delegated~, ~reviewing~, ~gating~ (building or testing), ~landing~ (merging, tagging, releasing) or ~blocked~.  Case is forgiven as for every nickname clawtilla reads; anything else -- ~none~ included -- refuses the whole call with the six spelled out, and *nothing is recorded*: not the note, not the result, so the agent calls again rather than leaving half a report.  Without ~phase~ both tools are exactly what they were.
+
+- *Stored on the task* (~phase~, ~phase_at~ in ~tasks.db~, no migration: one more JSON member), with every report kept as a bounded history (the last 32, ~phases~) that the timeline draws.  The same phase again is not a new report and does not move the time it began.
+- *It overrides inference* for a ~running~ task (rule 6 above) but not the reasons for ~blocked~.  On a ~pending~, held or finished task it is shown, not used.
+- *It lasts until the task goes back to ~pending~* -- a retry, a review asking for changes, a release from a hold -- which clears it with a =none= mark in the history: a phase describes one attempt.  A wait and its resumption keep it.
+- *With ~waiting_on~* the phase is kept on the now-blocked task, where the work had got to when it stopped.  *With ~clawtilla_task_complete~* it is recorded before the state moves, so the timeline shows the phase the work ended in.
+- Each report is journalled ("progress noted; phase gating", "phase landing") and announced with ~task.changed~, so the board's clients redraw.
+
+The daemon-side calls are =clawt_task_manager_note_progress_in_phase()=, =clawt_task_manager_complete_in_phase()= and =clawt_task_manager_set_phase()=; validation is =clawt_task_phase_parse()=.
+
+** Quiet: running, and nothing heard
+
+A running card is *quiet* when nothing has been heard of it for ~orchestration.board_quiet_minutes~ (default 20; 0 turns the rule off).  Deliberately not called "stalled": ~stalled~ is a task state, a limit stopping the work, while a quiet task is still running and nobody has heard from it.
+
+- *Heard* is the latest of: made, first started, a state change, a progress or phase report, or a streamed step its assignee took on it (=clawt_task_get_last_sign_of_life()=), on the card or on any running child.  Steps are counted in memory only (=clawt_task_manager_note_activity()=, from every step the daemon routes for a turn on that task), so just after a restart only the stored times count.
+- *Never quiet:* a task that is not ~running~; one whose assignee has a clawtilla wait pending (it said why it will be silent); one with a child queued, held or in review, which is waiting on somebody else.
+- A quiet card goes under ~blocked~ with the reason ~quiet~ and ~since~.  A card that is not quiet yet carries ~quiet_at~, when it would become so, and so does every chip: a client can flip it at that moment on a timer of its own, without asking the daemon again.
+
+** Timeline: when each state started and ended
+
+Each card and chip carries ~timeline~ (unless the request says ~timeline: false~): ~states~, each ~{state, from, to}~, and ~phases~, each ~{phase, from, to}~; the last span has no ~to~ (still going, or the state the task ended in).  =clawt_board_timeline()= builds it.
+
+- *Where the history comes from.*  The journal in ~tasks.db~ (since 0.35.0) has a row for every state change, with its time -- that is the transition record, and nothing new was needed for it.  Rows that changed nothing (a progress note) extend the open span.  ~source~ says ~journal~.
+- *Older tasks.*  A task saved before 0.35.0, or held by a daemon without a store, has no journal: its timeline is drawn from its own stamps -- created, first started, finished -- as pending, running and the state it ended in (~source: stamps~).  Coarse, never wrong about what it shows.
+- *What 0.78.0 adds to every task.*  ~state_at~ (when the state last changed; read as the latest of the created, started and finished times for a task saved before it), ~progress_at~ (the last progress report) and the phase fields, all in the task's JSON.  ~state_at~ is what a review's wait is measured from.  Times are whole seconds.
+- Phase spans come from the task's own phase history, which starts with 0.78.0: older tasks have none.
+
+** Header and lanes
+
+The ~header~ is the agent itself: its live state, the latest step of its running turn (text, tool, when) -- nothing between turns, since a step from an hour ago is not what it is doing now -- the task that turn is on (or its most recently active running task), how long the turn has run (~busy_since~), its mailbox depth, and counts per column with ~in_flight~ (planning + delegated + gating) and ~in_review~.
+
+The ~lanes~ are the people the work is with: the team asked for (~team~), or the agent's own team, then every worker a chip names that is not on it -- never the board's own agent.  Each lane has the agent's live state and step, its current task, its queue (~queued~: pending and held; ~running~; ~review~; ~mailbox~) and ~idle~, the seconds since its last streamed step (0 while it is in a turn; absent when this daemon run has seen none).
+
+** Live updates
+
+There is no polling loop in the daemon.  A client asks ~task.board~ once and asks again (debounced) on the events that move it: ~task.changed~ (every transition, every progress or phase report), ~task.noted~, ~agent.state~, ~mailbox.queued~ / ~mailbox.delivered~, ~decision.asked~ / ~decision.settled~ / ~decision.deleted~ and ~wait.changed~; it may patch the header's step from ~turn.step~ (subject the agent) without asking.  Quiet is the one thing that changes by time alone, and ~quiet_at~ is there for it.
+
+** On the command line
+
+#+begin_src bash
+clawtilla task board --agent oxpecker            # text: one section per column
+clawtilla task board oxpecker --window 7d        # done reaches back a week
+clawtilla task board --team forge                # the lead's board, the team's lanes
+clawtilla task board --agent oxpecker --json     # the task.board reply itself
+#+end_src
+
+The text is =clawt_board_render_text()= over the very reply ~--json~ prints.  See [[file:clients.org][clients.org]].
+
 * What the lists say about themselves
 
 ~task.list~ carries ~kept~ (whether this daemon has a task store), ~retention_days~, and still ~since~, the daemon's start. Every client and the CLI put =clawt_task_list_caption()= over the Tasks and Problems lists: "Tasks still open, and those that finished in the last day. Every task is kept for 180 days with a record of what happened to it, across restarts; older ones are in the history (clawtilla task list --history)."  A daemon whose ~tasks.db~ would not open keeps working in memory, says so once in its log, and its lists carry the old caption instead (=clawt_held_since_caption()=): "Since the daemon started at 09:14. Tasks and problems are held in memory, so a daemon restart clears this list; ...".  Saying "kept" when they are not would be the lie that caption was written to stop.
@@ -165,13 +267,15 @@ Each is described in full in [[file:ipc-protocol.org][ipc-protocol.org]], under 
 | ~task.diff~             | 0.39.0 | what the task's checkout changed (deferred answer)                    |
 | ~task.checkout_remove~  | 0.39.0 | removes the checkout, keeps its branch                                |
 | ~task.venture_retry~    | 0.44.0 | queues the task's given-up VENTURE writes again                       |
+| ~task.board~            | 0.78.0 | the agent board: ~agent~ or ~team~, ~window~, ~timeline~              |
 
-Events: ~task.changed~ on every transition, ~task.noted~ on a new note in a task's thread, ~task.tree_budget~ when a tree's budget is reached.
+Events: ~task.changed~ on every transition and every progress or phase report, ~task.noted~ on a new note in a task's thread, ~task.tree_budget~ when a tree's budget is reached.
 
 ** Command line
 
 #+begin_src bash
 clawtilla task list [--history] [--state STATE] [--agent AGENT] [--before UNIX] [--limit N]
+clawtilla task board --agent AGENT [--team TEAM] [--window today|<N>h|<N>d] [--no-timeline] [--json]
 clawtilla task show <task-id> [--journal]
 clawtilla task create [--agent AGENT] [--title TITLE] [--after TASK,TASK] \
         [--review lead|delegator|operator|AGENT|none] [--repo DIR [--base REF]] [--project ID] "<prompt>"
@@ -202,8 +306,8 @@ What each agent may call is decided by the ~tools/list~ gate; the =# BEGIN clawt
 | ~clawtilla_task_status~    | one task, with the last five comments; a finished one opens with the first lines of its result, and its last progress note is labelled as from before it finished |
 | ~clawtilla_task_result~    | a finished task's result                                                 |
 | ~clawtilla_task_cancel~    | cancels a task it delegated, with everything under it                    |
-| ~clawtilla_task_complete~  | reports its own task done (to ~review~ when it has a reviewer)           |
-| ~clawtilla_task_progress~  | says the work is not finished, so ending the turn does not close it; with ~waiting_on~ and ~question~, that it is blocked on somebody |
+| ~clawtilla_task_complete~  | reports its own task done (to ~review~ when it has a reviewer); optional ~phase~ for the board's timeline |
+| ~clawtilla_task_progress~  | says the work is not finished, so ending the turn does not close it; with ~waiting_on~ and ~question~, that it is blocked on somebody; with ~phase~, where the board draws it |
 | ~clawtilla_task_retry~     | sends a failed or stalled run round again                                |
 | ~clawtilla_task_link~      | adds or takes away a blocker on a task it delegated that is still ~blocked~ |
 | ~clawtilla_task_review~    | the reviewer's verdict: ~accept~, or changes with ~notes~                |
@@ -215,6 +319,8 @@ What each agent may call is decided by the ~tools/list~ gate; the =# BEGIN clawt
 | ~orchestration.task_retention_days~     | 180     | 0.35.0 | how long a finished task is kept in ~tasks.db~; 0 keeps all |
 | ~orchestration.review_rounds~           | 3       | 0.38.0 | rounds of changes before the operator decides; 0 for no limit |
 | ~orchestration.checkout_keep_days~      | 14      | 0.39.0 | when a finished task's clean checkout is removed            |
+| ~orchestration.board_quiet_minutes~     | 20      | 0.78.0 | when a running card with nothing heard is flagged quiet; 0 off |
+| ~orchestration.board_window~            | today   | 0.78.0 | how far back the board's done column reaches               |
 | ~agents.review_by~                      | empty   | 0.38.0 | who reviews an agent's work                                 |
 | ~projects~                              | none    | 0.40.0 | projects, their goals, directories, reviewers and budgets   |
 
@@ -272,3 +378,6 @@ A chief of staff calls ~clawtilla_delegate~ with ~agent: builder~, ~repo: /home/
 | ~checkout-remove~ is refused                                     | The task is still pending or running, or the checkout has uncommitted work: commit it, or ~--force~. |
 | New work in a project is refused with =LOOP_LIMIT=               | The project's ~budget_hard_stop~ is on and its month's budget is spent. Raise the budget, or wait for the month. |
 | A task's VENTURE state is ~skipped~ or ~dead~                    | See [[file:venture.org][venture.org]], "Troubleshooting".                                          |
+| A board card is under ~blocked~ with ~quiet~                     | Nothing was heard of it for ~orchestration.board_quiet_minutes~. Its agent should report with ~clawtilla_task_progress~, or set a wait while it is waiting; a restart forgets streamed steps, so a long-running card can read quiet just after one. |
+| A board card stays under ~blocked~ with ~child_failed~           | Retry the child, or have the agent report progress or a phase on the card: a report after the failure is taken as it having moved on. |
+| ~clawtilla_task_progress~ is refused for its ~phase~             | Only ~planning~, ~delegated~, ~reviewing~, ~gating~, ~landing~ and ~blocked~; nothing was recorded, so call it again.  |

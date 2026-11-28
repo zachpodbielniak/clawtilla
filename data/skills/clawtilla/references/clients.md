@@ -103,6 +103,7 @@ Same protocol on the unix socket (`daemon.socket`, default `$XDG_RUNTIME_DIR/cla
 | `msg.send` (`target`, `body`, `from`) | `queued`, `target_state` |
 | `room.list`, `room.history`, `room.steps`, `room.read` | rooms and transcripts |
 | `task.list`, `decision.list`, `decision.answer`, `activity.list`, `notice.list`, `mailbox.list` | work in flight |
+| `task.board` (`agent` or `team`, `window`, `timeline`) | one agent's work by column: `header`, seven `columns` of cards with worker `chips`, `lanes`, `totals` (0.78.0; CLI `clawtilla task board --agent A [--json]`) |
 | `config.show`, `config.render` (`agent`), `config.validate` | YAML text, validation |
 | `event.list`, `sentinel.scan`, `sentinel.report` | history and issues |
 

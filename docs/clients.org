@@ -81,6 +81,7 @@ licence, send nothing, and exit 0.
 | ~team rm <id>~ | its agents keep running and become teamless |
 | ~team assign <agent> <team> [lead]~ | |
 | ~task list/show/cancel~ | |
+| ~task board --agent A [--team T] [--window today\vert{}<N>h\vert{}<N>d] [--no-timeline] [--json]~ | the agent board: one section per column, cards with their worker chips, then the lanes (0.78.0; [[*The agent board: ~task board~][below]]) |
 | ~activity~ | every turn running across the fleet, with its age and last step |
 | ~decision list [--all]~ | choices agents are waiting on you for |
 | ~decision answer <id> <answer>~ | free text; it routes back to the agent |
@@ -124,6 +125,38 @@ licence, send nothing, and exit 0.
 | ~attachment list <agent or room>~ | every file a conversation carried, newest first: kind, size, sender, date, name, and the id (or old host path) |
 | ~attachment get <id> [-o FILE]~ | the daemon's copy of one file, written to its own name (or FILE; ~-o -~ for stdout) |
 | ~computer rebuild <agent>~ | destroy the guest and build it again from the image |
+
+*** The agent board: ~task board~
+
+~clawtilla task board --agent oxpecker~ answers "where is oxpecker right now, and what is still in front of him?" (since 0.78.0).  ~--team forge~ without an agent is the team's lead's board; with one, it is that agent's cards and the team's lanes.  ~--window~ is how far back the done column reaches (~today~ by default, from ~orchestration.board_window~; ~6h~, ~7d~).  The agent may also be given bare: ~clawtilla task board oxpecker~.
+
+#+begin_example
+oxpecker  running  (done since today, quiet after 20m)
+  on plan  Fix the export
+  now: Bash: make -j20 test  (2m ago)
+  mailbox 3 | backlog 4 | in flight 2 | in review 1 | blocked 1 | done 0
+
+== Blocked (1) ==
+  del-a  #41 clawtilla Fix the importer  6m  $1.25
+      blocked: child_failed del-a-1 (wildebuild): the build broke
+      > wildebuild   failed       12m  del-a-1  Rebuild the parser
+
+== Backlog (4) ==
+  1. bug-1  #44 Fix bug 1  age 4h00m
+  ...
+  4. bug-4  Fix bug 4  age 5h00m  (held)
+
+== In review (1) ==
+  rev  Fix bug rev  30m
+      review: rev-1 from wildebuild, waiting for oxpecker for 30m
+      > wildebuild   review     2h00m  rev-1  Fix bug rev-1
+
+== Lanes ==
+  bufferlo     running    idle 7m  queued 0, running 1, mailbox 1
+      on del-b-1  Fix bug del-b-1
+#+end_example
+
+One section per column, in the reply's order, empty ones included.  A card is one line -- its backlog position, id, VENTURE ticket, repository, title, how long it has been going (its age in the backlog), and what it cost -- then its phase, why it is blocked, what waits for a verdict and for how long, its last note (first line, cut), where a done card landed, and a ~>~ line per worker chip with its ~after:~ links.  The lanes follow.  ~--json~ prints the ~task.board~ reply itself; the text is =clawt_board_render_text()= over that same reply, so the two cannot say different things.  The columns and their rules are in [[file:tasks.org::#agent-board][tasks.org]]; the reply in [[file:ipc-protocol.org::#task-board][ipc-protocol.org]].
 
 Two verbs are not for people.  ~connector relay <name>~ and
 ~computer desktop-mcp <agent>~ speak MCP on stdout and are what an

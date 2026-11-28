@@ -28,7 +28,7 @@ One unit of work: origin (who asked), assignee, prompt, title, state, result, `p
 ## How a task finishes (agent side)
 
 - Assignee: `clawtilla_task_complete` (`task_id`, `result`), or just answer: the last thing it wrote is taken as the result (marked *inferred*; status/result say so).
-- Not done yet: `clawtilla_task_progress` (`task_id`, `note`) holds it open past THIS turn only (repeat each turn) and marks it `running`.
+- Not done yet: `clawtilla_task_progress` (`task_id`, `note`) holds it open past THIS turn only (repeat each turn) and marks it `running`. Optional `phase` (since 0.78.0) says where on the agent board it is; see "The agent board".
 - Turn-end completion is vetoed when: the turn was not the assignee's; the assignee is still typing; it called `clawtilla_task_progress` this turn; it has children still running.
 - Settle notice: on any terminal state clawtilla (not the assignee) tells the delegator, in the room the delegation was made in, closed exchange. Act with tools: `clawtilla_message_user` for a root task, `clawtilla_task_progress`/`_complete` on the parent mid-chain. Never poll; results for a busy room are held and merged.
 - Cancel: `clawtilla_task_cancel` (delegator or assignee only) takes the whole subtree. Depth limit is `orchestration.max_hops` measured from the parent.
@@ -98,10 +98,24 @@ projects:
 - Hard stop refuses delegation, new tasks, worktree routine/trigger runs and held releases with `LOOP_LIMIT`; running work continues.
 - Manage: `clawtilla project list` (month spend, `(stopped)`), `clawtilla project create <id> key=value ...` (name, directory, goal, review_by, agents, monthly_budget_usd, budget_warn_percent, budget_hard_stop), `clawtilla project set <id> <key> <value>` (`""` removes), `clawtilla project rm <id>`. IPC `project.list/create/set/remove`. VENTURE keys: `venture_repo_id`, `venture_milestone_id`, `venture_goal_id`.
 
+## The agent board (`task.board`, since 0.78.0)
+
+"Where is X right now, and what is still in front of it?" for one agent or a team's lead. Rules: docs/tasks.org "The agent board"; wire shape: docs/ipc-protocol.org "task.board".
+
+- Cards = the agent's TOP-LEVEL tasks in the live set (assigned to it, parent not its own). Its own sub-tasks are chips, not cards. Children = chips (worker, state, elapsed, sibling `after` links).
+- One column each, by the pure `clawt_board_classify()`, first match wins: hidden (not its, unassigned, cancelled, finished before the window) → `done` (completed in window) → `blocked` (pinned: failed/stalled itself; failed/stalled child not acknowledged by a later progress/phase report; open operator decision on it or a child, or a child waiting on `operator`; its own `waiting_on`; phase `blocked`; quiet) → `backlog` (pending, or held on `after:`) → `review` (its own result awaits its reviewer) → reported phase (planning, delegated, reviewing→review, gating/landing→gating) → `review` (a child's result awaits THIS agent) → `delegated` (a live child) → `planning`.
+- Phase: optional `phase` on `clawtilla_task_progress` / `clawtilla_task_complete` (planning|delegated|reviewing|gating|landing|blocked, case forgiven). Unknown → the call is refused and nothing is recorded. Stored on the task; cleared when it goes back to `pending`. Overrides inference, never the blocked reasons.
+- Quiet (not "stalled", which is a state): running, no wait pending, every unfinished child running, nothing heard (progress, phase, streamed step, state change) for `orchestration.board_quiet_minutes` (20; 0 off). Cards carry `quiet_at` for client-side timers.
+- Timeline per card/chip: state spans from the journal (a row per state change since 0.35.0), else from created/started/finished stamps (`source: stamps`); phase spans from the task's phase history (0.78.0 on).
+- Totals: `listed` (= `task.list {agent}`) = `cards` + `hidden` + `nested` − `from_history`.
+- No daemon polling: clients re-ask on `task.changed`, `task.noted`, `agent.state`, `mailbox.*`, `decision.*`, `wait.changed`; patch steps from `turn.step`.
+- `clawtilla task board --agent A [--team T] [--window today|6h|7d] [--no-timeline] [--json]`; text = `clawt_board_render_text()` over the same JSON.
+
 ## Task CLI summary
 
 ```
 clawtilla task list [--history] [--state S] [--agent A] [--before UNIX] [--limit N]
+clawtilla task board --agent A [--team T] [--window today|<N>h|<N>d] [--no-timeline] [--json]
 clawtilla task show <id> [--journal]
 clawtilla task create [--agent A] [--title T] [--after T1,T2] [--review lead|delegator|operator|AGENT|none] \
         [--repo DIR [--base REF]] [--project ID] "<prompt>"
