@@ -115,6 +115,7 @@
 #include "chat/clawt-change.h"
 #include "integration/clawt-media.h"
 #include "office/clawt-office-sheet.h"
+#include "office/clawt-office-face.h"
 #include "office/clawt-office-restyle.h"
 #include "chat/clawt-draft-store.h"
 #include "chat/clawt-room.h"
@@ -255,6 +256,7 @@
 #include "office/clawt-office-pack.h"
 #include "office/clawt-office-frames.h"
 #include "office/clawt-office-view.h"
+#include "office/clawt-office-camera.h"
 #include "office/clawt-office-board.h"
 #include "agent/clawt-agent-confine.h"
 

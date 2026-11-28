@@ -25,7 +25,12 @@
 #     4K with --ui-scale 2, the board is drawn and both the board and the
 #     rectangle its corners cover are inside the view (VENTURE #24: in
 #     modern-office it stood below the frame), and the board still changes
-#     the frame only inside that rectangle.
+#     the frame only inside that rectangle;
+#   * at 1600x1200 and 2294x2231, Fit (modern-office, usage off) fills at
+#     least 95% of the limiting side, measured from the PNG.  The second
+#     size used to floor to 1x and leave the map near half the window
+#     (VENTURE #43).  The panel and the board are still inside the view
+#     at both sizes.
 #
 # The frames with the board are kept as references in
 # tests/fixtures/office/board-shots/ (CLAWT_BOARD_SHOTS_UPDATE=1 rewrites
@@ -68,7 +73,7 @@ cleanup () {
 trap cleanup EXIT
 
 # a display of our own: -displayfd picks a free number and says which
-Xvfb -displayfd 3 -screen 0 1920x1080x24 -nolisten tcp 3> "${RUN}/display" \
+Xvfb -displayfd 3 -screen 0 4096x4096x24 -nolisten tcp 3> "${RUN}/display" \
 	> "${RUN}/xvfb.log" 2>&1 &
 XVFB_PID=$!
 for _ in $(seq 50)
@@ -162,6 +167,46 @@ do
 			cp "${RUN}/${name}.png" "${FIXTURES}/board-shots/${name}.png"
 		fi
 	done
+
+	# snapped, not eased: five frames is enough for the move to be on screen
+	name="${world}-3d-moved"
+	shot "${name}" "${world}" --3d --frames 5 \
+		--camera "20,16,2.0,0.76,90" || continue
+	check "${name}: the moved camera keeps the board in view" inview \
+		"${RUN}/${name}.json" 3d
+	check "${name}: the board moved from the default framing" moved \
+		"${RUN}/${world}-3d-default.json" "${RUN}/${name}.json" 40
+
+	for size in 1600x1200 2294x2231
+	do
+		w="${size%x*}"
+		h="${size#*x}"
+		name="${world}-3d-${w}x${h}"
+		shot "${name}" "${world}" --3d --frames 5 \
+			--width "${w}" --height "${h}" || continue
+		check "${name}: the board stays in view at ${w}x${h}" inview \
+			"${RUN}/${name}.json" 3d
+	done
+done
+
+# modern-office is 44 by 40 tiles of 32.  Fit must fill the limiting axis.
+MAP_W=1408
+MAP_H=1280
+for size in 1600x1200 2294x2231
+do
+	w="${size%x*}"
+	h="${size#*x}"
+	name="modern-office-span-${w}x${h}"
+	shot "${name}" modern-office --zoom fit --frames 5 --usage off \
+		--width "${w}" --height "${h}" || continue
+	check "${name}: the map spans the limiting side" span \
+		"${RUN}/${name}.png" "${MAP_W}" "${MAP_H}"
+	shot "${name}-panel" modern-office --zoom fit --frames 5 --usage-open \
+		--width "${w}" --height "${h}" || continue
+	check "${name}: the details panel stays in view" panel \
+		"${RUN}/${name}-panel.json"
+	check "${name}: the board stays in view" inview \
+		"${RUN}/${name}-panel.json" 2d
 done
 
 if [[ -n "${CLAWT_BOARD_SHOTS_OUT:-}" ]]

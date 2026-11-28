@@ -196,12 +196,14 @@ struct _OfficeView {
     GtkWidget         *stage;       /* GtkOverlay: the size, and the picture on it */
     GtkWidget         *sizer;       /* the overlay's main child, whose size is the view's */
     GtkWidget         *picture;
+    guint              held_key[16]; /* raylib codes forwarded, so focus-out can release them */
+    guint              n_held;
     ClawtNearestPaintable *paintable;  /* the picture's, for as long as the view lives */
 
     /* the toolbar over the drawing */
     GtkWidget         *mode_2d;     /* GtkToggleButton, grouped with mode_3d */
     GtkWidget         *mode_3d;
-    GtkWidget         *zoom_buttons[3];  /* Fit, 1x, 2x, by ClawtOfficeZoom */
+    GtkWidget         *zoom_buttons[4];  /* by ClawtOfficeZoom: Fit, 1x, 2x, pixel */
     GtkWidget         *usage;       /* GtkDropDown: on the wall, in the corner, off */
     GtkWidget         *follow;      /* GtkDropDown: nobody, then the roster */
     GtkStringList     *follow_names;
@@ -552,25 +554,114 @@ on_leave(GtkEventControllerMotion *controller, gpointer user_data)
                &error);
 }
 
-/* raylib's KEY_ESCAPE, the one key the renderer listens for */
-#define FRAME_KEY_ESCAPE (256)
+#define HELD_MAX (16)
 
-/* Escape over the drawing closes the usage panel; other keys go on to the window. */
+static void
+hold_key(OfficeView *view, guint ray, gboolean pressed)
+{
+    guint i;
+
+    for (i = 0; i < view->n_held; i++) {
+        if (view->held_key[i] != ray)
+            continue;
+        if (!pressed) {
+            view->held_key[i] = view->held_key[view->n_held - 1];
+            view->n_held--;
+        }
+        return;
+    }
+    if (pressed && view->n_held < HELD_MAX)
+        view->held_key[view->n_held++] = ray;
+}
+
+/* Focus left the drawing: every key it was holding is up, or W stays down. */
+static void
+release_held(OfficeView *view)
+{
+    guint i;
+
+    for (i = 0; i < view->n_held; i++) {
+        g_autoptr(GError) error = NULL;
+
+        input_sent(view, clawt_office_frames_send_key(view->frames, view->held_key[i],
+                                                      FALSE, 0, 0, &error), &error);
+    }
+    view->n_held = 0;
+}
+
+/*
+ * Movement, Shift, F, Home and Escape, and only while the drawing has
+ * focus.  Return, Tab and U stay with GTK: key_from_gdk answers 0 for them.
+ */
+static gboolean
+forward_key(OfficeView *view, guint keyval, GdkModifierType state, gboolean pressed)
+{
+    guint ray;
+    guint mods;
+    g_autoptr(GError) error = NULL;
+
+    if (view == NULL || view->picture == NULL || !gtk_widget_has_focus(view->picture))
+        return FALSE;
+    ray = clawt_office_key_from_gdk(keyval);
+    if (ray == 0)
+        return FALSE;
+    mods = clawt_office_modifiers_from_gdk((guint)state);
+    input_sent(view, clawt_office_frames_send_key(view->frames, ray, pressed, mods, 0, &error),
+               &error);
+    hold_key(view, ray, pressed);
+    return TRUE;
+}
+
 static gboolean
 on_key_pressed(GtkEventControllerKey *controller, guint keyval, guint keycode,
                GdkModifierType state, gpointer user_data)
 {
-    OfficeView *view = running_view(user_data);
-    g_autoptr(GError) error = NULL;
-
     (void)controller;
     (void)keycode;
-    (void)state;
-    if (view == NULL || keyval != GDK_KEY_Escape)
-        return FALSE;
-    input_sent(view, clawt_office_frames_send_key(view->frames, FRAME_KEY_ESCAPE, TRUE, 0, 0,
-                                                  &error), &error);
-    return TRUE;
+    return forward_key(running_view(user_data), keyval, state, TRUE);
+}
+
+static gboolean
+on_key_released(GtkEventControllerKey *controller, guint keyval, guint keycode,
+                GdkModifierType state, gpointer user_data)
+{
+    (void)controller;
+    (void)keycode;
+    return forward_key(running_view(user_data), keyval, state, FALSE);
+}
+
+static void
+on_focus_leave(GtkEventControllerFocus *controller, gpointer user_data)
+{
+    OfficeView *view = running_view(user_data);
+
+    (void)controller;
+    if (view != NULL)
+        release_held(view);
+}
+
+/* One sheet for the whole display: a ring while the drawing has the keys. */
+static void
+install_focus_ring(void)
+{
+    static gboolean done = FALSE;
+    GtkCssProvider *provider;
+    GdkDisplay *display;
+
+    if (done)
+        return;
+    display = gdk_display_get_default();
+    if (display == NULL)
+        return;
+    done = TRUE;
+    provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(provider,
+        "picture.office-picture:focus {"
+        " box-shadow: inset 0 0 0 2px @accent_bg_color;"
+        "}");
+    gtk_style_context_add_provider_for_display(display, GTK_STYLE_PROVIDER(provider),
+                                                GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(provider);
 }
 
 /* GDK numbers buttons 1 left, 2 middle, 3 right; raylib 0, 2, 1. */
@@ -1725,9 +1816,12 @@ build_toolbar(OfficeView *view)
         gtk_box_append(GTK_BOX(bar), open_button);
     }
 
-    /* Fit, 1x, 2x */
+    /* Fit, Pixel-perfect, 1x, 2x.  The array is indexed by the enum. */
     gtk_widget_add_css_class(zooms, "linked");
     view->zoom_buttons[CLAWT_OFFICE_ZOOM_FIT] = toggle_in(zooms, NULL, "Fit",
+        "The whole office, at the largest scale that fits");
+    view->zoom_buttons[CLAWT_OFFICE_ZOOM_PIXEL] = toggle_in(zooms,
+        view->zoom_buttons[CLAWT_OFFICE_ZOOM_FIT], "Pixel-perfect",
         "The whole office, at the largest whole-number scale that fits");
     view->zoom_buttons[CLAWT_OFFICE_ZOOM_1X] = toggle_in(zooms,
         view->zoom_buttons[CLAWT_OFFICE_ZOOM_FIT], "1x",
@@ -1787,8 +1881,8 @@ build_toolbar(OfficeView *view)
     gtk_box_append(GTK_BOX(column), bar);
 
     /* the same words as clawtilla-lrg's Office page */
-    hint = gtk_label_new("Click somebody to open their conversation; drag or scroll to "
-                         "turn the 3D view.");
+    hint = gtk_label_new("Right-drag to look, WASD to move, Q/E to turn, wheel to zoom, "
+                         "F to reset. Click somebody to open their conversation.");
     gtk_widget_add_css_class(hint, "dim-label");
     gtk_label_set_xalign(GTK_LABEL(hint), 0.0f);
     gtk_label_set_ellipsize(GTK_LABEL(hint), PANGO_ELLIPSIZE_END);
@@ -1882,6 +1976,8 @@ clawt_gtk_office_view_attach(ClawtWindow *self)
     gtk_widget_set_halign(view->picture, GTK_ALIGN_FILL);
     gtk_widget_set_valign(view->picture, GTK_ALIGN_FILL);
     gtk_widget_add_css_class(view->picture, "card");
+    gtk_widget_add_css_class(view->picture, "office-picture");
+    install_focus_ring();
     gtk_overlay_add_overlay(GTK_OVERLAY(view->stage), view->picture);
     gtk_box_append(GTK_BOX(view->drawing), view->stage);
     gtk_box_append(GTK_BOX(box), view->drawing);
@@ -1894,7 +1990,14 @@ clawt_gtk_office_view_attach(ClawtWindow *self)
     gtk_widget_set_focusable(view->picture, TRUE);
     key = gtk_event_controller_key_new();
     g_signal_connect(key, "key-pressed", G_CALLBACK(on_key_pressed), self);
+    g_signal_connect(key, "key-released", G_CALLBACK(on_key_released), self);
     gtk_widget_add_controller(view->picture, key);
+    {
+        GtkEventController *focus = gtk_event_controller_focus_new();
+
+        g_signal_connect(focus, "leave", G_CALLBACK(on_focus_leave), self);
+        gtk_widget_add_controller(view->picture, focus);
+    }
 
     click = gtk_gesture_click_new();
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);

@@ -165,6 +165,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/office/clawt-office-pack.h \
 	$(SRCDIR)/office/clawt-office-frames.h \
 	$(SRCDIR)/office/clawt-office-view.h \
+	$(SRCDIR)/office/clawt-office-camera.h \
 	$(SRCDIR)/office/clawt-office-board.h \
 	$(SRCDIR)/agent/clawt-agent-confine.h \
 	$(SRCDIR)/computer/clawt-exec-result.h \
@@ -231,6 +232,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-change.h \
 	$(SRCDIR)/integration/clawt-media.h \
 	$(SRCDIR)/office/clawt-office-sheet.h \
+	$(SRCDIR)/office/clawt-office-face.h \
 	$(SRCDIR)/office/clawt-office-restyle.h \
 	$(SRCDIR)/chat/clawt-draft-store.h \
 	$(SRCDIR)/chat/clawt-room.h \
@@ -439,6 +441,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/office/clawt-office-pack.c \
 	$(SRCDIR)/office/clawt-office-frames.c \
 	$(SRCDIR)/office/clawt-office-view.c \
+	$(SRCDIR)/office/clawt-office-camera.c \
 	$(SRCDIR)/office/clawt-office-board.c \
 	$(SRCDIR)/agent/clawt-agent-confine.c \
 	$(SRCDIR)/computer/clawt-exec-result.c \
@@ -511,6 +514,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-change.c \
 	$(SRCDIR)/integration/clawt-media.c \
 	$(SRCDIR)/office/clawt-office-sheet.c \
+	$(SRCDIR)/office/clawt-office-face.c \
 	$(SRCDIR)/office/clawt-office-restyle.c \
 	$(SRCDIR)/chat/clawt-draft-store.c \
 	$(SRCDIR)/chat/clawt-room.c \
@@ -834,6 +838,10 @@ endif
 # test-web-app.c #includes the web client's state, for the same reason.
 $(OUTDIR)/tests/test-web-app: $(WEB_SRCDIR)/web-app.c $(WEB_SRCDIR)/web-files.c \
                               $(WEB_SRCDIR)/web-pages.h $(WEB_SRCDIR)/clawt-web.h
+
+# test-office-feed.c #includes the feed, which is not in libclawt.
+$(OUTDIR)/tests/test-office-feed: $(OFFICE_SRCDIR)/office-feed.c \
+                                  $(OFFICE_SRCDIR)/office-feed.h
 
 # test-web-office.c #includes the office view and what it is drawn with.
 $(OUTDIR)/tests/test-web-office: $(WEB_SRCDIR)/web-office-view.c \
@@ -1278,7 +1286,7 @@ $(OUTDIR)/tests/test-config-offline: $(CLI_BIN_TARGET)
 $(OUTDIR)/tests/test-sentinel: $(CLI_BIN_TARGET)
 
 .PHONY: test  ## Build and run the hermetic test suite
-test: $(TEST_BINARIES) test-plugins plugins
+test: $(TEST_BINARIES) test-plugins plugins $(DAEMON_BIN_TARGET)
 	@echo "Running tests..."
 	@TMPDIR=$$(mktemp -d /tmp/clawt-run-XXXXXX); export TMPDIR; \
 	HOME="$$TMPDIR/no-home"; export HOME; \

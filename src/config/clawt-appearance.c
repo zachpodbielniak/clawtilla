@@ -703,8 +703,17 @@ clawt_appearance_set_office_zoom(ClawtAppearance *self, ClawtOfficeZoom zoom)
 {
     g_return_if_fail(self != NULL);
 
-    self->office_zoom = zoom == CLAWT_OFFICE_ZOOM_1X || zoom == CLAWT_OFFICE_ZOOM_2X
-                        ? zoom : CLAWT_OFFICE_ZOOM_FIT;
+    switch (zoom) {
+    case CLAWT_OFFICE_ZOOM_1X:
+    case CLAWT_OFFICE_ZOOM_2X:
+    case CLAWT_OFFICE_ZOOM_PIXEL:
+        self->office_zoom = zoom;
+        break;
+    case CLAWT_OFFICE_ZOOM_FIT:
+    default:
+        self->office_zoom = CLAWT_OFFICE_ZOOM_FIT;
+        break;
+    }
 }
 
 ClawtOfficeUsagePlacement
@@ -1860,8 +1869,8 @@ clawt_appearance_parse(const gchar *text, GError **error)
         ClawtOfficeZoom zoom = CLAWT_OFFICE_ZOOM_FIT;
 
         if (!clawt_office_zoom_from_nick(value, &zoom))
-            g_warning("appearance: office_zoom '%s' is not one of fit, 1x, "
-                      "2x; using fit", value);
+            g_warning("appearance: office_zoom '%s' is not one of fit, pixel, "
+                      "1x, 2x; using fit", value);
 
         clawt_appearance_set_office_zoom(self, zoom);
     }
@@ -2065,7 +2074,9 @@ clawt_appearance_to_data(ClawtAppearance *self)
         "\n"
         "# How clawtilla-gtk's Office page draws the office: 2d (the map\n"
         "# from above) or 3d (the level, from an orbiting camera), and how\n"
-        "# far the map is zoomed: fit, 1x or 2x. The page remembers them\n"
+        "# far the map is zoomed: fit, pixel, 1x or 2x. fit fills the\n"
+        "# view at a fractional scale; pixel is that scale floored to a\n"
+        "# whole number. The page remembers them\n"
         "# when you switch; a world with no 3D level is drawn in 2D.\n"
         "# office_usage is where provider usage is shown: world (on the\n"
         "# wall the pack tags usage_board), corner (a panel docked in the\n"

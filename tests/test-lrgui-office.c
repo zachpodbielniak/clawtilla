@@ -174,6 +174,37 @@ test_world_adapters(void)
  * metres high.  A real height difference (bones short of the hair, a
  * hat) is not a unit mistake.
  */
+/*
+ * The face the scene will draw, with no GL context: a picture when one
+ * is stored, the generated face when it is not, and the character sheet
+ * when that is what the agent has -- the picture does not replace it.
+ */
+static void
+test_face_kind(void)
+{
+    ClawtOfficeScene *scene = clawt_office_scene_new();
+    g_autoptr(JsonParser) parser = json_parser_new();
+    JsonObject *character;
+
+    clawt_office_scene_set_look(scene, "ada", "Ada", NULL, TRUE);
+    g_assert_cmpint(clawt_office_scene_face_kind(scene, "ada"), ==,
+                    CLAWT_OFFICE_FACE_PICTURE);
+
+    clawt_office_scene_set_look(scene, "bea", "Bea", NULL, FALSE);
+    g_assert_cmpint(clawt_office_scene_face_kind(scene, "bea"), ==,
+                    CLAWT_OFFICE_FACE_GENERATED);
+
+    clawt_office_scene_set_look(scene, "cy", "Cy", "initials", TRUE);
+    g_assert_true(json_parser_load_from_data(parser,
+        "{\"sheet\":\"hero.png\",\"animations\":{}}", -1, NULL));
+    character = json_node_get_object(json_parser_get_root(parser));
+    clawt_office_scene_set_character(scene, "cy", "/tmp", character);
+    g_assert_cmpint(clawt_office_scene_face_kind(scene, "cy"), ==,
+                    CLAWT_OFFICE_FACE_CHARACTER);
+
+    clawt_office_scene_free(scene);
+}
+
 static void
 test_units_ratio(void)
 {
@@ -200,6 +231,7 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/lrgui/office/simulate-uses-the-world", test_simulate_uses_the_world);
     g_test_add_func("/lrgui/office/layout-in-and-out", test_layout_in_and_out);
     g_test_add_func("/lrgui/office/world-adapters", test_world_adapters);
+    g_test_add_func("/lrgui/office/face-kind", test_face_kind);
     g_test_add_func("/lrgui/office/units-ratio", test_units_ratio);
 #else
     g_test_message("built without OFFICE=1: the office scene is not compiled in");

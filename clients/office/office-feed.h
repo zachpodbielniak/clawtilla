@@ -33,8 +33,17 @@ typedef struct _ClawtOfficeFeed ClawtOfficeFeed;
  *   under @dir at the paths @character names (`office.characters`); may be %NULL
  * @usage: what each provider login has left (`usage.providers`, as it
  *   stands -- the board never asks for a fresh read); may be %NULL
+ * @look: which face @id wears, from agent.list.  @face is the resolved
+ *   shape name or "initials", or %NULL.  @has_avatar is whether a picture
+ *   is stored.  May be %NULL
+ * @portrait: the decoded picture for @id, or a clear.  @rgba is square
+ *   straight RGBA, @size on a side, valid only for this call (the host
+ *   copies it); %NULL @rgba drops a picture the host is holding.  @etag
+ *   is the bytes' tag, or %NULL when clearing.  May be %NULL
  *
  * What the feed tells its host.  Called on the host's main context.
+ * @look and @portrait were added at the end so a host that still
+ * initialises the struct by position keeps them %NULL.
  */
 typedef struct {
     void (*world)(const gchar *pack_dir, JsonObject *world, gpointer user_data);
@@ -44,6 +53,10 @@ typedef struct {
     void (*character)(const gchar *agent, const gchar *dir, JsonObject *character,
                       gpointer user_data);
     void (*usage)(JsonObject *usage, gpointer user_data);
+    void (*look)(const gchar *id, const gchar *name, const gchar *face,
+                 gboolean has_avatar, gpointer user_data);
+    void (*portrait)(const gchar *id, const guint8 *rgba, gint size,
+                     const gchar *etag, gpointer user_data);
 } ClawtOfficeFeedFuncs;
 
 /**
@@ -68,7 +81,11 @@ ClawtOfficeFeed *clawt_office_feed_new(ClawtClient                *client,
  * @event: an event from the daemon
  *
  * Re-reads the layout on office.presence, and the world on
- * office.changed.  The host forwards its events here.
+ * office.changed.  agent.changed (and any agent.avatar* event) re-reads
+ * agent.list and refreshes that agent's picture.  A list reply older
+ * than the newest one already applied is ignored, so a slow answer
+ * cannot clear a picture a newer list has shown.  The host forwards its
+ * events here.
  */
 void clawt_office_feed_event(ClawtOfficeFeed *self, ClawtEvent *event);
 

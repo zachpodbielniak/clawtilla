@@ -49,10 +49,11 @@ const gchar *
 clawt_office_zoom_nick(ClawtOfficeZoom zoom)
 {
     switch (zoom) {
-    case CLAWT_OFFICE_ZOOM_1X: return "1x";
-    case CLAWT_OFFICE_ZOOM_2X: return "2x";
+    case CLAWT_OFFICE_ZOOM_1X:    return "1x";
+    case CLAWT_OFFICE_ZOOM_2X:    return "2x";
+    case CLAWT_OFFICE_ZOOM_PIXEL: return "pixel";
     case CLAWT_OFFICE_ZOOM_FIT:
-    default:                   return "fit";
+    default:                      return "fit";
     }
 }
 
@@ -73,6 +74,12 @@ clawt_office_zoom_from_nick(const gchar *nick, ClawtOfficeZoom *out)
     }
     if (g_ascii_strcasecmp(nick, "2x") == 0) {
         *out = CLAWT_OFFICE_ZOOM_2X;
+        return TRUE;
+    }
+    /* the button says Pixel-perfect; the file and the flag say pixel */
+    if (g_ascii_strcasecmp(nick, "pixel") == 0 ||
+        g_ascii_strcasecmp(nick, "pixel-perfect") == 0) {
+        *out = CLAWT_OFFICE_ZOOM_PIXEL;
         return TRUE;
     }
     return FALSE;
@@ -170,8 +177,11 @@ clawt_office_view_map_zoom(ClawtOfficeZoom zoom, gint ui_scale, gfloat view_widt
         return (gfloat)scale;
     case CLAWT_OFFICE_ZOOM_2X:
         return 2.0f * (gfloat)scale;
+    case CLAWT_OFFICE_ZOOM_PIXEL:
     case CLAWT_OFFICE_ZOOM_FIT:
+        break;
     default:
+        zoom = CLAWT_OFFICE_ZOOM_FIT;
         break;
     }
 
@@ -181,11 +191,16 @@ clawt_office_view_map_zoom(ClawtOfficeZoom zoom, gint ui_scale, gfloat view_widt
     fit = MIN(view_width / map_width, view_height / map_height);
 
     /*
-     * Whole numbers when the map fits at one or more: a 2.6x map has
-     * some pixels three wide and some two, which reads as shimmering
-     * when anything walks.  Below one there is no whole number to take.
+     * Pixel-perfect keeps the old Fit: a whole number when the map fits
+     * at one or more, because a 2.6x map has some pixels three wide and
+     * some two, which shimmers when anything walks.  Below one there is
+     * no whole number to take.  Fit itself is the fraction, so the map
+     * fills the view between 1x and 2x; the camera target is snapped to
+     * a screen pixel instead (office-scene.c) so the art does not crawl.
      */
-    return fit >= 1.0f ? floorf(fit) : fit;
+    if (zoom == CLAWT_OFFICE_ZOOM_PIXEL && fit >= 1.0f)
+        return floorf(fit);
+    return fit;
 }
 
 void
@@ -407,7 +422,8 @@ clawt_office_view_control_parse(const gchar *line, ClawtOfficeViewControl *out,
     if (zoom != NULL) {
         if (!clawt_office_zoom_from_nick(zoom, &out->zoom)) {
             g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
-                        "the control line's zoom \"%s\" is not fit, 1x or 2x", zoom);
+                        "the control line's zoom \"%s\" is not fit, pixel, 1x or 2x",
+                        zoom);
             return FALSE;
         }
         out->has_zoom = TRUE;

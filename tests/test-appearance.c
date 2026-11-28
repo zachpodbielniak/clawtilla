@@ -1771,6 +1771,8 @@ test_office_view_round_trip(void)
     g_autoptr(ClawtAppearance) copy = NULL;
     g_autoptr(ClawtAppearance) typo = NULL;
     g_autoptr(ClawtAppearance) shouted = NULL;
+    g_autoptr(ClawtAppearance) pixel = NULL;
+    g_autofree gchar *pixel_data = NULL;
     g_autofree gchar *fresh = NULL;
     g_autofree gchar *data = NULL;
 
@@ -1799,6 +1801,13 @@ test_office_view_round_trip(void)
     g_assert_nonnull(shouted);
     g_assert_cmpint(clawt_appearance_get_office_mode(shouted), ==, CLAWT_OFFICE_VIEW_3D);
     g_assert_cmpint(clawt_appearance_get_office_zoom(shouted), ==, CLAWT_OFFICE_ZOOM_1X);
+
+    /* pixel-perfect is the button's words; the file stores pixel */
+    pixel = clawt_appearance_parse("office_zoom: pixel-perfect\n", NULL);
+    g_assert_nonnull(pixel);
+    g_assert_cmpint(clawt_appearance_get_office_zoom(pixel), ==, CLAWT_OFFICE_ZOOM_PIXEL);
+    pixel_data = clawt_appearance_to_data(pixel);
+    g_assert_nonnull(strstr(pixel_data, "office_zoom: pixel\n"));
 
     /* a value out of the enum is clamped by the setter, not stored */
     clawt_appearance_set_office_zoom(appearance, (ClawtOfficeZoom)7);

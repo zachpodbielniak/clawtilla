@@ -589,6 +589,46 @@ test_input_bytes(void)
     read_exact(pair.app, got, sizeof(key));
     g_assert_cmpmem(got, sizeof(key), key, sizeof(key));
 
+    /*
+     * What the GTK Office page forwards for a movement key and a
+     * right-drag: W down and W up (raylib 87, from clawt_office_key_from_gdk),
+     * then button 1.  A widget test would need a display; these are the
+     * bytes that call produces.  The button's identity is the u32 already
+     * covered above, and again here so a right-drag cannot be sent as left.
+     */
+    {
+        static const guint8 w_down[] = {
+            'L', 'F', 'R', 'M', 1, 0, 19, 0, 16, 0, 0, 0, 0, 0, 0, 0,
+            87, 0, 0, 0,                /* KEY_W */
+            1, 0, 0, 0,                 /* pressed */
+            0, 0, 0, 0,
+            0, 0, 0, 0
+        };
+        static const guint8 w_up[] = {
+            'L', 'F', 'R', 'M', 1, 0, 19, 0, 16, 0, 0, 0, 0, 0, 0, 0,
+            87, 0, 0, 0,
+            0, 0, 0, 0,                 /* released */
+            0, 0, 0, 0,
+            0, 0, 0, 0
+        };
+
+        g_assert_cmpuint(clawt_office_key_from_gdk(0x0077), ==, 87);
+        g_assert_cmpuint(clawt_office_key_from_gdk(0xff0d), ==, 0);
+        g_assert_true(clawt_office_frames_send_key(pair.frames, 87, TRUE, 0, 0, &error));
+        read_exact(pair.app, got, sizeof(w_down));
+        g_assert_cmpmem(got, sizeof(w_down), w_down, sizeof(w_down));
+        g_assert_true(clawt_office_frames_send_key(pair.frames, 87, FALSE, 0, 0, &error));
+        read_exact(pair.app, got, sizeof(w_up));
+        g_assert_cmpmem(got, sizeof(w_up), w_up, sizeof(w_up));
+        g_assert_true(clawt_office_frames_send_button(pair.frames, 1, TRUE, 4.0f, 5.0f, &error));
+        g_assert_true(clawt_office_frames_send_pointer_move(pair.frames, 12.0f, 8.0f, &error));
+        /* button identity 1, then a move: the drag.  Consume both. */
+        read_exact(pair.app, got, sizeof(button));
+        g_assert_cmpuint(got[16], ==, 1);
+        read_exact(pair.app, got, sizeof(move));
+        g_assert_cmpuint(got[6], ==, 16);
+    }
+
     g_assert_true(clawt_office_frames_send_resize(pair.frames, 1920, 1080, &error));
     read_exact(pair.app, got, sizeof(resize));
     g_assert_cmpmem(got, sizeof(resize), resize, sizeof(resize));

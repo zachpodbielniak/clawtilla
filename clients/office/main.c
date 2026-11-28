@@ -67,6 +67,7 @@ static gint      opt_width = 1280;
 static gint      opt_height = 720;
 static gchar   **opt_adapter_dirs = NULL;
 static gchar    *opt_focus = NULL;
+static gchar    *opt_camera = NULL;
 static gchar    *opt_zoom = NULL;
 static gint      opt_ui_scale = 1;
 static gchar    *opt_usage = NULL;
@@ -107,8 +108,11 @@ static GOptionEntry entries[] = {
     { "height", 0, 0, G_OPTION_ARG_INT, &opt_height, "Height in pixels (default 720)", "H" },
     { "focus", 'f', 0, G_OPTION_ARG_STRING, &opt_focus,
       "Follow this participant with the 3D camera, close up", "ID" },
+    { "camera", 0, 0, G_OPTION_ARG_STRING, &opt_camera,
+      "Snap the 3D camera to x,z,yaw,pitch,distance (tiles and radians) "
+      "and stop Fit and --focus from moving it", "X,Z,YAW,PITCH,DIST" },
     { "zoom", 'z', 0, G_OPTION_ARG_STRING, &opt_zoom,
-      "Zoom the 2D map: fit (default), 1x or 2x", "ZOOM" },
+      "Zoom the 2D map: fit (default), pixel, 1x or 2x", "ZOOM" },
     { "ui-scale", 0, 0, G_OPTION_ARG_INT, &opt_ui_scale,
       "Draw text this many times larger, for a HiDPI screen (1-4, default 1)", "N" },
     { "usage", 'u', 0, G_OPTION_ARG_STRING, &opt_usage,
@@ -140,15 +144,19 @@ static const gchar description_text[] =
     "in a group round, waving a question mark while it waits on you.\n"
     "Turn it on with `clawtilla office on`.\n"
     "\n"
-    "In a window: Tab switches 2D and 3D, the arrow keys or a right-drag\n"
-    "turn the 3D camera, the wheel zooms, a click on somebody prints them,\n"
-    "U cycles where provider usage is shown (world, corner, off), a click\n"
-    "on the usage board opens its details, Escape closes them -- and quits\n"
-    "when nothing is open.\n"
+    "In a window: Tab switches 2D and 3D.  Right-drag looks, middle-drag\n"
+    "or Shift+right-drag pans the floor, W/A/S/D and the arrows move,\n"
+    "Q/E turn, the wheel zooms toward the cursor, F or Home resets to\n"
+    "Fit.  Shift moves and turns faster.  A click on somebody prints\n"
+    "them.  U cycles where provider usage is shown (world, corner, off),\n"
+    "a click on the usage board opens its details, Escape closes them --\n"
+    "and quits when nothing is open.  In 2D, W/A/S/D and the arrows pan,\n"
+    "the wheel zooms around the cursor, and F resets to Fit.\n"
     "\n"
-    "Embedded (--embed FD), a drag turns the 3D view or moves a zoomed 2D\n"
-    "map, and a line of JSON on stdin switches the view without a\n"
-    "restart: {\"mode\":\"3d\",\"focus\":\"chief\",\"zoom\":\"fit\",\"ui_scale\":2,\n"
+    "Embedded (--embed FD), the same controls arrive as frame-protocol\n"
+    "keys and buttons, and a line of JSON on stdin switches the view\n"
+    "without a restart:\n"
+    "{\"mode\":\"3d\",\"focus\":\"chief\",\"zoom\":\"fit\",\"ui_scale\":2,\n"
     "\"usage\":\"world\"}.\n"
     "Each member is optional.\n"
     "\n"
@@ -167,6 +175,7 @@ static const gchar description_text[] =
     "  clawtilla-office --screenshot office.png --width 1600 --height 900\n"
     "  clawtilla-office --adapter-dir ~/src/my-world/build\n"
     "  clawtilla-office --3d --focus chief\n"
+    "  clawtilla-office --3d --camera 22,20,2.0,0.76,40\n"
     "  clawtilla-office --zoom 2x --focus chief\n"
     "  clawtilla-office --screenshot office@2x.png --width 3840 --height 2160 --ui-scale 2\n"
     "  clawtilla-office --usage corner\n"
@@ -210,8 +219,15 @@ typedef struct {
     gint              reported_3d;
     gboolean          press_down;    /* embed: a left press not yet released */
     gboolean          dragged;       /* ...that moved far enough to be a drag */
+    gboolean          edge_left;     /* a left press this dispatch, for a double-click */
+    gboolean          click_pending; /* a left release that may still open somebody */
+    gboolean          have_pointer;  /* embed: last_x/y are a real sample */
     gfloat            press_x;
     gfloat            press_y;
+    gfloat            click_x;
+    gfloat            click_y;
+    gboolean          held_key[360]; /* raylib codes held, from the embed's key signal */
+    gboolean          key_edge[360]; /* went down since the previous frame */
     gint              ui_scale;      /* --ui-scale, or the last control line's */
 } Office;
 
@@ -273,8 +289,23 @@ on_usage(JsonObject *usage, gpointer user_data)
     clawt_office_scene_set_usage(((Office *)user_data)->scene, usage);
 }
 
+static void
+on_look(const gchar *id, const gchar *name, const gchar *face, gboolean has_avatar,
+        gpointer user_data)
+{
+    clawt_office_scene_set_look(((Office *)user_data)->scene, id, name, face, has_avatar);
+}
+
+static void
+on_portrait(const gchar *id, const guint8 *rgba, gint size, const gchar *etag,
+            gpointer user_data)
+{
+    clawt_office_scene_set_portrait(((Office *)user_data)->scene, id, rgba, size, etag);
+}
+
 static const ClawtOfficeFeedFuncs feed_funcs = {
-    on_world, on_layout, on_color, on_status, on_character, on_usage
+    on_world, on_layout, on_color, on_status, on_character, on_usage,
+    on_look, on_portrait
 };
 
 /* The world, loaded once a GL context exists; the pack's own words on failure. */
@@ -534,11 +565,23 @@ load_offline(Office *office, GError **error)
 
 /* ── The three ways to run ──────────────────────────────────────── */
 
+/* The binding table, sampled from raylib.  U and Tab stay outside it. */
+static void
+note_window_keys(ClawtOfficeInput *input)
+{
+    guint i;
+
+    for (i = 0; i < clawt_office_binding_count(); i++) {
+        guint key = clawt_office_binding_key(i);
+
+        clawt_office_input_note_key(input, key, IsKeyPressed((int)key),
+                                    IsKeyDown((int)key));
+    }
+}
+
 static gint
 run_window(Office *office)
 {
-    gboolean dragging = FALSE;
-
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT);
     SetTraceLogLevel(LOG_WARNING);
     InitWindow(opt_width, opt_height, "clawtilla office");
@@ -546,9 +589,21 @@ run_window(Office *office)
     SetExitKey(KEY_NULL);
     while (!WindowShouldClose()) {
         gfloat dt = GetFrameTime();
+        gint sw = MAX(GetScreenWidth(), 1);
+        gint sh = MAX(GetScreenHeight(), 1);
+        gint rw = GetRenderWidth();
+        gint rh = GetRenderHeight();
+        gfloat sx = (gfloat)rw / (gfloat)sw;
+        gfloat sy = (gfloat)rh / (gfloat)sh;
         Vector2 mouse = GetMousePosition();
+        Vector2 delta = GetMouseDelta();
+        ClawtOfficeInput input;
         const gchar *under;
+        gboolean eat;
+        gboolean left_pressed;
+        gfloat slop;
 
+        memset(&input, 0, sizeof(input));
         pump(office->context, 1);
         load_pending(office);
         simulate(office, dt);
@@ -563,24 +618,50 @@ run_window(Office *office)
             clawt_office_scene_set_mode(office->scene,
                 clawt_office_scene_get_mode(office->scene) == CLAWT_OFFICE_SCENE_2D
                 ? CLAWT_OFFICE_SCENE_3D : CLAWT_OFFICE_SCENE_2D);
-        if (IsKeyDown(KEY_LEFT))
-            clawt_office_scene_orbit(office->scene, -1.2f * dt, 0.0f);
-        if (IsKeyDown(KEY_RIGHT))
-            clawt_office_scene_orbit(office->scene, 1.2f * dt, 0.0f);
-        if (GetMouseWheelMove() != 0.0f)
-            clawt_office_scene_orbit(office->scene, 0.0f, GetMouseWheelMove());
-        dragging = IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
-        if (dragging)
-            clawt_office_scene_orbit(office->scene, GetMouseDelta().x * 0.01f, 0.0f);
 
-        under = clawt_office_scene_pointer(office->scene, mouse.x, mouse.y);
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
-            !clawt_office_scene_click(office->scene, mouse.x, mouse.y) && under != NULL)
+        input.dt = dt;
+        input.view_w = (gfloat)rw;
+        input.view_h = (gfloat)rh;
+        input.x = mouse.x * sx;
+        input.y = mouse.y * sy;
+        input.pointer_valid = TRUE;
+        input.wheel = GetMouseWheelMove();
+        input.left_down = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+        input.right_down = IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
+        input.middle_down = IsMouseButtonDown(MOUSE_BUTTON_MIDDLE);
+        left_pressed = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+        input.left_pressed = left_pressed;
+        if (left_pressed) {
+            office->press_x = input.x;
+            office->press_y = input.y;
+            office->dragged = FALSE;
+        }
+        slop = CLICK_SLOP * (gfloat)office->ui_scale;
+        if (input.left_down && !office->dragged &&
+            (fabsf(input.x - office->press_x) > slop ||
+             fabsf(input.y - office->press_y) > slop))
+            office->dragged = TRUE;
+        /*
+         * Right and middle move the 3D camera at once.  A left drag pans
+         * the 2D map, and only once it has left the click.
+         */
+        if (input.right_down || input.middle_down ||
+            (input.left_down && office->dragged &&
+             clawt_office_scene_get_mode(office->scene) != CLAWT_OFFICE_SCENE_3D)) {
+            input.dx = delta.x * sx;
+            input.dy = delta.y * sy;
+        }
+        note_window_keys(&input);
+        eat = clawt_office_scene_input(office->scene, &input);
+
+        under = clawt_office_scene_pointer(office->scene, input.x, input.y);
+        if (left_pressed && !eat &&
+            !clawt_office_scene_click(office->scene, input.x, input.y) && under != NULL)
             announce_open(under);
 
         clawt_office_scene_update(office->scene, dt);
         BeginDrawing();
-        clawt_office_scene_draw(office->scene, GetScreenWidth(), GetScreenHeight());
+        clawt_office_scene_draw(office->scene, rw, rh);
         EndDrawing();
     }
     CloseWindow();
@@ -666,21 +747,23 @@ on_inject_button(LrgInputInject *in, guint button, gboolean pressed, gfloat x, g
                  gpointer user_data)
 {
     Office *office = user_data;
-    const gchar *under;
 
     (void)in;
+    /*
+     * Right and middle are read with is_button_down() after the
+     * dispatch, so the drag keeps the button that started it.  A left
+     * click opens after scene_input(), which may have eaten it as a
+     * double-click on the floor.  Press and release of one click both
+     * arrive inside this dispatch.
+     */
     if (button != 0)
         return;
-    /*
-     * A click opens on release, and only if the pointer stayed put: a
-     * drag turns the view, and one that began on somebody used to open
-     * their chat and leave the Office page under the pointer.
-     */
     if (pressed) {
         office->press_down = TRUE;
         office->dragged = FALSE;
         office->press_x = x;
         office->press_y = y;
+        office->edge_left = TRUE;
         return;
     }
     if (!office->press_down)
@@ -688,24 +771,43 @@ on_inject_button(LrgInputInject *in, guint button, gboolean pressed, gfloat x, g
     office->press_down = FALSE;
     if (office->dragged)
         return;
-    /* the usage board takes its own clicks: open, close, or nothing */
-    if (clawt_office_scene_click(office->scene, x, y))
-        return;
-    under = clawt_office_scene_pointer(office->scene, x, y);
-    if (under != NULL)
-        announce_open(under);
+    office->click_pending = TRUE;
+    office->click_x = x;
+    office->click_y = y;
 }
 
-/* Escape from the host closes the usage panel; nothing else is a key here. */
+/* Movement keys, Shift, F, Home and Escape.  Anything else is ignored. */
 static void
 on_inject_key(LrgInputInject *in, guint key, gboolean pressed, guint modifiers,
               guint codepoint, gpointer user_data)
 {
+    Office *office = user_data;
+
     (void)in;
     (void)modifiers;
     (void)codepoint;
+    if (key < G_N_ELEMENTS(office->held_key)) {
+        if (pressed)
+            office->key_edge[key] = TRUE;
+        office->held_key[key] = pressed;
+    }
     if (pressed && key == (guint)KEY_ESCAPE)
-        clawt_office_scene_dismiss(((Office *)user_data)->scene);
+        clawt_office_scene_dismiss(office->scene);
+}
+
+static void
+note_embed_keys(Office *office, ClawtOfficeInput *input)
+{
+    guint i;
+
+    for (i = 0; i < clawt_office_binding_count(); i++) {
+        guint key = clawt_office_binding_key(i);
+
+        if (key >= G_N_ELEMENTS(office->held_key))
+            continue;
+        clawt_office_input_note_key(input, key, office->key_edge[key], office->held_key[key]);
+        office->key_edge[key] = FALSE;
+    }
 }
 
 /*
@@ -751,29 +853,62 @@ run_embed(Office *office)
             lrg_frame_export_set_size(out, w, h);
         }
         lrg_input_inject_get_pointer(in, &x, &y);
-
-        /* a left drag: past the slop it is a drag, which turns 3D or moves 2D */
-        if (office->press_down && lrg_input_inject_is_button_down(in, 0)) {
+        lrg_input_inject_take_scroll(in, &sx, &sy);
+        /* horizontal wheel is not a camera control; the vertical one dollies */
+        (void)sx;
+        {
+            ClawtOfficeInput input;
+            gboolean left = lrg_input_inject_is_button_down(in, 0);
+            gboolean right = lrg_input_inject_is_button_down(in, 1);
+            gboolean middle = lrg_input_inject_is_button_down(in, 2);
+            gboolean eat;
+            gfloat dx = 0.0f;
+            gfloat dy = 0.0f;
             gfloat slop = CLICK_SLOP * (gfloat)office->ui_scale;
 
-            if (!office->dragged &&
+            memset(&input, 0, sizeof(input));
+            if (office->have_pointer) {
+                dx = x - last_x;
+                dy = y - last_y;
+            }
+            office->have_pointer = TRUE;
+            if (office->press_down && left && !office->dragged &&
                 (fabsf(x - office->press_x) > slop || fabsf(y - office->press_y) > slop))
                 office->dragged = TRUE;
-            if (office->dragged && (x != last_x || y != last_y)) {
-                if (clawt_office_scene_get_mode(office->scene) == CLAWT_OFFICE_SCENE_3D)
-                    clawt_office_scene_orbit(office->scene, (x - last_x) * 0.01f, 0.0f);
-                else
-                    clawt_office_scene_pan(office->scene, x - last_x, y - last_y);
+            input.dt = FRAME_MS / 1000.0f;
+            input.view_w = (gfloat)w;
+            input.view_h = (gfloat)h;
+            input.x = x;
+            input.y = y;
+            input.pointer_valid = x >= 0.0f && y >= 0.0f;
+            input.wheel = sy;
+            input.left_down = left;
+            input.right_down = right;
+            input.middle_down = middle;
+            input.left_pressed = office->edge_left;
+            office->edge_left = FALSE;
+            if (right || middle || (left && office->dragged &&
+                clawt_office_scene_get_mode(office->scene) != CLAWT_OFFICE_SCENE_3D)) {
+                input.dx = dx;
+                input.dy = dy;
             }
+            note_embed_keys(office, &input);
+            eat = clawt_office_scene_input(office->scene, &input);
+            if (office->click_pending && !eat) {
+                const gchar *under;
+
+                if (!clawt_office_scene_click(office->scene, office->click_x, office->click_y)) {
+                    under = clawt_office_scene_pointer(office->scene, office->click_x,
+                                                       office->click_y);
+                    if (under != NULL)
+                        announce_open(under);
+                }
+            }
+            office->click_pending = FALSE;
+            clawt_office_scene_pointer(office->scene, x, y);
         }
         last_x = x;
         last_y = y;
-        lrg_input_inject_take_scroll(in, &sx, &sy);
-        if (sy != 0.0f)
-            clawt_office_scene_orbit(office->scene, 0.0f, sy);
-        if (sx != 0.0f)
-            clawt_office_scene_orbit(office->scene, sx * 0.1f, 0.0f);
-        clawt_office_scene_pointer(office->scene, x, y);
 
         pump(office->context, FRAME_MS);
         load_pending(office);
@@ -788,6 +923,35 @@ run_embed(Office *office)
     }
     CloseWindow();
     return EXIT_SUCCESS;
+}
+
+/* Five numbers, commas between, nothing after.  g_ascii_strtod, not the locale. */
+static gboolean
+parse_camera(const gchar *text, gfloat out[5])
+{
+    const gchar *p = text;
+    guint i;
+
+    if (text == NULL)
+        return FALSE;
+    for (i = 0; i < 5; i++) {
+        gchar *end = NULL;
+
+        if (*p == '\0')
+            return FALSE;
+        out[i] = (gfloat)g_ascii_strtod(p, &end);
+        if (end == p)
+            return FALSE;
+        p = end;
+        if (i < 4) {
+            if (*p != ',')
+                return FALSE;
+            p++;
+        }
+    }
+    while (*p == ' ' || *p == '\t')
+        p++;
+    return *p == '\0';
 }
 
 int
@@ -834,8 +998,8 @@ main(int argc, char *argv[])
         ClawtOfficeZoom zoom = CLAWT_OFFICE_ZOOM_FIT;
 
         if (opt_zoom != NULL && !clawt_office_zoom_from_nick(opt_zoom, &zoom)) {
-            g_printerr("%s: --zoom is fit, 1x or 2x, not \"%s\"\n", CLAWT_OFFICE_BIN_NAME,
-                       opt_zoom);
+            g_printerr("%s: --zoom is fit, pixel, 1x or 2x, not \"%s\"\n",
+                       CLAWT_OFFICE_BIN_NAME, opt_zoom);
             return EXIT_FAILURE;
         }
     }
@@ -888,6 +1052,20 @@ main(int argc, char *argv[])
         clawt_office_usage_placement_from_nick(opt_usage, &usage);
         clawt_office_scene_set_usage_placement(office.scene, usage);
         clawt_office_scene_set_usage_open(office.scene, opt_usage_open);
+    }
+    if (opt_camera != NULL) {
+        gfloat pose[5];
+
+        if (!parse_camera(opt_camera, pose)) {
+            g_printerr("%s: --camera is x,z,yaw,pitch,distance, not \"%s\"\n",
+                       CLAWT_OFFICE_BIN_NAME, opt_camera);
+            clawt_office_scene_free(office.scene);
+            g_main_context_unref(office.context);
+            return EXIT_FAILURE;
+        }
+        /* after focus and zoom, so the pose is what the first frame shows */
+        clawt_office_scene_set_camera(office.scene, pose[0], pose[1], pose[2],
+                                      pose[3], pose[4]);
     }
     office.want_mode = opt_3d ? CLAWT_OFFICE_VIEW_3D : CLAWT_OFFICE_VIEW_2D;
     office.ui_scale = opt_ui_scale;

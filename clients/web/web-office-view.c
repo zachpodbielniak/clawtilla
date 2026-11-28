@@ -306,7 +306,6 @@ office_faces(ClawtWebApp *app, JsonArray *participants)
         const gchar *color = NULL;
         g_autofree gchar *svg = NULL;
         JsonObject *face;
-        gunichar first;
         gchar initial[8] = { 0 };
 
         if (id == NULL)
@@ -319,20 +318,33 @@ office_faces(ClawtWebApp *app, JsonArray *participants)
             color = clawt_web_member(p, "color", NULL);
 
         face = json_object_new();
-        json_object_set_string_member(face, "color",
-                                      clawt_avatar_color(id, name, color));
-        if (agent != NULL && clawt_web_member_bool(agent, "has_avatar", FALSE)) {
-            g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
-            g_autofree gchar *url = g_strdup_printf("/a/%s/avatar", escaped);
+        /*
+         * The same rule the native office uses.  has_character stays
+         * false here: a sheet is a separate `characters` array, and this
+         * object still carries the picture, the SVG and the letter
+         * together, which is what the page already drew from.
+         */
+        {
+            ClawtOfficeFace resolved;
+            gchar color_buf[16];
+            const gchar *face_name = agent != NULL ? clawt_web_member(agent, "face", NULL) : NULL;
+            gboolean has_avatar = agent != NULL &&
+                clawt_web_member_bool(agent, "has_avatar", FALSE);
 
-            json_object_set_string_member(face, "img", url);
+            clawt_office_face_resolve(&resolved, id, name, color, face_name,
+                                      has_avatar, FALSE, color_buf, sizeof(color_buf),
+                                      initial, sizeof(initial));
+            json_object_set_string_member(face, "color", color_buf);
+            if (resolved.has_picture) {
+                g_autofree gchar *url = clawt_office_face_picture_url(id);
+
+                if (url != NULL)
+                    json_object_set_string_member(face, "img", url);
+            }
         }
         svg = clawt_web_face_svg(name, id, color, 64, FALSE);
         if (svg != NULL)
             json_object_set_string_member(face, "svg", svg);
-        first = g_utf8_get_char_validated(name, -1);
-        if (first != (gunichar)-1 && first != (gunichar)-2)
-            g_unichar_to_utf8(g_unichar_toupper(first), initial);
         json_object_set_string_member(face, "initial", initial);
         json_object_set_object_member(faces, id, face);
     }

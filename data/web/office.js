@@ -672,16 +672,30 @@
 	var view = { k: 1, w: 0, h: 0, ox: 0, W: 0, H: 0, a: 0, P: 1, q: 1, ty: 0, boost: 1 };
 
 	/*
+	 * Largest scale at which the whole map fits, aspect kept.  The same
+	 * rule as clawt_office_view_map_zoom() at Fit: a fraction, never
+	 * floored, so a window between 1x and 2x still fills.  An empty map
+	 * or view is 1.  The harness calls this as window.clawtOfficeFitScale.
+	 */
+	function fit_scale(view_w, view_h, mw, mh) {
+		if (!(view_w > 0) || !(view_h > 0) || !(mw > 0) || !(mh > 0))
+			return 1;
+		return Math.min(view_w / mw, view_h / mh);
+	}
+	window.clawtOfficeFitScale = fit_scale;
+
+	/*
 	 * Sizes the stage for the tilt `tilt` (0..1) and leans the floor back
 	 * by that much.  project() below is the same transform as the CSS one
 	 * written here -- translateY, scale, perspective, rotateX, about the
 	 * floor's centre -- so a person stands exactly on their seat whatever
-	 * the angle.
+	 * the angle.  The height budget is 0.74 of the window and never under
+	 * 320: it used to stop at 900, so a tall window left the map small.
 	 */
 	function layout_stage() {
 		var W = stage.clientWidth || 800;
-		var max_h = Math.max(320, Math.min(window.innerHeight * 0.74, 900));
-		var k = Math.min(W / map_w, max_h / map_h);
+		var max_h = Math.max(320, window.innerHeight * 0.74);
+		var k = fit_scale(W, max_h, map_w, map_h);
 		var w = map_w * k, h = map_h * k;
 		var a = TILT_DEGREES * Math.PI / 180 * tilt;
 		var P = PERSPECTIVE * h;
@@ -700,6 +714,8 @@
 		var bottom = h / 2 + ty + q * (h / 2) * Math.cos(a) * s_bot;
 		var H = Math.round(Math.max(bottom + 14 * tilt, h * (1 - tilt) + bottom * tilt));
 		var dpr = window.devicePixelRatio || 1;
+		/* whole device pixels, so a fractional Fit does not shimmer the floor */
+		var ox = Math.round(((W - w) / 2) * dpr) / dpr;
 
 		/*
 		 * People are drawn larger than the map's own scale: a whole floor
@@ -707,7 +723,7 @@
 		 * size, and a face that small is a dot.  Up to 1.9x, so on a big
 		 * screen they are true to the tiles.
 		 */
-		view = { k: k, w: w, h: h, ox: (W - w) / 2, W: W, H: H, a: a, P: P, q: q, ty: ty,
+		view = { k: k, w: w, h: h, ox: ox, W: W, H: H, a: a, P: P, q: q, ty: ty,
 		         boost: Math.max(1, Math.min(1.9, 1.05 / k)) };
 		stage.style.height = H + 'px';
 		floor_cv.style.width = w + 'px';

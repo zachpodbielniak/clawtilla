@@ -101,28 +101,60 @@ test_ui_scale_clamped(void)
 /* ── Zoom ─────────────────────────────────────────────────────────── */
 
 /*
- * modern-office is 1408 x 1280.  In a 1080p view (1600 x 675) it fits
- * only below one, as a fraction; in a 4K one at scale 2 (3200 x 1350) it
- * fits at 1.05 and is drawn at exactly 1 -- a whole number, so pixels are
- * repeated, not smeared.
+ * modern-office is 1408 x 1280.  Fit is the fraction that fits, aspect
+ * kept, including between 1 and 2.  Pixel-perfect is that fraction
+ * floored once it is at least 1, which is what Fit used to do.  Below 1
+ * both stay fractional.  1x and 2x are exactly 1 and 2 logical pixels.
  */
 static void
-test_fit_zoom_is_whole_when_it_can_be(void)
+test_fit_zoom_is_fractional(void)
 {
     gfloat z;
 
+    /* below one: the fraction, for Fit and for Pixel-perfect */
     z = clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_FIT, 1, 1600.0f, 675.0f,
                                    1408.0f, 1280.0f);
     g_assert_cmpfloat_with_epsilon(z, 675.0f / 1280.0f, 1e-6);
+    z = clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_PIXEL, 1, 1600.0f, 675.0f,
+                                   1408.0f, 1280.0f);
+    g_assert_cmpfloat_with_epsilon(z, 675.0f / 1280.0f, 1e-6);
 
+    /* a 4K view at scale 2 fits at about 1.05: Fit keeps it, pixel floors */
     z = clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_FIT, 2, 3200.0f, 1350.0f,
+                                   1408.0f, 1280.0f);
+    g_assert_cmpfloat_with_epsilon(z, 1350.0f / 1280.0f, 1e-5);
+    z = clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_PIXEL, 2, 3200.0f, 1350.0f,
                                    1408.0f, 1280.0f);
     g_assert_cmpfloat(z, ==, 1.0f);
 
-    /* a 4K view of a small map: the largest whole number, never 2.6 */
+    /* the ticket's 1.7, and the 2294x2231 window that showed the bug */
+    z = clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_FIT, 1, 1700.0f, 1700.0f,
+                                   1000.0f, 1000.0f);
+    g_assert_cmpfloat_with_epsilon(z, 1.7f, 1e-5);
+    z = clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_PIXEL, 1, 1700.0f, 1700.0f,
+                                   1000.0f, 1000.0f);
+    g_assert_cmpfloat(z, ==, 1.0f);
+    z = clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_FIT, 1, 2294.0f, 2231.0f,
+                                   1408.0f, 1280.0f);
+    g_assert_cmpfloat_with_epsilon(z, 2294.0f / 1408.0f, 1e-4);
+
+    /* a wide view of a short map: Fit is 2.7, pixel-perfect is 2 */
     z = clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_FIT, 2, 3840.0f, 2000.0f,
                                    1408.0f, 640.0f);
+    g_assert_cmpfloat_with_epsilon(z, 3840.0f / 1408.0f, 1e-4);
+    z = clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_PIXEL, 2, 3840.0f, 2000.0f,
+                                   1408.0f, 640.0f);
     g_assert_cmpfloat(z, ==, 2.0f);
+
+    /* 1x and 2x, exactly, whatever the view */
+    g_assert_cmpfloat(clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_1X, 1, 100.0f, 100.0f,
+                                                 1408.0f, 1280.0f), ==, 1.0f);
+    g_assert_cmpfloat(clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_1X, 2, 100.0f, 100.0f,
+                                                 1408.0f, 1280.0f), ==, 2.0f);
+    g_assert_cmpfloat(clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_2X, 1, 100.0f, 100.0f,
+                                                 1408.0f, 1280.0f), ==, 2.0f);
+    g_assert_cmpfloat(clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_2X, 2, 100.0f, 100.0f,
+                                                 1408.0f, 1280.0f), ==, 4.0f);
 
     /* no map yet, or no view: 1, never a division by zero */
     g_assert_cmpfloat(clawt_office_view_map_zoom(CLAWT_OFFICE_ZOOM_FIT, 1, 800.0f, 600.0f,
@@ -318,6 +350,9 @@ test_nicks(void)
     g_assert_cmpstr(clawt_office_zoom_nick(CLAWT_OFFICE_ZOOM_FIT), ==, "fit");
     g_assert_cmpstr(clawt_office_zoom_nick(CLAWT_OFFICE_ZOOM_1X), ==, "1x");
     g_assert_cmpstr(clawt_office_zoom_nick(CLAWT_OFFICE_ZOOM_2X), ==, "2x");
+    g_assert_cmpstr(clawt_office_zoom_nick(CLAWT_OFFICE_ZOOM_PIXEL), ==, "pixel");
+    g_assert_true(clawt_office_zoom_from_nick("Pixel-Perfect", &zoom));
+    g_assert_cmpint(zoom, ==, CLAWT_OFFICE_ZOOM_PIXEL);
     g_assert_true(clawt_office_zoom_from_nick("2X", &zoom));
     g_assert_cmpint(zoom, ==, CLAWT_OFFICE_ZOOM_2X);
     g_assert_false(clawt_office_zoom_from_nick("3x", &zoom));
@@ -395,6 +430,11 @@ test_control_partial(void)
     g_assert_true(control.has_zoom);
     g_assert_cmpint(control.zoom, ==, CLAWT_OFFICE_ZOOM_1X);
     g_assert_cmpint(control.ui_scale, ==, 0);
+    clawt_office_view_control_clear(&control);
+    g_assert_true(clawt_office_view_control_parse("{\"zoom\":\"pixel\"}",
+                                                  &control, &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(control.zoom, ==, CLAWT_OFFICE_ZOOM_PIXEL);
     /* an older host says nothing of usage: the renderer keeps what it has */
     g_assert_false(control.has_usage);
     clawt_office_view_control_clear(&control);
@@ -519,9 +559,11 @@ test_control_to_dead_child_is_an_error(void)
 /* The 3D view's bearing when nobody has orbited it: office-scene.c's start. */
 #define DEFAULT_ORBIT (0.65f)
 
-/* The view sizes the default framing has to hold at: the window, 1080p, 4K, 4:3. */
+/* The view sizes the default framing has to hold at: the window, 1080p,
+ * 4K, 4:3, and the large and odd sizes the screenshot harness also draws. */
 static const gint view_sizes[][2] = {
     { 1280, 720 }, { 1920, 1080 }, { 3840, 2160 }, { 1024, 768 },
+    { 1600, 1200 }, { 2294, 2231 },
 };
 
 /*
@@ -834,8 +876,13 @@ test_frame_3d_shipped_worlds(void)
             /* big enough to be read as a board, not a speck */
             g_assert_cmpfloat(rect[2], >=, (gfloat)width / 20.0f);
 
-            /* and the whole office costs at most a third more distance than the old camera */
-            g_assert_cmpfloat(reach, <=, MAX(w.map_w, w.map_h) / 2.0f * 1.2f * 1.34f);
+            /*
+             * Landscape windows stay within a third of the old fixed
+             * distance.  A near-square view (2294x2231) stands further
+             * back: the vertical field has to hold the floor.
+             */
+            if ((gfloat)width / (gfloat)MAX(height, 1) >= 1.2f)
+                g_assert_cmpfloat(reach, <=, MAX(w.map_w, w.map_h) / 2.0f * 1.2f * 1.34f);
         }
 
         /* the camera this replaced */
@@ -861,7 +908,7 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/office-view/device-size/scales", test_device_size_scales);
     g_test_add_func("/office-view/device-size/clamps", test_device_size_clamps);
     g_test_add_func("/office-view/ui-scale", test_ui_scale_clamped);
-    g_test_add_func("/office-view/zoom/fit-whole", test_fit_zoom_is_whole_when_it_can_be);
+    g_test_add_func("/office-view/zoom/fit-whole", test_fit_zoom_is_fractional);
     g_test_add_func("/office-view/zoom/fixed", test_fixed_zoom_follows_ui_scale);
     g_test_add_func("/office-view/zoom/clamp-centre", test_clamp_centre);
     g_test_add_func("/office-view/labels/apart", test_labels_apart_stay);
