@@ -97,9 +97,13 @@ event name, and every event podomation ships is named that way.
 | ~on_agent_state~ | It changed state | ~state~, ~detail~ |
 | ~on_agent_connected~ | An agent dialled in to the daemon | --- |
 | ~on_agent_disconnected~ | An agent's link dropped | --- |
+| ~on_agent_failover~ | It moved to a fallback backend or back, or every turn it takes is refused and it is held | ~state~ (=fallback=, =primary=, =held=), ~reason~, ~provider~, ~model~, ~primary_provider~, ~primary_model~, ~reset_at~, ~retry_at~, ~context_lost~, ~message~ |
 | ~on_agent_typing~ | A turn began or ended | ~typing~, ~peer~, ~room~ |
 | ~on_message~ | A message was routed | ~id~, ~from~, ~to~, ~body~, ~task~ |
 | ~on_task_changed~ | A delegated task changed state | ~state~, ~agent~ |
+| ~on_wait_changed~ | One of an agent's waits held, expired, was cancelled or ended | ~agent~, ~wait~, ~state~ |
+| ~on_decision_settled~ | A decision was answered, dismissed or took its default | ~agent~, ~decision~, ~how~, ~room~, ~answer~, ~via~ |
+| ~on_incident_opened~ | A run failed in a way that opened an incident | ~agent~, ~kind~, ~room~, ~team~, ~task~, ~routine~, ~recipient~, ~occurrences~ |
 | ~on_routine_ran~ | A scheduled routine started | --- |
 | ~on_routine_changed~ | A routine was added, edited or removed | --- |
 | ~on_routine_turned_off~ | A routine was turned off because its computer did not start =routines.max_start_failures= runs in a row | ~agent~, ~failures~, ~error~ |
@@ -118,12 +122,14 @@ Every event also carries ~timestamp~, which is microseconds since the
 epoch, and ~subject~ -- *what the event is about*, which is not always an
 agent.  For the ~on_agent_*~ kinds it is the agent id; for ~on_message~
 it is the *room*; for ~on_routine_ran~, ~on_routine_changed~ and
-~on_routine_turned_off~ the routine id; for ~on_integration_changed~ the instance name; for the ~on_trigger_*~ kinds the trigger id.  The three
+~on_routine_turned_off~ the routine id; for ~on_integration_changed~ the instance name; for the ~on_trigger_*~ kinds the trigger id; for ~on_wait_changed~ and ~on_decision_settled~ the agent; for ~on_incident_opened~ the incident id.  The three
 ~on_daemon_*~ kinds have no subject at all, and carry only a timestamp.
 
 ~agent~ is present when the event is about one: the subject for the
-~on_agent_*~ kinds, the *sender* for ~on_message~, and absent for the
-rest.  It is also what the scope is matched against, which is why a pod
+~on_agent_*~ kinds, the *sender* for ~on_message~, the agent whose task,
+wait, decision or incident it is for ~on_task_changed~,
+~on_wait_changed~, ~on_decision_settled~ and ~on_incident_opened~, and
+absent for the rest.  It is also what the scope is matched against, which is why a pod
 scoped to ~researcher~ sees that agent's outgoing messages rather than
 every room it happens to be in.
 

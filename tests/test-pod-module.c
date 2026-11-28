@@ -622,6 +622,128 @@ test_every_published_detail_reaches_the_pod(void)
     g_clear_pointer(&fired.data, g_variant_unref);
 }
 
+/* Publishes @event and checks @keys reached the pod under @pod_name. */
+static void
+assert_details_reach_the_pod(ClawtEventBus *bus, ClawtEvent *event,
+                             Fired *fired, const gchar *pod_name,
+                             const gchar *agent,
+                             const gchar *const *keys)
+{
+    guint before = fired->count;
+    guint i;
+
+    clawt_event_bus_publish(bus, event);
+
+    if (fired->count != before + 1)
+        g_error("%s never reached the pod", pod_name);
+    g_assert_cmpstr(fired->name, ==, pod_name);
+
+    {
+        g_autoptr(GVariant) who = g_variant_lookup_value(
+            fired->data, "agent", G_VARIANT_TYPE_STRING);
+
+        if (who == NULL || g_strcmp0(g_variant_get_string(who, NULL),
+                                     agent) != 0)
+            g_error("%s did not say it was about '%s'", pod_name, agent);
+    }
+
+    for (i = 0; keys[i] != NULL; i++) {
+        g_autoptr(GVariant) value = g_variant_lookup_value(
+            fired->data, keys[i], G_VARIANT_TYPE_STRING);
+
+        if (value == NULL)
+            g_error("%s lost '%s'", pod_name, keys[i]);
+    }
+}
+
+/*
+ * The events a fleet's failures are told by.  Each was published and
+ * none could be bound: agent.failover (a backend change, or an agent
+ * whose every turn is refused), wait.changed, decision.settled,
+ * incident.opened, and trigger.dropped -- with the details each one
+ * carries, which the forwarder's fixed list would otherwise drop, and
+ * the agent each is about, which is what a scoped pod is matched on.
+ */
+static void
+test_failure_events_reach_the_pod(void)
+{
+    g_autoptr(ClawtEventBus) bus = clawt_event_bus_new(16);
+    g_autoptr(ClawtPodModule) template = clawt_pod_module_new(bus, NULL, NULL);
+    g_autoptr(ClawtPodModule) instance = instance_for(template, NULL);
+    g_autoptr(ClawtEvent) failover = clawt_event_new("agent.failover",
+                                                     "researcher");
+    g_autoptr(ClawtEvent) wait = clawt_event_new("wait.changed",
+                                                 "researcher");
+    g_autoptr(ClawtEvent) decision = clawt_event_new("decision.settled",
+                                                     "researcher");
+    g_autoptr(ClawtEvent) incident = clawt_event_new("incident.opened",
+                                                     "inc-1");
+    g_autoptr(ClawtEvent) dropped = clawt_event_new("trigger.dropped", "ci");
+    Fired fired = { 0 };
+    static const gchar *const on_failover[] = {
+        "state", "reason", "provider", "model", "primary_provider",
+        "primary_model", "reset_at", "retry_at", "context_lost", "message",
+        NULL };
+    static const gchar *const on_wait[] = { "wait", "state", NULL };
+    static const gchar *const on_decision[] = { "decision", "how", "room",
+                                                "answer", "via", NULL };
+    static const gchar *const on_incident[] = { "kind", "room", "team",
+                                                "task", "routine",
+                                                "recipient", "occurrences",
+                                                NULL };
+    static const gchar *const on_dropped[] = { "reason", "delivery",
+                                               "max_pending", NULL };
+    guint i;
+
+    g_signal_connect(instance, "event-fired", G_CALLBACK(on_fired), &fired);
+    pod_event_source_start(POD_EVENT_SOURCE(instance), NULL, NULL);
+
+    /* What src/core/clawt-daemon.c puts on an agent.failover. */
+    for (i = 0; on_failover[i] != NULL; i++)
+        clawt_event_set_detail(failover, on_failover[i], "x");
+    assert_details_reach_the_pod(bus, failover, &fired, "on_agent_failover",
+                                 "researcher", on_failover);
+
+    /* src/core/daemon-wait.c */
+    clawt_event_set_detail(wait, "agent", "researcher");
+    clawt_event_set_detail(wait, "wait", "w-1");
+    clawt_event_set_detail(wait, "state", "expired");
+    assert_details_reach_the_pod(bus, wait, &fired, "on_wait_changed",
+                                 "researcher", on_wait);
+
+    /* src/core/daemon-misc.c */
+    clawt_event_set_detail(decision, "agent", "researcher");
+    for (i = 0; on_decision[i] != NULL; i++)
+        clawt_event_set_detail(decision, on_decision[i], "x");
+    assert_details_reach_the_pod(bus, decision, &fired,
+                                 "on_decision_settled", "researcher",
+                                 on_decision);
+
+    /* src/task/clawt-incident.c */
+    clawt_event_set_detail(incident, "agent", "researcher");
+    for (i = 0; on_incident[i] != NULL; i++)
+        clawt_event_set_detail(incident, on_incident[i], "x");
+    assert_details_reach_the_pod(bus, incident, &fired,
+                                 "on_incident_opened", "researcher",
+                                 on_incident);
+
+    /* src/core/daemon-trigger.c: about a trigger, so no agent */
+    for (i = 0; on_dropped[i] != NULL; i++)
+        clawt_event_set_detail(dropped, on_dropped[i], "x");
+    clawt_event_bus_publish(bus, dropped);
+    g_assert_cmpstr(fired.name, ==, "on_trigger_dropped");
+    for (i = 0; on_dropped[i] != NULL; i++) {
+        g_autoptr(GVariant) value = g_variant_lookup_value(
+            fired.data, on_dropped[i], G_VARIANT_TYPE_STRING);
+
+        if (value == NULL)
+            g_error("on_trigger_dropped lost '%s'", on_dropped[i]);
+    }
+
+    g_free(fired.name);
+    g_clear_pointer(&fired.data, g_variant_unref);
+}
+
 /*
  * Deliberately absent.  Every other action is a fleet operation the
  * daemon already owns; this one is arbitrary code on the machine, fired
@@ -710,6 +832,8 @@ main(int argc, char *argv[])
                     test_the_actions_getter_returns_the_actions);
     g_test_add_func("/pod-module/carried-details",
                     test_every_published_detail_reaches_the_pod);
+    g_test_add_func("/pod-module/failure-events",
+                    test_failure_events_reach_the_pod);
     g_test_add_func("/pod-module/computer-exec",
                     test_computer_exec_says_why_it_will_not);
     g_test_add_func("/pod-module/no-daemon",

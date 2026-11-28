@@ -69,6 +69,8 @@ clawt_daemon_publish_decision_settled(ClawtDaemon *self, ClawtDecision *decision
 
     event = clawt_event_new("decision.settled",
                             clawt_decision_get_agent(decision));
+    /* what a pod scoped to this agent is matched on */
+    clawt_event_set_detail(event, "agent", clawt_decision_get_agent(decision));
     clawt_event_set_detail(event, "decision", clawt_decision_get_id(decision));
     clawt_event_set_detail(event, "how", how);
 

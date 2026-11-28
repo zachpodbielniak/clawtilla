@@ -52,6 +52,10 @@ static const EventName events[] = {
       "An agent dialled in to the daemon" },
     { "on_agent_disconnected", "agent.disconnected",
       "An agent's link dropped" },
+    { "on_agent_failover", "agent.failover",
+      "The agent moved to a fallback backend or back, or every turn it "
+      "takes is refused and it is held; `state` (fallback, primary or "
+      "held), `reason`, `retry_at` and `message` say which" },
     { "on_agent_typing", "agent.typing",
       "A turn began or ended; `typing` says which, `peer` who it is for, "
       "`room` where" },
@@ -59,6 +63,15 @@ static const EventName events[] = {
       "A message was routed; `id`, `from`, `to`, `body` and `task`" },
     { "on_task_changed", "task.changed",
       "A delegated task changed state; `state` says which" },
+    { "on_wait_changed", "wait.changed",
+      "One of an agent's waits held, expired, was cancelled or ended; "
+      "`wait` and `state` say which" },
+    { "on_decision_settled", "decision.settled",
+      "A decision was answered, dismissed or took its default; `decision`, "
+      "`how` and `answer` say which" },
+    { "on_incident_opened", "incident.opened",
+      "A run failed in a way that opened an incident; `kind`, `task`, "
+      "`room` and `occurrences` say which" },
     { "on_routine_ran", "routine.ran", "A scheduled routine started" },
     { "on_routine_changed", "routine.changed",
       "A routine was added, edited or removed" },
@@ -453,13 +466,24 @@ on_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
      * from agent.typing, `id`, `from`, `to`, `body` and `task` from
      * message.  `error` and `path` belong to image.finished, which is
      * not forwarded today -- they cost nothing and are ready if it ever
-     * is.
+     * is.  Then the failure events: `reason`, `provider`, `model`,
+     * `primary_provider`, `primary_model`, `reset_at`, `retry_at`,
+     * `context_lost` and `message` from agent.failover; `wait` from
+     * wait.changed; `decision`, `how`, `answer` and `via` from
+     * decision.settled; `kind`, `team`, `routine`, `recipient` and
+     * `occurrences` from incident.opened; `delivery` and `max_pending`
+     * from trigger.dropped.
      */
     {
         static const gchar *const carried[] = {
             "state", "detail", "typing", "peer", "room",
             "id", "from", "to", "body", "task",
-            "error", "path", NULL
+            "error", "path",
+            "reason", "provider", "model", "primary_provider",
+            "primary_model", "reset_at", "retry_at", "context_lost",
+            "message", "wait", "decision", "how", "answer", "via",
+            "kind", "team", "routine", "recipient", "occurrences",
+            "delivery", "max_pending", NULL
         };
         gsize k;
 

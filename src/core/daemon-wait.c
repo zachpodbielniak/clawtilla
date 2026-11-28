@@ -764,6 +764,8 @@ on_waits_changed(
 		return;
 
 	event = clawt_event_new("wait.changed", agent_id);
+	/* what a pod scoped to this agent is matched on */
+	clawt_event_set_detail(event, "agent", agent_id);
 	clawt_event_set_detail(event, "wait", wait_id);
 	clawt_event_set_detail(event, "state",
 	                       wait != NULL ? clawt_wait_state_nick(wait->state)
