@@ -230,12 +230,19 @@ struct _ClawtOfficeScene {
     LrgLevel             *level;
     LrgWorld3DRenderer   *renderer;
     LrgCamera3D          *lcamera;
-    gfloat                orbit;      /* radians round the map's centre */
-    gfloat                distance;   /* 3D camera distance, in tiles */
+    ClawtOfficeCamera    *camera;     /* target, yaw, pitch, distance; shared by every host */
+    gfloat                distance_scale; /* Fit 1, 1x 0.6, 2x 0.35, on the framed slant */
+    gboolean              manual;     /* a person moved it: Fit and follow stop driving it */
+    gboolean              camera_ready; /* the first draw snapped; later changes ease */
+    gboolean              zoom_free;  /* a 2D wheel left the Fit/1x/2x choice */
+    gfloat                free_zoom;
+    gfloat                click_time; /* the scene clock of the previous left press */
+    gfloat                click_x;
+    gfloat                click_y;
 
     /* the 3D Fit, for the bearing and view shape it was worked out at */
     gboolean              frame_valid;
-    gfloat                frame_orbit;
+    gfloat                frame_yaw;
     gfloat                frame_aspect;
     gfloat                frame_x;
     gfloat                frame_z;
@@ -290,6 +297,20 @@ struct _ClawtOfficeScene {
 #define LABEL_STEPS (2)
 /* and kept this far apart, in logical pixels */
 #define LABEL_GAP   (2.0f)
+
+/* Where the 2D view is looking, worked out the same way draw and input do. */
+typedef struct {
+    gfloat zoom;
+    gfloat cx;
+    gfloat cy;
+} View2D;
+
+static View2D view_2d(ClawtOfficeScene *self, gfloat width, gfloat height);
+static void pan_2d(ClawtOfficeScene *self, gfloat view_w, gfloat view_h,
+                   gfloat dx, gfloat dy);
+static void frame_office_3d(ClawtOfficeScene *self, gfloat yaw, gfloat aspect,
+                            gfloat *cx, gfloat *cz, gfloat *reach);
+static void camera_refresh(ClawtOfficeScene *self, gint width, gint height);
 
 /* ── Colours ────────────────────────────────────────────────────── */
 
@@ -364,8 +385,10 @@ clawt_office_scene_new(void)
     self->handles = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     self->tile = 32.0f;
     self->person_scale = PERSON_SCALE;
-    self->orbit = 0.65f;
-    self->distance = 1.0f;
+    self->camera = clawt_office_camera_new();
+    self->distance_scale = 1.0f;
+    self->free_zoom = 1.0f;
+    self->click_time = -1000.0f;
     self->ui_scale = 1;
     self->status = g_strdup("Loading the office...");
     return self;
@@ -415,6 +438,7 @@ clawt_office_scene_free(ClawtOfficeScene *self)
     g_free(self->adapter_name);
     /* the module stays loaded: an adapter's types are registered for good */
     g_strfreev(self->adapter_dirs);
+    clawt_office_camera_free(self->camera);
     g_free(self);
 }
 
@@ -726,8 +750,13 @@ clawt_office_scene_load_world(ClawtOfficeScene  *self,
     /* the wall the allowances are drawn on, if the pack has one */
     self->has_board = zone_anchor(world, "usage_board", &self->board_x, &self->board_y) &&
                       board_zone(world, self->tile, &self->board_rect, &self->board_3d);
-    /* a new map and board: the 3D Fit is worked out again */
+    /* a new map and board: the 3D Fit is worked out again.
+     * A pose set with --camera (manual) is kept; only its aim is held
+     * inside the new footprint. */
     self->frame_valid = FALSE;
+    if (self->tile > 0.0f)
+        clawt_office_camera_set_bounds(self->camera, 0.0f, self->map_w / self->tile,
+                                       0.0f, self->map_h / self->tile);
     g_clear_pointer(&self->board_layout, clawt_office_board_layout_free);
     g_clear_pointer(&self->panel_layout, clawt_office_board_layout_free);
 
@@ -1166,16 +1195,22 @@ void
 clawt_office_scene_set_zoom(ClawtOfficeScene *self, ClawtOfficeZoom zoom)
 {
     self->zoom = zoom;
-    /* a new zoom starts from the middle (or whoever is followed), not an old drag */
+    /*
+     * A new zoom starts from the middle (or whoever is followed), not an
+     * old drag, and the 3D camera goes back to being driven by Fit.
+     * Follow is left as it was: the toolbar's zoom is not a manual move.
+     */
     self->panned = FALSE;
-    /* and in 3D picks the camera's distance; the wheel goes on from there */
+    self->manual = FALSE;
+    self->zoom_free = FALSE;
+    self->frame_valid = FALSE;
     switch (zoom) {
-    case CLAWT_OFFICE_ZOOM_1X: self->distance = 0.6f;  break;
-    case CLAWT_OFFICE_ZOOM_2X: self->distance = 0.35f; break;
+    case CLAWT_OFFICE_ZOOM_1X: self->distance_scale = 0.6f;  break;
+    case CLAWT_OFFICE_ZOOM_2X: self->distance_scale = 0.35f; break;
     /* pixel-perfect is a 2D sampling choice; in 3D it frames like Fit */
     case CLAWT_OFFICE_ZOOM_PIXEL:
     case CLAWT_OFFICE_ZOOM_FIT:
-    default:                   self->distance = 1.0f;  break;
+    default:                   self->distance_scale = 1.0f;  break;
     }
 }
 
@@ -1194,21 +1229,7 @@ clawt_office_scene_set_ui_scale(ClawtOfficeScene *self, gint ui_scale)
 void
 clawt_office_scene_pan(ClawtOfficeScene *self, gfloat dx, gfloat dy)
 {
-    gfloat zoom = self->camera2d.zoom > 0.0f ? self->camera2d.zoom : 1.0f;
-
-    if (self->mode == CLAWT_OFFICE_SCENE_3D && self->has_3d)
-        return;
-    if (!self->panned) {
-        self->centre_x = self->camera2d.target.x;
-        self->centre_y = self->camera2d.target.y;
-        self->panned = TRUE;
-    }
-    /* the map moves with the pointer: its centre the other way, in map pixels */
-    self->centre_x -= dx / zoom;
-    self->centre_y -= dy / zoom;
-    clawt_office_view_clamp_centre((gfloat)MAX(self->last_w, 1), (gfloat)MAX(self->last_h, 1),
-                                   self->map_w, self->map_h, zoom,
-                                   &self->centre_x, &self->centre_y);
+    pan_2d(self, (gfloat)self->last_w, (gfloat)self->last_h, dx, dy);
 }
 
 void
@@ -1226,17 +1247,209 @@ clawt_office_scene_n_participants(ClawtOfficeScene *self)
 void
 clawt_office_scene_set_focus(ClawtOfficeScene *self, const gchar *id)
 {
-    replace(&self->focus, id != NULL && *id != '\0' ? id : NULL);
-    /* following somebody is a reason to look at them, not at an old drag */
-    self->panned = FALSE;
+    gboolean have = id != NULL && *id != '\0';
+
+    replace(&self->focus, have ? id : NULL);
+    /*
+     * Following somebody looks at them, not at an old drag.  Clearing
+     * the follow (NULL) leaves a pan where the person put it.
+     */
+    if (have) {
+        self->panned = FALSE;
+        self->manual = FALSE;
+        self->zoom_free = FALSE;
+    }
 }
 
 void
-clawt_office_scene_orbit(ClawtOfficeScene *self, gfloat dx, gfloat zoom)
+clawt_office_scene_set_camera(ClawtOfficeScene *self, gfloat x, gfloat z,
+                              gfloat yaw, gfloat pitch, gfloat distance)
 {
-    self->orbit += dx;
-    if (zoom != 0.0f)
-        self->distance = CLAMP(self->distance * (zoom > 0.0f ? 0.9f : 1.1f), 0.35f, 2.0f);
+    clawt_office_camera_snap_pose(self->camera, x, z, yaw, pitch, distance);
+    self->manual = TRUE;
+    self->camera_ready = TRUE;
+    replace(&self->focus, NULL);
+}
+
+/*
+ * One sample from whichever host has the pointer.  The binding table
+ * already decided what the keys mean; this decides what a drag means,
+ * the same way in the window, the GTK embed and lrg.
+ *
+ * Returns TRUE when the sample was a double-click on the floor, so the
+ * host does not also open a conversation for it.
+ */
+gboolean
+clawt_office_scene_input(ClawtOfficeScene *self, const ClawtOfficeInput *in)
+{
+    gboolean eat = FALSE;
+    gboolean moved = FALSE;
+    gboolean three_d;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+    if (in == NULL)
+        return FALSE;
+
+    three_d = self->mode == CLAWT_OFFICE_SCENE_3D && self->has_3d;
+
+    /* F and Home win the frame: Fit, from the bearing the camera has */
+    if (in->reset_fit) {
+        self->zoom = CLAWT_OFFICE_ZOOM_FIT;
+        self->distance_scale = 1.0f;
+        self->manual = FALSE;
+        self->panned = FALSE;
+        self->zoom_free = FALSE;
+        self->frame_valid = FALSE;
+        replace(&self->focus, NULL);
+        clawt_office_camera_set_desired_pitch(self->camera,
+                                              clawt_office_camera_pitch_fit());
+        return TRUE;
+    }
+
+    if (three_d) {
+        gfloat forward = 0.0f;
+        gfloat strafe = 0.0f;
+        gfloat turn = 0.0f;
+        gfloat ax = 0.0f;
+        gfloat az = 0.0f;
+        gboolean anchor = FALSE;
+
+        if (in->move_forward)
+            forward += 1.0f;
+        if (in->move_back)
+            forward -= 1.0f;
+        if (in->move_right)
+            strafe += 1.0f;
+        if (in->move_left)
+            strafe -= 1.0f;
+        if (forward != 0.0f || strafe != 0.0f) {
+            clawt_office_camera_move(self->camera, forward, strafe, in->dt, in->shift);
+            moved = TRUE;
+        }
+        if (in->turn_left)
+            turn += 1.0f;
+        if (in->turn_right)
+            turn -= 1.0f;
+        if (turn != 0.0f) {
+            clawt_office_camera_turn(self->camera, turn, in->dt, in->shift);
+            moved = TRUE;
+        }
+        if ((in->dx != 0.0f || in->dy != 0.0f) && in->view_h > 0.0f) {
+            if (in->middle_down || (in->right_down && in->shift)) {
+                clawt_office_camera_pan(self->camera, in->dx, in->dy, in->view_h,
+                                        CLAWT_OFFICE_VIEW_3D_FOVY);
+                moved = TRUE;
+            } else if (in->right_down) {
+                clawt_office_camera_look(self->camera, in->dx, in->dy);
+                moved = TRUE;
+            }
+        }
+        if (in->wheel != 0.0f) {
+            if (in->pointer_valid && in->view_w > 0.0f && in->view_h > 0.0f)
+                anchor = clawt_office_camera_floor_at(self->camera, in->x, in->y,
+                                                      in->view_w, in->view_h,
+                                                      CLAWT_OFFICE_VIEW_3D_FOVY,
+                                                      &ax, &az);
+            clawt_office_camera_dolly(self->camera, in->wheel, anchor, ax, az);
+            moved = TRUE;
+        }
+        if (in->left_pressed && in->pointer_valid) {
+            gfloat since = self->clock - self->click_time;
+            gfloat cdx = in->x - self->click_x;
+            gfloat cdy = in->y - self->click_y;
+
+            if (clawt_office_camera_double_click(since, cdx, cdy)) {
+                const gchar *under = clawt_office_scene_pointer(self, in->x, in->y);
+
+                if (under == NULL && !self->board_hovered && !self->panel_hovered &&
+                    in->view_w > 0.0f && in->view_h > 0.0f &&
+                    clawt_office_camera_floor_at(self->camera, in->x, in->y,
+                                                 in->view_w, in->view_h,
+                                                 CLAWT_OFFICE_VIEW_3D_FOVY,
+                                                 &ax, &az)) {
+                    clawt_office_camera_set_desired_target(self->camera, ax, az);
+                    moved = TRUE;
+                    eat = TRUE;
+                }
+            }
+            self->click_time = self->clock;
+            self->click_x = in->x;
+            self->click_y = in->y;
+        }
+        if (moved)
+            self->manual = TRUE;
+    } else {
+        gfloat view_w = in->view_w > 0.0f ? in->view_w : (gfloat)MAX(self->last_w, 1);
+        gfloat view_h = in->view_h > 0.0f ? in->view_h : (gfloat)MAX(self->last_h, 1);
+        gfloat speed;
+        gfloat dx = 0.0f;
+        gfloat dy = 0.0f;
+
+        /* W looks up the map (y down), A looks left.  Shift is three times. */
+        speed = CLAWT_OFFICE_CAMERA_PAN_PX_PER_S * in->dt;
+        if (in->shift)
+            speed *= CLAWT_OFFICE_CAMERA_FAST_SCALE;
+        if (in->move_forward)
+            dy += speed;
+        if (in->move_back)
+            dy -= speed;
+        if (in->move_left)
+            dx += speed;
+        if (in->move_right)
+            dx -= speed;
+        if (dx != 0.0f || dy != 0.0f) {
+            pan_2d(self, view_w, view_h, dx, dy);
+            moved = TRUE;
+        }
+        /* a left drag grabs the map; Q and E do nothing from above */
+        if (in->left_down && (in->dx != 0.0f || in->dy != 0.0f)) {
+            pan_2d(self, view_w, view_h, in->dx, in->dy);
+            moved = TRUE;
+        }
+        if (in->wheel != 0.0f && in->pointer_valid) {
+            View2D v = view_2d(self, view_w, view_h);
+            gfloat next = clawt_office_camera_zoom_factor(v.zoom, in->wheel);
+
+            clawt_office_camera_zoom_around(&v.cx, &v.cy, v.zoom, next,
+                                            in->x, in->y, view_w, view_h);
+            clawt_office_view_clamp_centre(view_w, view_h, self->map_w, self->map_h,
+                                           next, &v.cx, &v.cy);
+            self->free_zoom = next;
+            self->zoom_free = TRUE;
+            self->centre_x = v.cx;
+            self->centre_y = v.cy;
+            self->panned = TRUE;
+            moved = TRUE;
+        }
+        if (in->left_pressed && in->pointer_valid) {
+            gfloat since = self->clock - self->click_time;
+            gfloat cdx = in->x - self->click_x;
+            gfloat cdy = in->y - self->click_y;
+
+            if (clawt_office_camera_double_click(since, cdx, cdy)) {
+                const gchar *under = clawt_office_scene_pointer(self, in->x, in->y);
+
+                if (under == NULL && !self->board_hovered && !self->panel_hovered) {
+                    View2D v = view_2d(self, view_w, view_h);
+
+                    self->centre_x = v.cx + (in->x - view_w * 0.5f) / v.zoom;
+                    self->centre_y = v.cy + (in->y - view_h * 0.5f) / v.zoom;
+                    self->panned = TRUE;
+                    clawt_office_view_clamp_centre(view_w, view_h, self->map_w, self->map_h,
+                                                   v.zoom, &self->centre_x, &self->centre_y);
+                    moved = TRUE;
+                    eat = TRUE;
+                }
+            }
+            self->click_time = self->clock;
+            self->click_x = in->x;
+            self->click_y = in->y;
+        }
+    }
+
+    if (moved)
+        replace(&self->focus, NULL);
+    return eat;
 }
 
 /* ── Time ───────────────────────────────────────────────────────── */
@@ -1501,6 +1714,19 @@ clawt_office_scene_update(ClawtOfficeScene *self, gfloat delta)
             lrg_beam_update(LRG_BEAM(value), delta);
             moving = TRUE;
         }
+    }
+
+    /*
+     * The camera eases here, once, after this frame's desired pose is
+     * current.  The first update runs before any draw, so last_w is 0
+     * and there is nothing to frame yet; the first draw snaps instead.
+     * No GL: a test that updates without a window stays on this path.
+     */
+    if (self->last_w > 0 && self->mode == CLAWT_OFFICE_SCENE_3D && self->has_3d) {
+        if (!self->manual)
+            camera_refresh(self, self->last_w, self->last_h);
+        if (clawt_office_camera_step(self->camera, delta))
+            moving = TRUE;
     }
     return moving;
 }
@@ -2250,6 +2476,63 @@ snap_camera_target(gfloat cx, gfloat cy, gfloat zoom)
     return (Vector2){ roundf(cx * zoom) / zoom, roundf(cy * zoom) / zoom };
 }
 
+/*
+ * The 2D view for this size: Fit (or a free wheel zoom), centred on the
+ * map, on whoever is followed, or where a drag or W/A/S/D left it.
+ * Input uses this rather than camera2d, which the first frame has not
+ * filled in yet.
+ */
+static View2D
+view_2d(ClawtOfficeScene *self, gfloat width, gfloat height)
+{
+    View2D v;
+    Actor *followed = NULL;
+    gfloat zoom;
+
+    if (self->zoom_free)
+        zoom = self->free_zoom;
+    else
+        zoom = clawt_office_view_map_zoom(self->zoom, self->ui_scale, width, height,
+                                          self->map_w, self->map_h);
+    if (!(zoom > 0.0f))
+        zoom = 1.0f;
+    v.zoom = zoom;
+    v.cx = self->map_w / 2.0f;
+    v.cy = self->map_h / 2.0f;
+    if (self->focus != NULL)
+        followed = g_hash_table_lookup(self->actors, self->focus);
+    if (followed != NULL && followed->placed && !self->panned) {
+        v.cx = followed->x;
+        v.cy = followed->y;
+    } else if (self->panned) {
+        v.cx = self->centre_x;
+        v.cy = self->centre_y;
+    }
+    clawt_office_view_clamp_centre(width, height, self->map_w, self->map_h, zoom,
+                                   &v.cx, &v.cy);
+    return v;
+}
+
+/* The map moves with the pointer: its centre the other way, in map pixels. */
+static void
+pan_2d(ClawtOfficeScene *self, gfloat view_w, gfloat view_h, gfloat dx, gfloat dy)
+{
+    View2D v;
+
+    if (self->mode == CLAWT_OFFICE_SCENE_3D && self->has_3d)
+        return;
+    if (!(view_w > 0.0f))
+        view_w = (gfloat)MAX(self->last_w, 1);
+    if (!(view_h > 0.0f))
+        view_h = (gfloat)MAX(self->last_h, 1);
+    v = view_2d(self, view_w, view_h);
+    self->centre_x = v.cx - dx / v.zoom;
+    self->centre_y = v.cy - dy / v.zoom;
+    self->panned = TRUE;
+    clawt_office_view_clamp_centre(view_w, view_h, self->map_w, self->map_h, v.zoom,
+                                   &self->centre_x, &self->centre_y);
+}
+
 static void
 draw_2d(ClawtOfficeScene *self, gint width, gint height)
 {
@@ -2257,32 +2540,15 @@ draw_2d(ClawtOfficeScene *self, gint width, gint height)
     g_autofree Vector2 *at = NULL;
     /*
      * From this frame's size, not a cached scale.  The GTK embed draws
-     * at the size of the latest resize message, the window at
-     * GetScreenWidth/Height, and lrg at the viewport's size, so Fit
-     * follows every resize in all three.
+     * at the size of the latest resize message, the window at the
+     * render size, and lrg at the viewport's size, so Fit follows every
+     * resize in all three.
      */
-    gfloat zoom = clawt_office_view_map_zoom(self->zoom, self->ui_scale, (gfloat)width,
-                                             (gfloat)height, self->map_w, self->map_h);
-    gfloat cx = self->map_w / 2.0f;
-    gfloat cy = self->map_h / 2.0f;
-    Actor *followed = self->focus != NULL ? g_hash_table_lookup(self->actors, self->focus)
-                                          : NULL;
+    View2D v = view_2d(self, (gfloat)width, (gfloat)height);
+    gfloat zoom = v.zoom;
+    gfloat cx = v.cx;
+    gfloat cy = v.cy;
     guint i;
-
-    /*
-     * Centred on the map's middle; on whoever is followed; or where a
-     * drag left it -- and held in so a zoomed map never shows past its
-     * edge.  At Fit the whole map is in view and all three are the middle.
-     */
-    if (followed != NULL && followed->placed && !self->panned) {
-        cx = followed->x;
-        cy = followed->y;
-    } else if (self->panned) {
-        cx = self->centre_x;
-        cy = self->centre_y;
-    }
-    clawt_office_view_clamp_centre((gfloat)width, (gfloat)height, self->map_w, self->map_h,
-                                   zoom, &cx, &cy);
     self->camera2d.offset = (Vector2){ floorf(width / 2.0f), floorf(height / 2.0f) };
     self->camera2d.target = snap_camera_target(cx, cy, zoom);
     self->camera2d.rotation = 0.0f;
@@ -2360,15 +2626,14 @@ draw_2d(ClawtOfficeScene *self, gint width, gint height)
  * since neither moves on most frames.
  */
 static void
-frame_office_3d(ClawtOfficeScene *self, gfloat aspect, gfloat *cx, gfloat *cz,
+frame_office_3d(ClawtOfficeScene *self, gfloat yaw, gfloat aspect, gfloat *cx, gfloat *cz,
                 gfloat *reach)
 {
     gfloat points[3 * 12];
     guint n = 0;
     gint i;
 
-    if (self->frame_valid && self->frame_orbit == self->orbit &&
-        self->frame_aspect == aspect) {
+    if (self->frame_valid && self->frame_yaw == yaw && self->frame_aspect == aspect) {
         *cx = self->frame_x;
         *cz = self->frame_z;
         *reach = self->frame_reach;
@@ -2387,10 +2652,10 @@ frame_office_3d(ClawtOfficeScene *self, gfloat aspect, gfloat *cx, gfloat *cz,
      * which looks along -(cos, sin) across the floor whatever its distance.
      */
     if (self->has_board &&
-        board_corners_3d(self, -cosf(self->orbit), -sinf(self->orbit), points + n * 3))
+        board_corners_3d(self, -cosf(yaw), -sinf(yaw), points + n * 3))
         n += 4;
 
-    if (!clawt_office_view_frame_3d(points, n, self->orbit, CLAWT_OFFICE_VIEW_3D_LIFT,
+    if (!clawt_office_view_frame_3d(points, n, yaw, CLAWT_OFFICE_VIEW_3D_LIFT,
                                     CLAWT_OFFICE_VIEW_3D_FOVY, aspect,
                                     CLAWT_OFFICE_VIEW_3D_MARGIN, cx, cz, reach)) {
         /* nothing to frame: the middle of the map, as it always was */
@@ -2400,53 +2665,95 @@ frame_office_3d(ClawtOfficeScene *self, gfloat aspect, gfloat *cx, gfloat *cz,
     }
 
     self->frame_valid = TRUE;
-    self->frame_orbit = self->orbit;
+    self->frame_yaw = yaw;
     self->frame_aspect = aspect;
     self->frame_x = *cx;
     self->frame_z = *cz;
     self->frame_reach = *reach;
 }
 
+/* reach across the floor, times the slant, times the zoom's scale. */
+static gfloat
+fit_distance(gfloat reach, gfloat scale)
+{
+    return reach * sqrtf(1.0f + CLAWT_OFFICE_VIEW_3D_LIFT * CLAWT_OFFICE_VIEW_3D_LIFT) * scale;
+}
+
 /*
- * The orbiting god's-eye camera.
- *
- * At Fit it frames the whole office -- every corner of the floor, the
- * people at head height, and the usage board -- with
- * clawt_office_view_frame_3d(); 1x and 2x and the wheel move it in from
- * there, towards the same point.  It used to aim at the middle of the
- * map from a fixed distance, which at this pitch left the near third of
- * the floor below the frame: in modern-office that is where the usage
- * board stands, so it could not be seen without moving the camera.
+ * While nobody has taken the camera, Fit (or follow) writes the desired
+ * pose.  The yaw is the one already wanted, so a resize re-frames without
+ * spinning back to the home bearing.  The spring is stepped in update(),
+ * not here, so a draw cannot move the camera twice.
+ */
+static void
+camera_refresh(ClawtOfficeScene *self, gint width, gint height)
+{
+    Actor *followed = NULL;
+    gfloat aspect;
+    gfloat cx;
+    gfloat cz;
+    gfloat reach;
+    gfloat yaw;
+
+    if (self->manual || width <= 0 || height <= 0)
+        return;
+    if (self->mode != CLAWT_OFFICE_SCENE_3D || !self->has_3d)
+        return;
+    if (self->focus != NULL)
+        followed = g_hash_table_lookup(self->actors, self->focus);
+    if (followed != NULL && followed->placed) {
+        clawt_office_camera_set_desired_target(self->camera, followed->x / self->tile,
+                                               followed->y / self->tile);
+        clawt_office_camera_set_desired_pitch(self->camera, clawt_office_camera_pitch_fit());
+        clawt_office_camera_set_desired_distance(self->camera,
+                                                 fit_distance(7.0f, self->distance_scale));
+        return;
+    }
+    aspect = (gfloat)width / (gfloat)MAX(height, 1);
+    yaw = clawt_office_camera_get_desired_yaw(self->camera);
+    frame_office_3d(self, yaw, aspect, &cx, &cz, &reach);
+    clawt_office_camera_set_desired_target(self->camera, cx, cz);
+    clawt_office_camera_set_desired_pitch(self->camera, clawt_office_camera_pitch_fit());
+    clawt_office_camera_set_desired_distance(self->camera,
+                                             fit_distance(reach, self->distance_scale));
+}
+
+/*
+ * The god's-eye camera: a point on the floor, a yaw, a pitch and a
+ * distance.  At Fit the distance is the framed horizontal reach times
+ * the slant, so the eye sits where the old fixed-pitch camera did.
+ * 1x, 2x and the wheel change that distance.  A manual move stops Fit
+ * and follow from writing over it.
  */
 static void
 place_camera_3d(ClawtOfficeScene *self, gint width, gint height)
 {
     gfloat aspect = (gfloat)width / (gfloat)MAX(height, 1);
-    gfloat cx = 0.0f;
-    gfloat cz = 0.0f;
-    gfloat reach = 0.0f;
-    Actor *followed = self->focus != NULL ? g_hash_table_lookup(self->actors, self->focus) : NULL;
+    gfloat ex = 0.0f;
+    gfloat ey = 0.0f;
+    gfloat ez = 0.0f;
+    gfloat tx = 0.0f;
+    gfloat tz = 0.0f;
     Vector3 eye;
 
-    /* following somebody: centred on them, close enough to see their face */
-    if (followed != NULL && followed->placed) {
-        cx = followed->x / self->tile;
-        cz = followed->y / self->tile;
-        reach = 7.0f * self->distance;
-    } else {
-        frame_office_3d(self, aspect, &cx, &cz, &reach);
-        reach *= self->distance;
+    if (!self->manual)
+        camera_refresh(self, width, height);
+    /* the first draw has no eased history: show the framed pose at once */
+    if (!self->camera_ready) {
+        clawt_office_camera_snap(self->camera);
+        self->camera_ready = TRUE;
     }
-    eye = (Vector3){ cx + cosf(self->orbit) * reach, reach * CLAWT_OFFICE_VIEW_3D_LIFT,
-                     cz + sinf(self->orbit) * reach };
+    clawt_office_camera_eye(self->camera, &ex, &ey, &ez);
+    clawt_office_camera_target(self->camera, &tx, &tz);
+    eye = (Vector3){ ex, ey, ez };
 
     self->camera3d.position = eye;
-    self->camera3d.target = (Vector3){ cx, 0.0f, cz };
+    self->camera3d.target = (Vector3){ tx, 0.0f, tz };
     self->camera3d.up = (Vector3){ 0.0f, 1.0f, 0.0f };
     self->camera3d.fovy = CLAWT_OFFICE_VIEW_3D_FOVY;
     self->camera3d.projection = CAMERA_PERSPECTIVE;
-    lrg_camera3d_set_position_xyz(self->lcamera, eye.x, eye.y, eye.z);
-    lrg_camera3d_set_target_xyz(self->lcamera, cx, 0.0f, cz);
+    lrg_camera3d_set_position_xyz(self->lcamera, ex, ey, ez);
+    lrg_camera3d_set_target_xyz(self->lcamera, tx, 0.0f, tz);
     lrg_camera3d_set_up_xyz(self->lcamera, 0.0f, 1.0f, 0.0f);
     lrg_camera3d_set_fovy(self->lcamera, CLAWT_OFFICE_VIEW_3D_FOVY);
     lrg_camera3d_set_aspect(self->lcamera, aspect);
@@ -2508,10 +2815,12 @@ draw_3d(ClawtOfficeScene *self, gint width, gint height)
                               (Vector3){ feet.x, base + 2.0f, feet.z }, 1.0f,
                               with_alpha(WHITE, a->fade));
             else {
+                gfloat yaw = clawt_office_camera_get_yaw(self->camera);
+
                 DrawSphere((Vector3){ feet.x, base + 2.0f, feet.z }, 0.5f, head);
-                DrawSphere((Vector3){ feet.x + 0.2f * cosf(self->orbit + G_PI),
+                DrawSphere((Vector3){ feet.x + 0.2f * cosf(yaw + G_PI),
                                       base + 2.08f,
-                                      feet.z + 0.2f * sinf(self->orbit + G_PI) }, 0.08f,
+                                      feet.z + 0.2f * sinf(yaw + G_PI) }, 0.08f,
                            with_alpha((Color){ 20, 20, 30, 255 }, a->fade));
             }
         }

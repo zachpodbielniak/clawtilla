@@ -27,7 +27,7 @@ G_BEGIN_DECLS
 /**
  * ClawtOfficeSceneMode:
  * @CLAWT_OFFICE_SCENE_2D: the Tiled map, from above
- * @CLAWT_OFFICE_SCENE_3D: the libregnum level, from an orbiting god's-eye camera
+ * @CLAWT_OFFICE_SCENE_3D: the libregnum level, from a yaw/pitch/distance camera
  *
  * How the office is drawn.
  */
@@ -310,9 +310,9 @@ gboolean clawt_office_scene_has_3d(ClawtOfficeScene *self);
  * How far the 2D map is zoomed (clawt_office_view_map_zoom()): Fit is the
  * largest scale at which the whole map fits, fractional included.
  * Pixel-perfect is that scale floored to a whole number.  In 3D, Fit and
- * Pixel-perfect set the camera's distance to frame the office, and 1x
- * and 2x come closer; the wheel then changes it.  Either way a drag's
- * panning is forgotten.
+ * Pixel-perfect frame the office, and 1x and 2x come closer; the wheel
+ * then changes the distance.  A drag's panning is forgotten, and the
+ * camera goes back to being driven by that framing.  Follow is kept.
  */
 void clawt_office_scene_set_zoom(ClawtOfficeScene *self, ClawtOfficeZoom zoom);
 
@@ -343,8 +343,8 @@ void clawt_office_scene_set_ui_scale(ClawtOfficeScene *self, gint ui_scale);
  * @dy: likewise
  *
  * Drags a 2D map that is larger than the view, within its edges.  Does
- * nothing in 3D (a drag turns the camera there) or at a zoom where the
- * whole map is in view.
+ * nothing in 3D (a drag there goes through clawt_office_scene_input())
+ * or at a zoom where the whole map is in view.
  */
 void clawt_office_scene_pan(ClawtOfficeScene *self, gfloat dx, gfloat dy);
 
@@ -404,12 +404,41 @@ void clawt_office_scene_draw(ClawtOfficeScene *self, gint width, gint height);
 const gchar *clawt_office_scene_pointer(ClawtOfficeScene *self, gfloat x, gfloat y);
 
 /**
- * clawt_office_scene_orbit:
+ * clawt_office_scene_set_camera:
  * @self: a scene
- * @dx: how far to turn the 3D camera, in radians
- * @zoom: a zoom step: positive in, negative out, 0 for none
+ * @x: where to aim, in tiles
+ * @z: and z
+ * @yaw: radians, the same sense the old orbit used
+ * @pitch: radians down from the horizontal
+ * @distance: tiles from the eye to the aim
+ *
+ * Snaps the 3D camera to this pose and stops Fit and follow from moving
+ * it.  --camera uses it, so a short screenshot still shows the move.
  */
-void clawt_office_scene_orbit(ClawtOfficeScene *self, gfloat dx, gfloat zoom);
+void clawt_office_scene_set_camera(ClawtOfficeScene *self,
+                                   gfloat             x,
+                                   gfloat             z,
+                                   gfloat             yaw,
+                                   gfloat             pitch,
+                                   gfloat             distance);
+
+/**
+ * clawt_office_scene_input:
+ * @self: a scene
+ * @in: one sample.  The host zeroes it and notes keys from the binding
+ *   table; this function does not look at a toolkit
+ *
+ * Right-drag looks, middle-drag and Shift+right-drag pan the floor,
+ * W/A/S/D and the arrows move, Q/E turn, the wheel dollies toward the
+ * cursor, a double-click on the floor recentres there, F and Home reset
+ * to Fit.  In 2D the subset is W/A/S/D and the arrows, the wheel around
+ * the cursor, F and Home, and a left drag.  Any of those cancels
+ * --focus.  The same function serves the window, the GTK embed and lrg.
+ *
+ * Returns: %TRUE when the sample was a double-click on the floor, which
+ *   the host should not also treat as a click on somebody
+ */
+gboolean clawt_office_scene_input(ClawtOfficeScene *self, const ClawtOfficeInput *in);
 
 /**
  * clawt_office_scene_set_focus:
@@ -417,9 +446,10 @@ void clawt_office_scene_orbit(ClawtOfficeScene *self, gfloat dx, gfloat zoom);
  * @id: (nullable): a participant to follow, or %NULL for the whole office
  *
  * The 3D camera centres on @id and comes in close, following it as it
- * walks.  In 2D a map zoomed past the view is centred on @id; at Fit the
- * whole map shows anyway.  Its name label is always drawn.  %NULL or ""
- * is nobody.
+ * walks, until a manual move cancels it.  In 2D a map zoomed past the
+ * view is centred on @id; at Fit the whole map shows anyway.  Its name
+ * label is always drawn.  %NULL or "" is nobody, and does not forget a
+ * pan the way a real id does.
  */
 void clawt_office_scene_set_focus(ClawtOfficeScene *self, const gchar *id);
 

@@ -559,9 +559,11 @@ test_control_to_dead_child_is_an_error(void)
 /* The 3D view's bearing when nobody has orbited it: office-scene.c's start. */
 #define DEFAULT_ORBIT (0.65f)
 
-/* The view sizes the default framing has to hold at: the window, 1080p, 4K, 4:3. */
+/* The view sizes the default framing has to hold at: the window, 1080p,
+ * 4K, 4:3, and the large and odd sizes the screenshot harness also draws. */
 static const gint view_sizes[][2] = {
     { 1280, 720 }, { 1920, 1080 }, { 3840, 2160 }, { 1024, 768 },
+    { 1600, 1200 }, { 2294, 2231 },
 };
 
 /*
@@ -874,8 +876,13 @@ test_frame_3d_shipped_worlds(void)
             /* big enough to be read as a board, not a speck */
             g_assert_cmpfloat(rect[2], >=, (gfloat)width / 20.0f);
 
-            /* and the whole office costs at most a third more distance than the old camera */
-            g_assert_cmpfloat(reach, <=, MAX(w.map_w, w.map_h) / 2.0f * 1.2f * 1.34f);
+            /*
+             * Landscape windows stay within a third of the old fixed
+             * distance.  A near-square view (2294x2231) stands further
+             * back: the vertical field has to hold the floor.
+             */
+            if ((gfloat)width / (gfloat)MAX(height, 1) >= 1.2f)
+                g_assert_cmpfloat(reach, <=, MAX(w.map_w, w.map_h) / 2.0f * 1.2f * 1.34f);
         }
 
         /* the camera this replaced */
