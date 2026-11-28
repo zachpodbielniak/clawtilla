@@ -329,6 +329,8 @@ clawt_web_stylesheet(void)
       "color:var(--muted);min-width:0;overflow:hidden;"
       "display:-webkit-box;-webkit-box-orient:vertical;"
       "-webkit-line-clamp:2;line-clamp:2}"
+    ".agent-waiting{margin-top:3px;font-size:12px;line-height:1.35;"
+      "color:var(--warn-fg);min-width:0;overflow-wrap:anywhere}"
     ".dot{width:7px;height:7px;border-radius:9999px;flex:none}"
     ".dot-good{background:var(--good-fg)}"
     ".dot-warn{background:var(--warn-fg)}"

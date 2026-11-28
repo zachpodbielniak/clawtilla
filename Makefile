@@ -864,6 +864,13 @@ $(OUTDIR)/tests/test-web-schedule: $(WEB_SRCDIR)/web-schedule.c \
                                    $(WEB_SRCDIR)/web-ui.h $(WEB_SRCDIR)/web-pages.h \
                                    $(WEB_SRCDIR)/clawt-web.h
 
+# test-web-fleet.c #includes the Fleet sidebar and what it is drawn with.
+$(OUTDIR)/tests/test-web-fleet: $(WEB_SRCDIR)/web-fleet.c \
+                                $(WEB_SRCDIR)/web-app.c $(WEB_SRCDIR)/web-files.c \
+                                $(WEB_SRCDIR)/web-ui.c $(WEB_SRCDIR)/web-style.c \
+                                $(WEB_SRCDIR)/web-ui.h $(WEB_SRCDIR)/web-pages.h \
+                                $(WEB_SRCDIR)/clawt-web.h
+
 # test-web-board.c #includes the board page and what it is drawn with.
 $(OUTDIR)/tests/test-web-board: $(WEB_SRCDIR)/web-board.c \
                                 $(WEB_SRCDIR)/web-app.c $(WEB_SRCDIR)/web-files.c \

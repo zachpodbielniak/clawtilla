@@ -301,6 +301,20 @@ agent_row(JsonObject *agent, const gchar *selected, ClawtPage view,
     htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(meta));
 
     /*
+     * A waiting agent says what it waits for, under its badges.  The
+     * sidebar is re-fetched on `sse:fleet`, which the daemon's
+     * agent.activity rides like every event, so this moves with no
+     * listener of its own.  Running and idle rows get nothing.
+     */
+    {
+        HtmxElement *waiting = clawt_web_agent_waiting_line(
+            agent, g_get_real_time() / G_USEC_PER_SEC);
+
+        if (waiting != NULL)
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(waiting));
+    }
+
+    /*
      * What the agent is for, under its name.
      *
      * New here.  The GTK sidebar has written the description under

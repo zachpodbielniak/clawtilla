@@ -147,6 +147,33 @@ HtmxElement *clawt_web_card_body(HtmxDiv *card);
 HtmxSpan *clawt_web_badge(const gchar *text, const gchar *tone);
 
 /**
+ * clawt_web_agent_waiting_text:
+ * @agent: an agent object from agent.list
+ * @now: the clock, a Unix time in seconds
+ *
+ * What a Fleet row says about an agent that is waiting: the library's
+ * `waiting: <label> (<age>)` from clawt_board_waiting_label(), then
+ * ` +N` when N further waits are pending.  Only an agent whose
+ * `activity` is `waiting` has one; a working or idle agent does not.
+ * Plain text: the caller sets it as text content, which escapes it.
+ *
+ * Returns: (transfer full) (nullable): the text, or %NULL
+ */
+gchar *clawt_web_agent_waiting_text(JsonObject *agent, gint64 now);
+
+/**
+ * clawt_web_agent_waiting_line:
+ * @agent: an agent object from agent.list
+ * @now: the clock, a Unix time in seconds
+ *
+ * The row's waiting line as an element, or %NULL when the agent is not
+ * waiting.  Server-rendered: no script, no listener, no timer.
+ *
+ * Returns: (transfer full) (nullable): a `div.agent-waiting`
+ */
+HtmxElement *clawt_web_agent_waiting_line(JsonObject *agent, gint64 now);
+
+/**
  * clawt_web_failover_badge:
  * @agent: (nullable): an agent as agent.list or agent.show reports it
  *
