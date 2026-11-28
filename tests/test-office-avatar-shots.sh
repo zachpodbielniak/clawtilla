@@ -16,8 +16,7 @@
 # without any of them.  During the office gate those are present, so a
 # skip there is a failure of the harness, not a pass.
 #
-# CLAWT_AVATAR_SHOTS_OUT=DIR keeps the frame.  The exchange copy is
-# written when /mnt/clawtilla/exchange/leopard exists.
+# CLAWT_AVATAR_SHOTS_OUT=DIR keeps the frame.
 
 set -euo pipefail
 
@@ -30,7 +29,7 @@ CLI="${TOP}/${BUILD}/clawtilla"
 
 skip () {
 	echo "test-office-avatar-shots: skipped (${1})"
-	exit 0
+	exit 77
 }
 
 [[ -x "${OFFICE}" ]] || skip "no clawtilla-office in ${BUILD}: build with OFFICE=1"
@@ -158,10 +157,6 @@ if [[ -n "${CLAWT_AVATAR_SHOTS_OUT:-}" ]]
 then
 	mkdir -p "${CLAWT_AVATAR_SHOTS_OUT}"
 	cp "${RUN}/avatars.png" "${CLAWT_AVATAR_SHOTS_OUT}/avatars.png"
-fi
-if [[ -d /mnt/clawtilla/exchange/leopard ]]
-then
-	cp "${RUN}/avatars.png" /mnt/clawtilla/exchange/leopard/office-avatars.png
 fi
 
 if ! python3 - "${RUN}/avatars.png" <<'PY'

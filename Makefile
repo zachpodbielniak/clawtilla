@@ -1285,7 +1285,7 @@ $(OUTDIR)/tests/test-config-offline: $(CLI_BIN_TARGET)
 $(OUTDIR)/tests/test-sentinel: $(CLI_BIN_TARGET)
 
 .PHONY: test  ## Build and run the hermetic test suite
-test: $(TEST_BINARIES) test-plugins plugins
+test: $(TEST_BINARIES) test-plugins plugins $(DAEMON_BIN_TARGET)
 	@echo "Running tests..."
 	@TMPDIR=$$(mktemp -d /tmp/clawt-run-XXXXXX); export TMPDIR; \
 	HOME="$$TMPDIR/no-home"; export HOME; \
