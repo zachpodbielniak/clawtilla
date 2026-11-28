@@ -251,6 +251,57 @@ gboolean clawt_task_manager_note_continuation(ClawtTaskManager *self,
                                               const gchar      *error);
 
 /**
+ * clawt_task_manager_note_turn_continued:
+ * @self: a #ClawtTaskManager
+ * @task_id: the task the turn is on
+ * @who: whose turn it is
+ * @reason: (nullable): why the CLI started another turn, from the runtime
+ *
+ * The assignee's CLI ended a turn and then began another one by itself,
+ * in the same run: a sub-agent or background shell it started finished,
+ * and the CLI ran the turn its notification asked for (VENTURE #58).
+ * From the daemon's side that is still one turn -- the runtime sends one
+ * reply when the run ends -- but it is two to the agent, and a
+ * clawtilla_task_progress call in the first was a hold for *that* turn.
+ * Left armed, it would veto the later turn's reply, which is the report,
+ * and the task would sit running with nothing left to end it.
+ *
+ * So the hold is spent here, as the end of the earlier turn would have
+ * spent it.  A progress call in the later turn arms a fresh one, which
+ * still holds the reply.  A note records what happened.  Only the
+ * assignee's run counts; anyone else's leaves the task alone.
+ *
+ * Returns: %TRUE if a hold was spent
+ */
+gboolean clawt_task_manager_note_turn_continued(ClawtTaskManager *self,
+                                                const gchar      *task_id,
+                                                const gchar      *who,
+                                                const gchar      *reason);
+
+/**
+ * clawt_task_manager_abandon_background:
+ * @self: a #ClawtTaskManager
+ * @task_id: the task the turn is on
+ * @who: whose turn it is
+ * @what: (nullable): what the runtime stopped waiting for, for the reason
+ *
+ * The assignee's CLI ended a turn with background work still running, and
+ * the runtime stopped waiting for it at its bound
+ * (`agents.runtime.background_wait_ms`).  Whatever that work would have
+ * produced will not arrive, so the task is failed with @what as its
+ * reason -- not left running for a turn nothing will start, and not
+ * completed on a reply that says in so many words that the work was not
+ * finished.  The settle notice tells the delegator; a failed task can be
+ * retried.  Only the assignee's run counts.
+ *
+ * Returns: %TRUE if the task was failed
+ */
+gboolean clawt_task_manager_abandon_background(ClawtTaskManager *self,
+                                               const gchar      *task_id,
+                                               const gchar      *who,
+                                               const gchar      *what);
+
+/**
  * clawt_task_manager_complete:
  * @self: a #ClawtTaskManager
  * @task_id: a task id

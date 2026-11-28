@@ -50,6 +50,64 @@
  * answer its own answers for ever; libreclaw's "Still working..." notes
  * were removed for a milder version of the same thing.
  */
+/*
+ * A turn boundary the runtime reported inside one run (VENTURE #58).
+ *
+ * Here and not in the turn code because it arrives as a step -- the only
+ * thing the runtime sends while a turn is still going -- and because it
+ * has to be acted on *then*: the reply that ends the run comes after it,
+ * and by the time that reply is judged the hold an earlier turn armed
+ * must already be spent, or the task must already have failed.
+ *
+ * Only a status step can carry a marker, and only the runtime writes a
+ * status step's detail.
+ */
+static void
+note_turn_boundary(ClawtDaemon   *self,
+                   ClawtTurnStep *step,
+                   const gchar   *agent_id,
+                   const gchar   *room_id,
+                   const gchar   *text)
+{
+    const gchar *marker;
+    const gchar *task_id;
+    ClawtAgent *agent;
+    gboolean continued;
+
+    if (clawt_turn_step_get_kind(step) != CLAWT_STEP_STATUS)
+        return;
+
+    marker = clawt_turn_step_get_detail(step);
+    continued = g_strcmp0(marker, CLAWT_STEP_DETAIL_TURN_CONTINUED) == 0;
+
+    if (!continued &&
+        g_strcmp0(marker, CLAWT_STEP_DETAIL_BACKGROUND_ABANDONED) != 0)
+        return;
+
+    if (self->agents == NULL || self->tasks == NULL)
+        return;
+
+    agent = clawt_agent_manager_get(self->agents, agent_id);
+    task_id = agent != NULL
+        ? clawt_agent_get_turn_task_id_in(agent, room_id) : NULL;
+
+    if (task_id == NULL)
+        return;
+
+    if (continued) {
+        if (clawt_task_manager_note_turn_continued(self->tasks, task_id,
+                                                   agent_id, text))
+            g_info("daemon: %s's CLI started another turn on %s, so the "
+                   "progress hold of the turn before it was spent",
+                   agent_id, task_id);
+    } else if (clawt_task_manager_abandon_background(self->tasks, task_id,
+                                                     agent_id, text)) {
+        g_message("daemon: %s ended a turn on %s with background work its "
+                  "runtime gave up waiting for; the task has failed: %s",
+                  agent_id, task_id, text != NULL ? text : "");
+    }
+}
+
 void
 clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step)
 {
@@ -121,6 +179,9 @@ clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step)
 
     /* And it is not silent any more: a rescue offer is withdrawn. */
     clawt_daemon_rescue_life(self, agent_id, room_id);
+
+    /* A turn that moved on, or gave up waiting, inside one run. */
+    note_turn_boundary(self, step, agent_id, room_id, text);
 
 	/*
 	 * And evidence of what the turn did.  A tool step is a command run,

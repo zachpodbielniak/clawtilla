@@ -786,6 +786,23 @@ The tmux provider uses its own command and inactivity bounds instead.
 This is a duration limit; runtime.turn_timeout_seconds separately
 controls the turn watchdog. Values must be between 0 and 2147483647.
 
+### `agents.runtime.background_wait_ms`
+
+- Type: integer
+- Default: `1800000`
+- Since: 0.77.3
+
+How long, in milliseconds, a turn keeps going after the agent's CLI
+ended it with background work of its own still running -- a Claude
+Code sub-agent or background shell. The CLI runs another turn by
+itself when that work finishes, and its text is part of the reply.
+When the bound is reached the CLI is stopped, the reply says what was
+left running, and a task the turn was on fails with that as its
+reason. 0 waits as long as the CLI runs (then only
+runtime.process_timeout_ms bounds it). The default is 30 minutes.
+Rendered as libreclaw ai.background_wait_ms. Values must be between 0
+and 2147483647.
+
 ### `agents.runtime.idle_stop_hours`
 
 - Type: integer

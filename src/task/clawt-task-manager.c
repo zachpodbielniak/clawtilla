@@ -932,6 +932,76 @@ clawt_task_manager_complete_on_turn_end(ClawtTaskManager  *self,
     return TRUE;
 }
 
+/*
+ * A turn boundary inside one run of the assignee's CLI.  See the header.
+ */
+gboolean
+clawt_task_manager_note_turn_continued(ClawtTaskManager *self,
+                                       const gchar      *task_id,
+                                       const gchar      *who,
+                                       const gchar      *reason)
+{
+    ClawtTask *task;
+    gboolean spent;
+    g_autofree gchar *body = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+
+    task = clawt_task_manager_get(self, task_id);
+
+    if (task == NULL || who == NULL ||
+        !clawt_task_state_is_active(clawt_task_get_state(task)) ||
+        g_strcmp0(clawt_task_get_assignee(task), who) != 0)
+        return FALSE;
+
+    spent = clawt_task_take_completion_hold(task);
+
+    body = g_strdup_printf(
+        "%s's turn ended and its CLI started another by itself (%s)%s",
+        who, reason != NULL && reason[0] != '\0' ? reason : "no reason given",
+        spent ? "; the progress hold from the earlier turn was spent, so "
+                "this turn's reply can complete the task" : "");
+    note(self, task, NULL, CLAWT_TASK_NOTE_COMMENT, body);
+
+    if (spent)
+        emit_changed(self, task, NULL);
+
+    return spent;
+}
+
+/*
+ * The runtime stopped waiting for background work.  See the header.
+ */
+gboolean
+clawt_task_manager_abandon_background(ClawtTaskManager *self,
+                                      const gchar      *task_id,
+                                      const gchar      *who,
+                                      const gchar      *what)
+{
+    ClawtTask *task;
+    g_autofree gchar *reason = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+
+    task = clawt_task_manager_get(self, task_id);
+
+    if (task == NULL || who == NULL ||
+        !clawt_task_state_is_active(clawt_task_get_state(task)) ||
+        g_strcmp0(clawt_task_get_assignee(task), who) != 0)
+        return FALSE;
+
+    reason = g_strdup_printf(
+        "%s ended its turn with background work still running, and its "
+        "runtime stopped waiting for it: %s", who,
+        what != NULL && what[0] != '\0' ? what : "(not named)");
+
+    /* No hold survives a failure: nothing is left to hold it for. */
+    (void)clawt_task_take_completion_hold(task);
+    note(self, task, NULL, CLAWT_TASK_NOTE_COMMENT, reason);
+
+    return clawt_task_manager_fail(self, task_id, reason);
+}
+
 gboolean
 clawt_task_manager_fail(ClawtTaskManager *self,
                         const gchar      *task_id,

@@ -54,6 +54,34 @@ GType clawt_turn_step_get_type(void) G_GNUC_CONST;
 typedef struct _ClawtTurnStep ClawtTurnStep;
 
 /**
+ * CLAWT_STEP_DETAIL_TURN_CONTINUED:
+ *
+ * The detail libreclaw puts on a %CLAWT_STEP_STATUS step to say the
+ * agent's CLI ended a turn and then started another one by itself in the
+ * same run -- background work it had launched (a Claude Code sub-agent,
+ * a background shell) finished, and the CLI ran the turn that work's
+ * notification asked for.  The reply that ends the run carries both
+ * turns' text.  VENTURE #58.
+ *
+ * libreclaw's LC_TURN_STEP_DETAIL_TURN_CONTINUED, spelled again here
+ * because the daemon does not include libreclaw's headers; the two are
+ * the wire.  Written by the runtime, never by the model: a step's detail
+ * for a status step is not something an agent can set.
+ */
+#define CLAWT_STEP_DETAIL_TURN_CONTINUED "turn-continued"
+
+/**
+ * CLAWT_STEP_DETAIL_BACKGROUND_ABANDONED:
+ *
+ * The detail on a %CLAWT_STEP_STATUS step that says the agent's CLI ended
+ * a turn with background work still running and the runtime stopped
+ * waiting for it (libreclaw `ai.background_wait_ms`, rendered from
+ * `agents.runtime.background_wait_ms`).  The step's text names the work.
+ * libreclaw's LC_TURN_STEP_DETAIL_BACKGROUND_ABANDONED.
+ */
+#define CLAWT_STEP_DETAIL_BACKGROUND_ABANDONED "background-abandoned"
+
+/**
  * CLAWT_STEP_MEMBER_KIND:
  *
  * The member name a step's kind travels under, in a `turn.step` event's

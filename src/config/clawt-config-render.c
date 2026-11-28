@@ -1205,6 +1205,9 @@ render_agent(ClawtConfig       *config,
      * Write zero explicitly as well as any user-selected deadline. */
     append_key_int(out, 2, "process_timeout_ms",
                    clawt_agent_config_get_int(agent, "runtime.process_timeout_ms"));
+    /* VENTURE #58: the wait for a CLI's own late turn, always explicit. */
+    append_key_int(out, 2, "background_wait_ms",
+                   clawt_agent_config_get_int(agent, "runtime.background_wait_ms"));
     append_key_value(out, 2, "provider",
                      clawt_agent_config_get_string(agent, "model.provider"));
     append_key_value(out, 2, "model",

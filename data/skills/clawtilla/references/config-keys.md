@@ -571,6 +571,7 @@ see security.md).
 | `agents.runtime.max_restarts` | integer | `10` |  | Consecutive failures before the agent is left in error rather than restarted again. |
 | `agents.runtime.stream_steps` | boolean |  |  | Report this agent's steps while its turn runs. |
 | `agents.runtime.process_timeout_ms` | integer | `0` |  | Maximum elapsed milliseconds for one AI CLI subprocess, including streaming turns. |
+| `agents.runtime.background_wait_ms` | integer | `1800000` |  | How long, in milliseconds, a turn keeps going after the agent's CLI ended it with background work of its own still running -- a Claude Code sub-agent or background shell. |
 | `agents.runtime.idle_stop_hours` | integer | `0` |  | Stop this agent after this many hours without a turn. |
 | `agents.runtime.turn_timeout_seconds` | integer | `0` |  | How long a turn may go without producing anything before it is cancelled. |
 | `agents.runtime.first_reply_seconds` | integer | `20` |  | How long a turn may show nothing at all -- no step, no thought, no reply -- before the clients offer to stop it or to run the same message on another model. |

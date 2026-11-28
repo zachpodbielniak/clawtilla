@@ -4047,6 +4047,20 @@ static const ClawtSchemaEntry schema[] = {
   "controls the turn watchdog. Values must be between 0 and 2147483647.",
   "0.2.0" },
 
+{ "agents.runtime.background_wait_ms", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "1800000", NULL,
+  "How long, in milliseconds, a turn keeps going after the agent's CLI\n"
+  "ended it with background work of its own still running -- a Claude\n"
+  "Code sub-agent or background shell. The CLI runs another turn by\n"
+  "itself when that work finishes, and its text is part of the reply.\n"
+  "When the bound is reached the CLI is stopped, the reply says what was\n"
+  "left running, and a task the turn was on fails with that as its\n"
+  "reason. 0 waits as long as the CLI runs (then only\n"
+  "runtime.process_timeout_ms bounds it). The default is 30 minutes.\n"
+  "Rendered as libreclaw ai.background_wait_ms. Values must be between 0\n"
+  "and 2147483647.",
+  "0.77.3" },
+
 { "agents.runtime.idle_stop_hours", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "0", NULL,
   "Stop this agent after this many hours without a turn. 0 never does.\n"
