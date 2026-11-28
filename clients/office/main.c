@@ -273,8 +273,23 @@ on_usage(JsonObject *usage, gpointer user_data)
     clawt_office_scene_set_usage(((Office *)user_data)->scene, usage);
 }
 
+static void
+on_look(const gchar *id, const gchar *name, const gchar *face, gboolean has_avatar,
+        gpointer user_data)
+{
+    clawt_office_scene_set_look(((Office *)user_data)->scene, id, name, face, has_avatar);
+}
+
+static void
+on_portrait(const gchar *id, const guint8 *rgba, gint size, const gchar *etag,
+            gpointer user_data)
+{
+    clawt_office_scene_set_portrait(((Office *)user_data)->scene, id, rgba, size, etag);
+}
+
 static const ClawtOfficeFeedFuncs feed_funcs = {
-    on_world, on_layout, on_color, on_status, on_character, on_usage
+    on_world, on_layout, on_color, on_status, on_character, on_usage,
+    on_look, on_portrait
 };
 
 /* The world, loaded once a GL context exists; the pack's own words on failure. */

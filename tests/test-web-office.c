@@ -328,6 +328,63 @@ test_layout_route(void)
     fixture_teardown(&fixture);
 }
 
+/* A 4x4 PNG, RGB 255,0,17.  Magic is enough for agent.avatar_set. */
+static const guint8 ADA_PNG[] = {
+    137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,4,0,0,0,4,8,2,0,0,0,38,147,9,41,
+    0,0,0,16,73,68,65,84,120,218,99,248,207,32,8,71,12,196,113,0,201,35,17,1,6,239,147,43,
+    0,0,0,0,73,69,78,68,174,66,96,130
+};
+
+/*
+ * The picture does not replace the colour, the generated SVG or the
+ * letter.  mallory, who has no picture, still has no img.  That is the
+ * JSON the page already drew from.
+ */
+static void
+test_layout_face_picture(void)
+{
+    OfficeFixture fixture = { 0 };
+    g_autofree gchar *encoded = NULL;
+    g_autofree gchar *payload_text = NULL;
+    g_autoptr(JsonParser) payload_parser = json_parser_new();
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxResponse) response = NULL;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    JsonObject *body;
+    JsonObject *faces;
+    JsonObject *ada;
+    JsonObject *mallory;
+
+    fixture_setup(&fixture, TRUE);
+    encoded = g_base64_encode(ADA_PNG, sizeof(ADA_PNG));
+    payload_text = g_strdup_printf("{\"agent\":\"ada\",\"data\":\"%s\"}", encoded);
+    g_assert_true(json_parser_load_from_data(payload_parser, payload_text, -1, &error));
+    g_assert_no_error(error);
+    reply = clawt_client_request(fixture.client, "agent.avatar_set",
+                                 json_node_copy(json_parser_get_root(payload_parser)), &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(reply);
+
+    response = get(&fixture, on_layout_json, "/office/layout.json", NULL);
+    g_assert_cmpuint(htmx_response_get_status(response), ==, SOUP_STATUS_OK);
+    body = parse_object(htmx_response_get_content(response), parser);
+    faces = json_object_get_object_member(body, "faces");
+    ada = json_object_get_object_member(faces, "ada");
+    mallory = json_object_get_object_member(faces, "mallory");
+    g_assert_nonnull(ada);
+    g_assert_nonnull(mallory);
+    g_assert_cmpstr(json_object_get_string_member(ada, "color"), ==,
+                    clawt_avatar_color("ada", "Ada", "#7c5cff"));
+    g_assert_cmpstr(json_object_get_string_member(ada, "img"), ==, "/a/ada/avatar");
+    g_assert_true(json_object_has_member(ada, "svg"));
+    g_assert_true(json_object_has_member(ada, "initial"));
+    g_assert_false(json_object_has_member(mallory, "img"));
+    g_assert_true(json_object_has_member(mallory, "initial"));
+
+    fixture_teardown(&fixture);
+}
+
 /* The world, with its map parsed and every tileset inlined as data. */
 static void
 test_world_route(void)
@@ -792,6 +849,7 @@ main(int argc, char *argv[])
                     test_file_refused_without_asking);
     g_test_add_func("/web-office/file-route", test_file_route);
     g_test_add_func("/web-office/layout-route", test_layout_route);
+    g_test_add_func("/web-office/layout-face-picture", test_layout_face_picture);
     g_test_add_func("/web-office/world-route", test_world_route);
     g_test_add_func("/web-office/markup-when-on", test_markup_when_on);
     g_test_add_func("/web-office/nothing-when-off", test_nothing_when_off);

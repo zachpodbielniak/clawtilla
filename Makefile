@@ -231,6 +231,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-change.h \
 	$(SRCDIR)/integration/clawt-media.h \
 	$(SRCDIR)/office/clawt-office-sheet.h \
+	$(SRCDIR)/office/clawt-office-face.h \
 	$(SRCDIR)/office/clawt-office-restyle.h \
 	$(SRCDIR)/chat/clawt-draft-store.h \
 	$(SRCDIR)/chat/clawt-room.h \
@@ -511,6 +512,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-change.c \
 	$(SRCDIR)/integration/clawt-media.c \
 	$(SRCDIR)/office/clawt-office-sheet.c \
+	$(SRCDIR)/office/clawt-office-face.c \
 	$(SRCDIR)/office/clawt-office-restyle.c \
 	$(SRCDIR)/chat/clawt-draft-store.c \
 	$(SRCDIR)/chat/clawt-room.c \
@@ -833,6 +835,10 @@ endif
 # test-web-app.c #includes the web client's state, for the same reason.
 $(OUTDIR)/tests/test-web-app: $(WEB_SRCDIR)/web-app.c $(WEB_SRCDIR)/web-files.c \
                               $(WEB_SRCDIR)/web-pages.h $(WEB_SRCDIR)/clawt-web.h
+
+# test-office-feed.c #includes the feed, which is not in libclawt.
+$(OUTDIR)/tests/test-office-feed: $(OFFICE_SRCDIR)/office-feed.c \
+                                  $(OFFICE_SRCDIR)/office-feed.h
 
 # test-web-office.c #includes the office view and what it is drawn with.
 $(OUTDIR)/tests/test-web-office: $(WEB_SRCDIR)/web-office-view.c \

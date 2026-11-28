@@ -98,6 +98,41 @@ actor_free(Actor *a)
     g_free(a);
 }
 
+/* The face agent.list named, kept even before the participant is placed. */
+typedef struct {
+    gchar   *name;
+    gchar   *face;
+    gboolean has_avatar;
+} Look;
+
+/* Decoded picture.  The texture is uploaded in prepare(), when GL is current. */
+typedef struct {
+    gchar    *etag;
+    guint8   *rgba;
+    gint      size;
+    Texture2D texture;
+    gboolean  uploaded;
+    gboolean  dirty;
+} FacePortrait;
+
+static void
+look_free(Look *look)
+{
+    g_free(look->name);
+    g_free(look->face);
+    g_free(look);
+}
+
+static void
+face_portrait_free(FacePortrait *portrait)
+{
+    if (portrait->uploaded)
+        UnloadTexture(portrait->texture);
+    g_free(portrait->etag);
+    g_free(portrait->rgba);
+    g_free(portrait);
+}
+
 /* An agent's own character: its sheet, and which row is which animation. */
 typedef struct {
     gchar          *path;       /* the sheet, or NULL */
@@ -209,6 +244,8 @@ struct _ClawtOfficeScene {
     GHashTable           *colors;     /* id -> "#rrggbb" */
     GHashTable           *beams;      /* "a|b" -> LrgBeam */
     GHashTable           *sheets;     /* id -> Sheet */
+    GHashTable           *looks;      /* id -> Look */
+    GHashTable           *portraits;  /* id -> FacePortrait */
     gchar                *status;
     gchar                *hovered;
     gchar                *focus;      /* who the 3D camera follows, or NULL */
@@ -318,6 +355,10 @@ clawt_office_scene_new(void)
     self->beams = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
     self->sheets = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                          (GDestroyNotify)sheet_free);
+    self->looks = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                        (GDestroyNotify)look_free);
+    self->portraits = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                            (GDestroyNotify)face_portrait_free);
     self->handles = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     self->tile = 32.0f;
     self->person_scale = PERSON_SCALE;
@@ -337,6 +378,8 @@ clawt_office_scene_free(ClawtOfficeScene *self)
     g_hash_table_unref(self->colors);
     g_hash_table_unref(self->beams);
     g_hash_table_unref(self->sheets);
+    g_hash_table_unref(self->looks);
+    g_hash_table_unref(self->portraits);
     g_ptr_array_unref(self->tilemaps);
     if (self->baked_ok)
         UnloadRenderTexture(self->baked);
@@ -916,6 +959,77 @@ clawt_office_scene_set_color(ClawtOfficeScene *self, const gchar *id, const gcha
 }
 
 void
+clawt_office_scene_set_look(ClawtOfficeScene *self, const gchar *id,
+                            const gchar *name, const gchar *face,
+                            gboolean has_avatar)
+{
+    Look *look;
+
+    if (id == NULL)
+        return;
+    look = g_new0(Look, 1);
+    look->name = g_strdup(name);
+    look->face = g_strdup(face);
+    look->has_avatar = has_avatar;
+    g_hash_table_replace(self->looks, g_strdup(id), look);
+}
+
+void
+clawt_office_scene_set_portrait(ClawtOfficeScene *self, const gchar *id,
+                                const guint8 *rgba, gint size, const gchar *etag)
+{
+    FacePortrait *portrait;
+
+    if (id == NULL)
+        return;
+    if (rgba == NULL || size < 1) {
+        g_hash_table_remove(self->portraits, id);
+        return;
+    }
+    portrait = g_hash_table_lookup(self->portraits, id);
+    if (portrait != NULL && g_strcmp0(portrait->etag, etag) == 0 && portrait->rgba != NULL)
+        return;
+    if (portrait == NULL) {
+        portrait = g_new0(FacePortrait, 1);
+        g_hash_table_insert(self->portraits, g_strdup(id), portrait);
+    }
+    /*
+     * The old texture stays until prepare(), which is the only place a
+     * GL call is safe: this can run from a feed callback between frames.
+     */
+    g_free(portrait->etag);
+    g_free(portrait->rgba);
+    portrait->etag = g_strdup(etag);
+    portrait->size = size;
+    portrait->rgba = g_memdup2(rgba, (gsize)size * (gsize)size * 4);
+    portrait->dirty = TRUE;
+}
+
+ClawtOfficeFaceKind
+clawt_office_scene_face_kind(ClawtOfficeScene *self, const gchar *id)
+{
+    Look *look = id != NULL ? g_hash_table_lookup(self->looks, id) : NULL;
+    Actor *actor = id != NULL ? g_hash_table_lookup(self->actors, id) : NULL;
+    Sheet *sheet = id != NULL ? g_hash_table_lookup(self->sheets, id) : NULL;
+    const gchar *color = id != NULL ? g_hash_table_lookup(self->colors, id) : NULL;
+    const gchar *name;
+    ClawtOfficeFace face;
+    gchar color_buf[16];
+    gchar initial[8];
+
+    if (color == NULL && actor != NULL)
+        color = actor->own_color;
+    name = look != NULL && look->name != NULL ? look->name
+        : actor != NULL && actor->name != NULL ? actor->name : id;
+    clawt_office_face_resolve(&face, id, name, color,
+                              look != NULL ? look->face : NULL,
+                              look != NULL && look->has_avatar,
+                              sheet != NULL && (sheet->path != NULL || sheet->mesh_path != NULL),
+                              color_buf, sizeof(color_buf), initial, sizeof(initial));
+    return face.kind;
+}
+
+void
 clawt_office_scene_set_usage(ClawtOfficeScene *self, JsonObject *usage)
 {
     g_clear_pointer(&self->usage, json_object_unref);
@@ -1126,6 +1240,34 @@ clawt_office_scene_prepare(ClawtOfficeScene *self)
             sheet->failed = !sheet->loaded;
             if (sheet->loaded)
                 SetTextureFilter(sheet->texture, TEXTURE_FILTER_POINT);
+        }
+
+        /*
+         * Portraits, the same place: a texture loaded inside the host's
+         * render texture is a nested mode raylib does not support.
+         * Bilinear even in a pixel-art world -- the head is a handful of
+         * pixels at Fit, and point sampling turns a face into noise.
+         * Sheets stay point-sampled above; that is a different picture.
+         */
+        g_hash_table_iter_init(&iter, self->portraits);
+        while (g_hash_table_iter_next(&iter, NULL, &value)) {
+            FacePortrait *portrait = value;
+            Image image = { 0 };
+
+            if (!portrait->dirty || portrait->rgba == NULL)
+                continue;
+            if (portrait->uploaded)
+                UnloadTexture(portrait->texture);
+            image.data = portrait->rgba;
+            image.width = portrait->size;
+            image.height = portrait->size;
+            image.mipmaps = 1;
+            image.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+            portrait->texture = LoadTextureFromImage(image);
+            portrait->uploaded = portrait->texture.id != 0;
+            portrait->dirty = !portrait->uploaded;
+            if (portrait->uploaded)
+                SetTextureFilter(portrait->texture, TEXTURE_FILTER_BILINEAR);
         }
 
         /*
@@ -1383,6 +1525,20 @@ sync_beams(ClawtOfficeScene *self, gboolean three_d)
         g_hash_table_remove(self->beams, g_ptr_array_index(stale, i));
 }
 
+/* The uploaded picture, or NULL until prepare() has handed it to GL. */
+static FacePortrait *
+actor_portrait(ClawtOfficeScene *self, Actor *a)
+{
+    FacePortrait *portrait;
+
+    if (a == NULL || a->id == NULL)
+        return NULL;
+    portrait = g_hash_table_lookup(self->portraits, a->id);
+    if (portrait == NULL || !portrait->uploaded || portrait->texture.id == 0)
+        return NULL;
+    return portrait;
+}
+
 /* A prop, drawn small beside the body: what the activity has in hand. */
 static void
 draw_prop_2d(Actor *a, gfloat x, gfloat y)
@@ -1413,19 +1569,25 @@ draw_prop_2d(Actor *a, gfloat x, gfloat y)
  * are a little lower; walking legs swing, standing ones do not.
  */
 static void
-draw_person_2d(Actor *a, gfloat x, gfloat y, gboolean hovered)
+draw_person_2d(ClawtOfficeScene *self, Actor *a, gfloat x, gfloat y, gboolean hovered)
 {
     gfloat alpha = a->fade;
     gboolean sitting = g_strcmp0(a->pose, "sit") == 0 || g_strcmp0(a->pose, "type") == 0 ||
                        g_strcmp0(a->pose, "read") == 0;
     gfloat lift = sitting ? 0.0f : 3.0f;
     gfloat swing = sinf(a->walk_phase) * 2.5f;
+    gfloat hx;
+    gfloat hy;
+    FacePortrait *picture;
     Color body = with_alpha(shade(a->color, 0.72f), alpha);
     Color head = with_alpha(a->color, alpha);
     Color eye = with_alpha(parse_color(clawt_face_eye_color(clawt_avatar_color(a->id, a->name,
                                                                                NULL)),
                                        (Color){ 20, 20, 30, 255 }), alpha);
 
+    picture = actor_portrait(self, a);
+    hx = x;
+    hy = y - 15.0f - lift;
     DrawEllipse((gint)x, (gint)(y + 7.0f), 11.0f, 4.0f, with_alpha((Color){ 0, 0, 0, 70 }, alpha));
     if (!sitting) {
         DrawLineEx((Vector2){ x - 3.0f, y + 2.0f }, (Vector2){ x - 3.0f + swing, y + 8.0f }, 3.0f,
@@ -1435,11 +1597,38 @@ draw_person_2d(Actor *a, gfloat x, gfloat y, gboolean hovered)
     }
     DrawRectangleRounded((Rectangle){ x - 7.0f, y - 8.0f - lift, 14.0f, 13.0f }, 0.5f, 6, body);
     if (hovered)
-        DrawCircleLines((gint)x, (gint)(y - 15.0f - lift), BODY_RADIUS + 2.0f,
+        DrawCircleLines((gint)hx, (gint)hy, BODY_RADIUS + 2.0f,
                         with_alpha((Color){ 255, 255, 255, 220 }, alpha));
-    DrawCircleV((Vector2){ x, y - 15.0f - lift }, BODY_RADIUS, head);
-    DrawCircleV((Vector2){ x - 3.0f, y - 16.0f - lift }, 1.6f, eye);
-    DrawCircleV((Vector2){ x + 3.0f, y - 16.0f - lift }, 1.6f, eye);
+    DrawCircleV((Vector2){ hx, hy }, BODY_RADIUS, head);
+    /*
+     * The token is already a circle (transparent corners), sized to the
+     * head this view already draws, so Fit and a pixel-art map keep the
+     * same face.  Until the bytes arrive the colour stands in.
+     */
+    if (picture != NULL) {
+        gfloat side = BODY_RADIUS * 2.0f;
+
+        DrawTexturePro(picture->texture,
+                       (Rectangle){ 0.0f, 0.0f, (gfloat)picture->size, (gfloat)picture->size },
+                       (Rectangle){ hx - BODY_RADIUS, hy - BODY_RADIUS, side, side },
+                       (Vector2){ 0.0f, 0.0f }, 0.0f, with_alpha(WHITE, alpha));
+    } else if (clawt_office_scene_face_kind(self, a->id) == CLAWT_OFFICE_FACE_BLOB) {
+        ClawtOfficeFace face;
+        Look *look = g_hash_table_lookup(self->looks, a->id);
+        gchar color_buf[16];
+        gchar initial[8];
+        gint tw;
+
+        clawt_office_face_resolve(&face, a->id, a->name, NULL,
+                                  look != NULL ? look->face : NULL, FALSE, FALSE,
+                                  color_buf, sizeof(color_buf), initial, sizeof(initial));
+        tw = MeasureText(initial, 10);
+        DrawText(initial, (gint)(hx - tw / 2.0f), (gint)(hy - 4.0f), 10,
+                 with_alpha((Color){ 20, 20, 30, 255 }, alpha));
+    } else {
+        DrawCircleV((Vector2){ hx - 3.0f, hy - 1.0f }, 1.6f, eye);
+        DrawCircleV((Vector2){ hx + 3.0f, hy - 1.0f }, 1.6f, eye);
+    }
     draw_prop_2d(a, x, y - lift);
 
     /* a remote worker or a temporary helper says so */
@@ -2101,7 +2290,7 @@ draw_2d(ClawtOfficeScene *self, gint width, gint height)
             Sheet *sheet = g_hash_table_lookup(self->sheets, a->id);
 
             if (sheet == NULL || !draw_character_2d(self, a, sheet, 0.0f, 0.0f))
-                draw_person_2d(a, 0.0f, 0.0f, g_strcmp0(self->hovered, a->id) == 0);
+                draw_person_2d(self, a, 0.0f, 0.0f, g_strcmp0(self->hovered, a->id) == 0);
         }
         rlPopMatrix();
     }
@@ -2265,11 +2454,26 @@ draw_3d(ClawtOfficeScene *self, gint width, gint height)
         /* a figure about two tiles tall, so it reads from a god's-eye camera */
         DrawCapsule((Vector3){ feet.x, base + 0.45f, feet.z },
                     (Vector3){ feet.x, base + 1.25f, feet.z }, 0.42f, 10, 8, body);
-        DrawSphere((Vector3){ feet.x, base + 2.0f, feet.z }, 0.5f, head);
-        DrawSphere((Vector3){ feet.x + 0.2f * cosf(self->orbit + G_PI),
-                              base + 2.08f,
-                              feet.z + 0.2f * sinf(self->orbit + G_PI) }, 0.08f,
-                   with_alpha((Color){ 20, 20, 30, 255 }, a->fade));
+        {
+            FacePortrait *picture = actor_portrait(self, a);
+
+            /*
+             * A disc facing the camera, where the sphere was.  The body
+             * stays the capsule; the name, the hover ring and the click
+             * still use the figure, not the texture.
+             */
+            if (picture != NULL)
+                DrawBillboard(self->camera3d, picture->texture,
+                              (Vector3){ feet.x, base + 2.0f, feet.z }, 1.0f,
+                              with_alpha(WHITE, a->fade));
+            else {
+                DrawSphere((Vector3){ feet.x, base + 2.0f, feet.z }, 0.5f, head);
+                DrawSphere((Vector3){ feet.x + 0.2f * cosf(self->orbit + G_PI),
+                                      base + 2.08f,
+                                      feet.z + 0.2f * sinf(self->orbit + G_PI) }, 0.08f,
+                           with_alpha((Color){ 20, 20, 30, 255 }, a->fade));
+            }
+        }
         if (g_strcmp0(self->hovered, a->id) == 0)
             DrawCircle3D((Vector3){ feet.x, 0.02f, feet.z }, 0.45f,
                          (Vector3){ 1.0f, 0.0f, 0.0f }, 90.0f, RAYWHITE);

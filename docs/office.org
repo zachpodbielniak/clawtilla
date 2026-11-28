@@ -226,6 +226,21 @@ Two more channels, both JSON lines, so a host can change the view without restar
 - *stdin, host to renderer.*  ~{"mode":"3d","focus":"chief","zoom":"fit","ui_scale":2}~ -- =clawt_office_view_control_line()= writes it and =clawt_office_view_control_parse()= reads it.  Every member is optional; ~"focus":""~ (or =null=) follows nobody; ~zoom~ is ~fit~, ~pixel~, ~1x~ or ~2x~; unknown members are ignored, and a line with a member of the wrong type or an unknown mode or zoom is refused whole, with the reason on stderr.  Lines are applied between frames.  The stream is read only with ~--embed~; at end of file the view stays as it is.
 - *stdout, renderer to host.*  Besides ~open_agent~, ~{"event":"view","mode":"2d","has_3d":true}~ whenever what is drawn changes: a world without a 3D level is drawn in 2D whatever was asked, and says so.
 
+*** Who looks like what
+
+One rule, =clawt_office_face_resolve()= in libclawt, decides the face.  The web office and the native office (clawtilla-office, the GTK Office page, the lrg Office page) both call it, so a fleet cannot look different because of which client drew it.
+
+The order, first match:
+
+1. A *character sheet or mesh* the custodial team made (below).  The picture is still remembered (=has_picture=) but it is not what is drawn.
+2. A *profile picture*, when ~agent.list~ says =has_avatar=.  The web page uses =/a/<id>/avatar=.  The native office fetches the bytes with ~agent.avatar~ (the same call the GTK sidebar uses), keeps a bounded cache keyed by the agent and the picture's etag, and refreshes it on ~agent.changed~ and on any ~agent.avatar*~ event, so a new picture shows up without restarting the office.  The fetch and the decode never run on the render loop.
+3. A *generated face*, the shape of the id.  A Grok bot and a visitor from another fleet are not in ~agent.list~, so this is what they wear, which is what the web office already did.
+4. The *letter disc*, the colour blob, when the configured face is =initials= (or a shape name this build does not know).
+
+In 2D the picture is a round token on the coloured body -- standing, seated and walking -- the size the head already is, so Fit keeps it legible.  In 3D it is a billboard disc above the body, in place of the plain sphere.  A pixel-art world still samples a character sheet as points; the portrait is bilinear, because a face a few pixels across turns to noise when it is not.  The name, the hover and the click are unchanged.
+
+The bytes are PNG, decoded with cairo (=cairo_image_surface_create_from_png_stream=, the =POPPLER=1= build), not gdk-pixbuf.  gdk-pixbuf hands the file to glycin, and glycin's bwrap sandbox does not run in the containers the office is tested in, so a picture decoded that way fails and the office draws a blob.  A JPEG picture is not decoded on this path and falls back to the generated face or the letter disc.
+
 *** Characters
 
 An agent the custodial team has made a character for ([[file:office-custodial-team.org::#characters][characters]]) is drawn from its own sprite sheet instead of the shared body: walking picks the row for the direction it is going, a pose (sit, type, read, phone, present) its own row, a still pose holds a frame.  A sheet is fetched with ~office.character_file~ and checked against the sha256 its manifest recorded -- one that does not match is not drawn.  In the 3D view a character with a *model* (a =.glb=, =.obj=, =.vox=, =.iqm= or =.m3d= the custodial team attached with ~clawtilla_office_character_mesh~) is drawn as that model -- scaled to the body's height, stood on the floor by its own bounding box, turned the way it walks, and playing an animation whose name says /walk/ while it walks (a still one holds its first frame).  One with only a sheet is its current frame on a billboard facing the camera.  The web canvas draws the office from above and uses the sheet.

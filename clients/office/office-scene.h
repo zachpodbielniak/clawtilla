@@ -114,6 +114,53 @@ void clawt_office_scene_set_color(ClawtOfficeScene *self, const gchar *id,
                                   const gchar *color);
 
 /**
+ * clawt_office_scene_set_look:
+ * @self: a scene
+ * @id: a participant's id
+ * @name: (nullable): the name the letter is taken from
+ * @face: (nullable): the resolved face name, or %NULL for the generated one
+ * @has_avatar: %TRUE when a profile picture is stored
+ *
+ * Which face @id wears, from the same rule as the web office
+ * (clawt_office_face_resolve()).  A picture is drawn once
+ * clawt_office_scene_set_portrait() has handed over its pixels; until
+ * then the colour blob stands in.  A character sheet still wins.
+ */
+void clawt_office_scene_set_look(ClawtOfficeScene *self, const gchar *id,
+                                 const gchar *name, const gchar *face,
+                                 gboolean has_avatar);
+
+/**
+ * clawt_office_scene_set_portrait:
+ * @self: a scene
+ * @id: a participant's id
+ * @rgba: (nullable) (array): square straight RGBA, or %NULL to drop the picture
+ * @size: the square's side; ignored when @rgba is %NULL
+ * @etag: (nullable): the bytes' tag; the same tag is not copied again
+ *
+ * The picture @id wears.  Copied: @rgba need only last for the call.
+ * Uploaded at the next clawt_office_scene_prepare(), never from inside a
+ * host's render texture.  Drawn with a bilinear filter, at the size the
+ * head already is, so a pixel-art world keeps it legible at Fit.
+ */
+void clawt_office_scene_set_portrait(ClawtOfficeScene *self, const gchar *id,
+                                     const guint8 *rgba, gint size,
+                                     const gchar *etag);
+
+/**
+ * clawt_office_scene_face_kind:
+ * @self: a scene
+ * @id: a participant's id
+ *
+ * What @id is drawn as, from the look, the portrait and any character
+ * sheet.  Needs no GL context: it is the decision, not the texture.
+ *
+ * Returns: the kind clawt_office_face_resolve() would answer
+ */
+ClawtOfficeFaceKind clawt_office_scene_face_kind(ClawtOfficeScene *self,
+                                                 const gchar *id);
+
+/**
  * clawt_office_scene_set_character:
  * @self: a scene
  * @id: an agent's id

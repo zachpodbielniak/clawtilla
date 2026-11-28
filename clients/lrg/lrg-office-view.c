@@ -90,8 +90,27 @@ on_usage(JsonObject *usage, gpointer user_data)
     clawt_office_scene_set_usage(view.scene, usage);
 }
 
+static void
+on_look(const gchar *id, const gchar *name, const gchar *face, gboolean has_avatar,
+        gpointer user_data)
+{
+    (void)user_data;
+    clawt_office_scene_set_look(view.scene, id, name, face, has_avatar);
+}
+
+static void
+on_portrait(const gchar *id, const guint8 *rgba, gint size, const gchar *etag,
+            gpointer user_data)
+{
+    clawt_office_scene_set_portrait(view.scene, id, rgba, size, etag);
+    /* uploaded here, in the drain, outside the viewport's texture mode */
+    clawt_office_scene_prepare(view.scene);
+    clawt_lrg_app_wake(user_data);
+}
+
 static const ClawtOfficeFeedFuncs feed_funcs = {
-    on_world, on_layout, on_color, on_status, on_character, on_usage
+    on_world, on_layout, on_color, on_status, on_character, on_usage,
+    on_look, on_portrait
 };
 
 /* Every frame, inside the viewport's render texture. */

@@ -19,6 +19,10 @@
 #include <string.h>
 
 #define LAYOUT_EVERY_MS (1000)
+/* pictures held at once; a larger fleet refetches the ones that fell off */
+#define PORTRAIT_CACHE_MAX (48)
+/* fetches in flight, so a roster cannot fill the render loop with replies */
+#define PORTRAIT_FETCH_MAX (4)
 
 struct _ClawtOfficeFeed {
     ClawtClient          *client;
@@ -35,7 +39,24 @@ struct _ClawtOfficeFeed {
     gboolean              layout_in_flight;
     gboolean              ready;
     guint                 generation;   /* bumped by every refresh */
+    GHashTable           *portraits;    /* id -> Portrait */
+    GQueue                portrait_queue;
+    guint                 portraits_inflight;
 };
+
+/* One agent's picture.  The bytes live here; the host is handed a copy. */
+typedef struct {
+    gchar   *id;
+    gchar   *etag;
+    gchar   *failed_etag;   /* decoded once, refused; not tried again until dirty */
+    guint8  *rgba;
+    gint     size;
+    gboolean dirty;
+    gboolean inflight;
+    gboolean queued;
+    guint    token;         /* an in-flight reply older than this is dropped */
+    gint64   used;
+} Portrait;
 
 typedef struct {
     ClawtOfficeFeed *feed;
@@ -57,6 +78,7 @@ static void fetch_next(ClawtOfficeFeed *self);
 static void request_layout(ClawtOfficeFeed *self);
 static void request_characters(ClawtOfficeFeed *self);
 static void request_usage(ClawtOfficeFeed *self);
+static void portrait_pump(ClawtOfficeFeed *self);
 
 static void
 say(ClawtOfficeFeed *self, const gchar *text)
@@ -307,6 +329,368 @@ on_tick(gpointer user_data)
     return G_SOURCE_CONTINUE;
 }
 
+/* ── Profile pictures ───────────────────────────────────────────── */
+
+typedef struct {
+    ClawtOfficeFeed *feed;
+    gchar           *id;
+    gchar           *etag;
+    guint8          *raw;
+    gsize            length;
+    guint            token;
+} PortraitJob;
+
+static void
+portrait_free(Portrait *portrait)
+{
+    if (portrait == NULL)
+        return;
+    g_free(portrait->id);
+    g_free(portrait->etag);
+    g_free(portrait->failed_etag);
+    g_free(portrait->rgba);
+    g_free(portrait);
+}
+
+static void
+portrait_job_free(PortraitJob *job)
+{
+    g_free(job->id);
+    g_free(job->etag);
+    g_free(job->raw);
+    g_free(job);
+}
+
+static void
+portrait_deliver(ClawtOfficeFeed *self, Portrait *portrait)
+{
+    if (self->funcs.portrait == NULL)
+        return;
+    self->funcs.portrait(portrait->id, portrait->rgba, portrait->size, portrait->etag,
+                         self->user_data);
+}
+
+static void
+portrait_evict(ClawtOfficeFeed *self)
+{
+    while (g_hash_table_size(self->portraits) > PORTRAIT_CACHE_MAX) {
+        GHashTableIter iter;
+        gpointer value;
+        Portrait *oldest = NULL;
+
+        g_hash_table_iter_init(&iter, self->portraits);
+        while (g_hash_table_iter_next(&iter, NULL, &value)) {
+            Portrait *portrait = value;
+
+            if (oldest == NULL || portrait->used < oldest->used)
+                oldest = portrait;
+        }
+        if (oldest == NULL)
+            return;
+        /*
+         * Dropped from the host too, or a picture that fell out of the
+         * cache would stay on screen after the bytes were freed.
+         */
+        if (oldest->rgba != NULL && self->funcs.portrait != NULL)
+            self->funcs.portrait(oldest->id, NULL, 0, NULL, self->user_data);
+        oldest->token++;
+        g_hash_table_remove(self->portraits, oldest->id);
+    }
+}
+
+static Portrait *
+portrait_get(ClawtOfficeFeed *self, const gchar *id)
+{
+    Portrait *portrait = g_hash_table_lookup(self->portraits, id);
+
+    if (portrait == NULL) {
+        portrait = g_new0(Portrait, 1);
+        portrait->id = g_strdup(id);
+        portrait->used = g_get_monotonic_time();
+        g_hash_table_insert(self->portraits, portrait->id, portrait);
+        portrait_evict(self);
+        portrait = g_hash_table_lookup(self->portraits, id);
+    }
+    if (portrait != NULL)
+        portrait->used = g_get_monotonic_time();
+    return portrait;
+}
+
+static void
+portrait_queue(ClawtOfficeFeed *self, Portrait *portrait)
+{
+    if (portrait->queued || portrait->inflight)
+        return;
+    portrait->queued = TRUE;
+    g_queue_push_tail(&self->portrait_queue, g_strdup(portrait->id));
+    portrait_pump(self);
+}
+
+static void portrait_decoded(GObject *source, GAsyncResult *result, gpointer user_data);
+
+/*
+ * Decode on a worker.  job->length is the byte count going in and the
+ * square's side coming out: the worker replaces it only after the
+ * pointer has been handed to the task, and the task owns that pointer.
+ */
+static void
+portrait_decode_worker(GTask *task, gpointer source, gpointer task_data,
+                       GCancellable *cancellable)
+{
+    PortraitJob *job = task_data;
+    guint8 *rgba = NULL;
+    gint size = 0;
+    GError *error = NULL;
+
+    (void)source;
+    (void)cancellable;
+    if (!clawt_office_portrait_decode(job->raw, job->length, &rgba, &size, &error)) {
+        g_task_return_error(task, error);
+        return;
+    }
+    job->length = (gsize)size;
+    g_task_return_pointer(task, rgba, g_free);
+}
+
+static void
+portrait_decoded(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    GTask *task = G_TASK(result);
+    PortraitJob *job = g_task_get_task_data(task);
+    ClawtOfficeFeed *self = job->feed;
+    Portrait *portrait;
+    g_autoptr(GError) error = NULL;
+    guint8 *rgba;
+
+    (void)source;
+    (void)user_data;
+    rgba = g_task_propagate_pointer(task, &error);
+    if (g_cancellable_is_cancelled(self->cancellable)) {
+        g_free(rgba);
+        return;
+    }
+    portrait = g_hash_table_lookup(self->portraits, job->id);
+    if (portrait != NULL)
+        portrait->inflight = FALSE;
+    if (portrait == NULL || portrait->token != job->token) {
+        g_free(rgba);
+        if (portrait != NULL && portrait->dirty)
+            portrait_queue(self, portrait);
+        portrait_pump(self);
+        return;
+    }
+    portrait->dirty = FALSE;
+    g_free(portrait->rgba);
+    portrait->rgba = NULL;
+    portrait->size = 0;
+    if (rgba == NULL) {
+        g_free(portrait->failed_etag);
+        portrait->failed_etag = g_strdup(job->etag);
+        portrait_deliver(self, portrait);
+        portrait_pump(self);
+        return;
+    }
+    g_free(portrait->failed_etag);
+    portrait->failed_etag = NULL;
+    g_free(portrait->etag);
+    portrait->etag = g_strdup(job->etag);
+    portrait->rgba = rgba;
+    portrait->size = (gint)job->length;
+    portrait->used = g_get_monotonic_time();
+    portrait_deliver(self, portrait);
+    portrait_pump(self);
+}
+
+static void
+portrait_begin_decode(ClawtOfficeFeed *self, Portrait *portrait, const gchar *etag,
+                      guint8 *raw, gsize length)
+{
+    PortraitJob *job = g_new0(PortraitJob, 1);
+    GTask *task;
+
+    job->feed = self;
+    job->id = g_strdup(portrait->id);
+    job->etag = g_strdup(etag);
+    job->raw = raw;
+    job->length = length;
+    job->token = portrait->token;
+    g_main_context_push_thread_default(self->context);
+    task = g_task_new(NULL, self->cancellable, portrait_decoded, NULL);
+    g_task_set_task_data(task, job, (GDestroyNotify)portrait_job_free);
+    g_task_run_in_thread(task, portrait_decode_worker);
+    g_object_unref(task);
+    g_main_context_pop_thread_default(self->context);
+}
+
+static void
+on_avatar(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    PortraitJob *req = user_data;
+    ClawtOfficeFeed *self = req->feed;
+    Portrait *portrait;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) node = NULL;
+    JsonObject *reply;
+    const gchar *encoded;
+    const gchar *etag;
+    const gchar *mime;
+    g_autofree guint8 *raw = NULL;
+    gsize length = 0;
+
+    self->portraits_inflight--;
+    if (g_cancellable_is_cancelled(self->cancellable)) {
+        portrait_job_free(req);
+        return;
+    }
+    portrait = g_hash_table_lookup(self->portraits, req->id);
+    if (portrait != NULL)
+        portrait->inflight = FALSE;
+    if (portrait == NULL || portrait->token != req->token) {
+        if (portrait != NULL && portrait->dirty)
+            portrait_queue(self, portrait);
+        portrait_job_free(req);
+        portrait_pump(self);
+        return;
+    }
+
+    reply = finish(source, result, &node, &error);
+    encoded = reply != NULL
+        ? json_object_get_string_member_with_default(reply, "base64", NULL) : NULL;
+    etag = reply != NULL
+        ? json_object_get_string_member_with_default(reply, "etag", NULL) : NULL;
+    mime = reply != NULL
+        ? json_object_get_string_member_with_default(reply, "mime", NULL) : NULL;
+    if (encoded == NULL || etag == NULL) {
+        /* gone, or a transport error: drop what we were showing and do not spin */
+        if (error == NULL || error->code == CLAWT_ERROR_NOT_FOUND) {
+            g_free(portrait->rgba);
+            portrait->rgba = NULL;
+            portrait->size = 0;
+            g_free(portrait->etag);
+            portrait->etag = NULL;
+            portrait->dirty = FALSE;
+            portrait_deliver(self, portrait);
+        } else {
+            portrait->dirty = TRUE;
+        }
+        portrait_job_free(req);
+        portrait_pump(self);
+        return;
+    }
+    if (portrait->etag != NULL && g_strcmp0(portrait->etag, etag) == 0 &&
+        portrait->rgba != NULL) {
+        portrait->dirty = FALSE;
+        portrait_job_free(req);
+        portrait_pump(self);
+        return;
+    }
+    if (portrait->failed_etag != NULL && g_strcmp0(portrait->failed_etag, etag) == 0) {
+        portrait->dirty = FALSE;
+        portrait_job_free(req);
+        portrait_pump(self);
+        return;
+    }
+    raw = g_base64_decode(encoded, &length);
+    if (raw == NULL || length == 0 || length > CLAWT_OFFICE_PORTRAIT_MAX_BYTES ||
+        g_strcmp0(mime, "image/png") != 0) {
+        g_free(portrait->rgba);
+        portrait->rgba = NULL;
+        portrait->size = 0;
+        g_free(portrait->failed_etag);
+        portrait->failed_etag = g_strdup(etag);
+        portrait->dirty = FALSE;
+        portrait_deliver(self, portrait);
+        portrait_job_free(req);
+        portrait_pump(self);
+        return;
+    }
+    portrait->inflight = TRUE;
+    portrait_begin_decode(self, portrait, etag, g_steal_pointer(&raw), length);
+    portrait_job_free(req);
+}
+
+static void
+portrait_pump(ClawtOfficeFeed *self)
+{
+    while (self->portraits_inflight < PORTRAIT_FETCH_MAX) {
+        g_autofree gchar *id = g_queue_pop_head(&self->portrait_queue);
+        Portrait *portrait;
+        PortraitJob *req;
+
+        if (id == NULL)
+            return;
+        portrait = g_hash_table_lookup(self->portraits, id);
+        if (portrait == NULL)
+            continue;
+        portrait->queued = FALSE;
+        if (!portrait->dirty || portrait->inflight)
+            continue;
+        portrait->inflight = TRUE;
+        portrait->used = g_get_monotonic_time();
+        self->portraits_inflight++;
+        req = g_new0(PortraitJob, 1);
+        req->feed = self;
+        req->id = g_strdup(portrait->id);
+        req->token = portrait->token;
+        request(self, "agent.avatar",
+                clawt_ipc_payload_new("agent", portrait->id, NULL),
+                on_avatar, req);
+    }
+}
+
+static void
+portrait_consider(ClawtOfficeFeed *self, const gchar *id, gboolean has_avatar)
+{
+    Portrait *portrait = g_hash_table_lookup(self->portraits, id);
+
+    if (!has_avatar) {
+        if (portrait == NULL)
+            return;
+        portrait->token++;
+        if (portrait->rgba != NULL && self->funcs.portrait != NULL)
+            self->funcs.portrait(id, NULL, 0, NULL, self->user_data);
+        g_hash_table_remove(self->portraits, id);
+        return;
+    }
+    portrait = portrait_get(self, id);
+    if (portrait == NULL)
+        return;
+    if (!portrait->dirty && portrait->rgba != NULL)
+        return;
+    if (!portrait->dirty && portrait->failed_etag != NULL)
+        return;
+    portrait->dirty = TRUE;
+    portrait_queue(self, portrait);
+}
+
+static void
+portrait_mark_dirty(ClawtOfficeFeed *self, const gchar *id)
+{
+    Portrait *portrait;
+
+    if (id == NULL) {
+        GHashTableIter iter;
+        gpointer value;
+
+        g_hash_table_iter_init(&iter, self->portraits);
+        while (g_hash_table_iter_next(&iter, NULL, &value)) {
+            portrait = value;
+            portrait->dirty = TRUE;
+            portrait->token++;
+            if (!portrait->inflight)
+                portrait_queue(self, portrait);
+        }
+        return;
+    }
+    portrait = g_hash_table_lookup(self->portraits, id);
+    if (portrait == NULL)
+        return;
+    portrait->dirty = TRUE;
+    portrait->token++;
+    if (!portrait->inflight)
+        portrait_queue(self, portrait);
+}
+
 static void
 on_agents(GObject *source, GAsyncResult *result, gpointer user_data)
 {
@@ -324,12 +708,22 @@ on_agents(GObject *source, GAsyncResult *result, gpointer user_data)
         ? json_object_get_array_member(reply, "agents") : NULL;
     for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
         JsonObject *agent = json_array_get_object_element(agents, i);
+        const gchar *id = json_object_get_string_member_with_default(agent, "id", NULL);
+        gboolean has_avatar = json_object_get_boolean_member_with_default(agent, "has_avatar",
+                                                                          FALSE);
 
+        if (id == NULL)
+            continue;
         if (self->funcs.color != NULL)
-            self->funcs.color(json_object_get_string_member_with_default(agent, "id", NULL),
-                              json_object_get_string_member_with_default(agent, "color",
-                                                                         NULL),
+            self->funcs.color(id,
+                              json_object_get_string_member_with_default(agent, "color", NULL),
                               self->user_data);
+        if (self->funcs.look != NULL)
+            self->funcs.look(id,
+                             json_object_get_string_member_with_default(agent, "name", NULL),
+                             json_object_get_string_member_with_default(agent, "face", NULL),
+                             has_avatar, self->user_data);
+        portrait_consider(self, id, has_avatar);
     }
 }
 
@@ -533,7 +927,10 @@ clawt_office_feed_new(ClawtClient                *client,
     self->funcs = *funcs;
     self->user_data = user_data;
     self->asked = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    self->portraits = g_hash_table_new_full(g_str_hash, g_str_equal, NULL,
+                                            (GDestroyNotify)portrait_free);
     g_queue_init(&self->pending);
+    g_queue_init(&self->portrait_queue);
 
     /* the timer on the host's context, named where it is attached */
     self->timer = g_timeout_source_new(LAYOUT_EVERY_MS);
@@ -556,8 +953,13 @@ clawt_office_feed_event(ClawtOfficeFeed *self, ClawtEvent *event)
         clawt_office_feed_refresh(self);
     else if (g_strcmp0(kind, "usage.providers_changed") == 0)
         request_usage(self);
-    else if (g_strcmp0(kind, "agent.created") == 0 || g_strcmp0(kind, "agent.changed") == 0)
+    else if (g_strcmp0(kind, "agent.created") == 0 ||
+             g_strcmp0(kind, "agent.changed") == 0 ||
+             (kind != NULL && g_str_has_prefix(kind, "agent.avatar"))) {
+        /* a new picture shows up without restarting the office */
+        portrait_mark_dirty(self, clawt_event_get_subject(event));
         request(self, "agent.list", NULL, on_agents, self);
+    }
 }
 
 void
@@ -572,7 +974,9 @@ clawt_office_feed_free(ClawtOfficeFeed *self)
         g_source_unref(self->timer);
     }
     g_queue_clear_full(&self->pending, g_free);
+    g_queue_clear_full(&self->portrait_queue, g_free);
     g_hash_table_unref(self->asked);
+    g_hash_table_unref(self->portraits);
     g_clear_pointer(&self->world, json_object_unref);
     g_object_unref(self->cancellable);
     g_object_unref(self->client);
