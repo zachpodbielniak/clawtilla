@@ -238,48 +238,6 @@ clawt_web_one_line(const gchar *text, glong limit)
 
 /* ── Pieces ──────────────────────────────────────────────────────── */
 
-gchar *
-clawt_web_agent_waiting_text(JsonObject *agent, gint64 now)
-{
-    g_autofree gchar *base = NULL;
-    gint64 pending;
-
-    /* only `waiting` -- a running turn is working whatever is pending */
-    if (agent == NULL ||
-        g_strcmp0(clawt_web_member(agent, "activity", "idle"),
-                  "waiting") != 0)
-        return NULL;
-
-    pending = clawt_web_member_int(agent, "waits_pending", 0);
-
-    /* the one spelling every surface uses; the library words the age */
-    base = clawt_board_waiting_label(
-        clawt_web_member(agent, "wait_label", NULL),
-        clawt_web_member_int(agent, "waiting_since", 0), now);
-
-    /* the label is the newest wait's: how many more are behind it */
-    if (pending > 1)
-        return g_strdup_printf("%s +%" G_GINT64_FORMAT, base, pending - 1);
-
-    return g_steal_pointer(&base);
-}
-
-HtmxElement *
-clawt_web_agent_waiting_line(JsonObject *agent, gint64 now)
-{
-    g_autofree gchar *text = clawt_web_agent_waiting_text(agent, now);
-    g_autoptr(HtmxDiv) line = NULL;
-
-    if (text == NULL)
-        return NULL;
-
-    line = htmx_div_new();
-    htmx_element_add_class(HTMX_ELEMENT(line), "agent-waiting");
-    htmx_node_set_text_content(HTMX_NODE(line), text);
-
-    return HTMX_ELEMENT(g_steal_pointer(&line));
-}
-
 HtmxSpan *
 clawt_web_badge(const gchar *text, const gchar *tone)
 {
