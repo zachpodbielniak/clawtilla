@@ -6161,6 +6161,60 @@ test_progress_then_only_fleet_calls_still_holds(void)
 }
 
 /*
+ * Asking a teammate, or dropping a schedule, is stopping too.  A note,
+ * then clawtilla_ask_agent -- whose answer comes later, in a turn of its
+ * own, exactly as message_agent's does -- then a closing line: the hold
+ * is the turn's, and the line is not the result.  ask_agent and
+ * routine_remove were missing from the stop tools, so each counted as
+ * the turn going on with its work, released the hold, and the closing
+ * line completed the task.  @data is the tool's name.
+ */
+static void
+test_progress_then_a_stop_tool_holds(gconstpointer data)
+{
+	const gchar *tool = data;
+	Fixture fixture = { 0 };
+	g_autofree gchar *mcp_name = g_strconcat("mcp__clawtilla__", tool, NULL);
+	ClawtLinkServer *links;
+	ClawtAgent *worker;
+	ClawtTask *task;
+	ClawtRoom *room;
+	ClawtTurnStep *step;
+
+	fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: worker\n");
+	g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+	links = clawt_daemon_get_link_server(fixture.daemon);
+	worker = clawt_agent_manager_get(fixture.daemon->agents, "worker");
+	room = clawt_room_manager_get_direct(fixture.daemon->rooms, "chief",
+		"worker");
+	task = clawt_task_manager_create(fixture.daemon->tasks, "chief",
+		"worker", "Find out which tag", NULL, NULL);
+
+	clawt_agent_deliver_turn(worker, clawt_room_get_id(room), 1, TRUE,
+		"chief", clawt_task_get_id(task));
+	g_signal_emit_by_name(links, "typing", "worker",
+		clawt_room_get_id(room), TRUE);
+
+	g_assert_true(clawt_task_manager_note_progress(fixture.daemon->tasks,
+		clawt_task_get_id(task), "Asked the release manager."));
+
+	step = clawt_turn_step_new(CLAWT_STEP_TOOL, "worker",
+		clawt_room_get_id(room), NULL, mcp_name, NULL, FALSE);
+	clawt_daemon_note_step(fixture.daemon, step);
+	clawt_turn_step_free(step);
+
+	g_signal_emit_by_name(links, "typing", "worker",
+		clawt_room_get_id(room), FALSE);
+	g_signal_emit_by_name(links, "message", "worker",
+		clawt_room_get_id(room), "Back when they answer.",
+		clawt_task_get_id(task));
+
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_RUNNING);
+	g_assert_null(clawt_task_get_result(task));
+	fixture_teardown(&fixture);
+}
+
+/*
  * VENTURE #58, the daemon's half.
  *
  * The assignee calls clawtilla_task_progress, ends its turn with an
@@ -14977,6 +15031,12 @@ main(int argc, char *argv[])
                     test_report_after_progress_and_computer_exec_completes);
     g_test_add_func("/daemon/task/progress-then-fleet-calls-still-holds",
                     test_progress_then_only_fleet_calls_still_holds);
+    g_test_add_data_func("/daemon/task/progress-then-ask-agent-holds",
+                         "clawtilla_ask_agent",
+                         test_progress_then_a_stop_tool_holds);
+    g_test_add_data_func("/daemon/task/progress-then-routine-remove-holds",
+                         "clawtilla_routine_remove",
+                         test_progress_then_a_stop_tool_holds);
     g_test_add_func("/daemon/task/late-turn-completes-the-task",
                     test_a_late_turn_completes_the_task);
     g_test_add_func("/daemon/task/progress-hold-without-late-turn",

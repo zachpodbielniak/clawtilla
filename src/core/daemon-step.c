@@ -36,7 +36,9 @@
 
 /*
  * The tools a turn *stops* with, for the progress hold: a note, a
- * result, a wait or a schedule set, work handed on, a message sent.  A
+ * result, a wait or a schedule set or removed, work handed on, a message
+ * sent or a question asked -- clawtilla_ask_agent is message_agent's
+ * shape, its answer arriving later as a turn of its own.  A
  * turn that ends on these after a progress note is the turn the hold is
  * for.  Named, not "every clawtilla tool": clawtilla_computer_exec is a
  * confined agent's whole shell, and the browser, display and web tools
@@ -49,10 +51,12 @@ static const gchar *const turn_stop_tools[] = {
     "clawtilla_wait_until",
     "clawtilla_routine_add",
     "clawtilla_routine_update",
+    "clawtilla_routine_remove",
     "clawtilla_delegate",
     "clawtilla_ephemeral_spawn",
     "clawtilla_handoff",
     "clawtilla_message_agent",
+    "clawtilla_ask_agent",
     "clawtilla_message_user",
     "clawtilla_post_room",
     "clawtilla_mailbox_reply",
