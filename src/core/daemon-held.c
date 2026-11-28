@@ -15,7 +15,9 @@
  *
  * - The drain when the hold runs out.  The router only delivers when
  *   something asks it to, and nothing would: the mail is already
- *   queued.  So the hold arms a timer for its end.
+ *   queued.  So the hold arms a timer for its end -- in slices of at
+ *   most a day, re-armed while the agent is still held, so a hold of
+ *   weeks neither wraps the timer nor drains early.
  *
  * - The alert.  A login is the account's, so every agent on it is held
  *   at the same moment, and one notification per agent is the noise
@@ -31,6 +33,16 @@
 
 /* How long an account must stay held before anybody is told. */
 #define HELD_ALERT_DELAY_MS (120u * 1000u)
+
+/*
+ * The longest one wake timer is armed for.  A hold can run for weeks
+ * (CLAWT_AGENT_HELD_MAX_SECONDS), and a GSource timeout is a guint of
+ * milliseconds, which wraps a little short of 50 days: a hold past that
+ * armed in one go fired early, drained while the agent was still held,
+ * and nothing armed it again.  So a long hold is waited out in slices of
+ * a day, each re-armed from the clock when it runs.
+ */
+#define HELD_WAKE_SLICE_MS (24u * 3600u * 1000u)
 
 typedef struct {
     ClawtDaemon *daemon;    /* borrowed: the daemon owns this */
@@ -178,20 +190,41 @@ wake_free(gpointer data)
     g_free(wake);
 }
 
+static void arm_wake(ClawtDaemon *self, ClawtAgent *agent);
+
+/*
+ * A wake ran.  Either the hold is over -- drain, and the queued mail goes
+ * -- or this was one slice of a longer hold (or the wall clock moved
+ * back), and the rest of it is armed again.  Draining while the agent is
+ * still held delivers nothing, and with no timer left nothing would ever
+ * deliver the mail after the hold did run out.
+ */
 static gboolean
 on_hold_ran_out(gpointer user_data)
 {
     Wake *wake = user_data;
     ClawtDaemon *self = wake->daemon;
     g_autofree gchar *agent_id = g_strdup(wake->agent_id);
+    ClawtAgent *agent;
 
     /*
-     * Out of the table before draining, which destroys this source and
-     * frees @wake: the drain's own turn may be refused, and the renewal
-     * it sends arms a fresh timer under the same key.
+     * Out of the table first, which destroys this source; @wake itself
+     * lives until this callback returns, but is not used past here.  The
+     * drain's own turn may be refused, and the renewal it sends arms a
+     * fresh timer under the same key.
      */
     if (self->held_wakes != NULL)
         g_hash_table_remove(self->held_wakes, agent_id);
+
+    agent = (self->agents != NULL)
+        ? clawt_agent_manager_get(self->agents, agent_id) : NULL;
+
+    /* The router's own gate, so the two cannot disagree about "held". */
+    if (agent != NULL &&
+        clawt_agent_is_turn_held(agent, g_get_real_time() / G_USEC_PER_SEC)) {
+        arm_wake(self, agent);
+        return G_SOURCE_REMOVE;
+    }
 
     if (self->router != NULL)
         clawt_mailbox_router_drain(self->router, agent_id);
@@ -199,11 +232,33 @@ on_hold_ran_out(gpointer user_data)
     return G_SOURCE_REMOVE;
 }
 
+/*
+ * Milliseconds to the next wake for a hold that runs out at @held_until
+ * (Unix seconds), from @now (microseconds): a little past the second, so
+ * the gate's "now < until" has passed, and never more than @slice_ms.
+ * Worked in gint64 and clamped before it becomes a guint, so neither a
+ * far-off hold nor a huge @held_until can wrap.
+ */
+static guint
+wake_delay_ms(gint64 now, gint64 held_until, guint slice_ms)
+{
+    gint64 until;
+    gint64 left;
+
+    until = (held_until > G_MAXINT64 / G_USEC_PER_SEC)
+        ? G_MAXINT64 : held_until * G_USEC_PER_SEC;
+    left = (until > now) ? (until - now) / 1000 + 50 : 50;
+
+    if (left > (gint64)slice_ms)
+        left = slice_ms;
+
+    return (guint)left;
+}
+
 static void
 arm_wake(ClawtDaemon *self, ClawtAgent *agent)
 {
-    gint64 now = g_get_real_time();
-    gint64 until = clawt_agent_get_held_until(agent) * G_USEC_PER_SEC;
+    gint64 held_until = clawt_agent_get_held_until(agent);
     guint ms;
     GSource *source;
 
@@ -213,11 +268,12 @@ arm_wake(ClawtDaemon *self, ClawtAgent *agent)
 
     g_hash_table_remove(self->held_wakes, clawt_agent_get_id(agent));
 
-    if (until <= 0)
+    if (held_until <= 0)
         return;
 
-    /* a little past the second, so the gate's "now < until" has passed */
-    ms = until > now ? (guint)((until - now) / 1000) + 50 : 50;
+    ms = wake_delay_ms(g_get_real_time(), held_until,
+                       self->held_wake_slice_ms > 0
+                           ? self->held_wake_slice_ms : HELD_WAKE_SLICE_MS);
 
     {
         Wake *wake = g_new0(Wake, 1);

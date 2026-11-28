@@ -166,12 +166,26 @@ void              clawt_agent_set_failover(ClawtAgent *self,
 #define CLAWT_AGENT_HELD_PROBE_SECONDS (15 * 60)
 
 /**
+ * CLAWT_AGENT_HELD_MAX_SECONDS:
+ *
+ * The longest a hold is believed: thirty days.  A `retry_at` further out
+ * than that is read as thirty days from now.  No usage window an
+ * account has resets further out, so a larger figure is a frame that is
+ * wrong (milliseconds sent as seconds, say), and believing it would
+ * leave the agent unfed for years.  At the end of the thirty days one
+ * delivery goes through as a probe, which renews the hold if it is still
+ * real.
+ */
+#define CLAWT_AGENT_HELD_MAX_SECONDS (30 * 24 * 60 * 60)
+
+/**
  * clawt_agent_is_turn_held:
  * @self: a #ClawtAgent
  * @now: Unix seconds
  *
  * Whether the agent said it is held (agent.failover, state "held") and
- * the hold has not run out: until the reset the refusal named, or for
+ * the hold has not run out: until the reset the refusal named, but no
+ * more than %CLAWT_AGENT_HELD_MAX_SECONDS from when it was said, or for
  * %CLAWT_AGENT_HELD_PROBE_SECONDS when it named none.  The router does
  * not feed a held agent.
  *

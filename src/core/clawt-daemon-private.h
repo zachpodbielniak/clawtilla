@@ -481,10 +481,14 @@ struct _ClawtDaemon {
      * held_accounts is account key -> the pending or sent alert for it.
      * held_alert_delay_ms is how long an account must stay held before
      * it is alerted about; 0 is the default, two minutes.
+     * held_wake_slice_ms is the longest one wake timer is armed for: a
+     * longer hold is re-armed slice by slice.  0 is the default, a day;
+     * a test sets it short to see a hold outlast several slices.
      */
     GHashTable        *held_wakes;
     GHashTable        *held_accounts;
     guint              held_alert_delay_ms;
+    guint              held_wake_slice_ms;
 
     /*
      * Conditions agents asked to be told about, checked by code rather

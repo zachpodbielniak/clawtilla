@@ -11132,6 +11132,162 @@ test_a_held_account_is_one_alert(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * One agent, scout, run on the fake libreclaw and linked, for the held
+ * tests below.  FALSE (and the test skipped) when the fixture binary is
+ * not there.
+ */
+static gboolean
+held_scout_setup(Fixture *fixture, GSocketConnection **link_out,
+                 ClawtAgent **agent_out)
+{
+    g_autofree gchar *fake = g_build_filename(CLAWT_TEST_FIXTURES,
+                                              "fake-libreclaw", NULL);
+    g_autofree gchar *extra = NULL;
+
+    if (!g_file_test(fake, G_FILE_TEST_IS_EXECUTABLE)) {
+        g_test_skip("the fake libreclaw fixture is not executable");
+        return FALSE;
+    }
+
+    extra = g_strdup_printf(
+        "  libreclaw_binary: \"%s\"\n"
+        "agents:\n"
+        "  - id: scout\n"
+        "    name: Scout\n"
+        "    enabled: true\n"
+        "    env:\n"
+        "      FAKE_LIBRECLAW_SLEEP: \"30\"\n"
+        "    computer:\n"
+        "      type: none\n", fake);
+
+    fixture_setup(fixture, extra);
+    g_assert_true(clawt_daemon_start(fixture->daemon, NULL));
+    *link_out = run_one_agent(fixture, "scout");
+    *agent_out = clawt_agent_manager_get(
+        clawt_daemon_get_agents(fixture->daemon), "scout");
+
+    return TRUE;
+}
+
+/* Sends a held frame naming @retry_at and waits until it is taken. */
+static void
+send_held(Fixture *fixture, GSocketConnection *link, KindCount *failovers,
+          gint64 retry_at)
+{
+    g_autofree gchar *frame = held_frame("usage-limit", retry_at,
+                                         "You have reached your limit");
+
+    send_agent_frame(link, frame);
+    pump_until_seen(fixture, failovers, failovers->seen + 1);
+}
+
+/*
+ * A hold longer than one wake timer is waited out slice by slice.  A
+ * GSource timeout is a guint of milliseconds, which wraps a little short
+ * of 50 days, so a hold that long fired early; the wake then drained
+ * while the agent was still held, which delivers nothing, and nothing
+ * armed another.  Mail queued for the agent was never delivered after
+ * the hold ran out.  The slice is a day; here it is 100 ms against a
+ * hold of three seconds, which is the same shape.
+ */
+static void
+test_a_long_hold_rearms_and_does_not_drain_early(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GSocketConnection) link = NULL;
+    g_autoptr(ClawtMailboxItem) item = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *item_id = NULL;
+    KindCount failovers = { "agent.failover", 0, CLAWT_ALERT_ROUTINE };
+    ClawtMailbox *mailbox;
+    ClawtAgent *agent = NULL;
+    gint64 retry_at;
+    guint spun;
+
+    if (!held_scout_setup(&fixture, &link, &agent))
+        return;
+    fixture.daemon->held_wake_slice_ms = 100;
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_kind_event), &failovers);
+    mailbox = clawt_agent_get_mailbox(agent);
+
+    retry_at = g_get_real_time() / G_USEC_PER_SEC + 3;
+    send_held(&fixture, link, &failovers, retry_at);
+
+    item = clawt_mailbox_item_new("user", "scout", "are you there?");
+    item_id = clawt_mailbox_post(mailbox, item, &error);
+    g_assert_no_error(error);
+
+    /* Several slices in: still held, still queued, and still armed. */
+    pump_for(&fixture, 1200);
+    g_assert_cmpint(g_get_real_time() / G_USEC_PER_SEC, <, retry_at);
+    g_assert_cmpuint(clawt_mailbox_depth(mailbox), ==, 1);
+    g_assert_nonnull(fixture.daemon->held_wakes);
+    g_assert_true(g_hash_table_contains(fixture.daemon->held_wakes,
+                                        "scout"));
+
+    /* And once it has run out, the mail goes with nothing else asking. */
+    for (spun = 0; spun < 6000 && clawt_mailbox_depth(mailbox) > 0; spun++) {
+        g_main_context_iteration(fixture.context, FALSE);
+        g_usleep(1000);
+    }
+    g_assert_cmpuint(clawt_mailbox_depth(mailbox), ==, 0);
+    g_assert_cmpint(g_get_real_time() / G_USEC_PER_SEC, >=, retry_at);
+
+    g_signal_handlers_disconnect_by_data(
+        clawt_daemon_get_event_bus(fixture.daemon), &failovers);
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A retry_at no account could mean is clamped to
+ * CLAWT_AGENT_HELD_MAX_SECONDS, and the wake is still armed.  Before,
+ * a reset sent in milliseconds held the agent for 130,000 years, and
+ * G_MAXINT64 overflowed `held_until * G_USEC_PER_SEC` in the wake, which
+ * then armed nothing at all.
+ */
+static void
+test_a_huge_retry_at_is_clamped(void)
+{
+    static const gint64 huge[] = {
+        G_GINT64_CONSTANT(4102444800000),   /* 2100-01-01, in ms */
+        G_MAXINT64,
+    };
+    Fixture fixture = { 0 };
+    g_autoptr(GSocketConnection) link = NULL;
+    KindCount failovers = { "agent.failover", 0, CLAWT_ALERT_ROUTINE };
+    ClawtAgent *agent = NULL;
+    guint i;
+
+    if (!held_scout_setup(&fixture, &link, &agent))
+        return;
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_kind_event), &failovers);
+
+    for (i = 0; i < G_N_ELEMENTS(huge); i++) {
+        gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+        gint64 until;
+
+        send_held(&fixture, link, &failovers, huge[i]);
+        until = clawt_agent_get_held_until(agent);
+
+        g_assert_cmpint(until, >, now);
+        g_assert_cmpint(until, <=,
+                        g_get_real_time() / G_USEC_PER_SEC +
+                        CLAWT_AGENT_HELD_MAX_SECONDS);
+        g_assert_cmpint(until, >=, now + CLAWT_AGENT_HELD_MAX_SECONDS);
+        g_assert_true(clawt_agent_is_turn_held(agent, now));
+        g_assert_nonnull(fixture.daemon->held_wakes);
+        g_assert_true(g_hash_table_contains(fixture.daemon->held_wakes,
+                                            "scout"));
+    }
+
+    g_signal_handlers_disconnect_by_data(
+        clawt_daemon_get_event_bus(fixture.daemon), &failovers);
+    fixture_teardown(&fixture);
+}
+
 /* The bodies of everything queued for @agent_id, joined. */
 static gchar *
 queued_bodies(Fixture *fixture, const gchar *agent_id)
@@ -14243,6 +14399,10 @@ main(int argc, char *argv[])
                     test_a_held_agent_is_degraded_and_not_fed);
     g_test_add_func("/daemon/failover/held-account-is-one-alert",
                     test_a_held_account_is_one_alert);
+    g_test_add_func("/daemon/failover/long-hold-rearms",
+                    test_a_long_hold_rearms_and_does_not_drain_early);
+    g_test_add_func("/daemon/failover/huge-retry-at-is-clamped",
+                    test_a_huge_retry_at_is_clamped);
     g_test_add_func("/daemon/failover/shown-and-announced",
                     test_an_agent_on_a_fallback_is_shown_and_announced);
     g_test_add_func("/daemon/failover/checked-where-they-arrive",

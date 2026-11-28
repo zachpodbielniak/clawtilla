@@ -634,11 +634,18 @@ clawt_agent_set_failover(ClawtAgent *self,
      * hold, or it is answered and the agent sends the release.  Holding
      * for ever on no reset would leave nothing able to notice the login
      * came back.
+     *
+     * A reset more than CLAWT_AGENT_HELD_MAX_SECONDS out is read as that
+     * far: the frame is wrong, not the account, and a figure that large
+     * also overflowed the wake's arithmetic in daemon-held.c.
      */
     {
         gint64 now = g_get_real_time() / G_USEC_PER_SEC;
         gint64 retry_at = json_object_get_int_member_with_default(
             copy, "retry_at", 0);
+
+        if (retry_at > now + CLAWT_AGENT_HELD_MAX_SECONDS)
+            retry_at = now + CLAWT_AGENT_HELD_MAX_SECONDS;
 
         self->held_until = retry_at > now
             ? retry_at : now + CLAWT_AGENT_HELD_PROBE_SECONDS;
