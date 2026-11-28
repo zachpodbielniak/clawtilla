@@ -416,12 +416,19 @@ The read rows report state, change nothing, carry no secret, and answer with wha
 | ~usage.summary~ | spend and token counts |
 | ~skill.list~ | the skill library's names and descriptions |
 
+*What the read rows do show.*  They hide no secrets by structure -- none of them is a configuration, credential or connector read -- but they return whatever a person or an agent wrote into them: task prompts, results and notes; wait conditions and their ~last_result~; the summaries policy asks carry; and decisions, the operator's answers included (~decision.list~ with ~room=~ returns every decision of one conversation).  Everything on the read list is visible to every agent, per decision ba0011f1, so do not put into a task, a wait or an answer what one agent should not see.  And the ~command~ secret backend's locator is the command line itself, which is shown wherever the reference is: a secret written inline into it (~{command: "echo hunter2"}~) is no longer a reference but the secret, so never write one there -- point the command at a store instead (~pass show ...~).
+
 Refused although they only read, because a reply can carry a secret or another agent's private conversations: ~config.show~ (the configuration, secret references included), ~agent.show~ (every setting, ~env:~ values included), ~connector.list~, ~integration.list~, ~account.list~, ~vault.list~, ~trigger.list~ (a webhook's address is a bearer capability), ~room.history~, ~room.list~ (each room's last message body), ~event.list~, ~notice.list~, ~mailbox.list~, ~memory.list~, ~memory.search~ and ~operator.get~.  An agent reads its own rooms, mail and memories through its tools, which already scope them to it.  Refused although they look like reads, because they write: ~model.list~ (a refresh warms the catalogue), ~steps.list~, ~orchestration.get~, ~notice.read~ and ~room.read~ (marking read is a change).  None of these is redacted to make it fit: a verb that mixes safe fields with secrets stays out until it has a reply that does not.
 
 Everything else -- ~decision.answer~, ~agent.set~, ~agent.restart~, ~agent.stop~, ~trigger.add~, ~task.unblock~, ~task.cancel~, ~routine.add~, ~computer.exec~, every config write, and the built-ins ~control.subscribe~ (the whole fleet's event stream) and ~device.redeem~ -- is refused with ~PERMISSION_DENIED~, naming the verb and the list.  The filter runs before the built-ins and the federation door, so nothing on the agent socket reaches them.
 
-*An agent cannot be another.*  For every act verb, the ~agent~ member
-of the payload is filled in from the connection when it is absent, and the request is refused with ~AUTH~
+*An agent cannot be another.*  Whoever a save is credited to (the
+change notes and the revision history) is the connection's agent: the
+frame's own ~acting_agent~, which the CLI sets from
+~CLAWTILLA_AGENT_ID~, is refused with ~AUTH~ on every verb when it names
+another agent, and is not read at all after that.  For every act verb,
+the ~agent~ member of the payload is filled in from the connection when
+it is absent, and the request is refused with ~AUTH~
 when it names anyone else -- or is not a string.  The connector verbs
 also need the named ~name~ to be a connector the agent holds.  Before
 this, ~computer.desktop~, ~computer.control~, ~connector.app~,
