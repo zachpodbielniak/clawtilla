@@ -233,7 +233,7 @@ One rule, =clawt_office_face_resolve()= in libclawt, decides the face.  The web 
 The order, first match:
 
 1. A *character sheet or mesh* the custodial team made (below).  The picture is still remembered (=has_picture=) but it is not what is drawn.
-2. A *profile picture*, when ~agent.list~ says =has_avatar=.  The web page uses =/a/<id>/avatar=.  The native office fetches the bytes with ~agent.avatar~ (the same call the GTK sidebar uses), keeps a bounded cache keyed by the agent and the picture's etag, and refreshes it on ~agent.changed~ and on any ~agent.avatar*~ event, so a new picture shows up without restarting the office.  The fetch and the decode never run on the render loop.
+2. A *profile picture*, when ~agent.list~ says =has_avatar=.  The web page uses =/a/<id>/avatar=.  The native office fetches the bytes with ~agent.avatar~ (the same call the GTK sidebar uses), keeps a bounded cache keyed by the agent and the picture's etag, and refreshes it on ~agent.changed~ and on any ~agent.avatar*~ event, so a new picture shows up without restarting the office.  Each list request carries a sequence number, and a reply older than the newest one already applied changes nothing, so a slow list that still says there is no picture cannot clear one a newer list has shown.  The fetch and the decode never run on the render loop.
 3. A *generated face*, the shape of the id.  A Grok bot and a visitor from another fleet are not in ~agent.list~, so this is what they wear, which is what the web office already did.
 4. The *letter disc*, the colour blob, when the configured face is =initials= (or a shape name this build does not know).
 

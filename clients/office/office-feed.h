@@ -82,7 +82,9 @@ ClawtOfficeFeed *clawt_office_feed_new(ClawtClient                *client,
  *
  * Re-reads the layout on office.presence, and the world on
  * office.changed.  agent.changed (and any agent.avatar* event) re-reads
- * agent.list and refreshes that agent's picture.  The host forwards its
+ * agent.list and refreshes that agent's picture.  A list reply older
+ * than the newest one already applied is ignored, so a slow answer
+ * cannot clear a picture a newer list has shown.  The host forwards its
  * events here.
  */
 void clawt_office_feed_event(ClawtOfficeFeed *self, ClawtEvent *event);

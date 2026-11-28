@@ -39,6 +39,8 @@ struct _ClawtOfficeFeed {
     gboolean              layout_in_flight;
     gboolean              ready;
     guint                 generation;   /* bumped by every refresh */
+    guint                 list_seq;     /* next agent.list number; each reply carries one */
+    guint                 list_applied; /* newest agent.list reply that was applied */
     GHashTable           *portraits;    /* id -> Portrait */
     GQueue                portrait_queue;
     guint                 portraits_inflight;
@@ -63,6 +65,12 @@ typedef struct {
     gchar           *path;
     guint            generation;
 } FileRequest;
+
+/* One agent.list.  seq is list_seq at the moment it was sent. */
+typedef struct {
+    ClawtOfficeFeed *feed;
+    guint            seq;
+} ListRequest;
 
 /* One character's files, fetched one after another; announced once all are here. */
 typedef struct {
@@ -694,16 +702,34 @@ portrait_mark_dirty(ClawtOfficeFeed *self, const gchar *id)
 static void
 on_agents(GObject *source, GAsyncResult *result, gpointer user_data)
 {
-    ClawtOfficeFeed *self = user_data;
+    ListRequest *req = user_data;
+    ClawtOfficeFeed *self = req->feed;
+    guint seq = req->seq;
     g_autoptr(GError) error = NULL;
     g_autoptr(JsonNode) node = NULL;
     JsonObject *reply;
     JsonArray *agents;
     guint i;
 
+    g_free(req);
     if (g_cancellable_is_cancelled(self->cancellable))
         return;
     reply = finish(source, result, &node, &error);
+
+    /*
+     * Two lists can be in flight: the one from connect, and the one
+     * agent.changed sends after a picture is stored.  The daemon answers
+     * them in whatever order the socket happens to.  An older reply that
+     * lands second still says has_avatar is false and would drop the
+     * picture the newer reply has already drawn.  The number is the
+     * request's, so a reply older than the newest one applied changes
+     * nothing: no colour, no look, no portrait.
+     */
+    if (seq < self->list_applied)
+        return;
+    if (reply != NULL)
+        self->list_applied = seq;
+
     agents = reply != NULL && json_object_has_member(reply, "agents")
         ? json_object_get_array_member(reply, "agents") : NULL;
     for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
@@ -890,6 +916,17 @@ request_usage(ClawtOfficeFeed *self)
         request(self, "usage.providers", NULL, on_usage, self);
 }
 
+/* The next agent.list.  Its reply is ignored once a newer one has landed. */
+static void
+request_agent_list(ClawtOfficeFeed *self)
+{
+    ListRequest *req = g_new0(ListRequest, 1);
+
+    req->feed = self;
+    req->seq = ++self->list_seq;
+    request(self, "agent.list", NULL, on_agents, req);
+}
+
 /* ── Life cycle ─────────────────────────────────────────────────── */
 
 void
@@ -908,7 +945,7 @@ clawt_office_feed_refresh(ClawtOfficeFeed *self)
         req->generation = self->generation;
         request(self, "office.world", payload, on_world, req);
     }
-    request(self, "agent.list", NULL, on_agents, self);
+    request_agent_list(self);
 }
 
 ClawtOfficeFeed *
@@ -958,7 +995,7 @@ clawt_office_feed_event(ClawtOfficeFeed *self, ClawtEvent *event)
              (kind != NULL && g_str_has_prefix(kind, "agent.avatar"))) {
         /* a new picture shows up without restarting the office */
         portrait_mark_dirty(self, clawt_event_get_subject(event));
-        request(self, "agent.list", NULL, on_agents, self);
+        request_agent_list(self);
     }
 }
 

@@ -15,11 +15,69 @@
 #include "clawtilla.h"
 
 #include <glib/gstdio.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "clawt-test-util.h"
 
+/*
+ * The stale-list test holds agent.list replies and delivers a newer one
+ * before an older one.  Every other request goes straight through.  The
+ * macro covers only the feed, which is included below; the hook itself
+ * calls the real function through the pointer saved first.
+ */
+static gboolean hold_agent_lists = FALSE;
+static GQueue held_agent_lists = G_QUEUE_INIT;
+
+typedef struct {
+    GObject             *source;
+    GAsyncResult        *result;
+    GAsyncReadyCallback  callback;
+    gpointer             user_data;
+} HeldAgentList;
+
+static void (*clawt_client_request_async_real)(ClawtClient         *self,
+                                               const gchar         *kind,
+                                               JsonNode            *payload,
+                                               GCancellable        *cancellable,
+                                               GAsyncReadyCallback  callback,
+                                               gpointer             user_data) =
+    clawt_client_request_async;
+
+static void
+hold_agent_list_reply(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    HeldAgentList *held = user_data;
+
+    held->source = g_object_ref(source);
+    held->result = G_ASYNC_RESULT(g_object_ref(G_OBJECT(result)));
+    g_queue_push_tail(&held_agent_lists, held);
+}
+
+static void
+clawt_client_request_async_hook(ClawtClient         *self,
+                                const gchar         *kind,
+                                JsonNode            *payload,
+                                GCancellable        *cancellable,
+                                GAsyncReadyCallback  callback,
+                                gpointer             user_data)
+{
+    if (hold_agent_lists && g_strcmp0(kind, "agent.list") == 0) {
+        HeldAgentList *held = g_new0(HeldAgentList, 1);
+
+        held->callback = callback;
+        held->user_data = user_data;
+        clawt_client_request_async_real(self, kind, payload, cancellable,
+                                        hold_agent_list_reply, held);
+        return;
+    }
+    clawt_client_request_async_real(self, kind, payload, cancellable, callback,
+                                    user_data);
+}
+
+#define clawt_client_request_async clawt_client_request_async_hook
 #include "../clients/office/office-feed.c"
+#undef clawt_client_request_async
 
 /* 4x4 PNGs.  Red is RGB 255,0,17; green is RGB 0,255,17. */
 static const guint8 RED_PNG[] = {
@@ -48,6 +106,39 @@ typedef struct {
     gint          size;
     guint8        center[4];
 } FeedFixture;
+
+static void
+release_held_agent_list(HeldAgentList *held)
+{
+    held->callback(held->source, held->result, held->user_data);
+    g_object_unref(held->result);
+    g_object_unref(held->source);
+    g_free(held);
+}
+
+static void
+release_queued_agent_lists(void)
+{
+    HeldAgentList *held;
+
+    while ((held = g_queue_pop_head(&held_agent_lists)) != NULL)
+        release_held_agent_list(held);
+}
+
+static gboolean
+wait_held_agent_lists(FeedFixture *fixture, guint want, gint timeout_ms)
+{
+    gint64 end = g_get_monotonic_time() + (gint64)timeout_ms * 1000;
+
+    while (g_get_monotonic_time() < end) {
+        while (g_main_context_pending(fixture->context))
+            g_main_context_iteration(fixture->context, FALSE);
+        if (g_queue_get_length(&held_agent_lists) >= want)
+            return TRUE;
+        g_usleep(2000);
+    }
+    return g_queue_get_length(&held_agent_lists) >= want;
+}
 
 static void
 on_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
@@ -247,8 +338,7 @@ test_change_refreshes_picture(void)
     }
 
     fixture_setup(&fixture);
-    /* the first agent.list has to land before the picture, or a late
-     * answer with has_avatar false would drop the cache */
+    /* the opening list, so the picture is a change rather than the first look */
     g_assert_true(wait_looks(&fixture, 1, 10000));
     set_avatar(&fixture, RED_PNG, sizeof(RED_PNG));
     end = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
@@ -285,6 +375,72 @@ test_change_refreshes_picture(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * Two agent.list replies, delivered newest first.  The older one still
+ * says the agent has no picture.  It must not clear the picture the
+ * newer one stored, and it must not flip has_avatar back.
+ */
+static void
+test_stale_list_keeps_picture(void)
+{
+    FeedFixture fixture = { 0 };
+    HeldAgentList *stale = NULL;
+    HeldAgentList *later = NULL;
+    gint portraits;
+    gint64 end;
+
+    if (!clawt_office_portrait_decode_available()) {
+        g_test_skip("cairo PNG decode is not in this build (POPPLER=0); "
+                    "gdk-pixbuf is not used because glycin's bwrap sandbox "
+                    "does not run in these containers");
+        return;
+    }
+
+    hold_agent_lists = TRUE;
+    fixture_setup(&fixture);
+    g_assert_true(wait_held_agent_lists(&fixture, 1, 10000));
+
+    set_avatar(&fixture, RED_PNG, sizeof(RED_PNG));
+    g_assert_true(wait_held_agent_lists(&fixture, 2, 10000));
+
+    /* head is the list from connect: it was queued before the picture existed */
+    stale = g_queue_pop_head(&held_agent_lists);
+    g_assert_nonnull(stale);
+    while ((later = g_queue_pop_head(&held_agent_lists)) != NULL)
+        release_held_agent_list(later);
+
+    end = g_get_monotonic_time() + 15 * G_USEC_PER_SEC;
+    while (g_get_monotonic_time() < end && !fixture.got_rgba) {
+        while ((later = g_queue_pop_head(&held_agent_lists)) != NULL)
+            release_held_agent_list(later);
+        while (g_main_context_pending(fixture.context))
+            g_main_context_iteration(fixture.context, FALSE);
+        g_usleep(2000);
+    }
+    g_assert_true(fixture.got_rgba);
+    g_assert_cmpint(fixture.center[0], ==, 255);
+    g_assert_cmpint(fixture.center[1], ==, 0);
+    g_assert_cmpint(fixture.center[2], ==, 17);
+    g_assert_cmpint(fixture.center[3], ==, 255);
+    g_assert_true(fixture.has_avatar);
+    portraits = fixture.portraits;
+
+    release_held_agent_list(stale);
+    pump(&fixture, 1000);
+
+    g_assert_true(fixture.got_rgba);
+    g_assert_true(fixture.has_avatar);
+    g_assert_cmpint(fixture.portraits, ==, portraits);
+    g_assert_cmpint(fixture.center[0], ==, 255);
+    g_assert_cmpint(fixture.center[1], ==, 0);
+    g_assert_cmpint(fixture.center[2], ==, 17);
+    g_assert_cmpint(fixture.center[3], ==, 255);
+
+    release_queued_agent_lists();
+    hold_agent_lists = FALSE;
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -292,6 +448,7 @@ main(int argc, char *argv[])
 
     g_test_add_func("/office-feed/change-flips-has-avatar", test_change_flips_has_avatar);
     g_test_add_func("/office-feed/change-refreshes-picture", test_change_refreshes_picture);
+    g_test_add_func("/office-feed/stale-list-keeps-picture", test_stale_list_keeps_picture);
 
     return g_test_run();
 }
