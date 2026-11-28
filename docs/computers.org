@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-29 Sat]
+#+updated: [2026-11-28 Sat]
 #+version: 0.51.0
 
 * Computers
@@ -3629,8 +3629,14 @@ The agent's ~.mcp.json~ gains a ~clawtilla-desktop~ server naming the
 clawtilla CLI:
 
 #+begin_src sh
-clawtilla --socket <daemon.sock> computer desktop-mcp <agent-id>
+clawtilla --socket <the agent's own socket> computer desktop-mcp <agent-id>
 #+end_src
+
+The socket is the agent's own (~agent-sockets/<id>.sock~ beside
+~daemon.socket~), never the operator's: the relay's ~computer.desktop~
+and ~computer.control~ are agent verbs there, and the connection, not
+the ~agent~ it names, says whose desktop it is.  See
+[[file:security.org::*The agent socket][security.org]].
 
 It asks the daemon for the SSH command that reaches the guest, and relays
 stdin and stdout to it.  SSH already carries stdio, so there is no

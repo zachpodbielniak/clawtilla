@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-29 Sat]
+#+updated: [2026-11-28 Sat]
 #+version: 0.2.0
 
 * The client protocol
@@ -948,7 +948,9 @@ from it.
 
 The agent's own token is required -- the same one the link uses.  The
 socket's permissions are the first line; this stops one agent on this
-machine calling tools as another.
+machine calling tools as another.  On an agent socket (see
+[[*Agent sockets][Agent sockets]]) ~agent~ may be left out: the connection supplies it,
+and the token must then be that agent's.
 
 *** msg.* and room.*
 
@@ -1799,7 +1801,7 @@ arrives from a file somebody edits by hand.
 | Payload   | Meaning |
 |-----------+---------|
 | ~agent~   | who is about to make the call |
-| ~token~   | the agent's token; required by the Claude hook, absent from the relays (the socket is the user's alone, and a check only restricts the caller) |
+| ~token~   | the agent's token; required by the Claude hook, absent from the relays (they run on the agent's own socket, whose connection already names the agent, and a check only restricts the caller) |
 | ~tool~    | the tool as the agent called it |
 | ~class~   | optional action class, when the caller knows better than the native table (the relays send ~external~ and ~desktop_input~) |
 | ~summary~ | the call, for a person asked to approve it |
@@ -2844,6 +2846,35 @@ them it already has.
 
 Over the unix socket: none.  The socket is 0600, so connecting at all
 proves you are the owner.
+
+*** Agent sockets
+
+Each agent also has a socket of its own,
+~agent-sockets/<id>.sock~ beside ~daemon.socket~, which its
+~clawtilla-mcp-server~, policy hook and relays dial (and the only daemon
+socket a ~runtime.confine: bwrap~ box binds).  Same framing, same
+~control.hello~ with no token.  Two differences:
+
+- *The identity is the connection.*  Every request on it is that
+  agent's.  A payload's ~agent~ is filled in when absent and refused with
+  =auth= when it names another agent.
+- *Only the agent verbs are served.*  The acts its own clients send:
+  ~control.hello~, ~tool.rpc~, ~policy.check~, ~connector.refresh~,
+  ~connector.unauthorized~, ~connector.tools_seen~ (the last three for a
+  connector the agent holds), ~connector.result_trimmed~,
+  ~connector.app~, ~computer.desktop~ and ~computer.control~.  And the
+  reads of fleet state that carry no secret: ~control.status~,
+  ~agent.list~, ~team.list~, ~task.list~, ~task.show~,
+  ~incident.list~, ~decision.list~, ~wait.list~, ~routine.list~,
+  ~routine.upcoming~, ~routine.occurrences~, ~project.list~,
+  ~usage.summary~ and ~skill.list~, answered as the operator would be.
+  Every other kind -- the built-ins ~control.subscribe~ and
+  ~device.redeem~ and every ~fed.*~ frame included -- is refused with
+  =permission_denied=, naming the kind and the list.  It never receives
+  events.
+
+The list is =agent_verbs[]= in =src/core/daemon-agent-socket.c=; see
+[[file:security.org::*The agent socket][security.org]] for why.
 
 Over TCP: ~control.hello~ with a token, before anything else.  The daemon
 refuses to open a TCP listener without a token configured.

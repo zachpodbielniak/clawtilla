@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-11-14 Sat]
+#+updated: [2026-11-28 Sat]
 #+version: 0.2.0
 
 * Security
@@ -168,6 +168,14 @@ client can: read every transcript, run commands on every agent's
 computer, edit the configuration.  The socket's permissions are the whole
 of the access control there.
 
+That is why no agent is handed it.  Everything an agent's CLI starts
+dials the agent's own socket instead, which serves the agent verbs and
+nothing else (*The agent socket*, under *Sockets*), and a confined
+agent's box binds only that one -- so ~confine: bwrap~ keeps the
+operator's socket out of the box.  An *unconfined* agent runs as you and
+can still open ~daemon.sock~ by its path; the agent socket narrows what
+its tools are pointed at, not what its processes can reach.
+
 *** The transcript index holds message bodies too
 
 ~<state_dir>/transcripts.db~ is a searchable copy of every message the
@@ -296,37 +304,26 @@ lapses while somebody is looking at it.
 
 ** Sockets
 
-Two, both 0600, both under directories the daemon creates 0700:
+Three kinds, all 0600, all under directories the daemon creates 0700:
 
 | Socket | Who connects |
 |--------+--------------|
-| ~<state_dir>/agents.sock~ | libreclaw agent processes |
-| ~$XDG_RUNTIME_DIR/clawtilla/daemon.sock~ | clients |
+| ~<state_dir>/agents.sock~ | libreclaw agent processes (the link) |
+| ~$XDG_RUNTIME_DIR/clawtilla/daemon.sock~ | clients: the operator |
+| ~$XDG_RUNTIME_DIR/clawtilla/agent-sockets/<id>.sock~, one per agent | that agent's ~clawtilla-mcp-server~, policy hook and relays |
+
+The agent sockets live beside ~daemon.socket~ wherever it is configured,
+in an ~agent-sockets~ directory of their own.
 
 A unix socket rather than a loopback HTTP port, deliberately: a port has
 no owner, is reachable by anything on the machine, and brings DNS
 rebinding with it if a browser is ever involved.
 
-The file mode is the whole of it.  A unix client presents no token and
-the daemon runs no further check on who is calling -- so "0600, in a 0700
-directory, owned by you" is the entire statement, and anything that can
-open the path is a client.
-
-An agent that can open ~daemon.sock~ can therefore reconfigure the fleet
-it belongs to, and ~confine: bwrap~ does not take that away.  bwrap
-builds its filesystem from nothing -- ~/usr~ and ~/etc~ read-only, a
-tmpfs ~/tmp~, the agent's root and its ~allow_paths~ -- so the rest of
-~$XDG_RUNTIME_DIR~ is not there, but the IPC socket file itself is
-bound in (the table under *bwrap*, below; =clawt_agent_confine_build()=
-grants every socket it is given), because the agent's
-~clawtilla-mcp-server~ reaches the daemon through it.  So a confined
-agent's processes can send any IPC verb a client can: ~trigger.add~,
-~agent.set~, ~config~ changes.  What an agent is *offered* is narrowed
-by the tool gate; what its processes *can do* is not, since no verb asks
-who is calling.  The other three modes leave the socket exactly where it
-is.  A real boundary needs the daemon to tell an agent's connection from
-the operator's -- a per-agent socket, or ~SO_PEERCRED~ with the agent's
-sandbox -- and to refuse operator verbs on the first.
+On ~daemon.sock~ the file mode is the whole of it.  A unix client
+presents no token and the daemon runs no further check on who is calling
+-- so "0600, in a 0700 directory, owned by you" is the entire statement,
+and anything that can open the path is the operator.  ~SO_PEERCRED~
+cannot narrow that: an agent's processes run as the same uid.
 
 A stale socket from an unclean shutdown is removed only after checking
 nothing is listening on it.  Unlinking a live socket would leave the
@@ -363,6 +360,82 @@ is 0600 in a 0700 directory like everything else there, and anything
 that can open the state directory can already do whatever it likes to
 the fleet -- the lock stops *clawtilla* from being its own second
 writer, which is a correctness problem rather than a threat.
+
+*** The agent socket
+
+Every agent gets a socket of its own when it starts, and loses it when
+it stops (an agent a reload removes too) or the daemon exits; stale ones
+a crashed daemon left are cleared at the next start, once the operator
+socket is bound -- which proves no other daemon is serving the
+directory.  Its path is a pure function of the configuration
+(=clawt_config_agent_socket_path()=), and it is what the agent's
+rendered files name: the ~--socket~ of ~clawtilla-mcp-server~ in the
+~.mcp.json~, of ~clawtilla policy-hook~ in the hook settings, and of the
+connector and desktop relays.  A confined agent's box binds that one
+socket file, beside its link, and never ~daemon.sock~ (the table under
+*Confining the agent's own CLI*, below).
+
+*The connection is the identity.*  The daemon makes each socket for
+exactly one agent, so every request on it is that agent's -- decided by
+which socket accepted the connection, before any frame is read, not by
+anything a request says.  A path the daemon owns and maps to one agent
+was chosen over a token at hello for three reasons: the relays and the
+hook run from the agent's CLI and carry no token today (they would all
+need one plumbed in); inside a box the agent can read its own token
+anyway, so a token proves nothing the path does not; and the box cannot
+even name another agent's socket, because it is not bound in.  The
+token checks the handlers already make (~tool.rpc~, a hook's
+~policy.check~) still run, against the connection's agent.
+
+*The rule: an agent may read fleet state, may not change it, and may not read secrets.*  This was Zach's decision ba0011f1 on 2026-11-28, taken when VENTURE #72 deferred to him which verbs count as agent verbs.  It is kept in one table, =agent_verbs[]= in =src/core/daemon-agent-socket.c=, one row per verb with no pattern matching -- so a verb added to the daemon later is refused on an agent socket until somebody adds a row -- and each row says whether it acts or reads, and why it is there.
+
+The act rows are exactly what the agent's own clients send, each for the connection's agent only:
+
+| Verb | Sent by |
+|------+---------|
+| ~control.hello~ | every client, first (a handshake; reads nothing) |
+| ~tool.rpc~ | ~clawtilla-mcp-server~ |
+| ~policy.check~ | the policy hook, the connector and desktop relays |
+| ~connector.refresh~, ~connector.unauthorized~, ~connector.tools_seen~ | the connector relay, for a connector the agent holds |
+| ~connector.result_trimmed~, ~connector.app~ | the connector relay |
+| ~computer.desktop~, ~computer.control~ | the desktop relay |
+
+The read rows report state, change nothing, carry no secret, and answer with what the operator would get:
+
+| Verb | What it reports |
+|------+-----------------|
+| ~control.status~ | the daemon's version and counts |
+| ~agent.list~ | the roster: ids, states, teams, computers -- no settings |
+| ~team.list~ | teams, leads and members |
+| ~task.list~, ~task.show~ | tasks, their states, results and notes |
+| ~incident.list~ | incidents raised on tasks and routines |
+| ~decision.list~ | decisions waiting on the operator (answering one is refused) |
+| ~wait.list~ | pending waits |
+| ~routine.list~, ~routine.upcoming~, ~routine.occurrences~ | routines and when they run |
+| ~project.list~ | projects and their budgets |
+| ~usage.summary~ | spend and token counts |
+| ~skill.list~ | the skill library's names and descriptions |
+
+Refused although they only read, because a reply can carry a secret or another agent's private conversations: ~config.show~ (the configuration, secret references included), ~agent.show~ (every setting, ~env:~ values included), ~connector.list~, ~integration.list~, ~account.list~, ~vault.list~, ~trigger.list~ (a webhook's address is a bearer capability), ~room.history~, ~room.list~ (each room's last message body), ~event.list~, ~notice.list~, ~mailbox.list~, ~memory.list~, ~memory.search~ and ~operator.get~.  An agent reads its own rooms, mail and memories through its tools, which already scope them to it.  Refused although they look like reads, because they write: ~model.list~ (a refresh warms the catalogue), ~steps.list~, ~orchestration.get~, ~notice.read~ and ~room.read~ (marking read is a change).  None of these is redacted to make it fit: a verb that mixes safe fields with secrets stays out until it has a reply that does not.
+
+Everything else -- ~decision.answer~, ~agent.set~, ~agent.restart~, ~agent.stop~, ~trigger.add~, ~task.unblock~, ~task.cancel~, ~routine.add~, ~computer.exec~, every config write, and the built-ins ~control.subscribe~ (the whole fleet's event stream) and ~device.redeem~ -- is refused with ~PERMISSION_DENIED~, naming the verb and the list.  The filter runs before the built-ins and the federation door, so nothing on the agent socket reaches them.
+
+*An agent cannot be another.*  For every act verb, the ~agent~ member
+of the payload is filled in from the connection when it is absent, and the request is refused with ~AUTH~
+when it names anyone else -- or is not a string.  The connector verbs
+also need the named ~name~ to be a connector the agent holds.  Before
+this, ~computer.desktop~, ~computer.control~, ~connector.app~,
+~connector.result_trimmed~ and a relay's token-less ~policy.check~
+trusted the payload's ~agent~ outright; on the operator socket they
+still do, since the operator may act for any agent.  The read verbs
+pass their payload through: an ~agent~ there (~task.list~, ~wait.list~)
+is a filter over fleet state rather than an identity, and none of them
+reveals an agent's private data.
+
+*Unconfined agents use it too.*  Their rendered files are the same, so
+an unconfined agent's tools take the same path through the same gate.
+It is not a boundary for them: a process running as you can open
+~daemon.sock~ by its path, which is what confinement is for.
 
 ** Agent authentication
 
@@ -923,7 +996,7 @@ What is in the box:
 | each granted connector's directory, =secrets.dir/connectors/<name>= | read-only | its relay runs in the box and reads the credential there; see *Connectors in a confined box* |
 | a granted connector's ~token_file~ named outside that directory | read-only, the file | a key somebody wrote by hand, a broker's key |
 | ~connectors.dir~, when the agent holds a connector | read-only | the catalogue the relay looks its provider up in |
-| the link socket and the IPC socket | each socket file | not the directory: it holds every agent's link |
+| the link socket and the agent's own socket | each socket file | not the directories: one holds every agent's link, the other every agent's socket; never ~daemon.sock~ (*The agent socket*) |
 | ~runtime.confine_paths~ | read-only | anything the builder cannot find for itself |
 | ~/etc/resolv.conf~'s target | read-only | on systemd-resolved it is a symlink into ~/run~ |
 
@@ -943,7 +1016,7 @@ A bind protects a path, not an inode. A file bound read-only that has a second n
 
 An abstract unix socket (~@/tmp/.X11-unix/X0~, and anything else bound with a leading NUL) has no file to bind or deny: its namespace is the network namespace's. So every box that keeps the host's network -- every agent-CLI box, and a ~clawtilla_computer_exec~ box with ~allow_network: true~, the default -- could connect to all of them. The one that matters is an X server that trusts the local user (an ~Xvfb~, or any display with ~xhost +si:localuser:~): that is every window and every keystroke. The self-check below found this from inside a real box; an Xvfb on the development machine accepted the connection with no cookie.
 
-bwrap cannot close it, and Landlock can. ~clawt_sandbox_enter()~ runs in the child between fork and exec of bwrap -- from the process runtime's child setup and the host computer's -- and puts it in a Landlock domain with ~LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET~ and nothing else: no filesystem or network rights are handled, so bwrap's mounts and the agent's TCP are untouched, and ~connect()~ to an abstract socket made outside the box fails with ~EPERM~. Sockets with a path (the agent's link, the IPC socket) are files and unaffected. It is applied in every bwrap box, offline ones included, so it does not rest on the network namespace.
+bwrap cannot close it, and Landlock can. ~clawt_sandbox_enter()~ runs in the child between fork and exec of bwrap -- from the process runtime's child setup and the host computer's -- and puts it in a Landlock domain with ~LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET~ and nothing else: no filesystem or network rights are handled, so bwrap's mounts and the agent's TCP are untouched, and ~connect()~ to an abstract socket made outside the box fails with ~EPERM~. Sockets with a path (the agent's link, its own socket) are files and unaffected. It is applied in every bwrap box, offline ones included, so it does not rest on the network namespace.
 
 It needs Landlock ABI 6 (Linux 6.12) and a bwrap that is not setuid, because the scope needs ~no_new_privs~ and a setuid bwrap cannot build its namespaces under it. Without either, the daemon says once, at the first networked box, that abstract sockets are reachable here; it does not refuse the box, because a networked box is documented as networked.
 
