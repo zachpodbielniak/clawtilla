@@ -316,6 +316,9 @@ agents:
       routing_mode: sender-room
       timeout_minutes: 60
       max_sessions: 10
+      max_wait_queue_depth: 32
+      max_queue_wait_seconds: 300
+      max_parked: 0
 
     runtime:
       type: process          # process | embedded
@@ -526,6 +529,32 @@ than libreclaw's session manager takes.  If one reaches the daemon anyway
 it is reported with a warning and replaced with ~10~ in the rendered
 config.  As with the timeout, set it as an agent key, not through the
 passthrough.
+
+*** When every session is busy, and how many are parked
+
+Three more libreclaw limits are agent keys, each rendered straight through
+into the same-named key under ~session:~ in the agent's ~config.yaml~ (since
+0.78.0).  They matter once ~max_sessions~ is reached:
+
+- ~session.max_wait_queue_depth~ (default ~32~) is how many channel messages
+  may wait for a session slot when every session is busy.  Past it the
+  *newest* is refused and its sender gets a busy notice; the oldest has
+  waited longest and keeps its place.  ~0~ does not wait at all: the message
+  is refused at once, and the notice is still sent.
+- ~session.max_queue_wait_seconds~ (default ~300~) refuses a waiting message
+  older than this, with the same notice.  ~0~ is no age limit.
+- ~session.max_parked~ (default ~0~) is how many parked conversations
+  libreclaw keeps; past it the oldest parked one is forgotten.  ~0~ keeps
+  all of them.
+
+None of these is libreclaw's ~session.max_queue_depth~, which is the message
+queue inside one session while its turn runs.
+
+~0~ is a valid value for all three.  ~clawtilla config validate~ rejects a
+negative one, or one larger than ~2147483647~, naming the agent and the key.
+If one reaches the daemon anyway it is reported with a warning and replaced
+with its default in the rendered config.  Like the other session keys, set
+them as agent keys, not through the passthrough.
 
 *** The libreclaw passthrough
 

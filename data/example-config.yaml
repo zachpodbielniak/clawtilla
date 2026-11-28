@@ -152,6 +152,34 @@ daemon:
   # permanent.
   event_log_days: 30
 
+  # How many days of each routine's run history to keep: what happened at
+  # every scheduled time -- started (and which task), failed, refused,
+  # missed while the daemon was down, or folded into a catch-up run.
+  #
+  # This is what lets the Schedule calendar put a tick or a cross on a
+  # time that has passed (routine.occurrences). It lives in the routine
+  # state file beside last_run, never in this config. Each routine also
+  # keeps at most 2,000 entries whatever this says, because the state file
+  # is rewritten on every run. 0 or less means the default.
+  routine_history_days: 62
+
+  # The longest window one routine.occurrences request may ask for, in
+  # days. A longer one is refused with this number in the error.
+  #
+  # 62 covers a month grid with the weeks either side of it. The bound
+  # exists because expanding a schedule costs time per run, and a client
+  # asking for a year of an every-minute routine would hold the daemon's
+  # loop while it did. 0 or less means the default.
+  calendar_max_days: 62
+
+  # The most occurrences one routine.occurrences request may return,
+  # across every routine and libreclaw cron in the window. Past it the
+  # request is refused, naming the routine that contributes most, rather
+  # than answered with a calendar that silently stops part-way through a
+  # week. Narrow the window or filter by agent or team. 0 or less means
+  # the default.
+  calendar_max_occurrences: 5000
+
   # Permit agents to use computer.host.confine: none.
   #
   # An unconfined host computer means the agent runs commands as you, with
@@ -3558,6 +3586,57 @@ agents:
       # renders this straight through.
       max_sessions: 10
 
+      # How many channel messages may wait for a session slot when every
+      # session is busy.
+      #
+      # Past this depth the newest message is refused, not the oldest: the
+      # oldest has waited longest and keeps its place. The sender is told the
+      # agent is busy. 0 does not wait at all -- a message that finds every
+      # session busy is refused at once, and the sender still gets the notice.
+      #
+      # This is not libreclaw's session.max_queue_depth, which is the message
+      # queue inside one session while its turn runs.
+      #
+      # A whole number from 0 to 2147483647. `clawtilla config validate`
+      # rejects a negative number or one too large for libreclaw, and if one
+      # reaches the daemon anyway it is reported with a warning and replaced
+      # with 32 in the rendered config.
+      #
+      # This is libreclaw's own value (its session.max_wait_queue_depth); the
+      # daemon renders this straight through.
+      max_wait_queue_depth: 32
+
+      # How many seconds a channel message may wait for a session slot.
+      #
+      # A waiting message older than this is refused, with the same busy
+      # notice as one refused for want of room in the line. 0 is no age
+      # limit.
+      #
+      # A whole number from 0 to 2147483647. `clawtilla config validate`
+      # rejects a negative number or one too large for libreclaw, and if one
+      # reaches the daemon anyway it is reported with a warning and replaced
+      # with 300 in the rendered config.
+      #
+      # This is libreclaw's own value (its session.max_queue_wait_seconds);
+      # the daemon renders this straight through.
+      max_queue_wait_seconds: 300
+
+      # How many parked conversations libreclaw keeps for this agent.
+      #
+      # A conversation is parked when max_sessions makes libreclaw give up its
+      # live session; it is resumed when its room speaks again. Past this
+      # count the oldest parked conversation is forgotten. 0 keeps all of
+      # them.
+      #
+      # A whole number from 0 to 2147483647. `clawtilla config validate`
+      # rejects a negative number or one too large for libreclaw, and if one
+      # reaches the daemon anyway it is reported with a warning and replaced
+      # with 0 in the rendered config.
+      #
+      # This is libreclaw's own value (its session.max_parked); the daemon
+      # renders this straight through.
+      max_parked: 0
+
     # How this agent's libreclaw instance is hosted.
     runtime:
 
@@ -3651,6 +3730,18 @@ agents:
       # This is a duration limit; runtime.turn_timeout_seconds separately
       # controls the turn watchdog. Values must be between 0 and 2147483647.
       process_timeout_ms: 0
+
+      # How long, in milliseconds, a turn keeps going after the agent's CLI
+      # ended it with background work of its own still running -- a Claude
+      # Code sub-agent or background shell. The CLI runs another turn by
+      # itself when that work finishes, and its text is part of the reply.
+      # When the bound is reached the CLI is stopped, the reply says what was
+      # left running, and a task the turn was on fails with that as its
+      # reason. 0 waits as long as the CLI runs (then only
+      # runtime.process_timeout_ms bounds it). The default is 30 minutes.
+      # Rendered as libreclaw ai.background_wait_ms. Values must be between 0
+      # and 2147483647.
+      background_wait_ms: 1800000
 
       # Stop this agent after this many hours without a turn. 0 never does.
       #

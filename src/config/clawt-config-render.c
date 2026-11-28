@@ -29,6 +29,15 @@
  */
 #define CLAWT_SESSION_MAX_SESSIONS_DEFAULT (10)
 
+/*
+ * libreclaw's own defaults for session.max_wait_queue_depth,
+ * session.max_queue_wait_seconds and session.max_parked, used when the
+ * configured value is a negative one libreclaw would replace silently.
+ */
+#define CLAWT_SESSION_MAX_WAIT_QUEUE_DEPTH_DEFAULT (32)
+#define CLAWT_SESSION_MAX_QUEUE_WAIT_SECONDS_DEFAULT (300)
+#define CLAWT_SESSION_MAX_PARKED_DEFAULT (0)
+
 gchar *
 clawt_config_agent_state_dir(ClawtConfig *config, const gchar *agent_id)
 {
@@ -1196,6 +1205,9 @@ render_agent(ClawtConfig       *config,
      * Write zero explicitly as well as any user-selected deadline. */
     append_key_int(out, 2, "process_timeout_ms",
                    clawt_agent_config_get_int(agent, "runtime.process_timeout_ms"));
+    /* VENTURE #58: the wait for a CLI's own late turn, always explicit. */
+    append_key_int(out, 2, "background_wait_ms",
+                   clawt_agent_config_get_int(agent, "runtime.background_wait_ms"));
     append_key_value(out, 2, "provider",
                      clawt_agent_config_get_string(agent, "model.provider"));
     append_key_value(out, 2, "model",
@@ -1477,6 +1489,50 @@ render_agent(ClawtConfig       *config,
             }
 
             append_key_int(out, 2, "max_sessions", max_sessions);
+        }
+
+        /*
+         * The three limits on messages waiting for a session slot and on
+         * parked conversations, rendered from `agents.session.<key>` --
+         * written at the default too.  libreclaw reads each as a
+         * non-negative gint and returns its default for a negative one
+         * without a word; reported and replaced here instead, for the
+         * reason session.max_sessions is.  0 is a real value for all
+         * three, so only a negative or too-large one is replaced.
+         */
+        {
+            static const struct {
+                const gchar *key;
+                gint64       fallback;
+            } waiting[] = {
+                { "max_wait_queue_depth",
+                  CLAWT_SESSION_MAX_WAIT_QUEUE_DEPTH_DEFAULT },
+                { "max_queue_wait_seconds",
+                  CLAWT_SESSION_MAX_QUEUE_WAIT_SECONDS_DEFAULT },
+                { "max_parked", CLAWT_SESSION_MAX_PARKED_DEFAULT }
+            };
+            guint k;
+
+            for (k = 0; k < G_N_ELEMENTS(waiting); k++) {
+                g_autofree gchar *schema_key = g_strdup_printf(
+                    "session.%s", waiting[k].key);
+                gint64 value = clawt_agent_config_get_int(agent, schema_key);
+
+                if (value < 0 || value > G_MAXINT) {
+                    if (report)
+                        g_warning("agent %s: %s: %" G_GINT64_FORMAT
+                                  " is not a whole number from 0 to %d "
+                                  "libreclaw can take. Using %"
+                                  G_GINT64_FORMAT " instead; fix it in the "
+                                  "config to silence this.",
+                                  clawt_agent_config_get_id(agent),
+                                  schema_key, value, G_MAXINT,
+                                  waiting[k].fallback);
+                    value = waiting[k].fallback;
+                }
+
+                append_key_int(out, 2, waiting[k].key, value);
+            }
         }
 
         g_string_append(out, "\n");

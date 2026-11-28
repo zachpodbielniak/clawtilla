@@ -787,6 +787,38 @@ on_routine_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
 }
 
 void
+clawt_gtk_edit_routine(ClawtWindow *self, const gchar *id)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *root;
+    JsonArray *routines;
+    guint i;
+
+    if (id == NULL || *id == '\0')
+        return;
+
+    reply = clawt_window_request(self, "routine.list", NULL);
+
+    if (reply == NULL)
+        return;
+
+    root = clawt_payload_of(reply);
+    routines = (root != NULL && json_object_has_member(root, "routines"))
+        ? json_object_get_array_member(root, "routines") : NULL;
+
+    for (i = 0; routines != NULL && i < json_array_get_length(routines); i++) {
+        JsonObject *routine = json_array_get_object_element(routines, i);
+
+        if (g_strcmp0(clawt_json_string(routine, "id", NULL), id) == 0) {
+            open_routine_editor(self, routine);
+            return;
+        }
+    }
+
+    clawt_window_toast(self, "That routine is not in the list.");
+}
+
+void
 clawt_gtk_refresh_routines(ClawtWindow *self)
 {
     g_autoptr(JsonNode) reply = NULL;

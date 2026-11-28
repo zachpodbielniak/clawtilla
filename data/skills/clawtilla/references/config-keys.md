@@ -30,6 +30,9 @@ see security.md).
 | `daemon.token_file` | path |  |  | File holding the bearer token remote clients must present. |
 | `daemon.device_idle_days` | integer | `90` |  | Days a paired device may go unseen before its token stops working. 0 means never. |
 | `daemon.event_log_days` | integer | `30` |  | How many days of per-room event logs to keep. |
+| `daemon.routine_history_days` | integer | `62` |  | How many days of each routine's run history to keep: what happened at every scheduled time -- started (and which task), failed, refused, missed while the daemon was down, or folded into a catch-up run. |
+| `daemon.calendar_max_days` | integer | `62` |  | The longest window one routine.occurrences request may ask for, in days. |
+| `daemon.calendar_max_occurrences` | integer | `5000` |  | The most occurrences one routine.occurrences request may return, across every routine and libreclaw cron in the window. |
 | `daemon.allow_unconfined_host` | boolean | `false` |  | **D** Permit agents to use computer.host.confine: none. |
 | `daemon.automation_dir` | path | `~/.clawtilla/pods` |  | Where podomation pods that watch the fleet live. |
 | `daemon.webhook_enabled` | boolean | `false` |  | Whether to accept inbound trigger deliveries. |
@@ -554,6 +557,9 @@ see security.md).
 | `agents.session.routing_mode` | enum | `sender-room` |  | How many context windows this agent is. |
 | `agents.session.timeout_minutes` | integer | `30` |  | Minutes of inactivity before libreclaw drops this agent's session. |
 | `agents.session.max_sessions` | integer | `10` |  | How many sessions this agent keeps live at once. |
+| `agents.session.max_wait_queue_depth` | integer | `32` |  | How many channel messages may wait for a session slot when every session is busy. |
+| `agents.session.max_queue_wait_seconds` | integer | `300` |  | How many seconds a channel message may wait for a session slot. |
+| `agents.session.max_parked` | integer | `0` |  | How many parked conversations libreclaw keeps for this agent. |
 | `agents.runtime` | section |  |  | How this agent's libreclaw instance is hosted. |
 | `agents.runtime.type` | enum | `process` |  | process or embedded. |
 | `agents.runtime.confine` | enum |  |  | Run this agent's own CLI inside a bubblewrap sandbox: none or bwrap. Defaults to defaults.confine. |
@@ -565,6 +571,7 @@ see security.md).
 | `agents.runtime.max_restarts` | integer | `10` |  | Consecutive failures before the agent is left in error rather than restarted again. |
 | `agents.runtime.stream_steps` | boolean |  |  | Report this agent's steps while its turn runs. |
 | `agents.runtime.process_timeout_ms` | integer | `0` |  | Maximum elapsed milliseconds for one AI CLI subprocess, including streaming turns. |
+| `agents.runtime.background_wait_ms` | integer | `1800000` |  | How long, in milliseconds, a turn keeps going after the agent's CLI ended it with background work of its own still running -- a Claude Code sub-agent or background shell. |
 | `agents.runtime.idle_stop_hours` | integer | `0` |  | Stop this agent after this many hours without a turn. |
 | `agents.runtime.turn_timeout_seconds` | integer | `0` |  | How long a turn may go without producing anything before it is cancelled. |
 | `agents.runtime.first_reply_seconds` | integer | `20` |  | How long a turn may show nothing at all -- no step, no thought, no reply -- before the clients offer to stop it or to run the same message on another model. |

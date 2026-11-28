@@ -1521,6 +1521,8 @@ clawt_web_view_body(ClawtWebApp *app, const gchar *agent_id, ClawtPage view)
         return clawt_web_computer_body(app, agent_id);
     case CLAWT_PAGE_ROUTINES:
         return clawt_web_routines_body(app, agent_id);
+    case CLAWT_PAGE_SCHEDULE:
+        return clawt_web_schedule_body(app, agent_id, NULL);
     case CLAWT_PAGE_TRIGGERS:
         return clawt_web_triggers_body(app, agent_id);
     case CLAWT_PAGE_TASKS:
@@ -1754,6 +1756,9 @@ on_agent_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
         body = clawt_web_chat_body_full(
             app, agent_id,
             htmx_request_get_query_param(request, "clear") != NULL, peer);
+    } else if (view == CLAWT_PAGE_SCHEDULE) {
+        /* The window and filters are in the query, which only this has. */
+        body = clawt_web_schedule_body(app, agent_id, request);
     } else {
         body = clawt_web_view_body(app, agent_id, view);
     }

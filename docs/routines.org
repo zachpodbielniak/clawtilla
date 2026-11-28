@@ -627,6 +627,18 @@ routine was last edited, and a fingerprint of its fields to notice the
 next edit by -- written atomically at 0600, since a run's task
 id is a handle onto somebody's work.
 
+Since 0.78.0 it also keeps each routine's *history*: one line per
+scheduled time, saying what happened to it (=ClawtRunEntry=, outcome
+=started=, =failed=, =refused=, =missed= or =caught-up=), with the task a
+started run became and the reason for anything else.  =last_run= only
+answers "how did it go last time" -- Wednesday's success overwrites
+Tuesday's failure -- and the Schedule calendar needs Tuesday.  It is
+bounded twice: =daemon.routine_history_days= (62 by default) by age, and
+2,000 lines per routine whatever that says, because the file is rewritten
+on every run and one every-five-minute routine would otherwise make every
+save of every routine slow.  A Run now is a line too, with no scheduled
+time and =by_hand: true=.
+
 A state file that cannot be parsed is a warning and an empty slate: it
 is a convenience, and refusing to schedule anything because a timestamp
 was lost would turn that into a stopped fleet.  The slate errs on the
@@ -634,6 +646,124 @@ quiet side -- every routine reads as never having run, so nothing
 catches up and nothing is reported missed.  A run that really was missed
 is forgotten rather than doubled, which is the right way round for
 something that talks to people.
+
+** The Schedule calendar
+:PROPERTIES:
+:CUSTOM_ID: calendar
+:END:
+
+Since 0.78.0 the daemon answers "what happens at 09:00 tomorrow, and how
+did last Tuesday go" for the whole fleet at once, rather than routine by
+routine: ~routine.occurrences~ lays every routine's schedule out over a
+window and joins each time that has passed with what actually happened,
+and ~routine.upcoming~ gives the next runs fleet-wide.  The clients'
+Schedule pages (Day, Week, Month and an Upcoming runs panel) and
+~clawtilla routine calendar~ are drawn from them.  The fields are in
+[[file:ipc-protocol.org][ipc-protocol.org]]; this section is what they
+mean.
+
+*** Expanding a schedule
+
+Every routine's schedule is expanded with =clawt_cron_between()=, which
+is nothing but =clawt_cron_next()= called until the window ends -- the
+same function the scheduler uses, so the calendar cannot show a run the
+scheduler will not make.  That includes the two days a year
+[[*Local time, and what that costs twice a year][local time]] misbehaves:
+in America/Detroit an hourly routine has 23 runs on the second Sunday of
+March and 25 on the first Sunday of November, a 02:30 routine has no
+run on the spring day, and a 01:30 one has two on the autumn day, an hour
+apart.  The day-of-month OR day-of-week rule applies as it does to the
+scheduler.
+
+A routine's =jitter_seconds= is shown as a window, =earliest= to
+=latest=, rather than a moment: the scheduled time is known and the
+start within the window is not.
+
+*** What a past time says
+
+| Status | Meaning |
+|--------+---------|
+| =ok= | it ran: its task completed (or is no longer known, but started) |
+| =failed= | it could not be started, or its task failed or stalled |
+| =running= | its task is still open |
+| =skipped= | it did not run, for a reason that is not a fault: =daemon_down= (the daemon was not running, or the machine slept through it), =catch_up= (folded into the one run a =catch_up= routine makes), =agent_stopped= (waiting in a stopped agent's mailbox -- =queued=, it runs when the agent starts), =refused= (the loop guard or a spending cap), =cancelled= |
+| =due= | its time has come and the run has not started: the next tick (for two minutes), or a jitter being waited out |
+| =unknown= | nothing was recorded: before the history was kept, pruned from it, or while the routine was off; and every past libreclaw cron, which clawtilla does not run |
+| =upcoming= | still to come |
+
+*Missed is skipped, not failed*, for the reason [[*When the machine was asleep][missed is not failed]]
+anywhere else.
+
+A late tick used to lose the times it stood in for: a routine due at
+09:00 and 09:20 that the daemon reached at 09:25 ran once and remembered
+only that it ran.  It still runs once -- that is the rule -- but the run
+is now put down against the latest time, 09:20, and 09:00 is kept as
+missed.  A =catch_up= routine does the same after a restart, with the
+earlier times kept as =caught-up=.  Times before the routine's last edit
+are not counted as missed: a routine turned back on after a month did
+not miss the month it was off.
+
+Runs the current schedule does not produce are shown as they happened:
+a Run now at the time it started (=kind: manual=), and a run from before
+the schedule was edited at its old time.
+
+*** Folding busy days
+
+An hourly routine would fill a week grid.  With =collapse=, a routine's
+runs on one local day become one group when there are three or more --
+"every hour, 08:00-18:00", with how many of each status and the runs
+themselves for an expand control.  The group's status is the worst in
+it, so one failure among ten successes still shows a cross.  Every
+occurrence carries =repeat= and the routine index carries
+=every_seconds= for a client that folds by itself instead.
+
+*** libreclaw crons
+
+An agent's =libreclaw:= block can carry libreclaw's own =cron:= jobs (a
+Matrix agent's morning message, say).  They are not routines -- libreclaw
+runs them inside the agent, and clawtilla never hears whether one ran --
+but they are part of "what happens when", so the calendar lays them out
+from the config, labelled =source: libreclaw-cron=, with every past one
+=unknown= / =not_tracked=.  An =interval_seconds= job counts from whenever
+the agent's process started, which has no place on a calendar; it is
+listed under =unscheduled= instead.  Only what the file says is shown: a
+job added at runtime through libreclaw's own command is not in it.
+Triggers are not on the calendar at all: they fire on events, not times.
+
+*** Bounds
+
+One request may cover at most =daemon.calendar_max_days= (62 -- a month
+grid with a week either side) and return at most
+=daemon.calendar_max_occurrences= (5000) occurrences.  Past either it is
+refused with a message naming the bound, and for the second the routine
+that holds most, rather than answered with a week that stops on
+Wednesday.  Narrow the window or filter by =agent= or =team=.
+
+*** Upcoming runs
+
+~routine.upcoming~ is the next =limit= runs (10 by default, at most 200)
+of every enabled routine and scheduled libreclaw cron, soonest first.
+Each routine's first is =clawt_routine_runner_next_run_after()= -- the
+function ~routine.list~'s =next_run= comes from -- so the panel and the
+list cannot disagree.
+
+*** From the CLI
+
+#+begin_src bash
+clawtilla routine calendar                         # today and the next six days
+clawtilla routine calendar --from 2026-11-23 --to 2026-11-30 --team forge
+clawtilla routine calendar --agent hornbill --expand --disabled
+clawtilla routine calendar --ics -o ~/routines.ics
+#+end_src
+
+The table is grouped by day, in the daemon's zone, and folded unless
+=--expand=.  =--ics= writes iCalendar (RFC 5545) for org-agenda or any
+calendar application: one read-only event per run, never folded, with a
+UID that is the same for the same routine at the same time on every
+export -- so importing again updates rather than duplicates -- DTSTART in
+UTC, the jitter window as DTEND, the title as SUMMARY and the agent,
+status and task as DESCRIPTION.  Lines end in CRLF and are folded at 75
+octets, never inside a UTF-8 character.
 
 ** From the GTK client
 
@@ -654,8 +784,10 @@ clawtilla routine add <id> <agent> [key=value ...]
 clawtilla routine set <id> [key=value ...]
 clawtilla routine rm <id>
 clawtilla routine run <id>
+clawtilla routine calendar [--from D] [--to D] [--agent A] [--team T] [--disabled] [--expand] [--ics [-o FILE]]
 #+end_src
 
+~routine calendar~ is described under [[#calendar][The Schedule calendar]].
 Every =key= is a schema key, so ~clawtilla config show~ and
 [[file:configuration-options.org][configuration-options.org]] are the
 reference for what a routine holds.

@@ -119,6 +119,7 @@ typedef enum {
     CLAWT_REFRESH_DEVICES,
     CLAWT_REFRESH_FEDERATION,
     CLAWT_REFRESH_OFFICE,
+    CLAWT_REFRESH_SCHEDULE,
     CLAWT_N_REFRESH
 } ClawtRefreshKind;
 
@@ -1546,6 +1547,17 @@ clawt_gtk_build_fleet_page(ClawtWindow *self);
 void
 clawt_gtk_refresh_fleet(ClawtWindow *self);
 
+/* ── Defined in gtk-schedule.c: Day / Week / Month / Upcoming ───── */
+
+GtkWidget *
+clawt_gtk_build_schedule_page(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_schedule(ClawtWindow *self);
+
+gboolean
+clawt_gtk_schedule_shows_task(ClawtWindow *self, const gchar *task_id);
+
 /*
  * The Fleet page's plan allowances.  @ask has the daemon read the logins
  * again behind its reply; the usage.providers_changed that follows is
@@ -1872,6 +1884,9 @@ clawt_gtk_refresh_settings_teams(ClawtWindow *self);
 GtkWidget *
 clawt_gtk_build_routine_page(ClawtWindow *self);
 
+void
+clawt_gtk_edit_routine(ClawtWindow *self, const gchar *id);
+
 /**
  * clawt_gtk_build_skill_page:
  * @self: the window
@@ -2050,6 +2065,9 @@ clawt_gtk_build_task_page(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_tasks(ClawtWindow *self);
+
+void
+clawt_gtk_show_task(ClawtWindow *self, const gchar *task_id);
 
 
 /* Build the searchable destination picker and its window action. */

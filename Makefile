@@ -243,6 +243,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/task/clawt-handoff-store.h \
 	$(SRCDIR)/task/clawt-task-store.h \
 	$(SRCDIR)/task/clawt-routine-runner.h \
+	$(SRCDIR)/task/clawt-routine-calendar.h \
 	$(SRCDIR)/task/clawt-incident.h \
 	$(SRCDIR)/trigger/clawt-trigger-event.h \
 	$(SRCDIR)/trigger/clawt-trigger-provider.h \
@@ -524,6 +525,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/task/clawt-task-checkout.c \
 	$(SRCDIR)/task/clawt-project.c \
 	$(SRCDIR)/task/clawt-routine-runner.c \
+	$(SRCDIR)/task/clawt-routine-calendar.c \
 	$(SRCDIR)/task/clawt-incident.c \
 	$(SRCDIR)/wait/clawt-wait.c \
 	$(SRCDIR)/wait/clawt-wait-manager.c \
@@ -760,7 +762,12 @@ DAEMON_SOURCES = $(wildcard $(DAEMON_SRCDIR)/*.c)
 CLI_SOURCES    = $(wildcard $(CLI_SRCDIR)/*.c)
 MCP_SOURCES    = $(wildcard $(MCP_SRCDIR)/*.c)
 GTK_SOURCES    = $(wildcard $(GTK_SRCDIR)/*.c)
+# The Schedule page's rows are the lrg model, compiled in here too so
+# GTK and lrg cannot disagree about a card.  It includes no libregnum.
+GTK_SOURCES   += $(LRG_SRCDIR)/lrg-schedule-model.c
 WEB_SOURCES    = $(wildcard $(WEB_SRCDIR)/*.c)
+# The Schedule page draws the same cards as GTK and lrg: one model.
+WEB_SOURCES   += $(LRG_SRCDIR)/lrg-schedule-model.c
 LRG_SOURCES    = $(wildcard $(LRG_SRCDIR)/*.c)
 OFFICE_SRCDIR  = clients/office
 # The scene and the feed are shared with the lrg client's Office view;
@@ -835,6 +842,16 @@ $(OUTDIR)/tests/test-web-office: $(WEB_SRCDIR)/web-office-view.c \
                                  $(WEB_SRCDIR)/web-ui.h $(WEB_SRCDIR)/web-pages.h \
                                  $(WEB_SRCDIR)/clawt-web.h
 
+# test-web-schedule.c #includes the Schedule page, the lrg model it draws
+# cards from, and what the page is drawn with, for the same reason.
+$(OUTDIR)/tests/test-web-schedule: $(WEB_SRCDIR)/web-schedule.c \
+                                   $(LRG_SRCDIR)/lrg-schedule-model.c \
+                                   $(LRG_SRCDIR)/clawt-lrg-schedule-model.h \
+                                   $(WEB_SRCDIR)/web-app.c $(WEB_SRCDIR)/web-files.c \
+                                   $(WEB_SRCDIR)/web-ui.c $(WEB_SRCDIR)/web-style.c \
+                                   $(WEB_SRCDIR)/web-ui.h $(WEB_SRCDIR)/web-pages.h \
+                                   $(WEB_SRCDIR)/clawt-web.h
+
 $(OUTDIR)/tests/test-web-render: $(WEB_SRCDIR)/web-ui.c \
                                  $(WEB_SRCDIR)/web-navigation.c \
                                  $(WEB_SRCDIR)/web-style.c \
@@ -898,7 +915,7 @@ $(CLI_BIN_TARGET): $(CLI_SOURCES) $(LIB_STATIC) $(DEFAULT_CONFIG_H) | $(OUTDIR) 
 
 $(WEB_BIN_TARGET): $(WEB_SOURCES) $(LIB_STATIC) | $(OUTDIR) $(OUTDIR)/clawt-version.h
 	@echo "Building $(WEB_BIN_NAME)..."
-	$(CC) $(CFLAGS) -I$(WEB_SRCDIR) $(WEB_SOURCES) -o $@ $(LIB_STATIC) $(LDFLAGS)
+	$(CC) $(CFLAGS) -I$(WEB_SRCDIR) -I$(LRG_SRCDIR) $(WEB_SOURCES) -o $@ $(LIB_STATIC) $(LDFLAGS)
 
 # The GTK client is skipped -- loudly, once -- when libadwaita is absent,
 # rather than failing the whole build.  Everything else here is headless

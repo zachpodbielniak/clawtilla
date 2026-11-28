@@ -282,6 +282,9 @@ test_the_grouping_is_the_one_intended(void)
                     CLAWT_SECTION_AUTOMATION);
     g_assert_cmpint(clawt_page_section(CLAWT_PAGE_TRIGGERS), ==,
                     CLAWT_SECTION_AUTOMATION);
+    g_assert_cmpint(clawt_page_section(CLAWT_PAGE_SCHEDULE), ==,
+                    CLAWT_SECTION_AUTOMATION);
+    g_assert_cmpstr(clawt_page_nick(CLAWT_PAGE_SCHEDULE), ==, "schedule");
     g_assert_cmpint(clawt_page_section(CLAWT_PAGE_TASKS), ==,
                     CLAWT_SECTION_WORK);
     g_assert_cmpint(clawt_page_section(CLAWT_PAGE_DECISIONS), ==,

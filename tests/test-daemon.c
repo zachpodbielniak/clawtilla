@@ -6160,6 +6160,180 @@ test_progress_then_only_fleet_calls_still_holds(void)
 	fixture_teardown(&fixture);
 }
 
+/*
+ * VENTURE #58, the daemon's half.
+ *
+ * The assignee calls clawtilla_task_progress, ends its turn with an
+ * interim note while a background sub-agent runs, and its CLI -- by
+ * itself, when the sub-agent finishes -- runs a second turn and writes
+ * the report.  The runtime sends one reply for the whole run (both turns'
+ * text) and, while it is happening, a status step marked turn-continued.
+ *
+ * Without the marker the progress hold armed in the first turn vetoes
+ * the reply, which is the report, and the task sits running with nothing
+ * left to end it: that was the stall.  With it the hold is spent on the
+ * turn it belonged to and the reply completes the task.
+ */
+typedef struct {
+	Fixture          fixture;
+	ClawtLinkServer *links;
+	ClawtAgent      *worker;
+	ClawtAgent      *chief;
+	ClawtTask       *task;
+	const gchar     *room_id;
+} LateTurnFixture;
+
+static void
+late_turn_setup(LateTurnFixture *lt)
+{
+	ClawtRoom *room;
+
+	memset(lt, 0, sizeof(*lt));
+	fixture_setup(&lt->fixture, "agents:\n  - id: chief\n  - id: worker\n");
+	g_assert_true(clawt_daemon_start(lt->fixture.daemon, NULL));
+
+	lt->links = clawt_daemon_get_link_server(lt->fixture.daemon);
+	lt->worker = clawt_agent_manager_get(lt->fixture.daemon->agents, "worker");
+	lt->chief = clawt_agent_manager_get(lt->fixture.daemon->agents, "chief");
+	room = clawt_room_manager_get_direct(lt->fixture.daemon->rooms,
+		"chief", "worker");
+	lt->room_id = clawt_room_get_id(room);
+	lt->task = clawt_task_manager_create(lt->fixture.daemon->tasks, "chief",
+		"worker", "Security review", NULL, NULL);
+	g_assert_nonnull(lt->task);
+
+	/* The turn starts, and the assignee says the work is still going. */
+	clawt_agent_deliver_turn(lt->worker, lt->room_id, 1, TRUE, "chief",
+		clawt_task_get_id(lt->task));
+	g_signal_emit_by_name(lt->links, "typing", "worker", lt->room_id, TRUE);
+	g_assert_true(clawt_task_manager_note_progress(lt->fixture.daemon->tasks,
+		clawt_task_get_id(lt->task), "part 1 done; sub-agent on part 2"));
+}
+
+static void
+late_turn_step(LateTurnFixture *lt, const gchar *marker, const gchar *text)
+{
+	g_autoptr(ClawtTurnStep) step = clawt_turn_step_new(CLAWT_STEP_STATUS,
+		"worker", lt->room_id, text, NULL, marker, FALSE);
+
+	clawt_daemon_note_step(lt->fixture.daemon, step);
+}
+
+/* The run ends: typing falls, and the one reply arrives. */
+static void
+late_turn_reply(LateTurnFixture *lt, const gchar *body)
+{
+	g_signal_emit_by_name(lt->links, "typing", "worker", lt->room_id, FALSE);
+	g_signal_emit_by_name(lt->links, "message", "worker", lt->room_id, body,
+		clawt_task_get_id(lt->task));
+}
+
+static void
+test_a_late_turn_completes_the_task(void)
+{
+	LateTurnFixture lt;
+
+	late_turn_setup(&lt);
+
+	late_turn_step(&lt, CLAWT_STEP_DETAIL_TURN_CONTINUED,
+		"Continuing the turn: background work finished: a540 (completed)");
+	g_assert_false(clawt_task_get_holds_completion(lt.task));
+	g_assert_cmpint(clawt_task_get_state(lt.task), ==, CLAWT_TASK_RUNNING);
+
+	late_turn_reply(&lt, "Interim.\n\nFull report: two high findings.");
+
+	g_assert_cmpint(clawt_task_get_state(lt.task), ==, CLAWT_TASK_COMPLETED);
+	g_assert_cmpstr(clawt_task_get_result(lt.task), ==,
+		"Interim.\n\nFull report: two high findings.");
+	/* The delegator was told: the settle notice is in its mailbox. */
+	g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(lt.chief)),
+		==, 1);
+
+	fixture_teardown(&lt.fixture);
+}
+
+/*
+ * The contrast, which is today's rule and stays it: with no marker the
+ * hold vetoes the reply.  A progress call in the *later* turn arms a
+ * fresh hold after the marker spent the old one, and that one holds too.
+ */
+static void
+test_a_progress_hold_still_holds_without_a_late_turn(void)
+{
+	LateTurnFixture lt;
+
+	late_turn_setup(&lt);
+	late_turn_reply(&lt, "Interim: still running.");
+	g_assert_cmpint(clawt_task_get_state(lt.task), ==, CLAWT_TASK_RUNNING);
+	fixture_teardown(&lt.fixture);
+
+	late_turn_setup(&lt);
+	late_turn_step(&lt, CLAWT_STEP_DETAIL_TURN_CONTINUED, "Continuing");
+	g_assert_true(clawt_task_manager_note_progress(lt.fixture.daemon->tasks,
+		clawt_task_get_id(lt.task), "the later turn is not done either"));
+	late_turn_reply(&lt, "Interim.\n\nStill going.");
+	g_assert_cmpint(clawt_task_get_state(lt.task), ==, CLAWT_TASK_RUNNING);
+	fixture_teardown(&lt.fixture);
+}
+
+/*
+ * The bound: the runtime gave up waiting for the background work.  The
+ * task fails, naming it, before the reply arrives -- never left running
+ * for a turn nothing will start.
+ */
+static void
+test_abandoned_background_work_fails_the_task(void)
+{
+	LateTurnFixture lt;
+	const gchar *note = "[ai-glib] This turn ended with 1 background task "
+		"still running: a540 (Review the bump). Waited 1800 s for it to "
+		"finish, then stopped the CLI; its result was never delivered.";
+
+	late_turn_setup(&lt);
+	late_turn_step(&lt, CLAWT_STEP_DETAIL_BACKGROUND_ABANDONED, note);
+
+	g_assert_cmpint(clawt_task_get_state(lt.task), ==, CLAWT_TASK_FAILED);
+	g_assert_nonnull(strstr(clawt_task_get_reason(lt.task),
+		"a540 (Review the bump)"));
+	g_assert_false(clawt_task_get_holds_completion(lt.task));
+
+	/* The reply that follows does not bring it back. */
+	late_turn_reply(&lt, "Interim.\n\n[ai-glib] ...");
+	g_assert_cmpint(clawt_task_get_state(lt.task), ==, CLAWT_TASK_FAILED);
+
+	fixture_teardown(&lt.fixture);
+}
+
+/* Only the runtime's marker counts, and only for the assignee's task. */
+static void
+test_a_turn_marker_needs_the_assignees_task(void)
+{
+	LateTurnFixture lt;
+	g_autoptr(ClawtTurnStep) chatter = NULL;
+
+	late_turn_setup(&lt);
+
+	/* A status step without the marker is chatter. */
+	late_turn_step(&lt, NULL, "Compacting context");
+	g_assert_true(clawt_task_get_holds_completion(lt.task));
+
+	/* A tool step carrying the spelling is not a marker. */
+	chatter = clawt_turn_step_new(CLAWT_STEP_TOOL, "worker", lt.room_id,
+		NULL, "Bash", CLAWT_STEP_DETAIL_BACKGROUND_ABANDONED, FALSE);
+	clawt_daemon_note_step(lt.fixture.daemon, chatter);
+	g_assert_cmpint(clawt_task_get_state(lt.task), ==, CLAWT_TASK_RUNNING);
+
+	/* Somebody else's turn does not spend the assignee's hold. */
+	g_assert_false(clawt_task_manager_note_turn_continued(
+		lt.fixture.daemon->tasks, clawt_task_get_id(lt.task), "chief", NULL));
+	g_assert_false(clawt_task_manager_abandon_background(
+		lt.fixture.daemon->tasks, clawt_task_get_id(lt.task), "chief", NULL));
+	g_assert_true(clawt_task_get_holds_completion(lt.task));
+	g_assert_cmpint(clawt_task_get_state(lt.task), ==, CLAWT_TASK_RUNNING);
+
+	fixture_teardown(&lt.fixture);
+}
+
 /* Connect a test agent to the actual router without starting a model. */
 static GSocket *
 request_context_link(ClawtAgent *agent)
@@ -14266,6 +14440,14 @@ main(int argc, char *argv[])
                     test_report_after_progress_and_computer_exec_completes);
     g_test_add_func("/daemon/task/progress-then-fleet-calls-still-holds",
                     test_progress_then_only_fleet_calls_still_holds);
+    g_test_add_func("/daemon/task/late-turn-completes-the-task",
+                    test_a_late_turn_completes_the_task);
+    g_test_add_func("/daemon/task/progress-hold-without-late-turn",
+                    test_a_progress_hold_still_holds_without_a_late_turn);
+    g_test_add_func("/daemon/task/abandoned-background-fails-the-task",
+                    test_abandoned_background_work_fails_the_task);
+    g_test_add_func("/daemon/task/turn-marker-needs-the-assignee",
+                    test_a_turn_marker_needs_the_assignees_task);
     g_test_add_func("/daemon/peer-request-context",
                     test_peer_request_context);
     g_test_add_func("/daemon/task/an-unknown-thread-still-routes",

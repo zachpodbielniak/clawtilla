@@ -575,6 +575,72 @@ in the rendered config.
 This is libreclaw's own value (its session.max_sessions); the daemon
 renders this straight through.
 
+### `agents.session.max_wait_queue_depth`
+
+- Type: integer
+- Default: `32`
+- Since: 0.78.0
+
+How many channel messages may wait for a session slot when every
+session is busy.
+
+Past this depth the newest message is refused, not the oldest: the
+oldest has waited longest and keeps its place. The sender is told the
+agent is busy. 0 does not wait at all -- a message that finds every
+session busy is refused at once, and the sender still gets the notice.
+
+This is not libreclaw's session.max_queue_depth, which is the message
+queue inside one session while its turn runs.
+
+A whole number from 0 to 2147483647. `clawtilla config validate`
+rejects a negative number or one too large for libreclaw, and if one
+reaches the daemon anyway it is reported with a warning and replaced
+with 32 in the rendered config.
+
+This is libreclaw's own value (its session.max_wait_queue_depth); the
+daemon renders this straight through.
+
+### `agents.session.max_queue_wait_seconds`
+
+- Type: integer
+- Default: `300`
+- Since: 0.78.0
+
+How many seconds a channel message may wait for a session slot.
+
+A waiting message older than this is refused, with the same busy
+notice as one refused for want of room in the line. 0 is no age
+limit.
+
+A whole number from 0 to 2147483647. `clawtilla config validate`
+rejects a negative number or one too large for libreclaw, and if one
+reaches the daemon anyway it is reported with a warning and replaced
+with 300 in the rendered config.
+
+This is libreclaw's own value (its session.max_queue_wait_seconds);
+the daemon renders this straight through.
+
+### `agents.session.max_parked`
+
+- Type: integer
+- Default: `0`
+- Since: 0.78.0
+
+How many parked conversations libreclaw keeps for this agent.
+
+A conversation is parked when max_sessions makes libreclaw give up its
+live session; it is resumed when its room speaks again. Past this
+count the oldest parked conversation is forgotten. 0 keeps all of
+them.
+
+A whole number from 0 to 2147483647. `clawtilla config validate`
+rejects a negative number or one too large for libreclaw, and if one
+reaches the daemon anyway it is reported with a warning and replaced
+with 0 in the rendered config.
+
+This is libreclaw's own value (its session.max_parked); the daemon
+renders this straight through.
+
 ## `agents.runtime`
 
 How this agent's libreclaw instance is hosted.
@@ -719,6 +785,23 @@ Rendered explicitly as libreclaw ai.process_timeout_ms for every agent.
 The tmux provider uses its own command and inactivity bounds instead.
 This is a duration limit; runtime.turn_timeout_seconds separately
 controls the turn watchdog. Values must be between 0 and 2147483647.
+
+### `agents.runtime.background_wait_ms`
+
+- Type: integer
+- Default: `1800000`
+- Since: 0.77.3
+
+How long, in milliseconds, a turn keeps going after the agent's CLI
+ended it with background work of its own still running -- a Claude
+Code sub-agent or background shell. The CLI runs another turn by
+itself when that work finishes, and its text is part of the reply.
+When the bound is reached the CLI is stopped, the reply says what was
+left running, and a task the turn was on fails with that as its
+reason. 0 waits as long as the CLI runs (then only
+runtime.process_timeout_ms bounds it). The default is 30 minutes.
+Rendered as libreclaw ai.background_wait_ms. Values must be between 0
+and 2147483647.
 
 ### `agents.runtime.idle_stop_hours`
 

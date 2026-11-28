@@ -179,6 +179,37 @@ static const ClawtSchemaEntry schema[] = {
   "replayed into every context rebuild, so a leaked key in one would be\n"
   "permanent.", "0.1.0" },
 
+{ "daemon.routine_history_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "62", NULL,
+  "How many days of each routine's run history to keep: what happened at\n"
+  "every scheduled time -- started (and which task), failed, refused,\n"
+  "missed while the daemon was down, or folded into a catch-up run.\n"
+  "\n"
+  "This is what lets the Schedule calendar put a tick or a cross on a\n"
+  "time that has passed (routine.occurrences). It lives in the routine\n"
+  "state file beside last_run, never in this config. Each routine also\n"
+  "keeps at most 2,000 entries whatever this says, because the state file\n"
+  "is rewritten on every run. 0 or less means the default.", "0.78.0" },
+
+{ "daemon.calendar_max_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "62", NULL,
+  "The longest window one routine.occurrences request may ask for, in\n"
+  "days. A longer one is refused with this number in the error.\n"
+  "\n"
+  "62 covers a month grid with the weeks either side of it. The bound\n"
+  "exists because expanding a schedule costs time per run, and a client\n"
+  "asking for a year of an every-minute routine would hold the daemon's\n"
+  "loop while it did. 0 or less means the default.", "0.78.0" },
+
+{ "daemon.calendar_max_occurrences", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "5000", NULL,
+  "The most occurrences one routine.occurrences request may return,\n"
+  "across every routine and libreclaw cron in the window. Past it the\n"
+  "request is refused, naming the routine that contributes most, rather\n"
+  "than answered with a calendar that silently stops part-way through a\n"
+  "week. Narrow the window or filter by agent or team. 0 or less means\n"
+  "the default.", "0.78.0" },
+
 { "daemon.allow_unconfined_host", CLAWT_SCHEMA_BOOLEAN,
   CLAWT_SCHEMA_FLAG_DANGEROUS, "false", NULL,
   "Permit agents to use computer.host.confine: none.\n"
@@ -3861,6 +3892,60 @@ static const ClawtSchemaEntry schema[] = {
   "This is libreclaw's own value (its session.max_sessions); the daemon\n"
   "renders this straight through.", "0.77.2" },
 
+{ "agents.session.max_wait_queue_depth", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "32", NULL,
+  "How many channel messages may wait for a session slot when every\n"
+  "session is busy.\n"
+  "\n"
+  "Past this depth the newest message is refused, not the oldest: the\n"
+  "oldest has waited longest and keeps its place. The sender is told the\n"
+  "agent is busy. 0 does not wait at all -- a message that finds every\n"
+  "session busy is refused at once, and the sender still gets the notice.\n"
+  "\n"
+  "This is not libreclaw's session.max_queue_depth, which is the message\n"
+  "queue inside one session while its turn runs.\n"
+  "\n"
+  "A whole number from 0 to 2147483647. `clawtilla config validate`\n"
+  "rejects a negative number or one too large for libreclaw, and if one\n"
+  "reaches the daemon anyway it is reported with a warning and replaced\n"
+  "with 32 in the rendered config.\n"
+  "\n"
+  "This is libreclaw's own value (its session.max_wait_queue_depth); the\n"
+  "daemon renders this straight through.", "0.78.0" },
+
+{ "agents.session.max_queue_wait_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "300", NULL,
+  "How many seconds a channel message may wait for a session slot.\n"
+  "\n"
+  "A waiting message older than this is refused, with the same busy\n"
+  "notice as one refused for want of room in the line. 0 is no age\n"
+  "limit.\n"
+  "\n"
+  "A whole number from 0 to 2147483647. `clawtilla config validate`\n"
+  "rejects a negative number or one too large for libreclaw, and if one\n"
+  "reaches the daemon anyway it is reported with a warning and replaced\n"
+  "with 300 in the rendered config.\n"
+  "\n"
+  "This is libreclaw's own value (its session.max_queue_wait_seconds);\n"
+  "the daemon renders this straight through.", "0.78.0" },
+
+{ "agents.session.max_parked", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "0", NULL,
+  "How many parked conversations libreclaw keeps for this agent.\n"
+  "\n"
+  "A conversation is parked when max_sessions makes libreclaw give up its\n"
+  "live session; it is resumed when its room speaks again. Past this\n"
+  "count the oldest parked conversation is forgotten. 0 keeps all of\n"
+  "them.\n"
+  "\n"
+  "A whole number from 0 to 2147483647. `clawtilla config validate`\n"
+  "rejects a negative number or one too large for libreclaw, and if one\n"
+  "reaches the daemon anyway it is reported with a warning and replaced\n"
+  "with 0 in the rendered config.\n"
+  "\n"
+  "This is libreclaw's own value (its session.max_parked); the daemon\n"
+  "renders this straight through.", "0.78.0" },
+
 { "agents.runtime", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "How this agent's libreclaw instance is hosted.", "0.1.0" },
 
@@ -3961,6 +4046,20 @@ static const ClawtSchemaEntry schema[] = {
   "This is a duration limit; runtime.turn_timeout_seconds separately\n"
   "controls the turn watchdog. Values must be between 0 and 2147483647.",
   "0.2.0" },
+
+{ "agents.runtime.background_wait_ms", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "1800000", NULL,
+  "How long, in milliseconds, a turn keeps going after the agent's CLI\n"
+  "ended it with background work of its own still running -- a Claude\n"
+  "Code sub-agent or background shell. The CLI runs another turn by\n"
+  "itself when that work finishes, and its text is part of the reply.\n"
+  "When the bound is reached the CLI is stopped, the reply says what was\n"
+  "left running, and a task the turn was on fails with that as its\n"
+  "reason. 0 waits as long as the CLI runs (then only\n"
+  "runtime.process_timeout_ms bounds it). The default is 30 minutes.\n"
+  "Rendered as libreclaw ai.background_wait_ms. Values must be between 0\n"
+  "and 2147483647.",
+  "0.77.3" },
 
 { "agents.runtime.idle_stop_hours", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "0", NULL,

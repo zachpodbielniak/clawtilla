@@ -509,6 +509,42 @@ not spend the hold the assignee armed against its own next one.  The
 last could not fire at all until delegation started recording a
 parent.  It is the one that would have held the reported case open.
 
+**** A turn the CLI runs by itself (since 0.77.3)
+
+Claude Code can end a turn while a sub-agent or a background shell it
+started is still running.  It does not exit: it waits, and when the work
+finishes it runs another turn *by itself* -- no message from clawtilla
+starts it -- and writes the rest of its answer there.  From the daemon's
+side the runtime's run is still one turn, with one reply when it ends;
+to the agent it was two.  VENTURE #58 is the incident: mongoose called
+~clawtilla_task_progress~, ended its turn with "the rest is still running
+in a sub-agent", and nine minutes later wrote a full security review that
+reached nobody.  The reply carried only the interim (ai-glib kept the
+first turn's text), and the progress hold -- armed in the first turn --
+vetoed it, so the task sat ~running~ with nothing left to end it.
+
+What happens now:
+
+| When | What the daemon sees | What it does |
+|------+----------------------+--------------|
+| the later turn begins | a status step marked ~turn-continued~ (~CLAWT_STEP_DETAIL_TURN_CONTINUED~), from the runtime | spends the assignee's progress hold, as the end of the earlier turn would have, and notes it on the task |
+| the run ends | one reply: both turns' text, joined by a blank line | the ordinary rule: the reply completes the task unless something vetoes it |
+| the later turn calls ~clawtilla_task_progress~ again | a fresh hold | the reply is held, as it should be |
+| the background work never reports back | at ~agents.runtime.background_wait_ms~ (default 30 minutes) a status step marked ~background-abandoned~, and a reply ending in a note naming the work | the task *fails*, its reason naming the work; the settle notice tells the delegator and ~clawtilla_task_retry~ applies |
+
+The markers are written by the runtime (libreclaw, from ai-glib's
+~AI_EVENT_TURN_CONTINUED~ / ~AI_EVENT_BACKGROUND_ABANDONED~), never by the
+model, and only on a status step; only the assignee's own task is
+touched.  libreclaw delivers the turn's steps before its reply, so the
+hold is spent, or the task failed, before the reply is judged.
+
+The session is busy for the whole run, as it was while the CLI lived:
+messages for the agent wait until it ends.  So a background job that
+never finishes costs the agent up to ~background_wait_ms~ of
+availability; lower it for agents that start long-lived background
+processes, or set ~0~ to wait as long as the CLI runs.  Other backends
+(Grok, codex, opencode, ...) never send either marker.
+
 A task that *does* end this way is marked as inferred, and
 ~clawtilla_task_status~ and ~clawtilla_task_result~ say so when they are
 read: "nobody reported this task complete; that is the last thing they

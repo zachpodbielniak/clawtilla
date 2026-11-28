@@ -2210,6 +2210,19 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
          g_strcmp0(kind, "spending.limit-reached") == 0))
         clawt_gtk_refresh_fleet(self);
 
+    /*
+     * Schedule, while it is up.  The two reads publish nothing, so the
+     * page asks again when a routine moves or a task a card shows does.
+     */
+    if (clawt_gtk_current_page(self) == CLAWT_PAGE_SCHEDULE &&
+        (g_strcmp0(kind, "routine.ran") == 0 ||
+         g_strcmp0(kind, "routine.changed") == 0 ||
+         g_strcmp0(kind, "routine.turned_off") == 0 ||
+         (g_strcmp0(kind, "task.changed") == 0 &&
+          clawt_gtk_schedule_shows_task(self,
+                                        clawt_event_get_subject(event)))))
+        clawt_gtk_refresh_schedule(self);
+
     /* somebody moved in the office: the daemon's edge, never a repeat */
     if (clawt_gtk_current_page(self) == CLAWT_PAGE_OFFICE &&
         (g_strcmp0(kind, "office.presence") == 0 ||
@@ -6415,6 +6428,10 @@ on_page_shown(ClawtWindow *self)
         clawt_gtk_refresh_grok(self);
         return;
     }
+    if (clawt_gtk_current_page(self) == CLAWT_PAGE_SCHEDULE) {
+        clawt_gtk_refresh_schedule(self);
+        return;
+    }
     if (clawt_gtk_current_page(self) != CLAWT_PAGE_MEMORY)
         return;
 
@@ -6625,6 +6642,7 @@ build_page(ClawtWindow *self, ClawtPage page)
     case CLAWT_PAGE_MAILBOX:   return clawt_gtk_build_mailbox_page(self);
     case CLAWT_PAGE_COMPUTER:  return clawt_gtk_build_computer_page(self);
     case CLAWT_PAGE_ROUTINES:  return clawt_gtk_build_routine_page(self);
+    case CLAWT_PAGE_SCHEDULE:  return clawt_gtk_build_schedule_page(self);
     case CLAWT_PAGE_TRIGGERS:  return clawt_gtk_build_trigger_page(self);
     case CLAWT_PAGE_TASKS:     return clawt_gtk_build_task_page(self);
     case CLAWT_PAGE_DECISIONS: return clawt_gtk_build_decision_page(self);

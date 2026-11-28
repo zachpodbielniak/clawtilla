@@ -213,6 +213,49 @@ scrubbed as it is written, not as it is displayed -- a transcript gets
 replayed into every context rebuild, so a leaked key in one would be
 permanent.
 
+### `daemon.routine_history_days`
+
+- Type: integer
+- Default: `62`
+- Since: 0.78.0
+
+How many days of each routine's run history to keep: what happened at
+every scheduled time -- started (and which task), failed, refused,
+missed while the daemon was down, or folded into a catch-up run.
+
+This is what lets the Schedule calendar put a tick or a cross on a
+time that has passed (routine.occurrences). It lives in the routine
+state file beside last_run, never in this config. Each routine also
+keeps at most 2,000 entries whatever this says, because the state file
+is rewritten on every run. 0 or less means the default.
+
+### `daemon.calendar_max_days`
+
+- Type: integer
+- Default: `62`
+- Since: 0.78.0
+
+The longest window one routine.occurrences request may ask for, in
+days. A longer one is refused with this number in the error.
+
+62 covers a month grid with the weeks either side of it. The bound
+exists because expanding a schedule costs time per run, and a client
+asking for a year of an every-minute routine would hold the daemon's
+loop while it did. 0 or less means the default.
+
+### `daemon.calendar_max_occurrences`
+
+- Type: integer
+- Default: `5000`
+- Since: 0.78.0
+
+The most occurrences one routine.occurrences request may return,
+across every routine and libreclaw cron in the window. Past it the
+request is refused, naming the routine that contributes most, rather
+than answered with a calendar that silently stops part-way through a
+week. Narrow the window or filter by agent or team. 0 or less means
+the default.
+
 ### `daemon.allow_unconfined_host`
 
 - Type: boolean

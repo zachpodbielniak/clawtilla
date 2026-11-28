@@ -80,6 +80,29 @@ void       clawt_cron_free(ClawtCron *self);
 GDateTime *clawt_cron_next(ClawtCron *self, GDateTime *after);
 
 /**
+ * clawt_cron_between:
+ * @self: a #ClawtCron
+ * @from: the start of the window, inclusive
+ * @to: the end of the window, exclusive
+ * @max: the most runs to return; the search stops one past it
+ * @out_truncated: (out) (optional): set to %TRUE when there were more
+ *   than @max runs in the window
+ *
+ * Every run in [@from, @to), in order (since 0.78.0).
+ *
+ * Built from clawt_cron_next() and nothing else, so a calendar and the
+ * scheduler cannot disagree about when something fires -- including
+ * twice a year, when an hour that does not exist is skipped and one that
+ * happens twice yields two runs.
+ *
+ * Returns: (transfer full) (element-type GDateTime): the runs, in local
+ *   time
+ */
+GPtrArray *clawt_cron_between(ClawtCron *self, GDateTime *from,
+                              GDateTime *to, guint max,
+                              gboolean *out_truncated);
+
+/**
  * clawt_cron_shortest_gap:
  * @self: a #ClawtCron
  * @after: where to start looking, exclusive

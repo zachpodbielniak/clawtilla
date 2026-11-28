@@ -1628,6 +1628,190 @@ test_agent_change_rollback_leaves_other_agents(void)
 }
 
 /*
+ * The three session limits that bound the line of messages waiting for a
+ * session slot and the parked conversations: key (clawtilla and libreclaw
+ * spell it the same), the default libreclaw uses, and a value that is not
+ * the default.
+ */
+static const struct {
+    const gchar *key;
+    gint         fallback;
+    gint         set;
+} session_limit_keys[] = {
+    { "max_wait_queue_depth", 32, 7 },
+    { "max_queue_wait_seconds", 300, 45 },
+    { "max_parked", 0, 12 }
+};
+
+/*
+ * Each key reaches libreclaw: render, write, and read the number back
+ * through libreclaw's own parser.
+ */
+static void
+test_session_limits_reach_libreclaw(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-cfg-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "rendered.yaml", NULL);
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: busy\n"
+        "    session:\n"
+        "      max_wait_queue_depth: 7\n"
+        "      max_queue_wait_seconds: 45\n"
+        "      max_parked: 12\n", &error);
+    g_autoptr(LcConfig) parsed = lc_config_new();
+    GPtrArray *agents;
+    g_autofree gchar *rendered = NULL;
+
+    g_assert_no_error(error);
+    g_assert_true(clawt_config_validate(config, &error));
+    g_assert_no_error(error);
+    agents = clawt_config_get_agents(config);
+
+    rendered = clawt_config_render_agent(
+        config, g_ptr_array_index(agents, 0),
+        "/tmp/s.sock", "/tmp/state", &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(rendered);
+
+    g_assert_true(g_file_set_contents(path, rendered, -1, &error));
+    g_assert_no_error(error);
+    g_assert_true(lc_config_load_from_path(parsed, path, &error));
+    g_assert_no_error(error);
+
+    g_assert_cmpint(lc_config_get_session_max_wait_queue_depth(parsed), ==, 7);
+    g_assert_cmpint(lc_config_get_session_max_queue_wait_seconds(parsed), ==, 45);
+    g_assert_cmpint(lc_config_get_session_max_parked(parsed), ==, 12);
+
+    clawt_test_remove_tree(dir);
+}
+
+/* Unset, each default is stated rather than left to libreclaw. */
+static void
+test_session_limits_unset_render_the_default(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n  - id: plain\n", &error);
+    GPtrArray *agents;
+    g_autofree gchar *rendered = NULL;
+    g_autofree gchar *after_max_sessions = NULL;
+    guint i;
+
+    g_assert_no_error(error);
+    agents = clawt_config_get_agents(config);
+
+    rendered = clawt_config_render_agent(
+        config, g_ptr_array_index(agents, 0),
+        "/tmp/s.sock", "/tmp/state", NULL);
+
+    for (i = 0; i < G_N_ELEMENTS(session_limit_keys); i++) {
+        g_autofree gchar *line = g_strdup_printf("\n  %s: %d\n",
+            session_limit_keys[i].key, session_limit_keys[i].fallback);
+
+        g_assert_nonnull(strstr(rendered, line));
+    }
+
+    /* Placed right after max_sessions in the session block. */
+    after_max_sessions = g_strdup(strstr(rendered, "\n  max_sessions: 10\n"));
+    g_assert_nonnull(after_max_sessions);
+    g_assert_true(g_str_has_prefix(
+        after_max_sessions + strlen("\n  max_sessions: 10"),
+        "\n  max_wait_queue_depth: 32\n"
+        "  max_queue_wait_seconds: 300\n"
+        "  max_parked: 0\n"));
+}
+
+/*
+ * libreclaw reads each as a non-negative gint.  0 means something for all
+ * three and is valid; a negative value or one past G_MAXINT is not.
+ */
+static void
+test_session_limits_validate_rejects_impossible_counts(void)
+{
+    static const gchar *const bad[] = { "-1", "2147483648" };
+    guint i;
+    guint j;
+
+    for (i = 0; i < G_N_ELEMENTS(session_limit_keys); i++) {
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *yaml = g_strdup_printf(
+            "agents:\n"
+            "  - id: zero\n"
+            "    session:\n"
+            "      %s: 0\n", session_limit_keys[i].key);
+        g_autoptr(ClawtConfig) config =
+            clawt_config_load_from_string(yaml, &error);
+
+        g_assert_no_error(error);
+        g_assert_true(clawt_config_validate(config, &error));
+        g_assert_no_error(error);
+
+        for (j = 0; j < G_N_ELEMENTS(bad); j++) {
+            g_autoptr(GError) bad_error = NULL;
+            g_autoptr(GError) load_error = NULL;
+            g_autofree gchar *bad_yaml = g_strdup_printf(
+                "agents:\n"
+                "  - id: impossible\n"
+                "    session:\n"
+                "      %s: %s\n", session_limit_keys[i].key, bad[j]);
+            g_autoptr(ClawtConfig) bad_config =
+                clawt_config_load_from_string(bad_yaml, &load_error);
+
+            g_assert_no_error(load_error);
+            g_assert_false(clawt_config_validate(bad_config, &bad_error));
+            g_assert_error(bad_error, CLAWT_ERROR,
+                           CLAWT_ERROR_CONFIG_INVALID);
+            g_assert_nonnull(strstr(bad_error->message, "impossible"));
+            g_assert_nonnull(strstr(bad_error->message,
+                                    session_limit_keys[i].key));
+        }
+    }
+}
+
+/*
+ * The render states 0 as 0, and replaces a negative value with the
+ * default and a warning, as session.max_sessions does.
+ */
+static void
+test_session_limits_render_replaces_impossible_counts(void)
+{
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(session_limit_keys); i++) {
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *yaml = g_strdup_printf(
+            "agents:\n"
+            "  - id: impossible\n"
+            "    session:\n"
+            "      %s: -1\n", session_limit_keys[i].key);
+        g_autoptr(ClawtConfig) config =
+            clawt_config_load_from_string(yaml, &error);
+        g_autofree gchar *warning = g_strdup_printf(
+            "*agent impossible: session.%s: -1*Using %d instead*",
+            session_limit_keys[i].key, session_limit_keys[i].fallback);
+        g_autofree gchar *line = g_strdup_printf("\n  %s: %d\n",
+            session_limit_keys[i].key, session_limit_keys[i].fallback);
+        GPtrArray *agents;
+        g_autofree gchar *rendered = NULL;
+
+        g_assert_no_error(error);
+        agents = clawt_config_get_agents(config);
+
+        g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING, warning);
+        rendered = clawt_config_render_agent(
+            config, g_ptr_array_index(agents, 0),
+            "/tmp/s.sock", "/tmp/state", &error);
+        g_test_assert_expected_messages();
+
+        g_assert_no_error(error);
+        g_assert_nonnull(rendered);
+        g_assert_nonnull(strstr(rendered, line));
+    }
+}
+
+/*
  * The routing mode reaches the agent's own config.yaml, and libreclaw
  * understands every value clawtilla can render.
  *
@@ -3276,6 +3460,18 @@ main(int argc, char *argv[])
     g_test_add_func(
         "/config/session-max-sessions/render-replaces-impossible-counts",
         test_session_max_sessions_render_replaces_impossible_counts);
+    g_test_add_func(
+        "/config/session-limits/reach-libreclaw",
+        test_session_limits_reach_libreclaw);
+    g_test_add_func(
+        "/config/session-limits/unset-render-the-default",
+        test_session_limits_unset_render_the_default);
+    g_test_add_func(
+        "/config/session-limits/validate-rejects-impossible-counts",
+        test_session_limits_validate_rejects_impossible_counts);
+    g_test_add_func(
+        "/config/session-limits/render-replaces-impossible-counts",
+        test_session_limits_render_replaces_impossible_counts);
     g_test_add_func("/config/agent-change/rollback-restores-the-block",
                     test_agent_change_rollback_restores_the_block);
     g_test_add_func("/config/agent-change/commit-keeps-it",

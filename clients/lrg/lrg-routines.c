@@ -733,6 +733,47 @@ on_edit_clicked(LrgButton *button, gpointer user_data)
 }
 
 static void
+on_edit_found(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+              gpointer user_data)
+{
+    const gchar *id = user_data;
+    JsonObject *root = clawt_ipc_reply_object(reply);
+    JsonArray *items;
+    guint i;
+
+    (void)error;
+
+    if (id == NULL || root == NULL)
+        return;
+
+    items = json_object_has_member(root, "routines")
+        ? json_object_get_array_member(root, "routines") : NULL;
+    routines.app = app;
+
+    for (i = 0; items != NULL && i < json_array_get_length(items); i++) {
+        JsonObject *routine = json_array_get_object_element(items, i);
+
+        if (g_strcmp0(clawt_ipc_payload_string(routine, "id"), id) == 0) {
+            open_editor(app, routine);
+            return;
+        }
+    }
+
+    clawt_lrg_toast(app, "That routine is not in the list.");
+}
+
+void
+clawt_lrg_routines_edit(ClawtLrgApp *app, const gchar *id)
+{
+    if (app == NULL || id == NULL || *id == '\0')
+        return;
+
+    routines.app = app;
+    clawt_lrg_request(app, "routine.list", NULL, CLAWT_LRG_REQUEST_NONE,
+                      on_edit_found, g_strdup(id), g_free);
+}
+
+static void
 on_turned_on(
 	ClawtLrgApp  *app,
 	JsonNode     *reply,

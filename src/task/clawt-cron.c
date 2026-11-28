@@ -603,3 +603,55 @@ clawt_cron_shortest_gap(ClawtCron *self, GDateTime *after, guint runs)
 
     return shortest;
 }
+
+GPtrArray *
+clawt_cron_between(
+	ClawtCron  *self,
+	GDateTime  *from,
+	GDateTime  *to,
+	guint       max,
+	gboolean   *out_truncated
+){
+	g_autoptr(GPtrArray) runs = NULL;
+	g_autoptr(GDateTime) cursor = NULL;
+	gint64 start;
+
+	if (out_truncated != NULL)
+		*out_truncated = FALSE;
+
+	g_return_val_if_fail(self != NULL, NULL);
+	g_return_val_if_fail(from != NULL, NULL);
+	g_return_val_if_fail(to != NULL, NULL);
+
+	runs = g_ptr_array_new_with_free_func((GDestroyNotify)g_date_time_unref);
+
+	/*
+	 * clawt_cron_next() is exclusive of its start, so the search begins
+	 * a second before the window: a run at exactly @from belongs to it.
+	 * A @from with a fraction of a second is rounded up first, or a run
+	 * in that same second -- which is before @from -- would be let in.
+	 */
+	start = g_date_time_to_unix(from);
+	if (g_date_time_get_microsecond(from) > 0)
+		start++;
+	cursor = g_date_time_new_from_unix_utc(start - 1);
+
+	while (cursor != NULL) {
+		g_autoptr(GDateTime) next = clawt_cron_next(self, cursor);
+
+		if (next == NULL || g_date_time_compare(next, to) >= 0)
+			break;
+
+		if (runs->len >= max) {
+			if (out_truncated != NULL)
+				*out_truncated = TRUE;
+			break;
+		}
+
+		g_ptr_array_add(runs, g_date_time_ref(next));
+		g_date_time_unref(cursor);
+		cursor = g_steal_pointer(&next);
+	}
+
+	return g_steal_pointer(&runs);
+}

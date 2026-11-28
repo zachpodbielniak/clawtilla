@@ -1167,6 +1167,61 @@ typedef enum {
 } ClawtRunState;
 
 /**
+ * ClawtRunOutcome:
+ * @CLAWT_RUN_OUTCOME_STARTED: a task was made for the run
+ * @CLAWT_RUN_OUTCOME_FAILED: the run could not be started
+ * @CLAWT_RUN_OUTCOME_REFUSED: the run was refused on purpose -- the loop
+ *   guard or a spending cap -- and its task cancelled with the reason
+ * @CLAWT_RUN_OUTCOME_MISSED: its time passed while the daemon was not
+ *   running or not ticking (a machine asleep)
+ * @CLAWT_RUN_OUTCOME_CAUGHT_UP: missed, and folded into the one run a
+ *   `catch_up` routine makes for everything it missed
+ *
+ * What happened to one scheduled time of a routine, as the runner's
+ * history keeps it (since 0.78.0).
+ *
+ * This is the record, not the answer a calendar shows: a started run is
+ * finished, failed or still going according to its task, which the
+ * daemon looks up when it is asked (#ClawtOccurrenceStatus).
+ */
+typedef enum {
+    CLAWT_RUN_OUTCOME_STARTED = 0,
+    CLAWT_RUN_OUTCOME_FAILED,
+    CLAWT_RUN_OUTCOME_REFUSED,
+    CLAWT_RUN_OUTCOME_MISSED,
+    CLAWT_RUN_OUTCOME_CAUGHT_UP
+} ClawtRunOutcome;
+
+/**
+ * ClawtOccurrenceStatus:
+ * @CLAWT_OCCURRENCE_UPCOMING: still in the future
+ * @CLAWT_OCCURRENCE_DUE: its time has come and the run has not started yet
+ *   -- the next tick, or a jitter still being waited out
+ * @CLAWT_OCCURRENCE_RUNNING: its task is still open
+ * @CLAWT_OCCURRENCE_OK: its task finished
+ * @CLAWT_OCCURRENCE_FAILED: it could not be started, or its task failed
+ *   or stalled
+ * @CLAWT_OCCURRENCE_SKIPPED: it did not run, for a reason that is not a
+ *   fault: the daemon was down, a catch-up folded it, the agent is
+ *   stopped, a guard refused it, or somebody cancelled it
+ * @CLAWT_OCCURRENCE_UNKNOWN: in the past, with no record of it -- before
+ *   the history was kept, pruned from it, or a source clawtilla does not
+ *   track (a libreclaw cron)
+ *
+ * What a calendar shows for one occurrence of a routine
+ * (`routine.occurrences`, since 0.78.0).  The nick is the wire value.
+ */
+typedef enum {
+    CLAWT_OCCURRENCE_UPCOMING = 0,
+    CLAWT_OCCURRENCE_DUE,
+    CLAWT_OCCURRENCE_RUNNING,
+    CLAWT_OCCURRENCE_OK,
+    CLAWT_OCCURRENCE_FAILED,
+    CLAWT_OCCURRENCE_SKIPPED,
+    CLAWT_OCCURRENCE_UNKNOWN
+} ClawtOccurrenceStatus;
+
+/**
  * ClawtGuestFlavour:
  * @CLAWT_GUEST_FLAVOUR_AUTO: work it out from the image
  * @CLAWT_GUEST_FLAVOUR_FEDORA: Fedora
@@ -1362,6 +1417,8 @@ GType clawt_notify_backend_get_type(void) G_GNUC_CONST;
 GType clawt_notify_events_get_type(void) G_GNUC_CONST;
 GType clawt_schedule_get_type(void) G_GNUC_CONST;
 GType clawt_run_state_get_type(void) G_GNUC_CONST;
+GType clawt_run_outcome_get_type(void) G_GNUC_CONST;
+GType clawt_occurrence_status_get_type(void) G_GNUC_CONST;
 GType clawt_guest_flavour_get_type(void) G_GNUC_CONST;
 GType clawt_connector_auth_get_type(void) G_GNUC_CONST;
 GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
@@ -1412,6 +1469,8 @@ GType clawt_checkout_mode_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_NOTIFY_EVENTS     (clawt_notify_events_get_type())
 #define CLAWT_TYPE_SCHEDULE          (clawt_schedule_get_type())
 #define CLAWT_TYPE_RUN_STATE         (clawt_run_state_get_type())
+#define CLAWT_TYPE_RUN_OUTCOME       (clawt_run_outcome_get_type())
+#define CLAWT_TYPE_OCCURRENCE_STATUS (clawt_occurrence_status_get_type())
 #define CLAWT_TYPE_GUEST_FLAVOUR     (clawt_guest_flavour_get_type())
 #define CLAWT_TYPE_CONNECTOR_AUTH    (clawt_connector_auth_get_type())
 #define CLAWT_TYPE_CREDENTIAL_PLACEMENT \
@@ -2201,6 +2260,8 @@ const gchar *clawt_grok_job_state_label(ClawtGrokJobState state);
  *   sent to one (since 0.10.0)
  * @CLAWT_PAGE_OFFICE: the office -- who is where, and with OFFICE=1 the
  *   office drawn (since 0.56.0)
+ * @CLAWT_PAGE_SCHEDULE: routines across a day, a week and a month, and
+ *   the next runs (since 0.78.0)
  *
  * Every page either client can show, in the order they are drawn.
  *
@@ -2223,7 +2284,8 @@ typedef enum {
     CLAWT_PAGE_MEMORY,
     CLAWT_PAGE_FLEET,
     CLAWT_PAGE_GROK,
-    CLAWT_PAGE_OFFICE
+    CLAWT_PAGE_OFFICE,
+    CLAWT_PAGE_SCHEDULE
 } ClawtPage;
 
 /**
