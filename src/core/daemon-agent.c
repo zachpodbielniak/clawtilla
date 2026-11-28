@@ -785,8 +785,9 @@ clawt_daemon_handle_agent(
         {
             g_autofree gchar *state_dir = clawt_config_agent_state_dir(
                 self->config, clawt_agent_config_get_id(agent_config));
-            g_autofree gchar *socket_path =
-                clawt_config_get_path_value(self->config, "daemon.socket");
+            /* The agent's own socket, as the full render writes it. */
+            g_autofree gchar *socket_path = clawt_config_agent_socket_path(
+                self->config, clawt_agent_config_get_id(agent_config));
 
             if (!clawt_workspace_write_mcp_config(self->config, agent_config,
                                                   socket_path, state_dir,

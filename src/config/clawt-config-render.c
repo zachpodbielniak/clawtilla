@@ -53,6 +53,46 @@ clawt_config_agent_state_dir(ClawtConfig *config, const gchar *agent_id)
     return g_build_filename(state_dir, "agents", agent_id, NULL);
 }
 
+/*
+ * Beside the operator socket rather than in the agent's state
+ * directory: that directory is bound writable into the agent's box, and
+ * the socket that speaks for an agent is the daemon's to place, not the
+ * agent's to replace.  The default for daemon.socket is the same one the
+ * daemon falls back on, so the two cannot disagree about where to look.
+ */
+gchar *
+clawt_config_agent_socket_dir(ClawtConfig *config)
+{
+    g_autofree gchar *daemon_socket = NULL;
+    g_autofree gchar *dir = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(config), NULL);
+
+    daemon_socket = clawt_config_get_path_value(config, "daemon.socket");
+
+    if (daemon_socket == NULL)
+        daemon_socket = clawt_client_default_socket_path();
+
+    dir = g_path_get_dirname(daemon_socket);
+
+    return g_build_filename(dir, "agent-sockets", NULL);
+}
+
+gchar *
+clawt_config_agent_socket_path(ClawtConfig *config, const gchar *agent_id)
+{
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *name = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(config), NULL);
+    g_return_val_if_fail(agent_id != NULL, NULL);
+
+    dir = clawt_config_agent_socket_dir(config);
+    name = g_strconcat(agent_id, ".sock", NULL);
+
+    return g_build_filename(dir, name, NULL);
+}
+
 gchar *
 clawt_config_display_dir(ClawtConfig *config, const gchar *agent_id)
 {
@@ -1792,12 +1832,16 @@ clawt_config_write_agent_files(ClawtConfig       *config,
      */
     {
         /*
-         * The IPC socket comes from the config rather than being passed
-         * in: that is where the daemon gets its own from, so the two can
-         * never disagree about where an agent should dial.
+         * The agent's own socket, never the operator's daemon.socket:
+         * every client the CLI starts from this file runs as the agent,
+         * inside its box when it is confined, and the operator socket
+         * would let it send any verb as the operator.  Computed from the
+         * config rather than passed in: that is where the daemon gets
+         * the path it listens on, so the two can never disagree about
+         * where an agent should dial.
          */
-        g_autofree gchar *ipc_socket =
-            clawt_config_get_path_value(config, "daemon.socket");
+        g_autofree gchar *ipc_socket = clawt_config_agent_socket_path(
+            config, clawt_agent_config_get_id(agent));
 
         if (!clawt_workspace_write_mcp_config(config, agent, ipc_socket,
                                                state_dir, error))

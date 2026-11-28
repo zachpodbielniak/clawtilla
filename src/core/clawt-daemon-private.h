@@ -2778,6 +2778,23 @@ void     clawt_daemon_idle_tick(ClawtDaemon *self);
 gboolean clawt_daemon_idle_is_asleep(ClawtDaemon *self, const gchar *agent_id);
 void clawt_daemon_policy_abandon(ClawtDaemon *self, const gchar *agent_id);
 
+/* -- Each agent's own IPC socket (src/core/daemon-agent-socket.c) -- */
+
+/*
+ * Installs the agent filter on the IPC server and clears stale agent
+ * sockets.  Once, after the operator socket is bound.
+ */
+void     clawt_daemon_agent_sockets_setup(ClawtDaemon *self);
+/* Listens on @agent_id's own socket; nothing happens when it already is. */
+gboolean clawt_daemon_agent_socket_open(ClawtDaemon  *self,
+                                        const gchar  *agent_id,
+                                        GError      **error);
+/* Closes it, and every connection on it, and unlinks it. */
+void     clawt_daemon_agent_socket_close(ClawtDaemon *self,
+                                         const gchar *agent_id);
+/* The agent verbs, for tests and docs: the nth, or NULL past the end. */
+const gchar *clawt_daemon_agent_verb_nth(guint index);
+
 /* -- Turns a restart cut short (src/core/daemon-replay.c) -------- */
 
 /*

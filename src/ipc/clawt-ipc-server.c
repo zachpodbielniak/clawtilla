@@ -88,6 +88,19 @@ typedef struct {
     gchar            *device_id;
 
     /*
+     * The agent whose own socket this connection came in on, or NULL for
+     * a connection to the operator socket (or a network listener).
+     *
+     * Decided by which listener accepted the connection and nothing
+     * else: the daemon made that socket for exactly one agent, and a
+     * confined agent's box binds its own and no other.  Every request on
+     * such a connection is put through the agent filter before anything
+     * -- built-ins included -- sees it, so the operator's verbs are not
+     * reachable from here at all.
+     */
+    gchar            *agent_id;
+
+    /*
      * The fleet this connection proved it is with `fed.hello`, or NULL.
      * A peer connection may send fed.* frames and nothing else, and is
      * never sent the event stream: it is another fleet, not a client.
@@ -115,6 +128,18 @@ typedef struct {
     GString          *inbound;
     guint8            chunk[CLAWT_IPC_READ_CHUNK_BYTES];
 } Client;
+
+/*
+ * One agent's own socket: a listener of its own, so it can be closed
+ * when that agent stops without touching anybody else's -- a
+ * GSocketListener has no way to drop one address of several.
+ */
+typedef struct {
+    ClawtIpcServer *server;     /* unowned: the server owns this */
+    gchar          *agent_id;
+    gchar          *path;
+    GSocketService *service;
+} AgentSocket;
 
 struct _ClawtIpcServer {
     GObject parent_instance;
@@ -151,6 +176,16 @@ struct _ClawtIpcServer {
     ClawtIpcFederationHandler fed_handler;
     gpointer                  fed_handler_data;
     GDestroyNotify  handler_destroy;
+
+    /*
+     * Each agent's own socket (agent id -> AgentSocket, owned), and what
+     * decides which of its requests are served.  Without a filter an
+     * agent socket serves nothing: failing closed is the point of it.
+     */
+    GHashTable          *agent_sockets;
+    ClawtIpcAgentFilter  agent_filter;
+    gpointer             agent_filter_data;
+    GDestroyNotify       agent_filter_destroy;
 
     /*
      * Whose request is being handled right now.
@@ -281,6 +316,14 @@ clawt_ipc_server_get_current_device(ClawtIpcServer *self)
     g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), NULL);
 
     return (self->current != NULL) ? self->current->device_id : NULL;
+}
+
+const gchar *
+clawt_ipc_server_get_current_agent(ClawtIpcServer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), NULL);
+
+    return (self->current != NULL) ? self->current->agent_id : NULL;
 }
 
 gboolean
@@ -490,6 +533,7 @@ client_free(gpointer data)
 
     g_clear_pointer(&client->writing_bytes, g_bytes_unref);
     g_free(client->device_id);
+    g_free(client->agent_id);
     g_free(client->peer_fleet);
 
     g_clear_object(&client->input);
@@ -881,6 +925,36 @@ dispatch_line(Client *client, const gchar *line, gsize length)
     }
 
     /*
+     * A connection on an agent's own socket is put through the agent
+     * filter before anything else looks at the frame -- the federation
+     * door, the built-ins (control.subscribe would hand it every event
+     * in the fleet, device.redeem would make it a paired device) and the
+     * daemon's handler alike.  The filter decides from the one table of
+     * agent verbs, and may rewrite the payload so the agent it names is
+     * the connection's.  No filter installed means nothing is served.
+     */
+    if (client->agent_id != NULL) {
+        g_autoptr(GError) refusal = NULL;
+        gboolean served = FALSE;
+
+        if (self->agent_filter != NULL)
+            served = self->agent_filter(self, client->agent_id, request,
+                                        &refusal, self->agent_filter_data);
+
+        if (!served) {
+            reply = clawt_ipc_error_new(
+                request,
+                refusal != NULL ? refusal->code
+                                : CLAWT_ERROR_PERMISSION_DENIED,
+                refusal != NULL ? refusal->message
+                                : "this agent socket serves no requests");
+            client_send(client, reply);
+            json_node_unref(reply);
+            return TRUE;
+        }
+    }
+
+    /*
      * Federation frames go to their own handler, before the token gate:
      * they authenticate themselves (every one is a signed envelope), and
      * a fleet dialling in has no owner token and must never be given one.
@@ -1056,16 +1130,17 @@ read_next(Client *client)
                               NULL, on_bytes_read, client_ref(client));
 }
 
-static gboolean
-on_incoming(GSocketService *service, GSocketConnection *connection,
-            GObject *source, gpointer user_data)
+/*
+ * Takes one accepted connection on.  @agent_id is the agent whose own
+ * socket it arrived on, or %NULL for the operator socket and the network
+ * listeners.
+ */
+static void
+accept_client(ClawtIpcServer *self, GSocketConnection *connection,
+              const gchar *agent_id)
 {
-    ClawtIpcServer *self = user_data;
     Client *client;
     gboolean is_unix;
-
-    (void)service;
-    (void)source;
 
     client = g_new0(Client, 1);
     client->ref_count = 1;
@@ -1073,6 +1148,7 @@ on_incoming(GSocketService *service, GSocketConnection *connection,
     client->connection = g_object_ref(connection);
     client->pending = g_string_new(NULL);
     client->inbound = g_string_new(NULL);
+    client->agent_id = g_strdup(agent_id);
 
     /*
      * A TCP connection speaks TLS when the daemon has a certificate.  The
@@ -1094,7 +1170,7 @@ on_incoming(GSocketService *service, GSocketConnection *connection,
                 g_warning("ipc: TLS refused a connection: %s", tls_error->message);
                 g_io_stream_close(G_IO_STREAM(connection), NULL, NULL);
                 client_free(client);
-                return TRUE;
+                return;
             }
         }
     }
@@ -1145,6 +1221,34 @@ on_incoming(GSocketService *service, GSocketConnection *connection,
 
     g_ptr_array_add(self->clients, client);
     read_next(client);
+}
+
+static gboolean
+on_incoming(GSocketService *service, GSocketConnection *connection,
+            GObject *source, gpointer user_data)
+{
+    (void)service;
+    (void)source;
+
+    accept_client(user_data, connection, NULL);
+
+    return TRUE;
+}
+
+/*
+ * A connection on one agent's own socket: the same client, labelled with
+ * the agent the daemon made that socket for.
+ */
+static gboolean
+on_agent_incoming(GSocketService *service, GSocketConnection *connection,
+                  GObject *source, gpointer user_data)
+{
+    AgentSocket *agent_socket = user_data;
+
+    (void)service;
+    (void)source;
+
+    accept_client(agent_socket->server, connection, agent_socket->agent_id);
 
     return TRUE;
 }
@@ -1166,7 +1270,13 @@ on_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
     for (i = self->clients->len; i > 0; i--) {
         Client *client = g_ptr_array_index(self->clients, i - 1);
 
-        if (client->subscribed)
+        /*
+         * Never an agent socket's connection, whatever it managed to
+         * set: the event stream is the whole fleet's, other agents'
+         * conversations included.  The filter already refuses
+         * control.subscribe there; this is the second lock on the door.
+         */
+        if (client->subscribed && client->agent_id == NULL)
             client_send(client, frame);
     }
 }
@@ -1576,6 +1686,183 @@ clawt_ipc_server_start(ClawtIpcServer *self, GError **error)
     return TRUE;
 }
 
+/* ── Agent sockets ───────────────────────────────────────────────── */
+
+/*
+ * Closes one agent's listener and takes its file away.  The connections
+ * that came in on it are closed by clawt_ipc_server_remove_agent_socket()
+ * first; by the time this runs from the table's destroy function the
+ * server may be finalizing, and its client list is not this function's
+ * to walk.
+ */
+static void
+agent_socket_free(gpointer data)
+{
+    AgentSocket *agent_socket = data;
+
+    if (agent_socket->service != NULL) {
+        g_socket_service_stop(agent_socket->service);
+        g_socket_listener_close(G_SOCKET_LISTENER(agent_socket->service));
+        g_clear_object(&agent_socket->service);
+    }
+
+    if (agent_socket->path != NULL)
+        g_unlink(agent_socket->path);
+
+    g_free(agent_socket->agent_id);
+    g_free(agent_socket->path);
+    g_free(agent_socket);
+}
+
+void
+clawt_ipc_server_set_agent_filter(ClawtIpcServer      *self,
+                                  ClawtIpcAgentFilter  filter,
+                                  gpointer             user_data,
+                                  GDestroyNotify       destroy)
+{
+    g_return_if_fail(CLAWT_IS_IPC_SERVER(self));
+
+    if (self->agent_filter_destroy != NULL && self->agent_filter_data != NULL)
+        self->agent_filter_destroy(self->agent_filter_data);
+
+    self->agent_filter = filter;
+    self->agent_filter_data = user_data;
+    self->agent_filter_destroy = destroy;
+}
+
+gboolean
+clawt_ipc_server_add_agent_socket(ClawtIpcServer  *self,
+                                  const gchar     *agent_id,
+                                  const gchar     *path,
+                                  GError         **error)
+{
+    g_autoptr(GSocketAddress) address = NULL;
+    g_autofree gchar *expanded = NULL;
+    g_autofree gchar *dir = NULL;
+    AgentSocket *agent_socket;
+    AgentSocket *existing;
+
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), FALSE);
+    g_return_val_if_fail(agent_id != NULL && *agent_id != '\0', FALSE);
+    g_return_val_if_fail(path != NULL, FALSE);
+
+    expanded = clawt_expand_path(path);
+
+    /*
+     * Already listening there for this agent: nothing to do.  A start
+     * after a crash, or a second start racing the first, must not take
+     * the socket away from a box that has it bound.
+     */
+    existing = g_hash_table_lookup(self->agent_sockets, agent_id);
+
+    if (existing != NULL) {
+        if (g_strcmp0(existing->path, expanded) == 0)
+            return TRUE;
+
+        /* Somewhere else now (daemon.socket moved): the old one goes. */
+        clawt_ipc_server_remove_agent_socket(self, agent_id);
+    }
+
+    if (!clawt_check_socket_path(expanded, error))
+        return FALSE;
+
+    /*
+     * 0700 on the directory, as on the operator socket's: the socket's
+     * own 0600 is set only after the bind, and the directory is what
+     * covers the moment between.
+     */
+    dir = g_path_get_dirname(expanded);
+
+    if (!clawt_ensure_dir(dir, 0700, error))
+        return FALSE;
+
+    if (!clear_stale_socket(expanded, error))
+        return FALSE;
+
+    agent_socket = g_new0(AgentSocket, 1);
+    agent_socket->server = self;
+    agent_socket->agent_id = g_strdup(agent_id);
+    agent_socket->service = g_socket_service_new();
+    address = g_unix_socket_address_new(expanded);
+
+    if (!g_socket_listener_add_address(
+            G_SOCKET_LISTENER(agent_socket->service), address,
+            G_SOCKET_TYPE_STREAM, G_SOCKET_PROTOCOL_DEFAULT, NULL, NULL,
+            error)) {
+        g_prefix_error(error, "listening on %s: ", expanded);
+        agent_socket_free(agent_socket);
+        return FALSE;
+    }
+
+    /* Set only once it is ours to unlink: a failed bind leaves no path. */
+    agent_socket->path = g_strdup(expanded);
+
+    if (g_chmod(expanded, 0600) != 0) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "could not restrict %s to the owner: %s",
+                    expanded, g_strerror(errno));
+        agent_socket_free(agent_socket);
+        return FALSE;
+    }
+
+    g_signal_connect(agent_socket->service, "incoming",
+                     G_CALLBACK(on_agent_incoming), agent_socket);
+    g_socket_service_start(agent_socket->service);
+
+    g_hash_table_insert(self->agent_sockets, g_strdup(agent_id),
+                        agent_socket);
+
+    return TRUE;
+}
+
+guint
+clawt_ipc_server_remove_agent_socket(ClawtIpcServer *self,
+                                     const gchar    *agent_id)
+{
+    guint closed = 0;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), 0);
+
+    if (agent_id == NULL)
+        return 0;
+
+    /*
+     * Its connections first, so an agent that has stopped holds nothing
+     * open on the daemon.  Backwards: client_close() removes from the
+     * array it is walking.
+     */
+    for (i = self->clients->len; i > 0; i--) {
+        Client *client = g_ptr_array_index(self->clients, i - 1);
+
+        if (g_strcmp0(client->agent_id, agent_id) != 0)
+            continue;
+
+        client_close(client);
+        closed++;
+    }
+
+    g_hash_table_remove(self->agent_sockets, agent_id);
+
+    return closed;
+}
+
+const gchar *
+clawt_ipc_server_get_agent_socket(ClawtIpcServer *self,
+                                  const gchar    *agent_id)
+{
+    AgentSocket *agent_socket;
+
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), NULL);
+
+    if (agent_id == NULL)
+        return NULL;
+
+    agent_socket = g_hash_table_lookup(self->agent_sockets, agent_id);
+
+    return (agent_socket != NULL) ? agent_socket->path : NULL;
+}
+
 void
 clawt_ipc_server_stop(ClawtIpcServer *self)
 {
@@ -1594,6 +1881,10 @@ clawt_ipc_server_stop(ClawtIpcServer *self)
 
     if (self->socket_path != NULL)
         g_unlink(self->socket_path);
+
+    /* Every agent's socket goes with it: each is unlinked as it closes. */
+    if (self->agent_sockets != NULL)
+        g_hash_table_remove_all(self->agent_sockets);
 }
 
 static void
@@ -1614,6 +1905,15 @@ clawt_ipc_server_dispose(GObject *object)
         self->handler_data = NULL;
     }
 
+    if (self->agent_filter_destroy != NULL &&
+        self->agent_filter_data != NULL) {
+        self->agent_filter_destroy(self->agent_filter_data);
+        self->agent_filter_destroy = NULL;
+        self->agent_filter_data = NULL;
+    }
+
+    self->agent_filter = NULL;
+
     clawt_ipc_server_stop(self);
 
     G_OBJECT_CLASS(clawt_ipc_server_parent_class)->dispose(object);
@@ -1625,6 +1925,7 @@ clawt_ipc_server_finalize(GObject *object)
     ClawtIpcServer *self = CLAWT_IPC_SERVER(object);
 
     g_clear_pointer(&self->clients, g_ptr_array_unref);
+    g_clear_pointer(&self->agent_sockets, g_hash_table_unref);
     g_free(self->socket_path);
     g_clear_pointer(&self->listeners, g_ptr_array_unref);
     g_free(self->tcp_token);
@@ -1649,4 +1950,6 @@ static void
 clawt_ipc_server_init(ClawtIpcServer *self)
 {
     self->clients = g_ptr_array_new_with_free_func(client_unref);
+    self->agent_sockets = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                g_free, agent_socket_free);
 }

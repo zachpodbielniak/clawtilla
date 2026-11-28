@@ -1558,6 +1558,17 @@ note_agent_crash(
 	}
 }
 
+/* A removed agent's own socket goes with it (daemon-agent-socket.c). */
+static void
+on_agent_removed_close_socket(ClawtAgentManager *manager,
+                              const gchar       *agent_id,
+                              gpointer           user_data)
+{
+    (void)manager;
+
+    clawt_daemon_agent_socket_close(CLAWT_DAEMON(user_data), agent_id);
+}
+
 /*
  * An agent's state changed.
  *
@@ -4903,6 +4914,17 @@ start_agent_prepare(ClawtDaemon    *self,
     if (!clawt_integration_validate(config, error))
         return FALSE;
 
+    /*
+     * Its own IPC socket, before anything that names it: the .mcp.json
+     * and the hook settings rendered next point the agent's clients at
+     * it, and a confined agent's box binds it -- bwrap refuses a bind
+     * whose source is not there.  Every agent gets one, confined or not:
+     * the rendered config is the same either way, and an unconfined
+     * agent's tools then go through the same gate (docs/security.org).
+     */
+    if (!clawt_daemon_agent_socket_open(self, agent_id, error))
+        return FALSE;
+
     if (!clawt_config_write_agent_files(self->config, config,
                                         self->link_socket, &config_path,
                                         error))
@@ -5443,13 +5465,21 @@ start_agent_launch(ClawtDaemon *self, const gchar *agent_id,
             g_autoptr(GError) why = NULL;
             g_autofree gchar *state_dir =
                 clawt_config_agent_state_dir(self->config, agent_id);
-            g_autofree gchar *ipc_socket =
-                clawt_config_get_path_value(self->config, "daemon.socket");
+            g_autofree gchar *agent_socket =
+                clawt_config_agent_socket_path(self->config, agent_id);
             ClawtComputer *computer = clawt_agent_get_computer(agent);
             const gchar *sockets[3];
 
+            /*
+             * Its link, and its own IPC socket -- never the operator's
+             * daemon.socket.  A unix client on that one is the operator,
+             * and anything in the box that can exec could send any verb
+             * there: answer its own policy ask, rewrite its own rules
+             * and confinement, unblock anybody's task (VENTURE #72).  The
+             * agent socket serves only the agent verbs, as this agent.
+             */
             sockets[0] = self->link_socket;
-            sockets[1] = ipc_socket;
+            sockets[1] = agent_socket;
             sockets[2] = NULL;
 
             /*
@@ -5837,6 +5867,13 @@ clawt_daemon_stop_agent(ClawtDaemon *self, const gchar *agent_id,
     g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
 
     agent = clawt_agent_manager_get(self->agents, agent_id);
+
+    /*
+     * Its own socket closes whatever state it is in: an agent whose
+     * process already exited still had the socket its tools dialled,
+     * and a stop is where that ends.
+     */
+    clawt_daemon_agent_socket_close(self, agent_id);
 
     if (agent == NULL ||
         clawt_agent_get_state(agent) == CLAWT_AGENT_STATE_STOPPED)
@@ -8018,6 +8055,13 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     g_signal_connect(self->agents, "agent-state-changed",
                      G_CALLBACK(on_agent_state_changed), self);
+
+    /*
+     * An agent a reload removed is stopped by the manager, not through
+     * clawt_daemon_stop_agent(), so its own socket is closed here too.
+     */
+    g_signal_connect(self->agents, "agent-removed",
+                     G_CALLBACK(on_agent_removed_close_socket), self);
     clawt_daemon_tasks_watch_waits(self);
     g_signal_connect(self->tasks, "task-changed",
                      G_CALLBACK(on_task_changed), self);
@@ -8362,6 +8406,14 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
             g_main_context_pop_thread_default(self->main_context);
         return FALSE;
     }
+
+    /*
+     * Each agent's own socket is served by this same server, through the
+     * agent filter, and the directory they live in is cleared of any a
+     * crashed daemon left -- safe now that the operator socket is bound,
+     * which proves no other daemon is serving it (daemon-agent-socket.c).
+     */
+    clawt_daemon_agent_sockets_setup(self);
 
     /*
      * Announced after the bind, and only if it took.  Saying it first

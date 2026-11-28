@@ -310,6 +310,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/clawt-daemon.c \
 	$(SRCDIR)/core/daemon-control.c \
 	$(SRCDIR)/core/daemon-misc.c \
+	$(SRCDIR)/core/daemon-agent-socket.c \
 	$(SRCDIR)/core/daemon-agent.c \
 	$(SRCDIR)/core/daemon-memory.c \
 	$(SRCDIR)/core/daemon-memory-review.c \

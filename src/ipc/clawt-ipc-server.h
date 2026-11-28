@@ -61,6 +61,29 @@ typedef JsonNode *(*ClawtIpcFederationHandler)(ClawtIpcServer *server,
                                                gpointer        user_data);
 
 /**
+ * ClawtIpcAgentFilter:
+ * @server: the server
+ * @agent_id: the agent whose own socket the request arrived on
+ * @request: the frame; the filter may change its payload
+ * @error: (out) (optional): why it is refused, when it is
+ * @user_data: data passed to clawt_ipc_server_set_agent_filter()
+ *
+ * Decides whether a request that arrived on an agent's own socket is
+ * served, before anything else sees it -- the built-ins included.  The
+ * identity is @agent_id, which comes from the connection; a filter that
+ * serves a verb naming an agent in its payload makes that agent
+ * @agent_id or refuses it.
+ *
+ * Returns: %TRUE to serve the request, %FALSE with @error set to refuse
+ *   it
+ */
+typedef gboolean (*ClawtIpcAgentFilter)(ClawtIpcServer  *server,
+                                        const gchar     *agent_id,
+                                        JsonNode        *request,
+                                        GError         **error,
+                                        gpointer         user_data);
+
+/**
  * ClawtIpcPending:
  *
  * A reply a handler could not give straight away.
@@ -404,6 +427,83 @@ gboolean clawt_ipc_server_check_credential(ClawtIpcServer  *self,
  * Returns: (transfer none) (nullable): the device id, or %NULL
  */
 const gchar *clawt_ipc_server_get_current_device(ClawtIpcServer *self);
+
+/**
+ * clawt_ipc_server_get_current_agent:
+ * @self: a #ClawtIpcServer
+ *
+ * Which agent's own socket the request being handled right now arrived
+ * on.  Only meaningful from inside a #ClawtIpcHandler.
+ *
+ * Returns: (transfer none) (nullable): the agent id, or %NULL for the
+ *   operator socket and the network listeners
+ */
+const gchar *clawt_ipc_server_get_current_agent(ClawtIpcServer *self);
+
+/**
+ * clawt_ipc_server_set_agent_filter:
+ * @self: a #ClawtIpcServer
+ * @filter: (nullable) (scope notified) (closure user_data): decides each
+ *   request on an agent socket; %NULL serves none
+ * @user_data: data for @filter
+ * @destroy: (nullable): frees @user_data when the filter is replaced
+ *
+ * Installs what decides the requests on every agent socket.  Without one
+ * an agent socket refuses everything, so a daemon that forgot to install
+ * it fails closed.
+ */
+void clawt_ipc_server_set_agent_filter(ClawtIpcServer      *self,
+                                       ClawtIpcAgentFilter  filter,
+                                       gpointer             user_data,
+                                       GDestroyNotify       destroy);
+
+/**
+ * clawt_ipc_server_add_agent_socket:
+ * @self: a #ClawtIpcServer
+ * @agent_id: the agent the socket is for
+ * @path: where to listen
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Listens on @path for @agent_id alone.  Every connection accepted there
+ * is that agent's: the daemon owns the path and makes it for exactly one
+ * agent, so the identity comes from which socket was dialled rather than
+ * from anything a request says.  Each request is decided by the agent
+ * filter (clawt_ipc_server_set_agent_filter()).
+ *
+ * The directory is made 0700 and the socket 0600.  A stale socket at
+ * @path is removed first, a live one refused.  Calling it again for the
+ * same agent and path changes nothing.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean clawt_ipc_server_add_agent_socket(ClawtIpcServer  *self,
+                                           const gchar     *agent_id,
+                                           const gchar     *path,
+                                           GError         **error);
+
+/**
+ * clawt_ipc_server_remove_agent_socket:
+ * @self: a #ClawtIpcServer
+ * @agent_id: an agent id
+ *
+ * Closes @agent_id's socket, every connection that came in on it, and
+ * unlinks its path.  Nothing happens for an agent with no socket.
+ *
+ * Returns: how many connections were closed
+ */
+guint clawt_ipc_server_remove_agent_socket(ClawtIpcServer *self,
+                                           const gchar    *agent_id);
+
+/**
+ * clawt_ipc_server_get_agent_socket:
+ * @self: a #ClawtIpcServer
+ * @agent_id: an agent id
+ *
+ * Returns: (transfer none) (nullable): where @agent_id's socket is
+ *   listening, or %NULL when it has none
+ */
+const gchar *clawt_ipc_server_get_agent_socket(ClawtIpcServer *self,
+                                               const gchar    *agent_id);
 
 /**
  * clawt_ipc_server_device_is_connected:

@@ -34,6 +34,38 @@ gchar *clawt_config_agent_state_dir(ClawtConfig *config,
                                     const gchar *agent_id);
 
 /**
+ * clawt_config_agent_socket_dir:
+ * @config: the fleet configuration
+ *
+ * The directory that holds every agent's own socket: `agent-sockets`
+ * beside `daemon.socket`.  The daemon makes it 0700 and owns everything
+ * in it; no box is granted the directory, only an agent's own socket.
+ *
+ * Returns: (transfer full): the expanded directory path
+ */
+gchar *clawt_config_agent_socket_dir(ClawtConfig *config);
+
+/**
+ * clawt_config_agent_socket_path:
+ * @config: the fleet configuration
+ * @agent_id: the agent
+ *
+ * Where the daemon listens for one agent's own IPC connections:
+ * `agent-sockets/<agent>.sock` beside `daemon.socket` (its default
+ * included).
+ *
+ * What clawtilla-mcp-server, the policy hook and the connector and
+ * desktop relays are pointed at, and the one daemon socket an agent's
+ * bwrap box binds.  A connection there is that agent and serves only the
+ * agent verbs (docs/security.org, "The agent socket"); the operator's
+ * `daemon.socket` is never bound into a box.
+ *
+ * Returns: (transfer full): the expanded socket path
+ */
+gchar *clawt_config_agent_socket_path(ClawtConfig *config,
+                                      const gchar *agent_id);
+
+/**
  * clawt_config_display_dir:
  * @config: the fleet configuration
  * @agent_id: the agent
