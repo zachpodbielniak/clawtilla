@@ -286,6 +286,18 @@ test_the_scaffold_explains_not_finishing(void)
     g_assert_nonnull(strstr(tools, "clawtilla_task_progress"));
 
     /*
+     * And the optional phase both tools take (0.78.0): the names it
+     * accepts, and that a bad one refuses the whole call.  The tool's own
+     * parameter says what a phase means; only this prose says that a
+     * misspelt one loses the note with it, which is what an agent has to
+     * know before it relies on the note having been kept.
+     */
+    g_assert_nonnull(strstr(tools, "optional ~phase~"));
+    g_assert_nonnull(strstr(tools, "~planning~, ~delegated~, ~reviewing~, "
+                                   "~gating~,\n~landing~ or ~blocked~"));
+    g_assert_nonnull(strstr(tools, "refuses the whole call"));
+
+    /*
      * And it no longer promises a task its own session.  That was never
      * true -- lc_router_resolve_session_key() excludes the thread, so a
      * task lands in the sender's existing conversation -- and docs and
