@@ -166,6 +166,17 @@ void              clawt_agent_set_failover(ClawtAgent *self,
 #define CLAWT_AGENT_HELD_PROBE_SECONDS (15 * 60)
 
 /**
+ * CLAWT_AGENT_HELD_ELAPSED_PROBE_SECONDS:
+ *
+ * How long a held agent is left unfed when the reset its refusal named
+ * has already passed: a few seconds, then one delivery goes through.  A
+ * held frame repeated on reconnect after the account recovered carries
+ * a reset in the past, and that is the account saying it is back, not
+ * that it is gone for %CLAWT_AGENT_HELD_PROBE_SECONDS.
+ */
+#define CLAWT_AGENT_HELD_ELAPSED_PROBE_SECONDS (5)
+
+/**
  * CLAWT_AGENT_HELD_MAX_SECONDS:
  *
  * The longest a hold is believed: thirty days.  A `retry_at` further out
@@ -185,9 +196,10 @@ void              clawt_agent_set_failover(ClawtAgent *self,
  *
  * Whether the agent said it is held (agent.failover, state "held") and
  * the hold has not run out: until the reset the refusal named, but no
- * more than %CLAWT_AGENT_HELD_MAX_SECONDS from when it was said, or for
- * %CLAWT_AGENT_HELD_PROBE_SECONDS when it named none.  The router does
- * not feed a held agent.
+ * more than %CLAWT_AGENT_HELD_MAX_SECONDS from when it was said; for
+ * %CLAWT_AGENT_HELD_ELAPSED_PROBE_SECONDS when that reset has already
+ * passed; or for %CLAWT_AGENT_HELD_PROBE_SECONDS when it named none.  The
+ * router does not feed a held agent.
  *
  * Returns: %TRUE while held
  */

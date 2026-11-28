@@ -638,6 +638,11 @@ clawt_agent_set_failover(ClawtAgent *self,
      * A reset more than CLAWT_AGENT_HELD_MAX_SECONDS out is read as that
      * far: the frame is wrong, not the account, and a figure that large
      * also overflowed the wake's arithmetic in daemon-held.c.
+     *
+     * A reset that has already passed is not "no reset".  It is a held
+     * frame repeated on reconnect, or one that waited in a queue, about
+     * a limit that is over: probe in a few seconds rather than hold for
+     * the full window.  retry_at 0 -- none named -- keeps that window.
      */
     {
         gint64 now = g_get_real_time() / G_USEC_PER_SEC;
@@ -647,8 +652,12 @@ clawt_agent_set_failover(ClawtAgent *self,
         if (retry_at > now + CLAWT_AGENT_HELD_MAX_SECONDS)
             retry_at = now + CLAWT_AGENT_HELD_MAX_SECONDS;
 
-        self->held_until = retry_at > now
-            ? retry_at : now + CLAWT_AGENT_HELD_PROBE_SECONDS;
+        if (retry_at > now)
+            self->held_until = retry_at;
+        else if (retry_at != 0)
+            self->held_until = now + CLAWT_AGENT_HELD_ELAPSED_PROBE_SECONDS;
+        else
+            self->held_until = now + CLAWT_AGENT_HELD_PROBE_SECONDS;
     }
 
     if (self->state == CLAWT_AGENT_STATE_RUNNING ||

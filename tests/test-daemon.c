@@ -11288,6 +11288,51 @@ test_a_huge_retry_at_is_clamped(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A held frame whose reset has already passed -- repeated on reconnect
+ * after the account recovered -- probes in a few seconds.  Before, any
+ * retry_at <= now read as "no reset" and held the agent for the full
+ * fifteen-minute probe window for nothing.  retry_at 0, which names no
+ * reset, keeps that window.
+ */
+static void
+test_an_elapsed_reset_probes_soon(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GSocketConnection) link = NULL;
+    KindCount failovers = { "agent.failover", 0, CLAWT_ALERT_ROUTINE };
+    ClawtAgent *agent = NULL;
+    gint64 now;
+    gint64 until;
+
+    if (!held_scout_setup(&fixture, &link, &agent))
+        return;
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_kind_event), &failovers);
+
+    /* A reset a minute ago: a few seconds, not fifteen minutes. */
+    now = g_get_real_time() / G_USEC_PER_SEC;
+    send_held(&fixture, link, &failovers, now - 60);
+    until = clawt_agent_get_held_until(agent);
+    g_assert_cmpint(until, >, now);
+    g_assert_cmpint(until, <=, g_get_real_time() / G_USEC_PER_SEC +
+                               CLAWT_AGENT_HELD_ELAPSED_PROBE_SECONDS);
+    g_assert_true(g_hash_table_contains(fixture.daemon->held_wakes,
+                                        "scout"));
+
+    /* No reset named: the whole probe window. */
+    now = g_get_real_time() / G_USEC_PER_SEC;
+    send_held(&fixture, link, &failovers, 0);
+    until = clawt_agent_get_held_until(agent);
+    g_assert_cmpint(until, >=, now + CLAWT_AGENT_HELD_PROBE_SECONDS);
+    g_assert_cmpint(until, <=, g_get_real_time() / G_USEC_PER_SEC +
+                               CLAWT_AGENT_HELD_PROBE_SECONDS);
+
+    g_signal_handlers_disconnect_by_data(
+        clawt_daemon_get_event_bus(fixture.daemon), &failovers);
+    fixture_teardown(&fixture);
+}
+
 /* The bodies of everything queued for @agent_id, joined. */
 static gchar *
 queued_bodies(Fixture *fixture, const gchar *agent_id)
@@ -14403,6 +14448,8 @@ main(int argc, char *argv[])
                     test_a_long_hold_rearms_and_does_not_drain_early);
     g_test_add_func("/daemon/failover/huge-retry-at-is-clamped",
                     test_a_huge_retry_at_is_clamped);
+    g_test_add_func("/daemon/failover/elapsed-reset-probes-soon",
+                    test_an_elapsed_reset_probes_soon);
     g_test_add_func("/daemon/failover/shown-and-announced",
                     test_an_agent_on_a_fallback_is_shown_and_announced);
     g_test_add_func("/daemon/failover/checked-where-they-arrive",
