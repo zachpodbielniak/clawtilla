@@ -26,8 +26,13 @@
 #       the drawn office, measured from pixels that are not the clear
 #       colour, covers at least 95% of the limiting side of the frame
 #       and keeps the map's aspect.  The zoom value is not consulted.
+#   office-board-check.py moved A.json B.json MIN_PX
+#       both reports are 3D, both drew a zone, and the zones' centres
+#       are at least MIN_PX apart.  A moved camera has to show up here;
+#       the PNGs are not compared byte for byte.
 
 import json
+import math
 import struct
 import sys
 import zlib
@@ -217,6 +222,29 @@ def check_inview(report_path: str, mode: str) -> None:
         fail(f"{report_path}: the board {board['rect']} leaves the view {view}")
 
 
+def zone_centre(zone: list[float]) -> tuple[float, float]:
+    return (zone[0] + zone[2] / 2.0, zone[1] + zone[3] / 2.0)
+
+
+def check_moved(a_path: str, b_path: str, min_px: float) -> None:
+    """The board's on-screen zone moved, and both frames still drew one."""
+    a: dict[str, Any] = json.load(open(a_path))
+    b: dict[str, Any] = json.load(open(b_path))
+    za: list[float] | None = a.get("zone")
+    zb: list[float] | None = b.get("zone")
+    dist: float
+
+    if a.get("mode") != "3d" or b.get("mode") != "3d":
+        fail(f"{a_path}: moved wants two 3D reports, got {a.get('mode')} and {b.get('mode')}")
+    if za is None or zb is None or len(za) != 4 or len(zb) != 4:
+        fail(f"{a_path}: a moved camera still has to leave the board's zone on screen")
+    dist = math.hypot(zone_centre(za)[0] - zone_centre(zb)[0],
+                      zone_centre(za)[1] - zone_centre(zb)[1])
+    print(f"office-board-check: zone moved {dist:.1f}px (need {min_px:.0f})")
+    if dist < min_px:
+        fail(f"{a_path}: the board's zone moved {dist:.1f}px, under {min_px:.0f}")
+
+
 def check_span(png: str, map_w: int, map_h: int) -> None:
     """The map fills the limiting side.  Clear colour is the one office-scene paints."""
     image: Image = Image(png)
@@ -285,9 +313,12 @@ def main() -> None:
         check_inview(sys.argv[2], sys.argv[3])
     elif len(sys.argv) == 5 and sys.argv[1] == "span":
         check_span(sys.argv[2], int(sys.argv[3]), int(sys.argv[4]))
+    elif len(sys.argv) == 5 and sys.argv[1] == "moved":
+        check_moved(sys.argv[2], sys.argv[3], float(sys.argv[4]))
     else:
         fail("usage: office-board-check.py board ON.png OFF.png ON.json DETAIL | "
-             "panel REPORT.json | inview REPORT.json MODE | span FRAME.png MAP_W MAP_H")
+             "panel REPORT.json | inview REPORT.json MODE | "
+             "span FRAME.png MAP_W MAP_H | moved A.json B.json MIN_PX")
 
 
 if __name__ == "__main__":

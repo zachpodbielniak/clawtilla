@@ -167,6 +167,26 @@ do
 			cp "${RUN}/${name}.png" "${FIXTURES}/board-shots/${name}.png"
 		fi
 	done
+
+	# snapped, not eased: five frames is enough for the move to be on screen
+	name="${world}-3d-moved"
+	shot "${name}" "${world}" --3d --frames 5 \
+		--camera "20,16,2.0,0.76,90" || continue
+	check "${name}: the moved camera keeps the board in view" inview \
+		"${RUN}/${name}.json" 3d
+	check "${name}: the board moved from the default framing" moved \
+		"${RUN}/${world}-3d-default.json" "${RUN}/${name}.json" 40
+
+	for size in 1600x1200 2294x2231
+	do
+		w="${size%x*}"
+		h="${size#*x}"
+		name="${world}-3d-${w}x${h}"
+		shot "${name}" "${world}" --3d --frames 5 \
+			--width "${w}" --height "${h}" || continue
+		check "${name}: the board stays in view at ${w}x${h}" inview \
+			"${RUN}/${name}.json" 3d
+	done
 done
 
 # modern-office is 44 by 40 tiles of 32.  Fit must fill the limiting axis.
