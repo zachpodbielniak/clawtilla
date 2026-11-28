@@ -78,7 +78,9 @@ destroy_source(gpointer data)
 /*
  * The login an agent's turns run on: its `accounts:` entry, or its
  * provider's default login.  Two agents with the same key are behind
- * the same wall.
+ * the same wall.  An account's key names its provider too when the
+ * agent's config says it: an account id is the operator's label, and two
+ * providers' logins under one label are two walls, not one.
  */
 static gchar *
 account_key(ClawtAgent *agent, gchar **label_out)
@@ -86,18 +88,22 @@ account_key(ClawtAgent *agent, gchar **label_out)
     ClawtAgentConfig *config = clawt_agent_get_config(agent);
     const gchar *account = NULL;
     const gchar *provider = NULL;
+    gboolean provider_known;
 
     if (config != NULL) {
         account = clawt_agent_config_get_string(config, "model.account");
         provider = clawt_agent_config_get_string(config, "model.provider");
     }
 
-    if (provider == NULL || *provider == '\0')
+    provider_known = (provider != NULL && *provider != '\0');
+    if (!provider_known)
         provider = "default";
 
     if (account != NULL && *account != '\0') {
         *label_out = g_strdup_printf("account %s", account);
-        return g_strdup_printf("account:%s", account);
+        return provider_known
+            ? g_strdup_printf("account:%s:%s", provider, account)
+            : g_strdup_printf("account:%s", account);
     }
 
     *label_out = g_strdup_printf("the default %s login", provider);

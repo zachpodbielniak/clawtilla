@@ -4089,6 +4089,45 @@ test_finished_status_shows_a_short_result_whole(void)
 }
 
 /*
+ * A finished task whose result is empty, or only blank lines, shows no
+ * "Result:" heading: over nothing it read as a result that went missing.
+ */
+static void
+test_finished_status_skips_an_empty_result(void)
+{
+    static const gchar *const empty[] = { "", "\n\n  \n" };
+    Fixture fixture = { 0 };
+    guint i;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: worker\n");
+
+    for (i = 0; i < G_N_ELEMENTS(empty); i++) {
+        g_autofree gchar *arguments = NULL;
+        g_autoptr(JsonNode) status = NULL;
+        ClawtTask *task;
+        const gchar *text;
+        gboolean is_error = TRUE;
+
+        task = clawt_task_manager_create(fixture.tasks, "chief", "worker",
+                                         "count the rows", NULL, NULL);
+        g_assert_true(clawt_task_manager_complete(fixture.tasks,
+                                                  clawt_task_get_id(task),
+                                                  empty[i]));
+
+        arguments = g_strdup_printf("{\"task_id\":\"%s\"}",
+                                    clawt_task_get_id(task));
+        status = call_tool(&fixture, "chief", "clawtilla_task_status",
+                           arguments);
+        text = response_text(status, &is_error);
+        g_assert_false(is_error);
+        g_assert_nonnull(strstr(text, "completed"));
+        g_assert_null(strstr(text, "Result:"));
+    }
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * One long line is cut too, and on a character boundary: a result that is
  * a single paragraph is as much a report as one with many lines.
  */
@@ -5035,6 +5074,8 @@ main(int argc, char *argv[])
                     test_finished_status_shows_the_result);
     g_test_add_func("/mcp/task-status/short-result-whole",
                     test_finished_status_shows_a_short_result_whole);
+    g_test_add_func("/mcp/task-status/empty-result-skipped",
+                    test_finished_status_skips_an_empty_result);
     g_test_add_func("/mcp/task-status/long-line-cut",
                     test_finished_status_cuts_a_long_line);
     g_test_add_func("/mcp-tools/message-agent/not-a-room",

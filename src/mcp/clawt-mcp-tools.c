@@ -7335,6 +7335,16 @@ append_result_excerpt(GString *out, const gchar *result)
     guint lines = 0;
     gboolean cut;
 
+    /*
+     * An empty result -- or only blank lines -- is no result to show: a
+     * "Result:" heading over nothing reads as a result that was lost.
+     */
+    for (stop = result; *stop == '\n' || *stop == '\r' || *stop == ' ' ||
+                        *stop == '\t'; stop++)
+        ;
+    if (*stop == '\0')
+        return;
+
     while (*end != '\0' && lines < TASK_STATUS_RESULT_LINES) {
         const gchar *newline = strchr(end, '\n');
 

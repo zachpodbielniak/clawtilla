@@ -458,6 +458,18 @@ gboolean clawt_task_take_completion_hold(ClawtTask *self);
 gboolean clawt_task_release_completion_hold(ClawtTask *self, gint64 when);
 
 /**
+ * clawt_task_get_holds_completion:
+ * @self: a #ClawtTask
+ *
+ * Whether the assignee said its turn is over and the work is not, and
+ * that has not yet been spent by a turn ending.  Read, not taken: this
+ * is clawt_task_take_completion_hold()'s question without its effect.
+ *
+ * Returns: %TRUE when a hold is armed
+ */
+gboolean clawt_task_get_holds_completion(ClawtTask *self);
+
+/**
  * clawt_task_get_result_inferred:
  * @self: a #ClawtTask
  *
@@ -470,18 +482,6 @@ gboolean clawt_task_release_completion_hold(ClawtTask *self, gint64 when);
  *
  * Returns: %TRUE if nothing reported this task complete
  */
-/**
- * clawt_task_get_holds_completion:
- * @self: a #ClawtTask
- *
- * Whether the assignee said its turn is over and the work is not, and
- * that has not yet been spent by a turn ending.  Read, not taken: this
- * is clawt_task_take_completion_hold()'s question without its effect.
- *
- * Returns: %TRUE when a hold is armed
- */
-gboolean clawt_task_get_holds_completion(ClawtTask *self);
-
 gboolean clawt_task_get_result_inferred(ClawtTask *self);
 
 /**
