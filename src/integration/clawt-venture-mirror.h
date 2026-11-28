@@ -45,8 +45,20 @@ G_DECLARE_FINAL_TYPE(ClawtVentureMirror, clawt_venture_mirror,
                      CLAWT, VENTURE_MIRROR, GObject)
 
 /**
+ * CLAWT_VENTURE_MIRROR_STATUS_NOT_SENT:
+ *
+ * What a request func answers with when the request never left the
+ * process -- a URL it cannot dial, say.  The mirror handles the answer
+ * as it would a 400, a refusal that retrying will not mend, but does not
+ * read it as news of the server: VENTURE was not contacted, so it is
+ * neither down nor up.  Not an HTTP status, which starts at 100.
+ */
+#define CLAWT_VENTURE_MIRROR_STATUS_NOT_SENT (1)
+
+/**
  * ClawtVentureMirrorReply:
- * @status: the HTTP status, or 0 when nothing came back (network)
+ * @status: the HTTP status, 0 when nothing came back (network), or
+ *   %CLAWT_VENTURE_MIRROR_STATUS_NOT_SENT when the request never left
  * @body: (nullable): the answer's body
  * @reply_data: what the mirror passed with the request
  *

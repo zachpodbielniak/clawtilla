@@ -106,7 +106,9 @@ Every task save and every note queues a row in ~tasks.db~'s =venture_outbox=, in
 
 ** VENTURE down is an event
 
-Every send is already a probe, so a VENTURE that stops answering is known from the sends that fail: no answer, a 408 or a 5xx.  The first such failure publishes ~integration.health~ (subject =venture=, ~state~ =down=, ~base~ the server, ~message~ the failed answer), and the first answer after it -- any answer, a 4xx included -- publishes ~state~ =up=.  Nothing in between, however many sends fail, and nothing for the first answer after a start.  A pod binds it as ~on_integration_health~, which is how the parts of tasks waiting on =external:venture= ([[file:tasks.org][tasks.org]], "Waiting on somebody") can be released the moment it is back: ~clawtilla task unblock --on external:venture~.  Down is a notice, up is routine.
+Every send is already a probe, so a VENTURE that stops answering is known from the sends that fail: no answer, a 408 or a 5xx.  The first such failure publishes ~integration.health~ (subject =venture=, ~state~ =down=, ~base~ the server, ~message~ the failed answer), and the first answer after it -- any answer, a 4xx included -- publishes ~state~ =up=.  Nothing in between, however many sends fail.  The first answer after a start publishes =up= as well: the daemon may have been stopped while VENTURE was down and started after it came back, and without that =up= nothing would say so.  A request that never left clawtilla (a base URL it cannot dial) is neither: VENTURE was not asked.  A pod binds it as ~on_integration_health~.  Down is a notice, up is routine.
+
+On =up= the daemon releases every task waiting on =external:venture= ([[file:tasks.org][tasks.org]], "Waiting on somebody") by itself, as ~clawtilla task unblock --on external:venture~ would, and each assignee is told.  That includes tasks restored ~blocked~ after a restart, which the first answer after the start releases.
 
 ** A 404 is confirmed before it is believed (VENTURE #30)
 

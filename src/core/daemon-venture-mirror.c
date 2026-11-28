@@ -103,8 +103,13 @@ mirror_send(ClawtVentureMirror     *mirror,
     message = clawt_http_message_new(method, url,
                                      CLAWT_HTTP_CARRIES_CREDENTIALS);
 
+    /*
+     * Never sent, and said so: answered as a 400 was, but VENTURE was not
+     * contacted, so the mirror does not count it as VENTURE answering.
+     */
     if (message == NULL) {
-        reply(400, "{\"message\":\"not a URL clawtilla can dial\"}",
+        reply(CLAWT_VENTURE_MIRROR_STATUS_NOT_SENT,
+              "{\"message\":\"not a URL clawtilla can dial\"}",
               reply_data);
         return;
     }
@@ -693,7 +698,14 @@ clawt_daemon_venture_mirror_sync(ClawtDaemon *self)
  * one place the fleet learns VENTURE is down without probing for it.
  * Published as integration.health, subject "venture" -- the dependency's
  * name, as external:venture names it in a task's waiting_on -- so a rule
- * can tell whoever needs to know, and on "up" release what waited on it.
+ * can tell whoever needs to know.
+ *
+ * On "up" the daemon itself releases every task waiting on
+ * external:venture, as `clawtilla task unblock --on external:venture`
+ * would.  That was left to a rule, but no pod action can unblock a task,
+ * so no rule could; and a task restored blocked after a restart has
+ * nobody watching for VENTURE on its behalf.  The first answer after a
+ * start is an "up" (note_health()), so those are released too.
  */
 static void
 on_mirror_health_changed(ClawtVentureMirror *mirror, const gchar *base,
@@ -705,14 +717,24 @@ on_mirror_health_changed(ClawtVentureMirror *mirror, const gchar *base,
 
     (void)mirror;
 
-    if (self->bus == NULL)
-        return;
+    if (self->bus != NULL) {
+        event = clawt_event_new("integration.health", "venture");
+        clawt_event_set_detail(event, "state", up ? "up" : "down");
+        clawt_event_set_detail(event, "base", base);
+        clawt_event_set_detail(event, "message", detail);
+        clawt_event_bus_publish(self->bus, event);
+    }
 
-    event = clawt_event_new("integration.health", "venture");
-    clawt_event_set_detail(event, "state", up ? "up" : "down");
-    clawt_event_set_detail(event, "base", base);
-    clawt_event_set_detail(event, "message", detail);
-    clawt_event_bus_publish(self->bus, event);
+    if (up && self->tasks != NULL) {
+        guint resumed = clawt_task_manager_resume(self->tasks, NULL,
+                                                  "external:venture",
+                                                  "VENTURE answers again");
+
+        if (resumed > 0)
+            g_message("venture mirror: %s answers; %u task%s no longer "
+                      "wait%s on external:venture", base, resumed,
+                      resumed == 1 ? "" : "s", resumed == 1 ? "s" : "");
+    }
 }
 
 /* ClawtTaskManager::task-changed: (task id, state). */

@@ -573,8 +573,16 @@ confirm_key(Account *account, gint64 ticket)
  * (0), a timeout (408) or a 5xx is the server down; anything else -- a
  * 4xx included -- is a server that answered.  ::health-changed fires on
  * a change only: the first failure, and then the first answer after it.
- * The first answer of all says nothing, since nobody was told it was
- * down.
+ *
+ * The first answer since the mirror started is a change too, and says
+ * "up".  The daemon may have been down while VENTURE was, and come back
+ * after it: tasks restored blocked on external:venture are released by
+ * an "up", and with the first answer silent nothing would ever send one.
+ * One routine event per server per start is the price.
+ *
+ * A request that never left the process
+ * (%CLAWT_VENTURE_MIRROR_STATUS_NOT_SENT) is not seen here at all: the
+ * callers leave it out, since VENTURE was not asked.
  */
 static void
 note_health(ClawtVentureMirror *self, Account *account, guint status,
@@ -595,13 +603,18 @@ note_health(ClawtVentureMirror *self, Account *account, guint status,
     g_hash_table_insert(self->health, g_strdup(account->base),
                         GINT_TO_POINTER(now));
 
-    if (was == 0 && up)
-        return;
+    detail = !up ? answer_message(status, body)
+           : (was == 0) ? g_strdup("answering (its first answer since the "
+                                   "mirror started)")
+           : g_strdup("answering again");
 
-    detail = up ? g_strdup("answering again")
-                : answer_message(status, body);
-
-    if (up)
+    /*
+     * The first answer after a start is routine, so debug: anything above
+     * that reads as news in the log (and to g_test_expect_message()).
+     */
+    if (up && was == 0)
+        g_debug("venture mirror: %s is answering", account->base);
+    else if (up)
         g_message("venture mirror: %s is answering again", account->base);
     else
         g_message("venture mirror: %s is not answering: %s", account->base,
@@ -2084,7 +2097,11 @@ on_answer(guint status, const gchar *body, gpointer data)
 {
     Job *job = data;
 
-    note_health(job->mirror, job->acting, status, body);
+    /* Never sent: a refusal for the job, and no word on the server. */
+    if (status == CLAWT_VENTURE_MIRROR_STATUS_NOT_SENT)
+        status = 400;
+    else
+        note_health(job->mirror, job->acting, status, body);
 
     switch (job->step) {
     case STEP_WHOAMI_CREATOR:
@@ -3744,7 +3761,11 @@ on_poll_answer(guint status, const gchar *body, gpointer data)
 {
     PollJob *poll = data;
 
-    note_health(poll->mirror, poll->asked, status, body);
+    /* Never sent: a refusal for the poll, and no word on the server. */
+    if (status == CLAWT_VENTURE_MIRROR_STATUS_NOT_SENT)
+        status = 400;
+    else
+        note_health(poll->mirror, poll->asked, status, body);
 
     switch (poll->step) {
     case POLL_CONTEXT:
@@ -4624,8 +4645,10 @@ clawt_venture_mirror_class_init(ClawtVentureMirrorClass *klass)
      * @detail: why not (the failed answer), or "answering again"
      *
      * A server stopped answering the mirror's sends, or answers again
-     * (0.78).  Once per change, however many sends fail in between, and
-     * not for the first answer of all.
+     * (0.78).  Once per change, however many sends fail in between.  The
+     * first answer since the mirror started is "up" as well, so what was
+     * waiting on the server while the daemon was down is released.  A
+     * request that never left the process says nothing either way.
      */
     mirror_signals[SIGNAL_HEALTH_CHANGED] =
         g_signal_new("health-changed", CLAWT_TYPE_VENTURE_MIRROR,

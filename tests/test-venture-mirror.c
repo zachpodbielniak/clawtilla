@@ -53,6 +53,7 @@ typedef struct {
     guint           create_conflicts;   /* answer this many POST ticket 409 */
     guint           patch_conflicts;    /* and this many PATCH 409 */
     guint           unavailable;        /* and this many anything 503 */
+    guint           not_sent;           /* and this many never sent */
 
     /* the reverse direction: what VENTURE answers, and what was done */
     gchar          *changed;            /* GET ticket?external_ref__like */
@@ -206,7 +207,12 @@ fake_send(ClawtVentureMirror     *mirror,
     answer->data = reply_data;
     answer->status = 200;
 
-    if (fixture->unavailable > 0) {
+    if (fixture->not_sent > 0) {
+        fixture->not_sent--;
+        answer->status = CLAWT_VENTURE_MIRROR_STATUS_NOT_SENT;
+        answer->body = g_strdup("{\"message\":\"not a URL clawtilla can "
+                                "dial\"}");
+    } else if (fixture->unavailable > 0) {
         fixture->unavailable--;
         answer->status = 503;
     } else if (g_str_has_prefix(path, "/api/v1/whoami")) {
@@ -921,6 +927,86 @@ test_health_changes_once_each_way(Fixture *fixture, gconstpointer data)
 
     g_assert_cmpuint(health.changes, ==, 2);
     g_assert_true(health.up);
+
+    g_free(health.base);
+    g_free(health.detail);
+}
+
+/*
+ * The first answer since the mirror started is "up".  It used to say
+ * nothing, since nobody had been told VENTURE was down -- but the daemon
+ * may have been, and come back after VENTURE did: the tasks it restored
+ * blocked on external:venture are released by an "up", and none came.
+ */
+static void
+test_first_answer_after_start_is_up(Fixture *fixture, gconstpointer data)
+{
+    Health health = { 0 };
+
+    (void)data;
+    g_signal_connect(fixture->mirror, "health-changed",
+                     G_CALLBACK(on_health), &health);
+
+    {
+        g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                              CLAWT_TASK_PENDING);
+    }
+    drain(fixture);
+
+    g_assert_cmpuint(health.changes, ==, 1);
+    g_assert_true(health.up);
+    g_assert_cmpstr(health.base, ==, "http://v.test");
+    g_assert_nonnull(strstr(health.detail, "first answer"));
+
+    /* and once: the next answers are no change */
+    {
+        g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                              CLAWT_TASK_PENDING);
+    }
+    drain(fixture);
+    g_assert_cmpuint(health.changes, ==, 1);
+
+    g_free(health.base);
+    g_free(health.detail);
+}
+
+/*
+ * A request that never left the process -- the transport could not even
+ * make it, a base URL it cannot dial -- is no news of VENTURE.  It was
+ * answered with a synchronous 400, and a 400 is "VENTURE answered", so a
+ * VENTURE that was down read as back without having been contacted.
+ */
+static void
+test_an_unsent_request_is_no_news(Fixture *fixture, gconstpointer data)
+{
+    Health health = { 0 };
+
+    (void)data;
+    g_signal_connect(fixture->mirror, "health-changed",
+                     G_CALLBACK(on_health), &health);
+
+    fixture->unavailable = 1;
+    {
+        g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                              CLAWT_TASK_PENDING);
+    }
+    drain(fixture);
+    g_assert_cmpuint(health.changes, ==, 1);
+    g_assert_false(health.up);
+
+    /* the job is refused as a 400 was, which is a warning of its own */
+    fixture->not_sent = 1;
+    g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
+                          "*not a URL clawtilla can dial*");
+    {
+        g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                              CLAWT_TASK_PENDING);
+    }
+    drain(fixture);
+    g_test_assert_expected_messages();
+    g_assert_cmpuint(fixture->not_sent, ==, 0);
+    g_assert_cmpuint(health.changes, ==, 1);
+    g_assert_false(health.up);
 
     g_free(health.base);
     g_free(health.detail);
@@ -3090,6 +3176,8 @@ main(int argc, char *argv[])
     ADD("notes-become-comments", test_notes_become_comments);
     ADD("unavailable-backs-off", test_unavailable_backs_off);
     ADD("health-changes-once-each-way", test_health_changes_once_each_way);
+    ADD("first-answer-after-start-is-up", test_first_answer_after_start_is_up);
+    ADD("unsent-request-is-no-news", test_an_unsent_request_is_no_news);
     ADD("outbox-coalesces-and-keeps-late-changes",
         test_outbox_coalesces_and_keeps_late_changes);
     ADD("no-outbox-without-mirror", test_no_outbox_without_mirror);

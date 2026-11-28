@@ -11737,9 +11737,12 @@ test_a_waiting_question_carries_the_turns_depth(void)
 
 /*
  * A VENTURE that stops answering the mirror is an event, integration.health
- * with state down and the failed answer, and its return is state up: a
- * rule can release every part waiting on external:venture on the second
- * rather than a probe finding out.  The subject is the integration.
+ * with state down and the failed answer, and its return is state up.  On
+ * up, every part waiting on external:venture is released on the second
+ * rather than when a probe finds out -- by the daemon itself: the comment
+ * here said "a rule can", but no pod action can unblock a task.  A task
+ * waiting on something else stays waiting.  The subject is the
+ * integration.
  */
 static void
 test_venture_health_is_an_event(void)
@@ -11748,8 +11751,14 @@ test_venture_health_is_an_event(void)
     g_autoptr(GError) error = NULL;
     KindCount health = { "integration.health", 0, CLAWT_ALERT_ROUTINE };
     g_autofree gchar *state = NULL;
+    g_autofree gchar *wait_venture = NULL;
+    g_autofree gchar *wait_operator = NULL;
+    g_autofree gchar *woken = NULL;
+    ClawtTask *on_venture;
+    ClawtTask *on_operator;
 
-    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    fixture_setup(&fixture,
+                  "agents:\n  - id: chief\n  - id: worker\n");
     g_assert_true(clawt_daemon_start(fixture.daemon, &error));
     g_assert_no_error(error);
     g_assert_nonnull(fixture.daemon->venture_mirror);
@@ -11781,10 +11790,41 @@ test_venture_health_is_an_event(void)
                         "VENTURE answered 503");
     }
 
+    /* two parts held up meanwhile: one by VENTURE, one by a person */
+    on_venture = clawt_task_manager_create(fixture.daemon->tasks, "chief",
+                                           "worker", "file the ticket",
+                                           NULL, NULL);
+    on_operator = clawt_task_manager_create(fixture.daemon->tasks, "chief",
+                                            "worker", "pick the tag",
+                                            NULL, NULL);
+    clawt_task_manager_start(fixture.daemon->tasks,
+                             clawt_task_get_id(on_venture));
+    clawt_task_manager_start(fixture.daemon->tasks,
+                             clawt_task_get_id(on_operator));
+    wait_venture = g_strdup_printf("{\"task_id\":\"%s\",\"note\":\"VENTURE "
+        "is down\",\"waiting_on\":\"external:venture\"}",
+        clawt_task_get_id(on_venture));
+    wait_operator = g_strdup_printf("{\"task_id\":\"%s\",\"note\":\"needs "
+        "a tag\",\"waiting_on\":\"operator\",\"question\":\"Which tag?\"}",
+        clawt_task_get_id(on_operator));
+    g_assert_true(report_progress(&fixture, "worker", wait_venture));
+    g_assert_true(report_progress(&fixture, "worker", wait_operator));
+    g_assert_cmpint(clawt_task_get_state(on_venture), ==, CLAWT_TASK_BLOCKED);
+    g_assert_cmpint(clawt_task_get_state(on_operator), ==,
+                    CLAWT_TASK_BLOCKED);
+
     g_signal_emit_by_name(fixture.daemon->venture_mirror, "health-changed",
                           "http://v.test", TRUE, "answering again");
     g_assert_cmpuint(health.seen, ==, 2);
     g_assert_cmpint(health.tier, ==, CLAWT_ALERT_ROUTINE);
+
+    /* back: what waited on VENTURE goes on, and is told */
+    g_assert_cmpint(clawt_task_get_state(on_venture), ==, CLAWT_TASK_RUNNING);
+    g_assert_null(clawt_task_get_waiting_on(on_venture));
+    g_assert_cmpint(clawt_task_get_state(on_operator), ==,
+                    CLAWT_TASK_BLOCKED);
+    woken = queued_bodies(&fixture, "worker");
+    g_assert_nonnull(strstr(woken, "no longer waits on external:venture"));
 
     g_signal_handlers_disconnect_by_data(
         clawt_daemon_get_event_bus(fixture.daemon), &health);
