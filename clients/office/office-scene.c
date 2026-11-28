@@ -246,6 +246,7 @@ struct _ClawtOfficeScene {
     GHashTable           *sheets;     /* id -> Sheet */
     GHashTable           *looks;      /* id -> Look */
     GHashTable           *portraits;  /* id -> FacePortrait */
+    GQueue                portrait_unload; /* Texture2D *, unloaded in prepare() */
     gchar                *status;
     gchar                *hovered;
     gchar                *focus;      /* who the 3D camera follows, or NULL */
@@ -359,6 +360,7 @@ clawt_office_scene_new(void)
                                         (GDestroyNotify)look_free);
     self->portraits = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                             (GDestroyNotify)face_portrait_free);
+    g_queue_init(&self->portrait_unload);
     self->handles = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     self->tile = 32.0f;
     self->person_scale = PERSON_SCALE;
@@ -380,6 +382,19 @@ clawt_office_scene_free(ClawtOfficeScene *self)
     g_hash_table_unref(self->sheets);
     g_hash_table_unref(self->looks);
     g_hash_table_unref(self->portraits);
+    /*
+     * Teardown, on the host's thread, same as the portraits still in the
+     * hash.  A clear from the feed callback only queued these.
+     */
+    {
+        Texture2D *texture;
+
+        while ((texture = g_queue_pop_head(&self->portrait_unload)) != NULL) {
+            if (texture->id != 0)
+                UnloadTexture(*texture);
+            g_free(texture);
+        }
+    }
     g_ptr_array_unref(self->tilemaps);
     if (self->baked_ok)
         UnloadRenderTexture(self->baked);
@@ -983,6 +998,23 @@ clawt_office_scene_set_portrait(ClawtOfficeScene *self, const gchar *id,
     if (id == NULL)
         return;
     if (rgba == NULL || size < 1) {
+        FacePortrait *existing = g_hash_table_lookup(self->portraits, id);
+
+        if (existing == NULL)
+            return;
+        /*
+         * prepare() is the only safe place for a GL call.  A clear from
+         * the feed callback queues the texture and drops the pixels; it
+         * does not call UnloadTexture.
+         */
+        if (existing->uploaded && existing->texture.id != 0) {
+            Texture2D *texture = g_new(Texture2D, 1);
+
+            *texture = existing->texture;
+            existing->uploaded = FALSE;
+            existing->texture.id = 0;
+            g_queue_push_tail(&self->portrait_unload, texture);
+        }
         g_hash_table_remove(self->portraits, id);
         return;
     }
@@ -1249,6 +1281,15 @@ clawt_office_scene_prepare(ClawtOfficeScene *self)
          * pixels at Fit, and point sampling turns a face into noise.
          * Sheets stay point-sampled above; that is a different picture.
          */
+        {
+            Texture2D *texture;
+
+            while ((texture = g_queue_pop_head(&self->portrait_unload)) != NULL) {
+                if (texture->id != 0)
+                    UnloadTexture(*texture);
+                g_free(texture);
+            }
+        }
         g_hash_table_iter_init(&iter, self->portraits);
         while (g_hash_table_iter_next(&iter, NULL, &value)) {
             FacePortrait *portrait = value;
