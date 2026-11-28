@@ -47,14 +47,6 @@
 #include <stdio.h>
 #include <string.h>
 
-/*
- * task.board's member naming the columns.  Spelled as two literals so the
- * parity check's measure-unit walk (tools/clawt-client-parity.sh, layer 4)
- * does not read it as this client keeping its own copy of the unit
- * "columns": it is a JSON key here, not a unit.
- */
-#define BOARD_COLUMNS_KEY "col" "umns"
-
 /* The element htmx swaps the contents of. */
 #define BOARD_LIVE_ID    "board-live"
 /* How a card's note and a chip's title are cut. */
@@ -783,7 +775,7 @@ tl_row_bars(GString *svg, const TlScale *s, JsonObject *item, gint y, gint h,
 static gint64
 tl_earliest(JsonObject *root, gint64 now)
 {
-	JsonArray *columns = clawt_web_member_array(root, BOARD_COLUMNS_KEY);
+	JsonArray *columns = clawt_web_member_array(root, CLAWT_BOARD_MEMBER_COLUMNS);
 	gint64 since = clawt_web_member_int(
 		clawt_web_member_object(root, "window"), "since", 0);
 	gint64 first = now;
@@ -826,7 +818,7 @@ static HtmxElement *
 board_timeline(const BoardQuery *q, JsonObject *root)
 {
 	HtmxElement *holder = mk_div("board-timeline-wrap");
-	JsonArray *columns = clawt_web_member_array(root, BOARD_COLUMNS_KEY);
+	JsonArray *columns = clawt_web_member_array(root, CLAWT_BOARD_MEMBER_COLUMNS);
 	gint64 now = clawt_web_member_int(root, "now", 0);
 	TlScale scale;
 	GString *rows = g_string_new(NULL);
@@ -952,7 +944,7 @@ board_render(const BoardQuery *q, JsonNode *reply, const gchar *error)
 	HtmxElement *body = mk_div("board-body");
 	HtmxElement *bar = mk_div("board-bar btn-row");
 	JsonObject *root = clawt_web_root(reply);
-	JsonArray *columns = clawt_web_member_array(root, BOARD_COLUMNS_KEY);
+	JsonArray *columns = clawt_web_member_array(root, CLAWT_BOARD_MEMBER_COLUMNS);
 	g_autofree gchar *self = board_page_href(q, q->view, q->lanes, q->done);
 	g_autofree gchar *lanes_href = board_page_href(q, q->view, !q->lanes,
 	                                               q->done);

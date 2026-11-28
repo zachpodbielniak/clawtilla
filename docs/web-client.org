@@ -1038,7 +1038,9 @@ updating for whichever kind was added last.
 The agent board (Tasks, Board and Timeline) listens on this same
 stream and opens no other: one ~sse:fleet~ trigger, coalesced with
 ~delay:~, on a host whose contents are swapped.  It starts no timer and no
-~every~ poller, which is what VENTURE #38's leak was.
+~every~ poller, which is what VENTURE #38's leak was.  A card's quiet
+badge changes on the next event or Refresh, not at its ~quiet_at~ by
+itself, because the board keeps no timer on purpose.
 
 A comment goes down every idle stream twice a minute.  A quiet fleet can
 go hours without an event, and anything in between -- a proxy, a NAT

@@ -50,6 +50,15 @@ G_BEGIN_DECLS
 #define CLAWT_BOARD_QUIET_MINUTES (20)
 
 /**
+ * CLAWT_BOARD_MEMBER_COLUMNS:
+ *
+ * The member of a `task.board` reply that lists the seven columns, in
+ * order.  It is the wire name, not a measure unit: clients read the
+ * reply through this so the name lives in the library alone.
+ */
+#define CLAWT_BOARD_MEMBER_COLUMNS "columns"
+
+/**
  * ClawtBoardBlocks:
  * @CLAWT_BOARD_BLOCK_NONE: nothing blocks it
  * @CLAWT_BOARD_BLOCK_FAILED: the task itself failed
