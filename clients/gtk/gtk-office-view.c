@@ -201,7 +201,7 @@ struct _OfficeView {
     /* the toolbar over the drawing */
     GtkWidget         *mode_2d;     /* GtkToggleButton, grouped with mode_3d */
     GtkWidget         *mode_3d;
-    GtkWidget         *zoom_buttons[3];  /* Fit, 1x, 2x, by ClawtOfficeZoom */
+    GtkWidget         *zoom_buttons[4];  /* by ClawtOfficeZoom: Fit, 1x, 2x, pixel */
     GtkWidget         *usage;       /* GtkDropDown: on the wall, in the corner, off */
     GtkWidget         *follow;      /* GtkDropDown: nobody, then the roster */
     GtkStringList     *follow_names;
@@ -1725,9 +1725,12 @@ build_toolbar(OfficeView *view)
         gtk_box_append(GTK_BOX(bar), open_button);
     }
 
-    /* Fit, 1x, 2x */
+    /* Fit, Pixel-perfect, 1x, 2x.  The array is indexed by the enum. */
     gtk_widget_add_css_class(zooms, "linked");
     view->zoom_buttons[CLAWT_OFFICE_ZOOM_FIT] = toggle_in(zooms, NULL, "Fit",
+        "The whole office, at the largest scale that fits");
+    view->zoom_buttons[CLAWT_OFFICE_ZOOM_PIXEL] = toggle_in(zooms,
+        view->zoom_buttons[CLAWT_OFFICE_ZOOM_FIT], "Pixel-perfect",
         "The whole office, at the largest whole-number scale that fits");
     view->zoom_buttons[CLAWT_OFFICE_ZOOM_1X] = toggle_in(zooms,
         view->zoom_buttons[CLAWT_OFFICE_ZOOM_FIT], "1x",

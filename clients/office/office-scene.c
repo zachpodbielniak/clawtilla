@@ -1026,6 +1026,8 @@ clawt_office_scene_set_zoom(ClawtOfficeScene *self, ClawtOfficeZoom zoom)
     switch (zoom) {
     case CLAWT_OFFICE_ZOOM_1X: self->distance = 0.6f;  break;
     case CLAWT_OFFICE_ZOOM_2X: self->distance = 0.35f; break;
+    /* pixel-perfect is a 2D sampling choice; in 3D it frames like Fit */
+    case CLAWT_OFFICE_ZOOM_PIXEL:
     case CLAWT_OFFICE_ZOOM_FIT:
     default:                   self->distance = 1.0f;  break;
     }
@@ -1673,9 +1675,17 @@ sync_plate(ClawtOfficeScene *self, Actor *a)
  */
 static void
 draw_overlays(ClawtOfficeScene *self, GPtrArray *people, const Vector2 *at, gfloat scale,
-              gint height)
+              gint height, gfloat plate_zoom)
 {
     gfloat ui = (gfloat)self->ui_scale;
+    /*
+     * Past 1x the plates grow with the map, so a fractional Fit does not
+     * leave the names at the size they had when the map was stuck at 1.
+     * At 1x and below they stay at the ui scale: a fitted map that is
+     * smaller than the view would otherwise shrink them to dots.  3D
+     * passes 0 and keeps the ui scale; its camera is not this zoom.
+     */
+    gfloat plate = plate_zoom > ui ? plate_zoom : ui;
     gfloat above = 30.0f * scale;
     gfloat below = MAX(12.0f * scale, 10.0f * ui);
     g_autofree ClawtOfficeLabel *labels = g_new0(ClawtOfficeLabel, MAX(people->len, 1));
@@ -1686,9 +1696,9 @@ draw_overlays(ClawtOfficeScene *self, GPtrArray *people, const Vector2 *at, gflo
         GrlRectangle box = { 0.0f, 0.0f, 0.0f, 0.0f };
 
         sync_plate(self, a);
-        lrg_world_widget_set_scale(LRG_WORLD_WIDGET(a->plate), ui);
-        lrg_world_widget_set_scale(LRG_WORLD_WIDGET(a->mark), ui);
-        lrg_world_widget_set_scale(LRG_WORLD_WIDGET(a->bubble), ui);
+        lrg_world_widget_set_scale(LRG_WORLD_WIDGET(a->plate), plate);
+        lrg_world_widget_set_scale(LRG_WORLD_WIDGET(a->mark), plate);
+        lrg_world_widget_set_scale(LRG_WORLD_WIDGET(a->bubble), plate);
         lrg_world_widget_get_box_at(LRG_WORLD_WIDGET(a->plate), at[i].x, at[i].y + below, &box);
         labels[i].x = box.x;
         labels[i].y = box.y;
@@ -1989,11 +1999,38 @@ sorted_actors(ClawtOfficeScene *self)
     return out;
 }
 
+/*
+ * Where the 2D camera looks, so the map does not sit a fraction of a
+ * screen pixel off.
+ *
+ * A whole zoom repeats map pixels.  The target stays on a map pixel, and
+ * each repeat starts on a screen pixel.  A fractional zoom cannot land
+ * every map pixel on a screen pixel; landing the target on one (target
+ * times zoom is a whole number) keeps the whole map from crawling, which
+ * is the shimmer a floored Fit used to avoid by never drawing that zoom.
+ * The offset is already a whole pixel.
+ */
+static Vector2
+snap_camera_target(gfloat cx, gfloat cy, gfloat zoom)
+{
+    if (!(zoom > 0.0f))
+        zoom = 1.0f;
+    if (zoom >= 1.0f && zoom == floorf(zoom))
+        return (Vector2){ floorf(cx), floorf(cy) };
+    return (Vector2){ roundf(cx * zoom) / zoom, roundf(cy * zoom) / zoom };
+}
+
 static void
 draw_2d(ClawtOfficeScene *self, gint width, gint height)
 {
     g_autoptr(GPtrArray) people = sorted_actors(self);
     g_autofree Vector2 *at = NULL;
+    /*
+     * From this frame's size, not a cached scale.  The GTK embed draws
+     * at the size of the latest resize message, the window at
+     * GetScreenWidth/Height, and lrg at the viewport's size, so Fit
+     * follows every resize in all three.
+     */
     gfloat zoom = clawt_office_view_map_zoom(self->zoom, self->ui_scale, (gfloat)width,
                                              (gfloat)height, self->map_w, self->map_h);
     gfloat cx = self->map_w / 2.0f;
@@ -2017,9 +2054,7 @@ draw_2d(ClawtOfficeScene *self, gint width, gint height)
     clawt_office_view_clamp_centre((gfloat)width, (gfloat)height, self->map_w, self->map_h,
                                    zoom, &cx, &cy);
     self->camera2d.offset = (Vector2){ floorf(width / 2.0f), floorf(height / 2.0f) };
-    /* whole map pixels at a whole-number zoom, so no pixel of the art is split */
-    self->camera2d.target = zoom >= 1.0f ? (Vector2){ floorf(cx), floorf(cy) }
-                                         : (Vector2){ cx, cy };
+    self->camera2d.target = snap_camera_target(cx, cy, zoom);
     self->camera2d.rotation = 0.0f;
     self->camera2d.zoom = zoom;
     /* people stay legible in a small view: never under ~a 16 logical px head on screen */
@@ -2079,7 +2114,7 @@ draw_2d(ClawtOfficeScene *self, gint width, gint height)
 
         at[i] = GetWorldToScreen2D((Vector2){ a->x, a->y }, self->camera2d);
     }
-    draw_overlays(self, people, at, self->person_scale * zoom, height);
+    draw_overlays(self, people, at, self->person_scale * zoom, height, zoom);
 }
 
 /*
@@ -2256,7 +2291,7 @@ draw_3d(ClawtOfficeScene *self, gint width, gint height)
         at[i] = GetWorldToScreenEx((Vector3){ a->x * k, 2.6f, a->y * k },
                                    self->camera3d, width, height);
     }
-    draw_overlays(self, people, at, (gfloat)self->ui_scale, height);
+    draw_overlays(self, people, at, (gfloat)self->ui_scale, height, 0.0f);
 }
 
 /*
@@ -2311,7 +2346,7 @@ draw_adapter(ClawtOfficeScene *self, gint width, gint height)
     }
     draw_overlays(self, people, at,
                   MAX(lrg_camera2d_get_zoom(camera) * PERSON_SCALE, 0.8f * self->ui_scale),
-                  height);
+                  height, 0.0f);
 }
 
 void

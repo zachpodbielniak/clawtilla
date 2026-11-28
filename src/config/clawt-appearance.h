@@ -794,7 +794,8 @@ void clawt_appearance_set_office_mode(ClawtAppearance     *self,
  * @self: a #ClawtAppearance
  *
  * How far the Office page's map is zoomed, as `office_zoom` in
- * `appearance.yaml` (`fit`, `1x` or `2x`).  Fit by default.
+ * `appearance.yaml` (`fit`, `pixel`, `1x` or `2x`; `pixel-perfect`
+ * reads as `pixel`).  Fit by default.
  *
  * Returns: the zoom
  */

@@ -161,6 +161,26 @@ on_pointer_scroll(LrgViewport *viewport, gfloat u, gfloat v, gfloat sx, gfloat s
     clawt_office_scene_orbit(view.scene, sx * 0.1f, sy);
 }
 
+/* Fit, Pixel-perfect, 1x, 2x.  The zoom is stashed on the button: the
+ * callback's user data is the app, which the wake needs. */
+static void
+on_zoom(LrgButton *button, gpointer user_data)
+{
+    clawt_office_scene_set_zoom(view.scene,
+        (ClawtOfficeZoom)GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "zoom")));
+    clawt_lrg_app_wake(user_data);
+}
+
+static LrgWidget *
+zoom_button(const gchar *label, ClawtOfficeZoom zoom, ClawtLrgApp *app)
+{
+    LrgWidget *button = clawt_lrg_button(label, "flat", G_CALLBACK(on_zoom), app);
+
+    /* FIT is 0, and GINT_TO_POINTER(0) is NULL; reading it back is 0 */
+    g_object_set_data(G_OBJECT(button), "zoom", GINT_TO_POINTER((gint)zoom));
+    return button;
+}
+
 /* 2D and 3D, beside the drawing. */
 static void
 on_mode(LrgButton *button, gpointer user_data)
@@ -207,6 +227,10 @@ clawt_lrg_office_view_add(ClawtLrgApp *app, LrgWidget *parent)
     clawt_lrg_take(bar, clawt_lrg_button("2D / 3D", "flat", G_CALLBACK(on_mode), app));
     clawt_lrg_take(bar, clawt_lrg_button("Open office", "flat", G_CALLBACK(on_open_office),
                                          app));
+    clawt_lrg_take(bar, zoom_button("Fit", CLAWT_OFFICE_ZOOM_FIT, app));
+    clawt_lrg_take(bar, zoom_button("Pixel-perfect", CLAWT_OFFICE_ZOOM_PIXEL, app));
+    clawt_lrg_take(bar, zoom_button("1x", CLAWT_OFFICE_ZOOM_1X, app));
+    clawt_lrg_take(bar, zoom_button("2x", CLAWT_OFFICE_ZOOM_2X, app));
     {
         /*
          * One line beside a fixed button: it takes the row's slack and

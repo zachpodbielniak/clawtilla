@@ -116,16 +116,21 @@ var scene = {
 
 var root = make_element('div');
 var scene_el = make_element('script');
+var listeners = {};
 
 scene_el.textContent = JSON.stringify(scene);
 
 var stage = make_element('div');
+var floor = make_element('canvas');
+var actors = make_element('canvas');
 
 root.querySelector = function (sel) {
 	if (sel === '.office-stage')
 		return stage;
-	if (sel === '.office-floor' || sel === '.office-actors')
-		return make_element('canvas');
+	if (sel === '.office-floor')
+		return floor;
+	if (sel === '.office-actors')
+		return actors;
 	return null;
 };
 
@@ -152,7 +157,11 @@ var win = {
 	matchMedia: function () {
 		return { matches: false, addEventListener: function () {} };
 	},
-	addEventListener: function () {},
+	addEventListener: function (type, fn) {
+		if (!listeners[type])
+			listeners[type] = [];
+		listeners[type].push(fn);
+	},
 	requestAnimationFrame: function (fn) { rafs.push(fn); return rafs.length; },
 	setTimeout: function () { return 1; },
 	setInterval: function () { return 1; },
@@ -200,6 +209,26 @@ board.logins.forEach(function (login) {
 		      'canvas text never got the window label "' + w.label + '"');
 	});
 });
+
+/* Fit is the fraction, aspect kept, and a tall window is not capped at 900. */
+check(typeof win.clawtOfficeFitScale === 'function', 'clawtOfficeFitScale was not exported');
+if (typeof win.clawtOfficeFitScale === 'function') {
+	var fit = win.clawtOfficeFitScale;
+
+	check(Math.abs(fit(1700, 1700, 1000, 1000) - 1.7) < 1e-9,
+	      'a fit of 1.7 was not returned as 1.7');
+	check(Math.abs(fit(2294, 2231, 1408, 1280) - (2294 / 1408)) < 1e-9,
+	      '2294x2231 Fit was floored');
+	check(Math.abs(fit(1600, 675, 1408, 1280) - (675 / 1280)) < 1e-9,
+	      'a fit below 1 was not left fractional');
+	check(fit(0, 100, 100, 100) === 1, 'an empty view did not return 1');
+}
+win.innerHeight = 2231;
+stage.clientWidth = 2294;
+(listeners.resize || []).forEach(function (fn) { fn(); });
+check(parseFloat(floor.style.height) > 1600,
+      'a 2231px window still capped the floor near 900 (height ' +
+      floor.style.height + ')');
 
 if (failures.length > 0) {
 	failures.forEach(function (f) { console.error('FAIL: ' + f); });

@@ -22,6 +22,10 @@
 #       the view was drawn in MODE (2d or 3d), the board was drawn at
 #       some level of detail, and its zone -- in 3D the rectangle the
 #       board's corners cover -- and the board itself are inside the view
+#   office-board-check.py span FRAME.png MAP_W MAP_H
+#       the drawn office, measured from pixels that are not the clear
+#       colour, covers at least 95% of the limiting side of the frame
+#       and keeps the map's aspect.  The zoom value is not consulted.
 
 import json
 import struct
@@ -213,6 +217,65 @@ def check_inview(report_path: str, mode: str) -> None:
         fail(f"{report_path}: the board {board['rect']} leaves the view {view}")
 
 
+def check_span(png: str, map_w: int, map_h: int) -> None:
+    """The map fills the limiting side.  Clear colour is the one office-scene paints."""
+    image: Image = Image(png)
+    clear: tuple[int, int, int] = (24, 26, 32)
+    tol: int = 12
+    lo_x: int = image.width
+    lo_y: int = image.height
+    hi_x: int = -1
+    hi_y: int = -1
+    y: int
+    x: int
+    span_w: int
+    span_h: int
+    width_pct: float
+    height_pct: float
+    limiting: float
+    which: str
+    map_aspect: float
+    content_aspect: float
+
+    for y in range(image.height):
+        row: bytes = image.rows[y]
+        ch: int = image.channels
+        for x in range(image.width):
+            a: int = x * ch
+            if (abs(row[a] - clear[0]) > tol or abs(row[a + 1] - clear[1]) > tol or
+                    abs(row[a + 2] - clear[2]) > tol):
+                if x < lo_x:
+                    lo_x = x
+                if y < lo_y:
+                    lo_y = y
+                if x > hi_x:
+                    hi_x = x
+                if y > hi_y:
+                    hi_y = y
+    if hi_x < 0:
+        fail(f"{png}: nothing but the clear colour")
+    span_w = hi_x - lo_x + 1
+    span_h = hi_y - lo_y + 1
+    width_pct = 100.0 * span_w / image.width
+    height_pct = 100.0 * span_h / image.height
+    # the axis the map hits first: a wider view is limited by height
+    if (image.width / image.height) > (map_w / map_h):
+        limiting = height_pct
+        which = "height"
+    else:
+        limiting = width_pct
+        which = "width"
+    map_aspect = map_w / map_h
+    content_aspect = span_w / span_h
+    print(f"office-board-check: {png}: width {width_pct:.1f}% height {height_pct:.1f}% "
+          f"limiting {which} {limiting:.1f}%")
+    if limiting < 95.0:
+        fail(f"{png}: the map spans {limiting:.1f}% of the limiting {which}, under 95% "
+             f"(bbox {span_w}x{span_h} in {image.width}x{image.height})")
+    if abs(content_aspect - map_aspect) / map_aspect > 0.15:
+        fail(f"{png}: content aspect {content_aspect:.3f} is not the map's {map_aspect:.3f}")
+
+
 def main() -> None:
     if len(sys.argv) == 6 and sys.argv[1] == "board":
         check_board(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
@@ -220,9 +283,11 @@ def main() -> None:
         check_panel(sys.argv[2])
     elif len(sys.argv) == 4 and sys.argv[1] == "inview":
         check_inview(sys.argv[2], sys.argv[3])
+    elif len(sys.argv) == 5 and sys.argv[1] == "span":
+        check_span(sys.argv[2], int(sys.argv[3]), int(sys.argv[4]))
     else:
         fail("usage: office-board-check.py board ON.png OFF.png ON.json DETAIL | "
-             "panel REPORT.json | inview REPORT.json MODE")
+             "panel REPORT.json | inview REPORT.json MODE | span FRAME.png MAP_W MAP_H")
 
 
 if __name__ == "__main__":

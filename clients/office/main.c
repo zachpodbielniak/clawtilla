@@ -108,7 +108,7 @@ static GOptionEntry entries[] = {
     { "focus", 'f', 0, G_OPTION_ARG_STRING, &opt_focus,
       "Follow this participant with the 3D camera, close up", "ID" },
     { "zoom", 'z', 0, G_OPTION_ARG_STRING, &opt_zoom,
-      "Zoom the 2D map: fit (default), 1x or 2x", "ZOOM" },
+      "Zoom the 2D map: fit (default), pixel, 1x or 2x", "ZOOM" },
     { "ui-scale", 0, 0, G_OPTION_ARG_INT, &opt_ui_scale,
       "Draw text this many times larger, for a HiDPI screen (1-4, default 1)", "N" },
     { "usage", 'u', 0, G_OPTION_ARG_STRING, &opt_usage,
@@ -834,8 +834,8 @@ main(int argc, char *argv[])
         ClawtOfficeZoom zoom = CLAWT_OFFICE_ZOOM_FIT;
 
         if (opt_zoom != NULL && !clawt_office_zoom_from_nick(opt_zoom, &zoom)) {
-            g_printerr("%s: --zoom is fit, 1x or 2x, not \"%s\"\n", CLAWT_OFFICE_BIN_NAME,
-                       opt_zoom);
+            g_printerr("%s: --zoom is fit, pixel, 1x or 2x, not \"%s\"\n",
+                       CLAWT_OFFICE_BIN_NAME, opt_zoom);
             return EXIT_FAILURE;
         }
     }

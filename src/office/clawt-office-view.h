@@ -88,18 +88,22 @@ typedef enum {
 /**
  * ClawtOfficeZoom:
  * @CLAWT_OFFICE_ZOOM_FIT: the whole map in the view, at the largest
- *   whole-number scale that fits (or the fraction that fits, when even
- *   one map pixel per device pixel is too big)
+ *   scale that fits, fractional included, aspect kept
  * @CLAWT_OFFICE_ZOOM_1X: one map pixel per logical pixel
  * @CLAWT_OFFICE_ZOOM_2X: two logical pixels per map pixel
+ * @CLAWT_OFFICE_ZOOM_PIXEL: the whole map at the largest whole-number
+ *   scale that fits (or the fraction that fits, when even one map pixel
+ *   per device pixel is too big).  Pixel-perfect: map pixels are
+ *   repeated, never smeared
  *
  * How far the 2D map is zoomed.  In 3D it picks the camera's distance:
- * Fit the whole level, 1x and 2x closer in.
+ * Fit and Pixel-perfect frame the whole level, 1x and 2x closer in.
  */
 typedef enum {
-    CLAWT_OFFICE_ZOOM_FIT = 0,
-    CLAWT_OFFICE_ZOOM_1X  = 1,
-    CLAWT_OFFICE_ZOOM_2X  = 2
+    CLAWT_OFFICE_ZOOM_FIT   = 0,
+    CLAWT_OFFICE_ZOOM_1X    = 1,
+    CLAWT_OFFICE_ZOOM_2X    = 2,
+    CLAWT_OFFICE_ZOOM_PIXEL = 3
 } ClawtOfficeZoom;
 
 /**
@@ -141,13 +145,14 @@ gboolean clawt_office_view_mode_from_nick(const gchar         *nick,
  * clawt_office_zoom_nick:
  * @zoom: a #ClawtOfficeZoom
  *
- * Returns: (transfer none): "fit", "1x" or "2x"
+ * Returns: (transfer none): "fit", "pixel", "1x" or "2x"
  */
 const gchar *clawt_office_zoom_nick(ClawtOfficeZoom zoom);
 
 /**
  * clawt_office_zoom_from_nick:
- * @nick: (nullable): "fit", "1x" or "2x", in any case
+ * @nick: (nullable): "fit", "pixel" (or "pixel-perfect"), "1x" or "2x",
+ *   in any case
  * @out: (out): the zoom
  *
  * Returns: %TRUE when @nick named a zoom; @out is untouched otherwise
@@ -226,11 +231,14 @@ gint clawt_office_view_clamp_ui_scale(gint ui_scale);
  * @map_width: the map, in map pixels
  * @map_height: likewise
  *
- * Device pixels per map pixel.  Fit is a whole number whenever the map
- * fits at one or more, so pixel art is scaled by repeating pixels, never
- * by smearing them; below one it is the fraction that fits.  1x is
- * @ui_scale and 2x twice it -- one or two logical pixels per map pixel,
- * crisp on any screen, and larger than the view on a small one.
+ * Device pixels per map pixel.  Fit is the fraction that fits, at any
+ * size, so a window between one and two times the map draws the map at
+ * 1.7 rather than leaving it at 1.  Pixel-perfect is that fraction
+ * floored to a whole number whenever the map fits at one or more, so
+ * pixel art is scaled by repeating pixels, never by smearing them;
+ * below one it is the same fraction as Fit.  1x is @ui_scale and 2x
+ * twice it -- one or two logical pixels per map pixel, crisp on any
+ * screen, and larger than the view on a small one.
  *
  * Returns: the zoom; 1 for a map with no size
  */

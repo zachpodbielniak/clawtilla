@@ -258,12 +258,14 @@ gboolean clawt_office_scene_has_3d(ClawtOfficeScene *self);
 /**
  * clawt_office_scene_set_zoom:
  * @self: a scene
- * @zoom: Fit, 1x or 2x
+ * @zoom: Fit, Pixel-perfect, 1x or 2x
  *
  * How far the 2D map is zoomed (clawt_office_view_map_zoom()): Fit is the
- * whole map at the largest whole-number scale that fits.  In 3D it sets
- * the camera's distance, which the wheel then changes.  Either way a
- * drag's panning is forgotten.
+ * largest scale at which the whole map fits, fractional included.
+ * Pixel-perfect is that scale floored to a whole number.  In 3D, Fit and
+ * Pixel-perfect set the camera's distance to frame the office, and 1x
+ * and 2x come closer; the wheel then changes it.  Either way a drag's
+ * panning is forgotten.
  */
 void clawt_office_scene_set_zoom(ClawtOfficeScene *self, ClawtOfficeZoom zoom);
 
