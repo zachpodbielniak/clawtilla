@@ -2408,7 +2408,7 @@ Every kind published, by subject:
 | a Grok bot | ~grok.bots_changed~ |
 | a skill | ~skill.changed~ |
 | a recording | ~teach.changed~ |
-| an integration | ~integration.changed~ |
+| an integration | ~integration.changed~, ~integration.health~ (~state~ =down= or =up=, ~base~, ~message~; subject the service, =venture=): a service the fleet depends on stopped answering or answers again |
 | the broker's state (~stopped~, ~starting~, ~running~, ...), or ~key~ | ~broker.changed~ (the integration broker moved, or a key was stored) |
 | a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
 | the daemon | ~device.paired~ (~device~, ~name~), ~device.revoked~ (~device~), ~device.expired~ (~device~) |

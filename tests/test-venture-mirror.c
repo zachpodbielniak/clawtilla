@@ -859,6 +859,73 @@ test_unavailable_backs_off(Fixture *fixture, gconstpointer data)
     g_assert_null(find_sent(fixture, "POST", "/api/v1/ticket"));
 }
 
+typedef struct {
+    guint  changes;
+    gchar *base;
+    gboolean up;
+    gchar *detail;
+} Health;
+
+static void
+on_health(ClawtVentureMirror *mirror, const gchar *base, gboolean up,
+          const gchar *detail, gpointer data)
+{
+    Health *health = data;
+
+    (void)mirror;
+    health->changes++;
+    g_free(health->base);
+    health->base = g_strdup(base);
+    health->up = up;
+    g_free(health->detail);
+    health->detail = g_strdup(detail);
+}
+
+/*
+ * The mirror already sees every send fail when VENTURE is down, so it
+ * says so: one health-changed "down" on the first failure, nothing more
+ * for the next ten, and one "up" on the first answer after.  A refusal
+ * that VENTURE answered (a 4xx) is VENTURE up.  Before, a down VENTURE
+ * was only a retry in the outbox; something had to probe for it.
+ */
+static void
+test_health_changes_once_each_way(Fixture *fixture, gconstpointer data)
+{
+    Health health = { 0 };
+    guint i;
+
+    (void)data;
+    g_signal_connect(fixture->mirror, "health-changed",
+                     G_CALLBACK(on_health), &health);
+
+    fixture->unavailable = 11;
+    for (i = 0; i < 11; i++) {
+        g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                              CLAWT_TASK_PENDING);
+    }
+    drain(fixture);
+
+    g_assert_cmpuint(fixture->sent->len, >=, 11);
+    g_assert_cmpuint(health.changes, ==, 1);
+    g_assert_false(health.up);
+    g_assert_cmpstr(health.base, ==, "http://v.test");
+    g_assert_nonnull(strstr(health.detail, "503"));
+
+    {
+        g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                              CLAWT_TASK_PENDING);
+
+        g_assert_cmpuint(fixture->unavailable, ==, 0);
+        drain(fixture);
+    }
+
+    g_assert_cmpuint(health.changes, ==, 2);
+    g_assert_true(health.up);
+
+    g_free(health.base);
+    g_free(health.detail);
+}
+
 /*
  * The outbox coalesces a task's saves into one row, and a change made
  * while the row was in flight is kept rather than finished away.
@@ -3022,6 +3089,7 @@ main(int argc, char *argv[])
     ADD("stale-version-is-reread", test_stale_version_is_reread);
     ADD("notes-become-comments", test_notes_become_comments);
     ADD("unavailable-backs-off", test_unavailable_backs_off);
+    ADD("health-changes-once-each-way", test_health_changes_once_each_way);
     ADD("outbox-coalesces-and-keeps-late-changes",
         test_outbox_coalesces_and_keeps_late_changes);
     ADD("no-outbox-without-mirror", test_no_outbox_without_mirror);

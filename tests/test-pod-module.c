@@ -740,6 +740,26 @@ test_failure_events_reach_the_pod(void)
             g_error("on_trigger_dropped lost '%s'", on_dropped[i]);
     }
 
+    /* src/core/daemon-venture-mirror.c: about a service, so no agent */
+    {
+        g_autoptr(ClawtEvent) health = clawt_event_new("integration.health",
+                                                       "venture");
+        static const gchar *const on_health[] = { "state", "base", "message",
+                                                  NULL };
+
+        for (i = 0; on_health[i] != NULL; i++)
+            clawt_event_set_detail(health, on_health[i], "x");
+        clawt_event_bus_publish(bus, health);
+        g_assert_cmpstr(fired.name, ==, "on_integration_health");
+        for (i = 0; on_health[i] != NULL; i++) {
+            g_autoptr(GVariant) value = g_variant_lookup_value(
+                fired.data, on_health[i], G_VARIANT_TYPE_STRING);
+
+            if (value == NULL)
+                g_error("on_integration_health lost '%s'", on_health[i]);
+        }
+    }
+
     g_free(fired.name);
     g_clear_pointer(&fired.data, g_variant_unref);
 }

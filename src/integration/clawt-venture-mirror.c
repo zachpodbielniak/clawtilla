@@ -166,12 +166,25 @@ struct _ClawtVentureMirror {
 
     /* VENTURE #30: 404s confirmed, and what the operator is told. */
     GHashTable               *confirmed;     /* "base#ticket" -> gint64 time */
+
+    /*
+     * Whether each server answers (0.78): base -> HEALTH_UP or
+     * HEALTH_DOWN, absent until the first answer.  Every send is a probe
+     * already, so a VENTURE that is down is known from the sends that
+     * fail -- see note_health().
+     */
+    GHashTable               *health;
     GHashTable               *warnings;      /* "agent#kind#org" -> Warning */
 };
 
 G_DEFINE_FINAL_TYPE(ClawtVentureMirror, clawt_venture_mirror, G_TYPE_OBJECT)
 
-enum { SIGNAL_CONTEXT_CHANGED, SIGNAL_ACCOUNT_LEARNED, N_SIGNALS };
+enum {
+    SIGNAL_CONTEXT_CHANGED,
+    SIGNAL_ACCOUNT_LEARNED,
+    SIGNAL_HEALTH_CHANGED,
+    N_SIGNALS
+};
 static guint mirror_signals[N_SIGNALS];
 
 /* ── One job: one outbox row being sent ──────────────────────────── */
@@ -548,6 +561,54 @@ static gchar *
 confirm_key(Account *account, gint64 ticket)
 {
     return g_strdup_printf("%s#%" G_GINT64_FORMAT, account->base, ticket);
+}
+
+/* ── Whether VENTURE answers ─────────────────────────────────────── */
+
+#define HEALTH_UP   (1)
+#define HEALTH_DOWN (2)
+
+/*
+ * An answer, or the lack of one, from @account's server.  No connection
+ * (0), a timeout (408) or a 5xx is the server down; anything else -- a
+ * 4xx included -- is a server that answered.  ::health-changed fires on
+ * a change only: the first failure, and then the first answer after it.
+ * The first answer of all says nothing, since nobody was told it was
+ * down.
+ */
+static void
+note_health(ClawtVentureMirror *self, Account *account, guint status,
+            const gchar *body)
+{
+    gboolean up = !(status == 0 || status == 408 || status >= 500);
+    gint now = up ? HEALTH_UP : HEALTH_DOWN;
+    gint was;
+    g_autofree gchar *detail = NULL;
+
+    if (account == NULL || account->base == NULL)
+        return;
+
+    was = GPOINTER_TO_INT(g_hash_table_lookup(self->health, account->base));
+    if (was == now)
+        return;
+
+    g_hash_table_insert(self->health, g_strdup(account->base),
+                        GINT_TO_POINTER(now));
+
+    if (was == 0 && up)
+        return;
+
+    detail = up ? g_strdup("answering again")
+                : answer_message(status, body);
+
+    if (up)
+        g_message("venture mirror: %s is answering again", account->base);
+    else
+        g_message("venture mirror: %s is not answering: %s", account->base,
+                  detail);
+
+    g_signal_emit(self, mirror_signals[SIGNAL_HEALTH_CHANGED], 0,
+                  account->base, up, detail);
 }
 
 /* ── Sending ─────────────────────────────────────────────────────── */
@@ -2023,6 +2084,8 @@ on_answer(guint status, const gchar *body, gpointer data)
 {
     Job *job = data;
 
+    note_health(job->mirror, job->acting, status, body);
+
     switch (job->step) {
     case STEP_WHOAMI_CREATOR:
         on_whoami(job, job->creator, status, body);
@@ -2344,6 +2407,7 @@ typedef struct {
     gint64              team_last;   /* the last ticket id they listed */
     gboolean            team_full;   /* and the last page was full */
     gboolean            asking;      /* first, every unknown account's whoami */
+    Account            *asked;       /* not owned: whose server was asked */
     gboolean            context_changed;
 } PollJob;
 
@@ -2491,6 +2555,7 @@ poll_send_as(PollJob *poll, Account *account, const gchar *path)
     ClawtVentureMirror *self = poll->mirror;
     g_autofree gchar *url = g_strconcat(account->base, path, NULL);
 
+    poll->asked = account;
     self->request(self, "GET", url, account->token, NULL, NULL,
                   on_poll_answer, poll, self->request_data);
 }
@@ -3679,6 +3744,8 @@ on_poll_answer(guint status, const gchar *body, gpointer data)
 {
     PollJob *poll = data;
 
+    note_health(poll->mirror, poll->asked, status, body);
+
     switch (poll->step) {
     case POLL_CONTEXT:
         on_poll_context(poll, status, body);
@@ -4510,6 +4577,7 @@ clawt_venture_mirror_finalize(GObject *object)
     g_hash_table_unref(self->intake_times);
     g_hash_table_unref(self->team_linked);
     g_hash_table_unref(self->confirmed);
+    g_hash_table_unref(self->health);
     g_hash_table_unref(self->warnings);
     g_clear_object(&self->store);
     g_clear_pointer(&self->context, g_main_context_unref);
@@ -4547,6 +4615,23 @@ clawt_venture_mirror_class_init(ClawtVentureMirrorClass *klass)
         g_signal_new("account-learned", CLAWT_TYPE_VENTURE_MIRROR,
                      G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
                      G_TYPE_NONE, 2, G_TYPE_STRING, G_TYPE_STRING);
+
+    /**
+     * ClawtVentureMirror::health-changed:
+     * @self: the mirror
+     * @base: the VENTURE server, as an account names it
+     * @up: whether it answers now
+     * @detail: why not (the failed answer), or "answering again"
+     *
+     * A server stopped answering the mirror's sends, or answers again
+     * (0.78).  Once per change, however many sends fail in between, and
+     * not for the first answer of all.
+     */
+    mirror_signals[SIGNAL_HEALTH_CHANGED] =
+        g_signal_new("health-changed", CLAWT_TYPE_VENTURE_MIRROR,
+                     G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+                     G_TYPE_NONE, 3, G_TYPE_STRING, G_TYPE_BOOLEAN,
+                     G_TYPE_STRING);
 }
 
 static void
@@ -4557,6 +4642,8 @@ clawt_venture_mirror_init(ClawtVentureMirror *self)
     self->last_progress = g_hash_table_new_full(g_str_hash, g_str_equal,
                                                 g_free, NULL);
     self->rows = g_queue_new();
+    self->health = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                         NULL);
     self->context_milestones = g_array_new(FALSE, FALSE, sizeof(gint64));
     self->started = iso_seconds_ago(0);
     self->context_goals = g_array_new(FALSE, FALSE, sizeof(gint64));

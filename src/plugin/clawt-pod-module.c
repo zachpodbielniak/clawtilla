@@ -80,6 +80,9 @@ static const EventName events[] = {
       "max_start_failures runs in a row; `failures` and `error` say why" },
     { "on_integration_changed", "integration.changed",
       "An integration was added, edited or removed" },
+    { "on_integration_health", "integration.health",
+      "A service the fleet depends on stopped answering, or answers again; "
+      "`state` (down or up), `base` and `message` say which" },
     /*
      * docs/triggers.org promised these five to pods from the start, and
      * the daemon has always published them; this table, which is the
@@ -473,7 +476,8 @@ on_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
      * decision.settled; `kind`, `team`, `routine`, `recipient` and
      * `occurrences` from incident.opened; `delivery` and `max_pending`
      * from trigger.dropped; `waiting_on` and `question` from a
-     * task.changed whose task waits on somebody.
+     * task.changed whose task waits on somebody; `base` from
+     * integration.health.
      */
     {
         static const gchar *const carried[] = {
@@ -484,7 +488,8 @@ on_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
             "primary_model", "reset_at", "retry_at", "context_lost",
             "message", "wait", "decision", "how", "answer", "via",
             "kind", "team", "routine", "recipient", "occurrences",
-            "delivery", "max_pending", "waiting_on", "question", NULL
+            "delivery", "max_pending", "waiting_on", "question", "base",
+            NULL
         };
         gsize k;
 

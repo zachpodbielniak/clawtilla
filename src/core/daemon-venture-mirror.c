@@ -688,6 +688,33 @@ clawt_daemon_venture_mirror_sync(ClawtDaemon *self)
     }
 }
 
+/*
+ * The mirror's sends stopped being answered, or are answered again: the
+ * one place the fleet learns VENTURE is down without probing for it.
+ * Published as integration.health, subject "venture" -- the dependency's
+ * name, as external:venture names it in a task's waiting_on -- so a rule
+ * can tell whoever needs to know, and on "up" release what waited on it.
+ */
+static void
+on_mirror_health_changed(ClawtVentureMirror *mirror, const gchar *base,
+                         gboolean up, const gchar *detail,
+                         gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+    g_autoptr(ClawtEvent) event = NULL;
+
+    (void)mirror;
+
+    if (self->bus == NULL)
+        return;
+
+    event = clawt_event_new("integration.health", "venture");
+    clawt_event_set_detail(event, "state", up ? "up" : "down");
+    clawt_event_set_detail(event, "base", base);
+    clawt_event_set_detail(event, "message", detail);
+    clawt_event_bus_publish(self->bus, event);
+}
+
 /* ClawtTaskManager::task-changed: (task id, state). */
 static void
 on_task_changed_for_mirror(ClawtTaskManager *tasks, const gchar *task_id,
@@ -734,6 +761,8 @@ clawt_daemon_venture_mirror_start(ClawtDaemon *self)
                      G_CALLBACK(on_mirror_context_changed), self);
     g_signal_connect(self->venture_mirror, "account-learned",
                      G_CALLBACK(on_mirror_account_learned), self);
+    g_signal_connect(self->venture_mirror, "health-changed",
+                     G_CALLBACK(on_mirror_health_changed), self);
 
     if (self->tasks != NULL)
         self->mirror_task_handler = g_signal_connect(

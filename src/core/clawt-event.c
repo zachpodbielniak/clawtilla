@@ -410,6 +410,15 @@ clawt_alert_tier_for_event(ClawtEvent *event)
      * comes later (daemon-held.c): a notice is the list a client shows,
      * not a phone going off eight times for one dead login.
      */
+    /*
+     * A dependency that stopped answering is a notice; its return is
+     * routine, ending a condition somebody was told about.
+     */
+    if (g_strcmp0(kind, "integration.health") == 0)
+        return (g_strcmp0(clawt_event_get_detail(event, "state"),
+                          "down") == 0)
+                   ? CLAWT_ALERT_NOTICE : CLAWT_ALERT_ROUTINE;
+
     if (g_strcmp0(kind, "agent.failover") == 0) {
         const gchar *state = clawt_event_get_detail(event, "state");
 

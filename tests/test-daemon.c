@@ -11094,6 +11094,62 @@ test_a_task_waiting_on_somebody_asks_and_is_unblocked(void)
 }
 
 /*
+ * A VENTURE that stops answering the mirror is an event, integration.health
+ * with state down and the failed answer, and its return is state up: a
+ * rule can release every part waiting on external:venture on the second
+ * rather than a probe finding out.  The subject is the integration.
+ */
+static void
+test_venture_health_is_an_event(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    KindCount health = { "integration.health", 0, CLAWT_ALERT_ROUTINE };
+    g_autofree gchar *state = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(fixture.daemon->venture_mirror);
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_kind_event), &health);
+
+    g_signal_emit_by_name(fixture.daemon->venture_mirror, "health-changed",
+                          "http://v.test", FALSE, "VENTURE answered 503");
+    g_assert_cmpuint(health.seen, ==, 1);
+    g_assert_cmpint(health.tier, ==, CLAWT_ALERT_NOTICE);
+
+    {
+        g_autoptr(GPtrArray) events = clawt_event_bus_replay(
+            clawt_daemon_get_event_bus(fixture.daemon), 0, NULL);
+        ClawtEvent *last = NULL;
+        guint i;
+
+        for (i = 0; i < events->len; i++)
+            if (g_strcmp0(clawt_event_get_kind(events->pdata[i]),
+                          "integration.health") == 0)
+                last = events->pdata[i];
+
+        g_assert_nonnull(last);
+        g_assert_cmpstr(clawt_event_get_subject(last), ==, "venture");
+        g_assert_cmpstr(clawt_event_get_detail(last, "state"), ==, "down");
+        g_assert_cmpstr(clawt_event_get_detail(last, "base"), ==,
+                        "http://v.test");
+        g_assert_cmpstr(clawt_event_get_detail(last, "message"), ==,
+                        "VENTURE answered 503");
+    }
+
+    g_signal_emit_by_name(fixture.daemon->venture_mirror, "health-changed",
+                          "http://v.test", TRUE, "answering again");
+    g_assert_cmpuint(health.seen, ==, 2);
+    g_assert_cmpint(health.tier, ==, CLAWT_ALERT_ROUTINE);
+
+    g_signal_handlers_disconnect_by_data(
+        clawt_daemon_get_event_bus(fixture.daemon), &health);
+    fixture_teardown(&fixture);
+}
+
+/*
  * A fallback list is checked where it arrives.  Another sign-in to the
  * agent's own subscription is refused with the reason and nothing is
  * written; a provider change that would make the current list such a
@@ -13815,6 +13871,8 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/usage/fleet-page-summary",
                     test_usage_summary_for_the_fleet_page);
+    g_test_add_func("/daemon/venture/health-is-an-event",
+                    test_venture_health_is_an_event);
     g_test_add_func("/daemon/task/waiting-on-asks-and-is-unblocked",
                     test_a_task_waiting_on_somebody_asks_and_is_unblocked);
     g_test_add_func("/daemon/failover/held-agent-is-degraded-and-not-fed",
