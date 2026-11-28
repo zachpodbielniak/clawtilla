@@ -6323,6 +6323,17 @@ test_a_turn_marker_needs_the_assignees_task(void)
 	clawt_daemon_note_step(lt.fixture.daemon, chatter);
 	g_assert_cmpint(clawt_task_get_state(lt.task), ==, CLAWT_TASK_RUNNING);
 
+	/*
+	 * Though it is work: a tool step by the assignee after its note says
+	 * the note was not its last word, and spends the hold
+	 * (clawt_task_manager_note_turn_work()).  A fresh note arms another,
+	 * for the check below.
+	 */
+	g_assert_false(clawt_task_get_holds_completion(lt.task));
+	g_assert_true(clawt_task_manager_note_progress(lt.fixture.daemon->tasks,
+		clawt_task_get_id(lt.task), "still waiting on the sub-agent"));
+	g_assert_true(clawt_task_get_holds_completion(lt.task));
+
 	/* Somebody else's turn does not spend the assignee's hold. */
 	g_assert_false(clawt_task_manager_note_turn_continued(
 		lt.fixture.daemon->tasks, clawt_task_get_id(lt.task), "chief", NULL));
