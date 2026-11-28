@@ -10,6 +10,19 @@
 #include "clawtilla.h"
 #include "task/clawt-task.h"
 
+/*
+ * How many phase reports a task keeps.  The board's timeline draws them;
+ * an agent that reports a phase on every progress note would otherwise
+ * grow a stored task without bound.  The oldest go first.
+ */
+#define CLAWT_TASK_PHASES_KEPT (32)
+
+/* One phase report: which phase, and when (Unix time). */
+typedef struct {
+    ClawtTaskPhase phase;
+    gint64         at;
+} PhaseMark;
+
 struct _ClawtTask {
     gint ref_count;
 
@@ -78,6 +91,30 @@ struct _ClawtTask {
     gchar *cancelled_by;
     gchar *retried_by;
     guint  retries;
+
+    /*
+     * Where the assignee says the work has got to (0.78.0), when it said
+     * so, and every phase it has reported, oldest first -- the board's
+     * timeline draws phase spans from the last.  Cleared (with a NONE
+     * mark) when the task goes back to pending: a phase describes one
+     * attempt, and a retry or a review sending the work back starts
+     * another.
+     */
+    ClawtTaskPhase phase;
+    gint64         phase_at;
+    GArray        *phases;        /* PhaseMark */
+
+    /*
+     * When the state last changed and when the assignee last reported
+     * progress, as Unix times: what the board reads a review's wait and
+     * a running task's last sign of life from.  Both are stored.
+     * activity_at is not: it is the last streamed step the assignee took
+     * on the task, as frequent as a tool call, and a step after a restart
+     * is what the next one is.
+     */
+    gint64 state_at;
+    gint64 progress_at;
+    gint64 activity_at;
 
     /*
      * Everyone who has owned it, oldest first, with the current
@@ -152,6 +189,8 @@ clawt_task_new(const gchar *origin_agent,
     self->prompt = g_strdup(prompt);
     self->state = CLAWT_TASK_PENDING;
     self->created_at = g_get_real_time() / G_USEC_PER_SEC;
+    self->state_at = self->created_at;
+    self->phases = g_array_new(FALSE, TRUE, sizeof(PhaseMark));
 
     /*
      * Seeded with the first assignee rather than left empty, so the
@@ -226,6 +265,15 @@ clawt_task_copy(ClawtTask *self)
     copy->cancelled_by = g_strdup(self->cancelled_by);
     copy->retried_by = g_strdup(self->retried_by);
     copy->retries = self->retries;
+    copy->phase = self->phase;
+    copy->phase_at = self->phase_at;
+    copy->phases = g_array_new(FALSE, TRUE, sizeof(PhaseMark));
+    if (self->phases != NULL && self->phases->len > 0)
+        g_array_append_vals(copy->phases, self->phases->data,
+                            self->phases->len);
+    copy->state_at = self->state_at;
+    copy->progress_at = self->progress_at;
+    copy->activity_at = self->activity_at;
 
     /*
      * Deep, because g_ptr_array_copy() carries the source's element-free
@@ -289,6 +337,7 @@ clawt_task_free(ClawtTask *self)
     g_free(self->question);
     g_free(self->cancelled_by);
     g_free(self->retried_by);
+    g_clear_pointer(&self->phases, g_array_unref);
     g_clear_pointer(&self->owners, g_ptr_array_unref);
     g_free(self);
 }
@@ -350,7 +399,9 @@ clawt_task_reopen(ClawtTask *self, const gchar *who)
     self->hold_armed_at = 0;
     self->result_inferred = FALSE;
     self->finished_at = 0;
-    self->state = CLAWT_TASK_PENDING;
+
+    /* Through the setter, so the state's time and the phase move too. */
+    clawt_task_set_state(self, CLAWT_TASK_PENDING);
 
     g_free(self->retried_by);
     self->retried_by = g_strdup(who);
@@ -583,12 +634,54 @@ clawt_task_set_title(ClawtTask *self, const gchar *title)
         ? clawt_utf8_truncate(title, CLAWT_TASK_TITLE_MAX, FALSE) : NULL;
 }
 
+/* Appends a phase report, dropping the oldest past the bound. */
+static void
+add_phase_mark(ClawtTask *self, ClawtTaskPhase phase, gint64 at)
+{
+    PhaseMark mark;
+
+    if (self->phases == NULL)
+        self->phases = g_array_new(FALSE, TRUE, sizeof(PhaseMark));
+
+    mark.phase = phase;
+    mark.at = at;
+    g_array_append_val(self->phases, mark);
+
+    while (self->phases->len > CLAWT_TASK_PHASES_KEPT)
+        g_array_remove_index(self->phases, 0);
+}
+
 void
 clawt_task_set_state(ClawtTask *self, ClawtTaskState state)
 {
+    gboolean changed;
+
     g_return_if_fail(self != NULL);
 
+    changed = (self->state != state);
     self->state = state;
+
+    /*
+     * When it last moved, which is what "how long has this waited for a
+     * verdict" and "how long since anything happened" are read from.
+     * Only on a real change: a setter called with the state it already
+     * has is not news.
+     *
+     * Going back to pending starts another attempt -- a retry, a review
+     * sending it back, a release from a hold -- and the phase its
+     * assignee reported described the last one, so it goes, with a mark
+     * that says so for the timeline.
+     */
+    if (changed) {
+        self->state_at = g_get_real_time() / G_USEC_PER_SEC;
+
+        if (state == CLAWT_TASK_PENDING &&
+            self->phase != CLAWT_TASK_PHASE_NONE) {
+            self->phase = CLAWT_TASK_PHASE_NONE;
+            self->phase_at = self->state_at;
+            add_phase_mark(self, CLAWT_TASK_PHASE_NONE, self->state_at);
+        }
+    }
 
     /*
      * When somebody first picked it up.  Once: a retry is the same task
@@ -610,6 +703,175 @@ clawt_task_set_depth(ClawtTask *self, gint depth)
 {
     g_return_if_fail(self != NULL);
     self->depth = depth;
+}
+
+/* ── Phase, and the times the board reads (0.78.0) ───────────────── */
+
+ClawtTaskPhase
+clawt_task_get_phase(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, CLAWT_TASK_PHASE_NONE);
+    return self->phase;
+}
+
+gint64
+clawt_task_get_phase_at(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, 0);
+    return self->phase_at;
+}
+
+gboolean
+clawt_task_set_phase(ClawtTask *self, ClawtTaskPhase phase, gint64 at)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    /*
+     * The same phase again is not a new report: a progress note that
+     * repeats "gating" must not move the time the gating began, which is
+     * what the timeline measures from.
+     */
+    if (self->phase == phase)
+        return FALSE;
+
+    if (at <= 0)
+        at = g_get_real_time() / G_USEC_PER_SEC;
+
+    self->phase = phase;
+    self->phase_at = at;
+    add_phase_mark(self, phase, at);
+
+    return TRUE;
+}
+
+guint
+clawt_task_get_phase_count(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, 0);
+    return self->phases != NULL ? self->phases->len : 0;
+}
+
+ClawtTaskPhase
+clawt_task_get_phase_nth(ClawtTask *self, guint index, gint64 *at)
+{
+    PhaseMark *mark;
+
+    g_return_val_if_fail(self != NULL, CLAWT_TASK_PHASE_NONE);
+
+    if (self->phases == NULL || index >= self->phases->len) {
+        if (at != NULL)
+            *at = 0;
+        return CLAWT_TASK_PHASE_NONE;
+    }
+
+    mark = &g_array_index(self->phases, PhaseMark, index);
+
+    if (at != NULL)
+        *at = mark->at;
+
+    return mark->phase;
+}
+
+gint64
+clawt_task_get_state_at(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, 0);
+    return self->state_at;
+}
+
+void
+clawt_task_set_state_at(ClawtTask *self, gint64 at)
+{
+    g_return_if_fail(self != NULL);
+    self->state_at = at;
+}
+
+gint64
+clawt_task_get_progress_at(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, 0);
+    return self->progress_at;
+}
+
+void
+clawt_task_set_progress_at(ClawtTask *self, gint64 at)
+{
+    g_return_if_fail(self != NULL);
+    self->progress_at = at;
+}
+
+gint64
+clawt_task_get_activity_at(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, 0);
+    return self->activity_at;
+}
+
+void
+clawt_task_note_activity(ClawtTask *self, gint64 at)
+{
+    g_return_if_fail(self != NULL);
+
+    /* Steps can arrive out of order; the latest is the one that counts. */
+    if (at > self->activity_at)
+        self->activity_at = at;
+}
+
+gint64
+clawt_task_get_last_sign_of_life(ClawtTask *self)
+{
+    gint64 last;
+
+    g_return_val_if_fail(self != NULL, 0);
+
+    /*
+     * Every one of these is the task, or its assignee on it, doing
+     * something somebody could see: made, started, moved, reported on,
+     * or a streamed step.  A phase report is a report too.
+     */
+    last = self->created_at;
+    last = MAX(last, self->started_at);
+    last = MAX(last, self->state_at);
+    last = MAX(last, self->progress_at);
+    last = MAX(last, self->phase_at);
+    last = MAX(last, self->activity_at);
+
+    return last;
+}
+
+const gchar *
+clawt_task_phase_to_nick(ClawtTaskPhase phase)
+{
+    return clawt_enum_to_nick(CLAWT_TYPE_TASK_PHASE, phase);
+}
+
+gboolean
+clawt_task_phase_parse(const gchar     *nick,
+                       ClawtTaskPhase  *phase,
+                       GError         **error)
+{
+    gint value = CLAWT_TASK_PHASE_NONE;
+
+    /*
+     * `none` is refused as well as anything unknown: a phase is reported,
+     * and clearing one is the task going back to pending, not something
+     * an agent says.  The message lists what is accepted, because the
+     * agent reading it has to try again with one of them.
+     */
+    if (nick == NULL ||
+        !clawt_enum_from_nick(CLAWT_TYPE_TASK_PHASE, nick, &value) ||
+        value == CLAWT_TASK_PHASE_NONE) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is not a phase; use one of planning, delegated, "
+                    "reviewing, gating, landing or blocked",
+                    nick != NULL ? nick : "");
+        return FALSE;
+    }
+
+    if (phase != NULL)
+        *phase = (ClawtTaskPhase)value;
+
+    return TRUE;
 }
 
 GPtrArray *
@@ -921,11 +1183,39 @@ clawt_task_to_json(ClawtTask *self)
     add_int(builder, "created_at", self->created_at);
     add_int(builder, "started_at", self->started_at);
     add_int(builder, "finished_at", self->finished_at);
+    add_int(builder, "state_at", self->state_at);
+    add_int(builder, "progress_at", self->progress_at);
 
     /* By nickname, so the file survives the enum being reordered. */
     json_builder_set_member_name(builder, "state");
     json_builder_add_string_value(builder,
         clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE, self->state));
+
+    /*
+     * The phase and its reports (0.78.0), by nickname like the state.
+     * Left out entirely for a task nobody reported a phase on, which is
+     * most of them, so their rows read as they always did.
+     */
+    if (self->phase != CLAWT_TASK_PHASE_NONE)
+        add_string(builder, "phase", clawt_task_phase_to_nick(self->phase));
+    if (self->phase_at != 0)
+        add_int(builder, "phase_at", self->phase_at);
+
+    if (self->phases != NULL && self->phases->len > 0) {
+        json_builder_set_member_name(builder, "phases");
+        json_builder_begin_array(builder);
+
+        for (i = 0; i < self->phases->len; i++) {
+            PhaseMark *mark = &g_array_index(self->phases, PhaseMark, i);
+
+            json_builder_begin_object(builder);
+            add_string(builder, "phase", clawt_task_phase_to_nick(mark->phase));
+            add_int(builder, "at", mark->at);
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+    }
 
     json_builder_set_member_name(builder, "owners");
     json_builder_begin_array(builder);
@@ -1055,6 +1345,56 @@ clawt_task_new_from_json(JsonNode *node, GError **error)
     self->created_at = int_member(object, "created_at");
     self->started_at = int_member(object, "started_at");
     self->finished_at = int_member(object, "finished_at");
+    self->progress_at = int_member(object, "progress_at");
+
+    /*
+     * When the state last moved.  A task saved before 0.78.0 has none:
+     * the latest of the times it does have is the best that can be said,
+     * and it is never later than the truth.
+     */
+    self->state_at = int_member(object, "state_at");
+    if (self->state_at == 0)
+        self->state_at = MAX(self->created_at,
+                             MAX(self->started_at, self->finished_at));
+
+    /*
+     * The phase and its reports.  An unknown nickname -- a later build's
+     * phase -- reads as none rather than failing the task: a phase only
+     * decides where a card is drawn.
+     */
+    {
+        g_autofree gchar *phase = dup_member(object, "phase");
+        gint value = CLAWT_TASK_PHASE_NONE;
+        JsonArray *marks = json_object_has_member(object, "phases") &&
+                           JSON_NODE_HOLDS_ARRAY(json_object_get_member(
+                               object, "phases"))
+            ? json_object_get_array_member(object, "phases") : NULL;
+
+        if (phase != NULL &&
+            clawt_enum_from_nick(CLAWT_TYPE_TASK_PHASE, phase, &value))
+            self->phase = (ClawtTaskPhase)value;
+
+        self->phase_at = int_member(object, "phase_at");
+        self->phases = g_array_new(FALSE, TRUE, sizeof(PhaseMark));
+
+        for (i = 0; marks != NULL && i < json_array_get_length(marks); i++) {
+            JsonNode *element = json_array_get_element(marks, i);
+            g_autofree gchar *nick = NULL;
+            gint mark = CLAWT_TASK_PHASE_NONE;
+
+            if (!JSON_NODE_HOLDS_OBJECT(element))
+                continue;
+
+            nick = dup_member(json_node_get_object(element), "phase");
+
+            if (nick == NULL ||
+                !clawt_enum_from_nick(CLAWT_TYPE_TASK_PHASE, nick, &mark))
+                continue;
+
+            add_phase_mark(self, (ClawtTaskPhase)mark,
+                           int_member(json_node_get_object(element), "at"));
+        }
+    }
 
     /*
      * A state this build does not know is read as failed, said once:

@@ -241,6 +241,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/task/clawt-cron.h \
 	$(SRCDIR)/task/clawt-task.h \
 	$(SRCDIR)/task/clawt-task-manager.h \
+	$(SRCDIR)/task/clawt-board.h \
 	$(SRCDIR)/task/clawt-handoff.h \
 	$(SRCDIR)/task/clawt-handoff-store.h \
 	$(SRCDIR)/task/clawt-task-store.h \
@@ -524,6 +525,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/task/clawt-cron.c \
 	$(SRCDIR)/task/clawt-task.c \
 	$(SRCDIR)/task/clawt-task-manager.c \
+	$(SRCDIR)/task/clawt-board.c \
 	$(SRCDIR)/task/clawt-handoff.c \
 	$(SRCDIR)/task/clawt-handoff-store.c \
 	$(SRCDIR)/task/clawt-task-store.c \

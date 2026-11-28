@@ -2427,3 +2427,52 @@ clawt_checkout_mode_get_type(void)
     }
     return g_define_type_id__volatile;
 }
+
+/* Register ClawtTaskPhase as a GLib enum type */
+GType
+clawt_task_phase_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_TASK_PHASE_NONE, "CLAWT_TASK_PHASE_NONE", "none" },
+            { CLAWT_TASK_PHASE_PLANNING, "CLAWT_TASK_PHASE_PLANNING", "planning" },
+            { CLAWT_TASK_PHASE_DELEGATED, "CLAWT_TASK_PHASE_DELEGATED", "delegated" },
+            { CLAWT_TASK_PHASE_REVIEWING, "CLAWT_TASK_PHASE_REVIEWING", "reviewing" },
+            { CLAWT_TASK_PHASE_GATING, "CLAWT_TASK_PHASE_GATING", "gating" },
+            { CLAWT_TASK_PHASE_LANDING, "CLAWT_TASK_PHASE_LANDING", "landing" },
+            { CLAWT_TASK_PHASE_BLOCKED, "CLAWT_TASK_PHASE_BLOCKED", "blocked" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id =
+            g_enum_register_static("ClawtTaskPhase", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/* Register ClawtBoardColumn as a GLib enum type */
+GType
+clawt_board_column_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_BOARD_HIDDEN, "CLAWT_BOARD_HIDDEN", "hidden" },
+            { CLAWT_BOARD_BACKLOG, "CLAWT_BOARD_BACKLOG", "backlog" },
+            { CLAWT_BOARD_PLANNING, "CLAWT_BOARD_PLANNING", "planning" },
+            { CLAWT_BOARD_DELEGATED, "CLAWT_BOARD_DELEGATED", "delegated" },
+            { CLAWT_BOARD_REVIEW, "CLAWT_BOARD_REVIEW", "review" },
+            { CLAWT_BOARD_GATING, "CLAWT_BOARD_GATING", "gating" },
+            { CLAWT_BOARD_DONE, "CLAWT_BOARD_DONE", "done" },
+            { CLAWT_BOARD_BLOCKED, "CLAWT_BOARD_BLOCKED", "blocked" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id =
+            g_enum_register_static("ClawtBoardColumn", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}

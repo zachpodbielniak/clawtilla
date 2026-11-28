@@ -153,6 +153,21 @@ guint clawt_task_manager_count_unfinished_children(ClawtTaskManager *self,
                                                    const gchar      *task_id);
 
 /**
+ * clawt_task_manager_list_children:
+ * @self: a #ClawtTaskManager
+ * @task_id: (nullable): a task id
+ *
+ * The tasks @task_id handed on directly, in any state, in the order they
+ * were made -- from the live set only, so a child that finished more
+ * than a day ago is not among them (since 0.78.0).
+ *
+ * Returns: (transfer container) (element-type ClawtTask): the children,
+ *   borrowed from the manager
+ */
+GPtrArray *clawt_task_manager_list_children(ClawtTaskManager *self,
+                                            const gchar      *task_id);
+
+/**
  * clawt_task_manager_note_progress:
  * @self: a #ClawtTaskManager
  * @task_id: a task id
@@ -172,6 +187,64 @@ guint clawt_task_manager_count_unfinished_children(ClawtTaskManager *self,
 gboolean clawt_task_manager_note_progress(ClawtTaskManager *self,
                                           const gchar      *task_id,
                                           const gchar      *progress);
+
+/**
+ * clawt_task_manager_note_progress_in_phase:
+ * @self: a #ClawtTaskManager
+ * @task_id: a task id
+ * @progress: (nullable): what the assignee wants the delegator to know
+ * @phase: where it says the work has got to, or %CLAWT_TASK_PHASE_NONE
+ *   to leave the phase as it is
+ *
+ * clawt_task_manager_note_progress() with clawtilla_task_progress's
+ * `phase` (since 0.78.0): the phase is set after a pending task moves to
+ * running, and the one save and ::task-changed carry both.  Validating
+ * the spelling is the caller's (clawt_task_phase_parse()).
+ *
+ * Returns: %TRUE if the task existed and had not ended
+ */
+gboolean clawt_task_manager_note_progress_in_phase(ClawtTaskManager *self,
+                                                   const gchar      *task_id,
+                                                   const gchar      *progress,
+                                                   ClawtTaskPhase    phase);
+
+/**
+ * clawt_task_manager_set_phase:
+ * @self: a #ClawtTaskManager
+ * @task_id: a task id
+ * @phase: the phase reported
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Records a phase report on its own -- the path for a report that comes
+ * with something other than a progress note, such as a wait.  Saved,
+ * journalled ("phase gating") and announced with ::task-changed when it
+ * changes the phase; the same phase again is accepted and changes
+ * nothing.  Refused for a task that has finished or is on the backlog.
+ *
+ * Returns: %TRUE unless refused
+ */
+gboolean clawt_task_manager_set_phase(ClawtTaskManager  *self,
+                                      const gchar       *task_id,
+                                      ClawtTaskPhase     phase,
+                                      GError           **error);
+
+/**
+ * clawt_task_manager_note_activity:
+ * @self: a #ClawtTaskManager
+ * @task_id: (nullable): the task a turn is on
+ * @who: (nullable): whose turn it is
+ * @when: when the step was taken, in g_get_real_time() microseconds
+ *
+ * A streamed step of a turn on @task_id: the agent board's sign of life
+ * for it (clawt_task_get_activity_at()).  Only the assignee's steps
+ * count.  Memory only and silent.
+ *
+ * Returns: %TRUE when recorded
+ */
+gboolean clawt_task_manager_note_activity(ClawtTaskManager *self,
+                                          const gchar      *task_id,
+                                          const gchar      *who,
+                                          gint64            when);
 
 /**
  * clawt_task_manager_note_turn_work:
@@ -337,6 +410,24 @@ gboolean clawt_task_manager_abandon_background(ClawtTaskManager *self,
 gboolean clawt_task_manager_complete(ClawtTaskManager *self,
                                      const gchar      *task_id,
                                      const gchar      *result);
+
+/**
+ * clawt_task_manager_complete_in_phase:
+ * @self: a #ClawtTaskManager
+ * @task_id: a task id
+ * @result: what it produced
+ * @phase: the phase reported with it, or %CLAWT_TASK_PHASE_NONE
+ *
+ * clawt_task_manager_complete() with clawtilla_task_complete's `phase`
+ * (since 0.78.0), recorded before the state moves so the timeline shows
+ * the phase the work ended in.
+ *
+ * Returns: %TRUE if the task existed and was running
+ */
+gboolean clawt_task_manager_complete_in_phase(ClawtTaskManager *self,
+                                              const gchar      *task_id,
+                                              const gchar      *result,
+                                              ClawtTaskPhase    phase);
 
 /**
  * clawt_task_manager_fail:

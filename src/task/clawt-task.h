@@ -855,6 +855,168 @@ const gchar *clawt_task_get_checkout_guest(ClawtTask *self);
  */
 void clawt_task_set_checkout_guest(ClawtTask *self, const gchar *guest);
 
+/**
+ * clawt_task_get_phase:
+ * @self: a #ClawtTask
+ *
+ * Where its assignee last said the work has got to (since 0.78.0), with
+ * `phase` on clawtilla_task_progress or clawtilla_task_complete.  The
+ * agent board draws the card where this says, over what it would infer;
+ * see clawt_board_classify().  Cleared when the task goes back to
+ * `pending`.
+ *
+ * Returns: the phase, or %CLAWT_TASK_PHASE_NONE when none is reported
+ */
+ClawtTaskPhase clawt_task_get_phase(ClawtTask *self);
+
+/**
+ * clawt_task_get_phase_at:
+ * @self: a #ClawtTask
+ *
+ * Returns: when the phase was last reported or cleared, a Unix time, or 0
+ */
+gint64 clawt_task_get_phase_at(ClawtTask *self);
+
+/**
+ * clawt_task_set_phase:
+ * @self: a #ClawtTask
+ * @phase: the phase reported
+ * @at: when, a Unix time, or 0 for now
+ *
+ * Records a phase report and adds it to the task's phase history.  The
+ * phase it already has is not a new report and changes nothing, so the
+ * time a phase began is not moved by repeating it.  Validating a
+ * spelling is clawt_task_phase_parse()'s; ordinary code goes through
+ * clawt_task_manager_set_phase(), which saves it.
+ *
+ * Returns: %TRUE when the phase changed
+ */
+gboolean clawt_task_set_phase(ClawtTask      *self,
+                              ClawtTaskPhase  phase,
+                              gint64          at);
+
+/**
+ * clawt_task_get_phase_count:
+ * @self: a #ClawtTask
+ *
+ * How many phase reports are kept: the last 32, oldest first, with a
+ * %CLAWT_TASK_PHASE_NONE mark where the task went back to pending.
+ *
+ * Returns: the number of reports
+ */
+guint clawt_task_get_phase_count(ClawtTask *self);
+
+/**
+ * clawt_task_get_phase_nth:
+ * @self: a #ClawtTask
+ * @index: which report, from 0 (the oldest kept)
+ * @at: (out) (optional): when it was made, a Unix time
+ *
+ * Returns: the phase of report @index, or %CLAWT_TASK_PHASE_NONE past the
+ *   end
+ */
+ClawtTaskPhase clawt_task_get_phase_nth(ClawtTask *self,
+                                        guint      index,
+                                        gint64    *at);
+
+/**
+ * clawt_task_get_state_at:
+ * @self: a #ClawtTask
+ *
+ * When the task's state last changed, a Unix time (since 0.78.0).  For a
+ * task saved before then, the latest of its created, started and
+ * finished times.
+ *
+ * Returns: the time
+ */
+gint64 clawt_task_get_state_at(ClawtTask *self);
+
+/**
+ * clawt_task_set_state_at:
+ * @self: a #ClawtTask
+ * @at: a Unix time
+ *
+ * Overrides when the state last changed.  For reading a task back and for
+ * tests with a clock of their own; clawt_task_set_state() keeps it.
+ */
+void clawt_task_set_state_at(ClawtTask *self, gint64 at);
+
+/**
+ * clawt_task_get_progress_at:
+ * @self: a #ClawtTask
+ *
+ * Returns: when its assignee last reported progress, a Unix time, or 0
+ */
+gint64 clawt_task_get_progress_at(ClawtTask *self);
+
+/**
+ * clawt_task_set_progress_at:
+ * @self: a #ClawtTask
+ * @at: a Unix time
+ *
+ * Stamped by clawt_task_manager_note_progress().
+ */
+void clawt_task_set_progress_at(ClawtTask *self, gint64 at);
+
+/**
+ * clawt_task_get_activity_at:
+ * @self: a #ClawtTask
+ *
+ * When its assignee's turn last streamed a step on it, a Unix time.  In
+ * memory only: 0 after a restart until the next step.
+ *
+ * Returns: the time, or 0
+ */
+gint64 clawt_task_get_activity_at(ClawtTask *self);
+
+/**
+ * clawt_task_note_activity:
+ * @self: a #ClawtTask
+ * @at: when the step was taken, a Unix time
+ *
+ * Records a streamed step of its assignee's on the task.  An earlier time
+ * than the one held is ignored, since steps can arrive out of order.
+ */
+void clawt_task_note_activity(ClawtTask *self, gint64 at);
+
+/**
+ * clawt_task_get_last_sign_of_life:
+ * @self: a #ClawtTask
+ *
+ * The latest of everything that shows the task moving: made, started, a
+ * state change, a progress or phase report, a streamed step.  What the
+ * agent board's quiet rule measures from.
+ *
+ * Returns: a Unix time
+ */
+gint64 clawt_task_get_last_sign_of_life(ClawtTask *self);
+
+/**
+ * clawt_task_phase_to_nick:
+ * @phase: a #ClawtTaskPhase
+ *
+ * Returns: (transfer none): its nickname, e.g. `gating`
+ */
+const gchar *clawt_task_phase_to_nick(ClawtTaskPhase phase);
+
+/**
+ * clawt_task_phase_parse:
+ * @nick: (nullable): a phase as an agent spells it
+ * @phase: (out) (optional): the phase
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Reads a reported phase: `planning`, `delegated`, `reviewing`, `gating`,
+ * `landing` or `blocked`.  Anything else -- `none` included, since a
+ * phase is cleared by the task going back to pending and not by a
+ * report -- is %CLAWT_ERROR_INVALID_ARGUMENT, with a message listing the
+ * six.
+ *
+ * Returns: %TRUE when @nick is a phase
+ */
+gboolean clawt_task_phase_parse(const gchar     *nick,
+                                ClawtTaskPhase  *phase,
+                                GError         **error);
+
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTask, clawt_task_free)
 
 G_END_DECLS

@@ -1375,6 +1375,65 @@ typedef enum {
     CLAWT_CHECKOUT_CLONE
 } ClawtCheckoutMode;
 
+/**
+ * ClawtTaskPhase:
+ * @CLAWT_TASK_PHASE_NONE: nothing reported; the board infers the column
+ *   from the task's state and its children
+ * @CLAWT_TASK_PHASE_PLANNING: working it out, nothing handed on yet
+ * @CLAWT_TASK_PHASE_DELEGATED: parts of it are with other agents
+ * @CLAWT_TASK_PHASE_REVIEWING: reading work handed back to it
+ * @CLAWT_TASK_PHASE_GATING: building or testing before it hands back
+ * @CLAWT_TASK_PHASE_LANDING: merging, tagging or releasing it
+ * @CLAWT_TASK_PHASE_BLOCKED: it says it cannot go on
+ *
+ * Where its assignee says a task has got to (since 0.78.0), given as
+ * `phase` on clawtilla_task_progress or clawtilla_task_complete.  It
+ * overrides what the agent board would infer, and lasts until the task
+ * next goes back to `pending` (a retry, a review sending it back, a
+ * release from a hold).  Appended to only: the nickname is what is
+ * stored and sent.
+ */
+typedef enum {
+    CLAWT_TASK_PHASE_NONE = 0,
+    CLAWT_TASK_PHASE_PLANNING,
+    CLAWT_TASK_PHASE_DELEGATED,
+    CLAWT_TASK_PHASE_REVIEWING,
+    CLAWT_TASK_PHASE_GATING,
+    CLAWT_TASK_PHASE_LANDING,
+    CLAWT_TASK_PHASE_BLOCKED
+} ClawtTaskPhase;
+
+/**
+ * ClawtBoardColumn:
+ * @CLAWT_BOARD_HIDDEN: not on the board: cancelled, finished before the
+ *   window, or not this agent's
+ * @CLAWT_BOARD_BACKLOG: not started, or held until the tasks it waits
+ *   for complete
+ * @CLAWT_BOARD_PLANNING: being worked on, with nothing handed on
+ * @CLAWT_BOARD_DELEGATED: parts of it are with other agents
+ * @CLAWT_BOARD_REVIEW: a result waits for a verdict -- a child's for this
+ *   agent, or this task's for its reviewer
+ * @CLAWT_BOARD_GATING: its assignee says it is building, testing or
+ *   landing
+ * @CLAWT_BOARD_DONE: completed inside the board's window
+ * @CLAWT_BOARD_BLOCKED: something needs somebody: a failed or stalled
+ *   child, a decision for the operator, a wait on a person or service,
+ *   or the work has gone quiet
+ *
+ * The column of the agent board (docs/tasks.org, "The agent board") a
+ * card is drawn in (since 0.78.0).  clawt_board_classify() decides it.
+ */
+typedef enum {
+    CLAWT_BOARD_HIDDEN = 0,
+    CLAWT_BOARD_BACKLOG,
+    CLAWT_BOARD_PLANNING,
+    CLAWT_BOARD_DELEGATED,
+    CLAWT_BOARD_REVIEW,
+    CLAWT_BOARD_GATING,
+    CLAWT_BOARD_DONE,
+    CLAWT_BOARD_BLOCKED
+} ClawtBoardColumn;
+
 /* GType registration */
 GType clawt_agent_state_get_type(void) G_GNUC_CONST;
 GType clawt_agent_caps_get_type(void) G_GNUC_CONST;
@@ -1427,6 +1486,10 @@ GType clawt_tool_directory_mode_get_type(void) G_GNUC_CONST;
 GType clawt_apply_writes_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_CHECKOUT_MODE (clawt_checkout_mode_get_type())
 GType clawt_checkout_mode_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_TASK_PHASE (clawt_task_phase_get_type())
+GType clawt_task_phase_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_BOARD_COLUMN (clawt_board_column_get_type())
+GType clawt_board_column_get_type(void) G_GNUC_CONST;
 
 #define CLAWT_TYPE_AGENT_STATE      (clawt_agent_state_get_type())
 #define CLAWT_TYPE_AGENT_CAPS       (clawt_agent_caps_get_type())

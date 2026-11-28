@@ -640,6 +640,16 @@ clawt_task_manager_complete(ClawtTaskManager *self,
                             const gchar      *task_id,
                             const gchar      *result)
 {
+    return clawt_task_manager_complete_in_phase(self, task_id, result,
+                                                CLAWT_TASK_PHASE_NONE);
+}
+
+gboolean
+clawt_task_manager_complete_in_phase(ClawtTaskManager *self,
+                                     const gchar      *task_id,
+                                     const gchar      *result,
+                                     ClawtTaskPhase    phase)
+{
     ClawtTask *task = clawt_task_manager_get(self, task_id);
 
     if (task == NULL)
@@ -659,6 +669,14 @@ clawt_task_manager_complete(ClawtTaskManager *self,
      */
     if (!clawt_task_state_is_active(clawt_task_get_state(task)))
         return FALSE;
+
+    /*
+     * A phase given with the result (clawtilla_task_complete's `phase`)
+     * is recorded before the state moves, so the one save and the one
+     * ::task-changed below carry both, and the timeline has it.
+     */
+    if (phase != CLAWT_TASK_PHASE_NONE)
+        clawt_task_set_phase(task, phase, 0);
 
     clawt_task_set_result(task, result);
     note(self, task, clawt_task_get_assignee(task), CLAWT_TASK_NOTE_RESULT,
@@ -697,6 +715,39 @@ clawt_task_manager_complete(ClawtTaskManager *self,
  * one gap is a branch that was cancelled or failed out from under a
  * still-running grandchild, and cancellation already cascades.
  */
+GPtrArray *
+clawt_task_manager_list_children(ClawtTaskManager *self,
+                                 const gchar      *task_id)
+{
+    GPtrArray *out;
+    GPtrArray *kids;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), NULL);
+
+    out = g_ptr_array_new();
+
+    if (task_id == NULL)
+        return out;
+
+    kids = g_hash_table_lookup(self->children, task_id);
+
+    /*
+     * From the live set only: a child that finished long enough ago to
+     * have left memory is history, and reading every one back from the
+     * store would make a board of a busy agent cost a query per child.
+     */
+    for (i = 0; kids != NULL && i < kids->len; i++) {
+        ClawtTask *child = g_hash_table_lookup(self->tasks,
+                                               g_ptr_array_index(kids, i));
+
+        if (child != NULL)
+            g_ptr_array_add(out, child);
+    }
+
+    return out;
+}
+
 guint
 clawt_task_manager_count_unfinished_children(ClawtTaskManager *self,
                                              const gchar      *task_id)
@@ -827,6 +878,16 @@ clawt_task_manager_note_progress(ClawtTaskManager *self,
                                  const gchar      *task_id,
                                  const gchar      *progress)
 {
+    return clawt_task_manager_note_progress_in_phase(self, task_id, progress,
+                                                     CLAWT_TASK_PHASE_NONE);
+}
+
+gboolean
+clawt_task_manager_note_progress_in_phase(ClawtTaskManager *self,
+                                          const gchar      *task_id,
+                                          const gchar      *progress,
+                                          ClawtTaskPhase    phase)
+{
     ClawtTask *task = clawt_task_manager_get(self, task_id);
 
     /* Progress is the assignee's to report, on work it has. */
@@ -848,8 +909,95 @@ clawt_task_manager_note_progress(ClawtTaskManager *self,
     if (clawt_task_get_state(task) == CLAWT_TASK_PENDING)
         clawt_task_set_state(task, CLAWT_TASK_RUNNING);
 
+    /*
+     * When it was said, for the board's quiet rule; and the phase, set
+     * after the state has moved, since a move back to pending is what
+     * clears one.  One save and one ::task-changed carry all of it.
+     */
+    clawt_task_set_progress_at(task, g_get_real_time() / G_USEC_PER_SEC);
+
+    if (phase != CLAWT_TASK_PHASE_NONE &&
+        clawt_task_set_phase(task, phase, 0)) {
+        g_autofree gchar *what = g_strdup_printf(
+            "progress noted; phase %s", clawt_task_phase_to_nick(phase));
+
+        emit_changed(self, task, what);
+        return TRUE;
+    }
+
     emit_changed(self, task, "progress noted");
 
+    return TRUE;
+}
+
+gboolean
+clawt_task_manager_set_phase(ClawtTaskManager  *self,
+                             const gchar       *task_id,
+                             ClawtTaskPhase     phase,
+                             GError           **error)
+{
+    ClawtTask *task;
+    g_autofree gchar *what = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+
+    task = task_id != NULL ? clawt_task_manager_get(self, task_id) : NULL;
+
+    if (task == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no task %s", task_id != NULL ? task_id : "");
+        return FALSE;
+    }
+
+    /*
+     * A finished task's column is its ending, which no report changes;
+     * one on the backlog has nobody to report on it.
+     */
+    if (clawt_task_is_finished(task) ||
+        clawt_task_get_state(task) == CLAWT_TASK_UNASSIGNED) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "task %s is %s; a phase is for work in hand",
+                    task_id, clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
+                                                clawt_task_get_state(task)));
+        return FALSE;
+    }
+
+    if (phase == CLAWT_TASK_PHASE_NONE ||
+        !clawt_task_set_phase(task, phase, 0))
+        return TRUE;
+
+    what = g_strdup_printf("phase %s", clawt_task_phase_to_nick(phase));
+    emit_changed(self, task, what);
+
+    return TRUE;
+}
+
+gboolean
+clawt_task_manager_note_activity(ClawtTaskManager *self,
+                                 const gchar      *task_id,
+                                 const gchar      *who,
+                                 gint64            when)
+{
+    ClawtTask *task;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+
+    if (task_id == NULL || who == NULL)
+        return FALSE;
+
+    task = g_hash_table_lookup(self->tasks, task_id);
+
+    /*
+     * The assignee's steps only, for the reason only its turn ending is
+     * evidence about the task: a delegator's acknowledgement in the
+     * task's room is not the work moving.  Memory only, and no signal --
+     * a step is far too frequent to be news, and the board reads it when
+     * it is asked.
+     */
+    if (task == NULL || g_strcmp0(clawt_task_get_assignee(task), who) != 0)
+        return FALSE;
+
+    clawt_task_note_activity(task, when / G_USEC_PER_SEC);
     return TRUE;
 }
 
