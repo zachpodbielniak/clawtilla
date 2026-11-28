@@ -441,6 +441,144 @@ test_stale_list_keeps_picture(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * free() cancels, then releases the feed.  A reply still queued runs
+ * after that.  The block the feed occupied is taken back and filled
+ * with 0xA5.  A callback that still writes portraits_inflight (the
+ * avatar reply does, before it looks at the cancellable) changes the
+ * fill; one that still reads the feed faults on the fill.  After the
+ * fix the fill is untouched and the context drains to idle.
+ */
+static gpointer
+reclaim_feed(ClawtOfficeFeed *dangling)
+{
+    gpointer slots[32];
+    guint n = 0;
+    guint i;
+    gpointer found = NULL;
+
+    for (i = 0; i < 32 && found == NULL; i++) {
+        slots[n] = g_malloc(sizeof(struct _ClawtOfficeFeed));
+        if (slots[n] == (gpointer)dangling)
+            found = slots[n];
+        n++;
+    }
+    g_assert_nonnull(found);
+    memset(found, 0xA5, sizeof(struct _ClawtOfficeFeed));
+    for (i = 0; i < n; i++) {
+        if (slots[i] != found)
+            g_free(slots[i]);
+    }
+    return found;
+}
+
+static void
+drain_idle(FeedFixture *fixture)
+{
+    gint64 end = g_get_monotonic_time() + 2 * G_USEC_PER_SEC;
+
+    while (g_get_monotonic_time() < end) {
+        while (g_main_context_pending(fixture->context))
+            g_main_context_iteration(fixture->context, FALSE);
+        g_usleep(2000);
+    }
+}
+
+static void
+free_feed_poisoned(FeedFixture *fixture, gpointer *block)
+{
+    ClawtOfficeFeed *dangling = fixture->feed;
+
+    g_signal_handlers_disconnect_by_data(fixture->client, dangling);
+    clawt_office_feed_free(dangling);
+    fixture->feed = NULL;
+    *block = reclaim_feed(dangling);
+}
+
+static gboolean
+drive_until(FeedFixture *fixture, gboolean (*ready)(FeedFixture *fixture), gint timeout_ms)
+{
+    gint64 end = g_get_monotonic_time() + (gint64)timeout_ms * 1000;
+
+    while (g_get_monotonic_time() < end) {
+        if (ready(fixture))
+            return TRUE;
+        if (!g_main_context_iteration(fixture->context, FALSE))
+            g_usleep(1000);
+    }
+    return ready(fixture);
+}
+
+static gboolean
+avatar_request_inflight(FeedFixture *fixture)
+{
+    return fixture->feed->portraits_inflight > 0;
+}
+
+static gboolean
+decode_inflight(FeedFixture *fixture)
+{
+    Portrait *portrait = g_hash_table_lookup(fixture->feed->portraits, "ada");
+
+    return portrait != NULL && portrait->inflight && fixture->feed->portraits_inflight == 0;
+}
+
+static void
+assert_poison_held(gpointer block, gint portraits_before, FeedFixture *fixture)
+{
+    guint *counter = (guint *)((guint8 *)block +
+                               offsetof(struct _ClawtOfficeFeed, portraits_inflight));
+
+    g_assert_cmpuint(*counter, ==, 0xA5A5A5A5u);
+    g_assert_cmpint(fixture->portraits, ==, portraits_before);
+    g_free(block);
+}
+
+/* The agent.avatar reply is queued and the feed is already gone. */
+static void
+test_free_during_avatar(void)
+{
+    FeedFixture fixture = { 0 };
+    gpointer block = NULL;
+    gint portraits_before;
+
+    fixture_setup(&fixture);
+    g_assert_true(wait_looks(&fixture, 1, 10000));
+    set_avatar(&fixture, RED_PNG, sizeof(RED_PNG));
+    g_assert_true(drive_until(&fixture, avatar_request_inflight, 10000));
+    portraits_before = fixture.portraits;
+    free_feed_poisoned(&fixture, &block);
+    drain_idle(&fixture);
+    assert_poison_held(block, portraits_before, &fixture);
+    fixture_teardown(&fixture);
+}
+
+/* The PNG is in the worker.  Its callback is what would touch the feed. */
+static void
+test_free_during_decode(void)
+{
+    FeedFixture fixture = { 0 };
+    gpointer block = NULL;
+    gint portraits_before;
+
+    if (!clawt_office_portrait_decode_available()) {
+        g_test_skip("cairo PNG decode is not in this build (POPPLER=0); "
+                    "gdk-pixbuf is not used because glycin's bwrap sandbox "
+                    "does not run in these containers");
+        return;
+    }
+
+    fixture_setup(&fixture);
+    g_assert_true(wait_looks(&fixture, 1, 10000));
+    set_avatar(&fixture, RED_PNG, sizeof(RED_PNG));
+    g_assert_true(drive_until(&fixture, decode_inflight, 10000));
+    portraits_before = fixture.portraits;
+    free_feed_poisoned(&fixture, &block);
+    drain_idle(&fixture);
+    assert_poison_held(block, portraits_before, &fixture);
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -449,6 +587,8 @@ main(int argc, char *argv[])
     g_test_add_func("/office-feed/change-flips-has-avatar", test_change_flips_has_avatar);
     g_test_add_func("/office-feed/change-refreshes-picture", test_change_refreshes_picture);
     g_test_add_func("/office-feed/stale-list-keeps-picture", test_stale_list_keeps_picture);
+    g_test_add_func("/office-feed/free-during-avatar", test_free_during_avatar);
+    g_test_add_func("/office-feed/free-during-decode", test_free_during_decode);
 
     return g_test_run();
 }

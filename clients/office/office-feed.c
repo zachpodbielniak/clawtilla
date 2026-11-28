@@ -62,6 +62,7 @@ typedef struct {
 
 typedef struct {
     ClawtOfficeFeed *feed;
+    GCancellable    *cancellable; /* own ref; the liveness test, not the feed's */
     gchar           *path;
     guint            generation;
 } FileRequest;
@@ -69,12 +70,25 @@ typedef struct {
 /* One agent.list.  seq is list_seq at the moment it was sent. */
 typedef struct {
     ClawtOfficeFeed *feed;
+    GCancellable    *cancellable;
     guint            seq;
 } ListRequest;
+
+/*
+ * A callback whose user_data was the feed.  free() cancels, then frees
+ * the feed, and the reply still runs.  The cancellable here is a ref
+ * this request owns, so the callback can see the cancel without reading
+ * the feed.
+ */
+typedef struct {
+    ClawtOfficeFeed *feed;
+    GCancellable    *cancellable;
+} FeedCall;
 
 /* One character's files, fetched one after another; announced once all are here. */
 typedef struct {
     ClawtOfficeFeed *feed;
+    GCancellable    *cancellable;
     JsonObject      *character;
     gchar           *dir;
     GQueue           files;      /* "sheet" / "mesh": which member names the next file */
@@ -87,6 +101,23 @@ static void request_layout(ClawtOfficeFeed *self);
 static void request_characters(ClawtOfficeFeed *self);
 static void request_usage(ClawtOfficeFeed *self);
 static void portrait_pump(ClawtOfficeFeed *self);
+
+static FeedCall *
+feed_call_new(ClawtOfficeFeed *self)
+{
+    FeedCall *call = g_new0(FeedCall, 1);
+
+    call->feed = self;
+    call->cancellable = g_object_ref(self->cancellable);
+    return call;
+}
+
+static void
+feed_call_free(FeedCall *call)
+{
+    g_object_unref(call->cancellable);
+    g_free(call);
+}
 
 static void
 say(ClawtOfficeFeed *self, const gchar *text)
@@ -161,13 +192,14 @@ static void
 on_file(GObject *source, GAsyncResult *result, gpointer user_data)
 {
     FileRequest *req = user_data;
-    ClawtOfficeFeed *self = req->feed;
+    ClawtOfficeFeed *self;
     g_autoptr(GError) error = NULL;
     g_autoptr(JsonNode) node = NULL;
     JsonObject *reply;
 
-    if (g_cancellable_is_cancelled(self->cancellable))
+    if (g_cancellable_is_cancelled(req->cancellable))
         goto done;
+    self = req->feed;
     reply = finish(source, result, &node, &error);
 
     /*
@@ -203,6 +235,7 @@ on_file(GObject *source, GAsyncResult *result, gpointer user_data)
     fetch_next(self);
 
 done:
+    g_object_unref(req->cancellable);
     g_free(req->path);
     g_free(req);
 }
@@ -226,6 +259,7 @@ fetch_next(ClawtOfficeFeed *self)
     }
     req = g_new0(FileRequest, 1);
     req->feed = self;
+    req->cancellable = g_object_ref(self->cancellable);
     req->path = path;
     req->generation = self->generation;
     payload = clawt_ipc_payload_new("world",
@@ -239,8 +273,8 @@ static void
 on_world(GObject *source, GAsyncResult *result, gpointer user_data)
 {
     FileRequest *req = user_data;
-    ClawtOfficeFeed *self = req->feed;
-    guint generation = req->generation;
+    ClawtOfficeFeed *self;
+    guint generation;
     g_autoptr(GError) error = NULL;
     g_autoptr(JsonNode) node = NULL;
     JsonObject *reply;
@@ -248,9 +282,15 @@ on_world(GObject *source, GAsyncResult *result, gpointer user_data)
     const gchar *id;
     guint i;
 
-    g_free(req);
-    if (g_cancellable_is_cancelled(self->cancellable))
+    if (g_cancellable_is_cancelled(req->cancellable)) {
+        g_object_unref(req->cancellable);
+        g_free(req);
         return;
+    }
+    self = req->feed;
+    generation = req->generation;
+    g_object_unref(req->cancellable);
+    g_free(req);
     reply = finish(source, result, &node, &error);
     /* an older refresh's answer: a newer one is on its way */
     if (generation != self->generation)
@@ -297,13 +337,18 @@ on_world(GObject *source, GAsyncResult *result, gpointer user_data)
 static void
 on_layout(GObject *source, GAsyncResult *result, gpointer user_data)
 {
-    ClawtOfficeFeed *self = user_data;
+    FeedCall *call = user_data;
+    ClawtOfficeFeed *self;
     g_autoptr(GError) error = NULL;
     g_autoptr(JsonNode) node = NULL;
     JsonObject *reply;
 
-    if (g_cancellable_is_cancelled(self->cancellable))
+    if (g_cancellable_is_cancelled(call->cancellable)) {
+        feed_call_free(call);
         return;
+    }
+    self = call->feed;
+    feed_call_free(call);
     self->layout_in_flight = FALSE;
     reply = finish(source, result, &node, &error);
     if (reply == NULL)
@@ -327,7 +372,7 @@ request_layout(ClawtOfficeFeed *self)
     self->layout_in_flight = TRUE;
     if (self->world_id != NULL)
         payload = clawt_ipc_payload_new("world", self->world_id, NULL);
-    request(self, "office.layout", payload, on_layout, self);
+    request(self, "office.layout", payload, on_layout, feed_call_new(self));
 }
 
 static gboolean
@@ -341,6 +386,7 @@ on_tick(gpointer user_data)
 
 typedef struct {
     ClawtOfficeFeed *feed;
+    GCancellable    *cancellable; /* own ref, checked before the feed is touched */
     gchar           *id;
     gchar           *etag;
     guint8          *raw;
@@ -363,6 +409,7 @@ portrait_free(Portrait *portrait)
 static void
 portrait_job_free(PortraitJob *job)
 {
+    g_clear_object(&job->cancellable);
     g_free(job->id);
     g_free(job->etag);
     g_free(job->raw);
@@ -465,7 +512,7 @@ portrait_decoded(GObject *source, GAsyncResult *result, gpointer user_data)
 {
     GTask *task = G_TASK(result);
     PortraitJob *job = g_task_get_task_data(task);
-    ClawtOfficeFeed *self = job->feed;
+    ClawtOfficeFeed *self;
     Portrait *portrait;
     g_autoptr(GError) error = NULL;
     guint8 *rgba;
@@ -473,10 +520,11 @@ portrait_decoded(GObject *source, GAsyncResult *result, gpointer user_data)
     (void)source;
     (void)user_data;
     rgba = g_task_propagate_pointer(task, &error);
-    if (g_cancellable_is_cancelled(self->cancellable)) {
+    if (g_cancellable_is_cancelled(job->cancellable)) {
         g_free(rgba);
         return;
     }
+    self = job->feed;
     portrait = g_hash_table_lookup(self->portraits, job->id);
     if (portrait != NULL)
         portrait->inflight = FALSE;
@@ -517,6 +565,7 @@ portrait_begin_decode(ClawtOfficeFeed *self, Portrait *portrait, const gchar *et
     GTask *task;
 
     job->feed = self;
+    job->cancellable = g_object_ref(self->cancellable);
     job->id = g_strdup(portrait->id);
     job->etag = g_strdup(etag);
     job->raw = raw;
@@ -534,7 +583,7 @@ static void
 on_avatar(GObject *source, GAsyncResult *result, gpointer user_data)
 {
     PortraitJob *req = user_data;
-    ClawtOfficeFeed *self = req->feed;
+    ClawtOfficeFeed *self;
     Portrait *portrait;
     g_autoptr(GError) error = NULL;
     g_autoptr(JsonNode) node = NULL;
@@ -545,11 +594,12 @@ on_avatar(GObject *source, GAsyncResult *result, gpointer user_data)
     g_autofree guint8 *raw = NULL;
     gsize length = 0;
 
-    self->portraits_inflight--;
-    if (g_cancellable_is_cancelled(self->cancellable)) {
+    if (g_cancellable_is_cancelled(req->cancellable)) {
         portrait_job_free(req);
         return;
     }
+    self = req->feed;
+    self->portraits_inflight--;
     portrait = g_hash_table_lookup(self->portraits, req->id);
     if (portrait != NULL)
         portrait->inflight = FALSE;
@@ -638,6 +688,7 @@ portrait_pump(ClawtOfficeFeed *self)
         self->portraits_inflight++;
         req = g_new0(PortraitJob, 1);
         req->feed = self;
+        req->cancellable = g_object_ref(self->cancellable);
         req->id = g_strdup(portrait->id);
         req->token = portrait->token;
         request(self, "agent.avatar",
@@ -703,17 +754,23 @@ static void
 on_agents(GObject *source, GAsyncResult *result, gpointer user_data)
 {
     ListRequest *req = user_data;
-    ClawtOfficeFeed *self = req->feed;
-    guint seq = req->seq;
+    ClawtOfficeFeed *self;
+    guint seq;
     g_autoptr(GError) error = NULL;
     g_autoptr(JsonNode) node = NULL;
     JsonObject *reply;
     JsonArray *agents;
     guint i;
 
-    g_free(req);
-    if (g_cancellable_is_cancelled(self->cancellable))
+    if (g_cancellable_is_cancelled(req->cancellable)) {
+        g_object_unref(req->cancellable);
+        g_free(req);
         return;
+    }
+    self = req->feed;
+    seq = req->seq;
+    g_object_unref(req->cancellable);
+    g_free(req);
     reply = finish(source, result, &node, &error);
 
     /*
@@ -760,6 +817,7 @@ static void fetch_character_file(SheetRequest *req);
 static void
 sheet_request_free(SheetRequest *req)
 {
+    g_clear_object(&req->cancellable);
     json_object_unref(req->character);
     g_free(req->dir);
     g_queue_clear_full(&req->files, g_free);
@@ -776,7 +834,6 @@ static void
 on_character_file(GObject *source, GAsyncResult *result, gpointer user_data)
 {
     SheetRequest *req = user_data;
-    ClawtOfficeFeed *self = req->feed;
     g_autoptr(GError) error = NULL;
     g_autoptr(JsonNode) node = NULL;
     g_autofree gchar *member = g_queue_pop_head(&req->files);
@@ -793,7 +850,7 @@ on_character_file(GObject *source, GAsyncResult *result, gpointer user_data)
     g_autofree gchar *parent = NULL;
     gsize length = 0;
 
-    if (g_cancellable_is_cancelled(self->cancellable)) {
+    if (g_cancellable_is_cancelled(req->cancellable)) {
         sheet_request_free(req);
         return;
     }
@@ -843,14 +900,21 @@ fetch_character_file(SheetRequest *req)
 static void
 on_characters(GObject *source, GAsyncResult *result, gpointer user_data)
 {
-    ClawtOfficeFeed *self = user_data;
+    FeedCall *call = user_data;
+    ClawtOfficeFeed *self;
     g_autoptr(GError) error = NULL;
     g_autoptr(JsonNode) node = NULL;
     JsonObject *reply;
     JsonArray *list;
     guint i;
 
-    if (g_cancellable_is_cancelled(self->cancellable) || self->funcs.character == NULL)
+    if (g_cancellable_is_cancelled(call->cancellable)) {
+        feed_call_free(call);
+        return;
+    }
+    self = call->feed;
+    feed_call_free(call);
+    if (self->funcs.character == NULL)
         return;
     reply = finish(source, result, &node, &error);
     list = reply != NULL && json_object_has_member(reply, "characters")
@@ -866,6 +930,7 @@ on_characters(GObject *source, GAsyncResult *result, gpointer user_data)
             continue;
         req = g_new0(SheetRequest, 1);
         req->feed = self;
+        req->cancellable = g_object_ref(self->cancellable);
         req->character = json_object_ref(c);
         req->generation = self->generation;
         req->dir = g_build_filename(g_get_user_cache_dir(), "clawtilla", "office",
@@ -884,7 +949,7 @@ on_characters(GObject *source, GAsyncResult *result, gpointer user_data)
 static void
 request_characters(ClawtOfficeFeed *self)
 {
-    request(self, "office.characters", NULL, on_characters, self);
+    request(self, "office.characters", NULL, on_characters, feed_call_new(self));
 }
 
 /* ── The usage board ──────────────────────────────────────────────── */
@@ -892,13 +957,18 @@ request_characters(ClawtOfficeFeed *self)
 static void
 on_usage(GObject *source, GAsyncResult *result, gpointer user_data)
 {
-    ClawtOfficeFeed *self = user_data;
+    FeedCall *call = user_data;
+    ClawtOfficeFeed *self;
     g_autoptr(GError) error = NULL;
     g_autoptr(JsonNode) node = NULL;
     JsonObject *reply;
 
-    if (g_cancellable_is_cancelled(self->cancellable))
+    if (g_cancellable_is_cancelled(call->cancellable)) {
+        feed_call_free(call);
         return;
+    }
+    self = call->feed;
+    feed_call_free(call);
     reply = finish(source, result, &node, &error);
     if (reply != NULL && self->funcs.usage != NULL)
         self->funcs.usage(reply, self->user_data);
@@ -913,7 +983,7 @@ static void
 request_usage(ClawtOfficeFeed *self)
 {
     if (self->funcs.usage != NULL)
-        request(self, "usage.providers", NULL, on_usage, self);
+        request(self, "usage.providers", NULL, on_usage, feed_call_new(self));
 }
 
 /* The next agent.list.  Its reply is ignored once a newer one has landed. */
@@ -923,6 +993,7 @@ request_agent_list(ClawtOfficeFeed *self)
     ListRequest *req = g_new0(ListRequest, 1);
 
     req->feed = self;
+    req->cancellable = g_object_ref(self->cancellable);
     req->seq = ++self->list_seq;
     request(self, "agent.list", NULL, on_agents, req);
 }
@@ -942,6 +1013,7 @@ clawt_office_feed_refresh(ClawtOfficeFeed *self)
         FileRequest *req = g_new0(FileRequest, 1);
 
         req->feed = self;
+        req->cancellable = g_object_ref(self->cancellable);
         req->generation = self->generation;
         request(self, "office.world", payload, on_world, req);
     }
@@ -1004,7 +1076,12 @@ clawt_office_feed_free(ClawtOfficeFeed *self)
 {
     if (self == NULL)
         return;
-    /* replies in flight see the cancellable and touch nothing else */
+    /*
+     * Cancel first.  Every reply holds its own ref of this cancellable
+     * and reads that, not the feed, so the free below is not a
+     * use-after-free when the callback runs later.  The timer is not one
+     * of those replies: destroying it drops on_tick before the struct goes.
+     */
     g_cancellable_cancel(self->cancellable);
     if (self->timer != NULL) {
         g_source_destroy(self->timer);
