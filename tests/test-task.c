@@ -494,6 +494,79 @@ test_a_progress_note_holds_the_task_open_for_one_turn(void)
 }
 
 /*
+ * A progress note says where a turn had got to when it was written, not
+ * that the turn is over.  An assignee told to post progress every twenty
+ * minutes posts one, carries on working in the same turn, and ends it
+ * with the report -- and the hold the note armed swallowed that ending,
+ * so the report sat in the room under a task that still read running.
+ * Work after the note is what says the note was not the turn's last word.
+ */
+static void
+test_work_after_a_progress_note_releases_the_hold(void)
+{
+    g_autoptr(ClawtTaskManager) tasks = clawt_task_manager_new();
+    ClawtTask *task;
+    g_autofree gchar *held = NULL;
+
+    task = clawt_task_manager_create(tasks, "chief", "oryx", "verify it",
+                                     NULL, NULL);
+
+    g_assert_true(clawt_task_manager_note_progress(
+                      tasks, clawt_task_get_id(task),
+                      "section chosen; writing the change next"));
+    g_assert_true(clawt_task_get_holds_completion(task));
+
+    g_assert_true(clawt_task_manager_note_turn_work(
+                      tasks, clawt_task_get_id(task), "oryx",
+                      g_get_real_time()));
+    g_assert_false(clawt_task_get_holds_completion(task));
+
+    g_assert_true(clawt_task_manager_complete_on_turn_end(
+                      tasks, clawt_task_get_id(task), "oryx",
+                      "the change is live; here is the report", &held));
+    g_assert_null(held);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
+    g_assert_cmpstr(clawt_task_get_result(task), ==,
+                    "the change is live; here is the report");
+}
+
+/*
+ * But only work after the note, and only the assignee's.  A step taken
+ * before the note was written can reach the daemon after it -- the
+ * streamed steps and the tool call travel separately -- and must not undo
+ * the note; nor can anybody else's turn in the thread.
+ */
+static void
+test_work_before_the_note_or_by_others_keeps_the_hold(void)
+{
+    g_autoptr(ClawtTaskManager) tasks = clawt_task_manager_new();
+    ClawtTask *task;
+    gint64 before;
+    g_autofree gchar *held = NULL;
+
+    task = clawt_task_manager_create(tasks, "chief", "oryx", "verify it",
+                                     NULL, NULL);
+
+    before = g_get_real_time();
+    g_assert_true(clawt_task_manager_note_progress(
+                      tasks, clawt_task_get_id(task),
+                      "waiting on the guest to finish booting"));
+
+    g_assert_false(clawt_task_manager_note_turn_work(
+                       tasks, clawt_task_get_id(task), "oryx", before - 1));
+    g_assert_false(clawt_task_manager_note_turn_work(
+                       tasks, clawt_task_get_id(task), "chief",
+                       g_get_real_time()));
+    g_assert_true(clawt_task_get_holds_completion(task));
+
+    g_assert_false(clawt_task_manager_complete_on_turn_end(
+                       tasks, clawt_task_get_id(task), "oryx",
+                       "back shortly", &held));
+    g_assert_nonnull(held);
+    g_assert_false(clawt_task_is_finished(task));
+}
+
+/*
  * "They reported a result" and "they stopped talking" are different
  * facts, and a delegator that cannot tell them apart either waits on
  * finished work or re-runs work that is done.
@@ -676,6 +749,10 @@ main(int argc, char *argv[])
                     test_a_task_with_children_running_does_not_auto_complete);
     g_test_add_func("/task/a-progress-note-holds-it-open",
                     test_a_progress_note_holds_the_task_open_for_one_turn);
+    g_test_add_func("/task/work-after-progress-releases-the-hold",
+                    test_work_after_a_progress_note_releases_the_hold);
+    g_test_add_func("/task/earlier-or-others-work-keeps-the-hold",
+                    test_work_before_the_note_or_by_others_keeps_the_hold);
     g_test_add_func("/task/only-the-assignee-ends-it",
                     test_only_the_assignees_turn_ends_a_task);
     g_test_add_func("/task/an-inferred-result-says-so",

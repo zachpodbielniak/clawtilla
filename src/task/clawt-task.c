@@ -103,6 +103,16 @@ struct _ClawtTask {
      * two need different follow-ups.
      */
     gboolean holds_completion;
+
+    /*
+     * When the hold was armed, in g_get_real_time() microseconds, so that
+     * work the turn did *after* the note can be told from work before it:
+     * see clawt_task_release_completion_hold().  Memory only, like the
+     * turn it describes -- a hold read back from the store has 0 here,
+     * and any later work releases it, which is right: the turn that set
+     * it did not survive the restart.
+     */
+    gint64 hold_armed_at;
     gboolean result_inferred;
 
     ClawtTaskState state;
@@ -228,6 +238,7 @@ clawt_task_copy(ClawtTask *self)
     }
 
     copy->holds_completion = self->holds_completion;
+    copy->hold_armed_at = self->hold_armed_at;
     copy->result_inferred = self->result_inferred;
     copy->state = self->state;
     copy->depth = self->depth;
@@ -328,6 +339,7 @@ clawt_task_reopen(ClawtTask *self, const gchar *who)
     g_clear_pointer(&self->progress_note, g_free);
     g_clear_pointer(&self->cancelled_by, g_free);
     self->holds_completion = FALSE;
+    self->hold_armed_at = 0;
     self->result_inferred = FALSE;
     self->finished_at = 0;
     self->state = CLAWT_TASK_PENDING;
@@ -387,6 +399,7 @@ clawt_task_hold_completion(ClawtTask *self)
     g_return_if_fail(self != NULL);
 
     self->holds_completion = TRUE;
+    self->hold_armed_at = g_get_real_time();
 }
 
 gboolean
@@ -398,8 +411,28 @@ clawt_task_take_completion_hold(ClawtTask *self)
 
     held = self->holds_completion;
     self->holds_completion = FALSE;
+    self->hold_armed_at = 0;
 
     return held;
+}
+
+gboolean
+clawt_task_release_completion_hold(ClawtTask *self, gint64 when)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    /*
+     * At or after, not strictly after: a step stamped in the same
+     * microsecond as the note is as likely one as the other, and the
+     * hold is only worth keeping when the note is plainly the last thing.
+     */
+    if (!self->holds_completion || when < self->hold_armed_at)
+        return FALSE;
+
+    self->holds_completion = FALSE;
+    self->hold_armed_at = 0;
+
+    return TRUE;
 }
 
 gboolean

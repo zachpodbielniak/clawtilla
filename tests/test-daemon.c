@@ -5990,6 +5990,176 @@ test_parallel_room_completion(void)
 	fixture_teardown(&fixture);
 }
 
+/*
+ * One turn: a progress note partway through, more work, and the report
+ * as the turn's last words.  The note armed the progress hold and the end
+ * of the same turn spent it, so the report stayed in the room under a
+ * task that read running until somebody told the assignee to call
+ * clawtilla_task_complete.  The tool steps after the note are what the
+ * daemon sees of the turn carrying on, and they release the hold.
+ */
+static void
+test_report_after_mid_turn_progress_completes(void)
+{
+	Fixture fixture = { 0 };
+	ClawtLinkServer *links;
+	ClawtAgent *worker;
+	ClawtTask *task;
+	ClawtRoom *room;
+	ClawtTurnStep *step;
+
+	fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: worker\n");
+	g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+	links = clawt_daemon_get_link_server(fixture.daemon);
+	worker = clawt_agent_manager_get(fixture.daemon->agents, "worker");
+	room = clawt_room_manager_get_direct(fixture.daemon->rooms, "chief",
+		"worker");
+	task = clawt_task_manager_create(fixture.daemon->tasks, "chief",
+		"worker", "Publish the new page", NULL, NULL);
+	g_assert_nonnull(task);
+
+	clawt_agent_deliver_turn(worker, clawt_room_get_id(room), 1, TRUE,
+		"chief", clawt_task_get_id(task));
+	g_signal_emit_by_name(links, "typing", "worker",
+		clawt_room_get_id(room), TRUE);
+
+	g_assert_true(clawt_task_manager_note_progress(fixture.daemon->tasks,
+		clawt_task_get_id(task), "Section chosen; writing the HTML next."));
+
+	/* Fleet calls are how a turn stops; they do not say it carried on. */
+	step = clawt_turn_step_new(CLAWT_STEP_TOOL, "worker",
+		clawt_room_get_id(room), NULL,
+		"mcp__clawtilla__clawtilla_task_progress", NULL, FALSE);
+	clawt_daemon_note_step(fixture.daemon, step);
+	clawt_turn_step_free(step);
+	g_assert_true(clawt_task_get_holds_completion(task));
+
+	step = clawt_turn_step_new(CLAWT_STEP_TOOL, "worker",
+		clawt_room_get_id(room), NULL, "Bash", "scp index.html", FALSE);
+	clawt_daemon_note_step(fixture.daemon, step);
+	clawt_turn_step_free(step);
+
+	g_signal_emit_by_name(links, "typing", "worker",
+		clawt_room_get_id(room), FALSE);
+	g_signal_emit_by_name(links, "message", "worker",
+		clawt_room_get_id(room), "The page is live. Report follows.",
+		clawt_task_get_id(task));
+
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
+	g_assert_cmpstr(clawt_task_get_result(task), ==,
+		"The page is live. Report follows.");
+	g_assert_true(clawt_task_get_result_inferred(task));
+	fixture_teardown(&fixture);
+}
+
+/*
+ * The same turn on a confined agent, whose shell *is* a clawtilla tool:
+ * clawtilla_computer_exec is the only thing that enters its machine, so
+ * thirty of those after the note are the work, exactly as thirty shell
+ * steps are for an agent on the host.  Only the tools a turn stops with
+ * keep the hold.
+ */
+static void
+test_report_after_progress_and_computer_exec_completes(void)
+{
+	Fixture fixture = { 0 };
+	ClawtLinkServer *links;
+	ClawtAgent *worker;
+	ClawtTask *task;
+	ClawtRoom *room;
+	ClawtTurnStep *step;
+
+	fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: worker\n");
+	g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+	links = clawt_daemon_get_link_server(fixture.daemon);
+	worker = clawt_agent_manager_get(fixture.daemon->agents, "worker");
+	room = clawt_room_manager_get_direct(fixture.daemon->rooms, "chief",
+		"worker");
+	task = clawt_task_manager_create(fixture.daemon->tasks, "chief",
+		"worker", "Build it inside the guest", NULL, NULL);
+	g_assert_nonnull(task);
+
+	clawt_agent_deliver_turn(worker, clawt_room_get_id(room), 1, TRUE,
+		"chief", clawt_task_get_id(task));
+	g_signal_emit_by_name(links, "typing", "worker",
+		clawt_room_get_id(room), TRUE);
+
+	g_assert_true(clawt_task_manager_note_progress(fixture.daemon->tasks,
+		clawt_task_get_id(task), "Cloned; building next."));
+
+	step = clawt_turn_step_new(CLAWT_STEP_TOOL, "worker",
+		clawt_room_get_id(room), NULL,
+		"mcp__clawtilla__clawtilla_computer_exec", "make -j8", FALSE);
+	clawt_daemon_note_step(fixture.daemon, step);
+	clawt_turn_step_free(step);
+
+	g_signal_emit_by_name(links, "typing", "worker",
+		clawt_room_get_id(room), FALSE);
+	g_signal_emit_by_name(links, "message", "worker",
+		clawt_room_get_id(room), "Built and tested. Report follows.",
+		clawt_task_get_id(task));
+
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
+	g_assert_cmpstr(clawt_task_get_result(task), ==,
+		"Built and tested. Report follows.");
+	fixture_teardown(&fixture);
+}
+
+/*
+ * And the hold still does its job for the turn that does stop: a note,
+ * then only fleet calls -- a wait set, a schedule-load -- and a closing
+ * line that is not the result.
+ */
+static void
+test_progress_then_only_fleet_calls_still_holds(void)
+{
+	Fixture fixture = { 0 };
+	ClawtLinkServer *links;
+	ClawtAgent *worker;
+	ClawtTask *task;
+	ClawtRoom *room;
+	ClawtTurnStep *step;
+
+	fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: worker\n");
+	g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+	links = clawt_daemon_get_link_server(fixture.daemon);
+	worker = clawt_agent_manager_get(fixture.daemon->agents, "worker");
+	room = clawt_room_manager_get_direct(fixture.daemon->rooms, "chief",
+		"worker");
+	task = clawt_task_manager_create(fixture.daemon->tasks, "chief",
+		"worker", "Watch the CI run", NULL, NULL);
+
+	clawt_agent_deliver_turn(worker, clawt_room_get_id(room), 1, TRUE,
+		"chief", clawt_task_get_id(task));
+	g_signal_emit_by_name(links, "typing", "worker",
+		clawt_room_get_id(room), TRUE);
+
+	g_assert_true(clawt_task_manager_note_progress(fixture.daemon->tasks,
+		clawt_task_get_id(task), "CI is running; I set a wait on it."));
+
+	step = clawt_turn_step_new(CLAWT_STEP_TOOL, "worker",
+		clawt_room_get_id(room), NULL, "ToolSearch",
+		"select:mcp__clawtilla__clawtilla_wait_until", FALSE);
+	clawt_daemon_note_step(fixture.daemon, step);
+	clawt_turn_step_free(step);
+
+	step = clawt_turn_step_new(CLAWT_STEP_TOOL, "worker",
+		clawt_room_get_id(room), NULL,
+		"mcp__clawtilla__clawtilla_wait_until", NULL, FALSE);
+	clawt_daemon_note_step(fixture.daemon, step);
+	clawt_turn_step_free(step);
+
+	g_signal_emit_by_name(links, "typing", "worker",
+		clawt_room_get_id(room), FALSE);
+	g_signal_emit_by_name(links, "message", "worker",
+		clawt_room_get_id(room), "Back when CI finishes.",
+		clawt_task_get_id(task));
+
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_RUNNING);
+	g_assert_null(clawt_task_get_result(task));
+	fixture_teardown(&fixture);
+}
+
 /* Connect a test agent to the actual router without starting a model. */
 static GSocket *
 request_context_link(ClawtAgent *agent)
@@ -13416,6 +13586,12 @@ main(int argc, char *argv[])
                     test_an_assignees_report_crosses_a_closed_exchange);
     g_test_add_func("/daemon/task/parallel-room-completion",
                     test_parallel_room_completion);
+    g_test_add_func("/daemon/task/report-after-mid-turn-progress-completes",
+                    test_report_after_mid_turn_progress_completes);
+    g_test_add_func("/daemon/task/report-after-progress-and-computer-exec-completes",
+                    test_report_after_progress_and_computer_exec_completes);
+    g_test_add_func("/daemon/task/progress-then-fleet-calls-still-holds",
+                    test_progress_then_only_fleet_calls_still_holds);
     g_test_add_func("/daemon/peer-request-context",
                     test_peer_request_context);
     g_test_add_func("/daemon/task/an-unknown-thread-still-routes",

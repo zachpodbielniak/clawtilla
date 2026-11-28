@@ -1444,8 +1444,10 @@ static const ToolDefinition tools[] = {
          "because an AI CLI cannot end one without writing something -- so "
          "call this whenever you are stopping for now and coming back: you "
          "have handed part of it on, or scheduled a wakeup, or are waiting "
-         "on somebody. It records the note, keeps the task open for one "
-         "more turn, and marks it running so nobody re-delegates it.",
+         "on somebody. It records the note and marks the task running so "
+         "nobody re-delegates it. Called as you stop, it keeps the task "
+         "open past the end of this turn; if you go on working after it, "
+         "the turn's last message is taken as the result as usual.",
          NEEDS_NOTHING, task_progress_params, CLAWT_ACTION_MESSAGE),
 
     TOOL("clawtilla_mailbox_list",

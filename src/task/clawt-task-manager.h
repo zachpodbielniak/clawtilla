@@ -174,6 +174,31 @@ gboolean clawt_task_manager_note_progress(ClawtTaskManager *self,
                                           const gchar      *progress);
 
 /**
+ * clawt_task_manager_note_turn_work:
+ * @self: a #ClawtTaskManager
+ * @task_id: (nullable): the task the turn is working on
+ * @who: whose turn it is
+ * @when: when the work was done, in g_get_real_time() microseconds
+ *
+ * Records that the assignee's turn did work, releasing a progress hold
+ * armed earlier in that turn.
+ *
+ * clawtilla_task_progress is asked for in two places that mean different
+ * things: "call it when you stop with work open", and "post progress
+ * every twenty minutes".  The second is written partway through a turn
+ * that goes on working and ends with the report -- and the hold the note
+ * armed swallowed that ending, so the task read running with its result
+ * sitting in the room.  A note followed by work was not the turn
+ * stopping, so it does not hold the turn's end.
+ *
+ * Returns: %TRUE if a hold was released
+ */
+gboolean clawt_task_manager_note_turn_work(ClawtTaskManager *self,
+                                           const gchar      *task_id,
+                                           const gchar      *who,
+                                           gint64            when);
+
+/**
  * clawt_task_manager_complete_on_turn_end:
  * @self: a #ClawtTaskManager
  * @task_id: a task id

@@ -820,6 +820,36 @@ clawt_task_manager_note_progress(ClawtTaskManager *self,
 }
 
 /*
+ * The assignee's turn doing work, which says a progress note it wrote
+ * earlier in the turn was not its last word.  See
+ * clawt_task_release_completion_hold() for why only work after the note
+ * counts; here is whose: the assignee's, for the same reason only its
+ * turn ending is evidence about the task.
+ */
+gboolean
+clawt_task_manager_note_turn_work(ClawtTaskManager *self,
+                                  const gchar      *task_id,
+                                  const gchar      *who,
+                                  gint64            when)
+{
+    ClawtTask *task;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+
+    if (task_id == NULL || who == NULL)
+        return FALSE;
+
+    task = g_hash_table_lookup(self->tasks, task_id);
+
+    if (task == NULL ||
+        !clawt_task_state_is_active(clawt_task_get_state(task)) ||
+        g_strcmp0(clawt_task_get_assignee(task), who) != 0)
+        return FALSE;
+
+    return clawt_task_release_completion_hold(task, when);
+}
+
+/*
  * Completing a task because its assignee's turn ended.
  *
  * An inference, not a report: an AI CLI cannot end a turn without

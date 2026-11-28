@@ -415,6 +415,26 @@ void clawt_task_hold_completion(ClawtTask *self);
 gboolean clawt_task_take_completion_hold(ClawtTask *self);
 
 /**
+ * clawt_task_release_completion_hold:
+ * @self: a #ClawtTask
+ * @when: when the work was done, in g_get_real_time() microseconds
+ *
+ * Drops the hold because the turn that armed it kept working afterwards.
+ *
+ * A hold says "my turn is over and the work is not".  An assignee that
+ * notes progress partway through a turn and then carries on has said
+ * nothing of the kind: the turn was not over, and what ends it is as
+ * likely the result as anything.  Holding that ending left the report in
+ * the room under a task that read running.  Work stamped before the hold
+ * was armed does not release it -- the streamed steps and the progress
+ * call reach the daemon by different paths, so a step from before the
+ * note can arrive after it.
+ *
+ * Returns: %TRUE if a hold was armed and is now released
+ */
+gboolean clawt_task_release_completion_hold(ClawtTask *self, gint64 when);
+
+/**
  * clawt_task_get_result_inferred:
  * @self: a #ClawtTask
  *

@@ -35,6 +35,63 @@
 #define ROOM_STEP_HISTORY 500
 
 /*
+ * The tools a turn *stops* with, for the progress hold: a note, a
+ * result, a wait or a schedule set, work handed on, a message sent.  A
+ * turn that ends on these after a progress note is the turn the hold is
+ * for.  Named, not "every clawtilla tool": clawtilla_computer_exec is a
+ * confined agent's whole shell, and the browser, display and web tools
+ * are its work as much as a host agent's own shell is.  ToolSearch is a
+ * CLI loading one of these before it calls it.
+ */
+static const gchar *const turn_stop_tools[] = {
+    "clawtilla_task_progress",
+    "clawtilla_task_complete",
+    "clawtilla_wait_until",
+    "clawtilla_routine_add",
+    "clawtilla_routine_update",
+    "clawtilla_delegate",
+    "clawtilla_ephemeral_spawn",
+    "clawtilla_handoff",
+    "clawtilla_message_agent",
+    "clawtilla_message_user",
+    "clawtilla_post_room",
+    "clawtilla_mailbox_reply",
+    "clawtilla_ask_decision",
+    "clawtilla_grok_dispatch",
+    "ToolSearch",
+    NULL
+};
+
+/*
+ * Whether a tool step is the turn going on with its work, for the
+ * progress hold.  Everything is, except the tools above.  Matched on the
+ * name after the last "__", so a CLI's MCP prefix (mcp__clawtilla__) does
+ * not matter.
+ */
+static gboolean
+step_carries_the_turn_on(const gchar *tool)
+{
+    const gchar *name;
+    const gchar *sep;
+    guint i;
+
+    if (tool == NULL)
+        return TRUE;
+
+    name = tool;
+
+    while ((sep = strstr(name, "__")) != NULL && sep[2] != '\0')
+        name = sep + 2;
+
+    for (i = 0; turn_stop_tools[i] != NULL; i++) {
+        if (g_strcmp0(name, turn_stop_tools[i]) == 0)
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*
  * One step, from the agent that produced it to the clients.
  *
  * Three things happen here and the order matters.  The text is redacted
@@ -137,6 +194,18 @@ clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step)
 			gboolean failed = clawt_turn_step_get_failed(step);
 
 			clawt_agent_note_turn_tool(agent, room_id);
+
+			/*
+			 * And for the progress hold: the turn carrying on after a
+			 * progress note says the note was not where it stopped.
+			 * Failed or not -- a command that failed is still the turn
+			 * working.  The step's own time, not now, because it can
+			 * reach here after the note that came later.
+			 */
+			if (self->tasks != NULL && step_carries_the_turn_on(tool))
+				clawt_task_manager_note_turn_work(self->tasks,
+					clawt_agent_get_turn_task_id_in(agent, room_id),
+					agent_id, clawt_turn_step_get_timestamp(step));
 
 			/*
 			 * And for the task progress guard, which wants work rather
