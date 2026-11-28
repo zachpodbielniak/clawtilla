@@ -226,6 +226,21 @@ gchar *clawt_board_waiting_label(const gchar *label,
                                  gint64       now);
 
 /**
+ * clawt_board_event_refreshes:
+ * @kind: (nullable): an event kind from the daemon's event stream
+ *
+ * Whether a `task.board` reply a client holds is stale after an event of
+ * @kind (since 0.78.0): a task changed or was noted, an agent's state or
+ * activity moved, its mailbox filled or drained, a decision was asked or
+ * settled, or a wait changed.  `turn.step` is not one: a client rewrites
+ * the step line in place.  Every client asks this, so none names an
+ * event kind of its own.
+ *
+ * Returns: %TRUE when the client should ask `task.board` again
+ */
+gboolean clawt_board_event_refreshes(const gchar *kind);
+
+/**
  * clawt_board_column_nick:
  * @column: a #ClawtBoardColumn
  *

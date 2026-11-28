@@ -332,6 +332,14 @@ gboolean clawt_lrg_board_span(gint64 axis_from, gint64 axis_to,
  */
 gchar *clawt_lrg_board_bar_cells(gdouble x0, gdouble x1, guint cells);
 
+/**
+ * clawt_lrg_board_event_refreshes:
+ * @kind: (nullable): an event kind
+ *
+ * clawt_board_event_refreshes(), for the board views.
+ *
+ * Returns: %TRUE when the board should ask `task.board` again
+ */
 gboolean clawt_lrg_board_event_refreshes(const gchar *kind);
 
 gboolean clawt_lrg_board_event_is_step(const gchar *kind);

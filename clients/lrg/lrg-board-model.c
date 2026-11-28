@@ -37,19 +37,6 @@ static const gchar *column_ids[] = {
     "done"
 };
 
-/* Events that mean the reply is stale.  turn.step is patched in place. */
-static const gchar *refresh_kinds[] = {
-    "task.changed",
-    "task.noted",
-    "agent.state",
-    "mailbox.queued",
-    "mailbox.delivered",
-    "decision.asked",
-    "decision.settled",
-    "decision.deleted",
-    "wait.changed",
-    NULL
-};
 
 /* ── Small readers ────────────────────────────────────────────────── */
 
@@ -388,17 +375,8 @@ clawt_lrg_board_bar_cells(gdouble x0, gdouble x1, guint cells)
 gboolean
 clawt_lrg_board_event_refreshes(const gchar *kind)
 {
-    guint i;
-
-    if (kind == NULL)
-        return FALSE;
-
-    for (i = 0; refresh_kinds[i] != NULL; i++) {
-        if (g_strcmp0(kind, refresh_kinds[i]) == 0)
-            return TRUE;
-    }
-
-    return FALSE;
+    /* The list lives beside the reply's contract, in the library. */
+    return clawt_board_event_refreshes(kind);
 }
 
 gboolean

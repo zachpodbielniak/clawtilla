@@ -76,6 +76,42 @@ clawt_board_waiting_label(const gchar *label,
     return g_strdup_printf("waiting: %s (%s)", what, age);
 }
 
+/*
+ * The events after which a task.board reply is stale.  They live here,
+ * beside the reply's contract, so no client names an event kind of its
+ * own and GTK, lrg and any later client ask again on the same list.
+ * turn.step is not one of them: a client rewrites the step line in place.
+ */
+static const gchar *board_stale_kinds[] = {
+    "task.changed",
+    "task.noted",
+    "agent.state",
+    "agent.activity",
+    "mailbox.queued",
+    "mailbox.delivered",
+    "decision.asked",
+    "decision.settled",
+    "decision.deleted",
+    "wait.changed",
+    NULL
+};
+
+gboolean
+clawt_board_event_refreshes(const gchar *kind)
+{
+    guint i;
+
+    if (kind == NULL)
+        return FALSE;
+
+    for (i = 0; board_stale_kinds[i] != NULL; i++) {
+        if (strcmp(kind, board_stale_kinds[i]) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
 const gchar *
 clawt_board_column_nick(ClawtBoardColumn column)
 {

@@ -250,6 +250,9 @@ test_chip_text_and_step(void)
 
     g_assert_true(clawt_lrg_board_event_refreshes("task.changed"));
     g_assert_true(clawt_lrg_board_event_refreshes("wait.changed"));
+    g_assert_true(clawt_lrg_board_event_refreshes("mailbox.queued"));
+    g_assert_true(clawt_lrg_board_event_refreshes("agent.activity"));
+    g_assert_false(clawt_lrg_board_event_refreshes(NULL));
     g_assert_false(clawt_lrg_board_event_refreshes("turn.step"));
     g_assert_true(clawt_lrg_board_event_is_step("turn.step"));
     g_assert_false(clawt_lrg_board_event_refreshes("message"));

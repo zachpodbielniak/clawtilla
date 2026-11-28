@@ -991,14 +991,8 @@ clawt_gtk_board_on_event(ClawtWindow *self, ClawtEvent *event)
         return;
     }
 
-    /*
-     * mailbox.queued and mailbox.delivered are named here, not only
-     * in the shared model.  The parity check reads clients/gtk, and
-     * the header's mailbox depth is wrong until either event.
-     */
-    if (g_strcmp0(kind, "mailbox.queued") != 0 &&
-        g_strcmp0(kind, "mailbox.delivered") != 0 &&
-        !clawt_lrg_board_event_refreshes(kind))
+    /* The stale-event list is the library's (clawt_board_event_refreshes). */
+    if (!clawt_lrg_board_event_refreshes(kind))
         return;
 
     if (clawt_gtk_current_page(self) == CLAWT_PAGE_TASKS &&
