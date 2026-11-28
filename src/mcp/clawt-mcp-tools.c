@@ -7101,27 +7101,102 @@ append_handoff_history(ClawtMcpTools *self, GString *out,
 }
 
 /*
- * Whether a task is this agent's business, and why not when it is not.
- *
- * Written once because it was written twice already: clawtilla_task_cancel
- * and clawtilla_task_complete each grew their own inline origin/assignee
- * test, and the three verbs beside them -- status, result and progress --
- * were left with none, which is the shape a check acquires when it is
- * added where somebody noticed rather than where the rule is.  All five
- * are NEEDS_NOTHING, so any agent that has ever seen a task id in a
- * listing or a delivery preamble could read another agent's verbatim
- * result and its delegator's private reason, or write a progress note
- * that is rendered as the *assignee's* own words and holds somebody
- * else's task open past its turn.
- *
- * Readable by its assignee, its delegator and its reviewer.
- *
- * An unknown id is not refused here.  The caller already says "there is
- * no such task", and answering a bad id with a permission refusal tells
- * an agent that a task it invented exists.
- *
- * Returns: (transfer full) (nullable): the refusal, or %NULL when allowed
+ * One line, and short.  A question is sent as the body of a message to
+ * another agent; a newline is a second sentence they were not asked, and
+ * a page of text is a prompt, not a question.
  */
+#define WAITING_QUESTION_MAX_BYTES (500)
+
+static gchar *
+waiting_question_shape_refusal(const gchar *question)
+{
+    if (question == NULL)
+        return NULL;
+
+    if (strchr(question, '\n') != NULL || strchr(question, '\r') != NULL)
+        return g_strdup("question must be one line: a newline is refused.");
+
+    if (strlen(question) > WAITING_QUESTION_MAX_BYTES)
+        return g_strdup_printf("question is longer than %d bytes.",
+                               WAITING_QUESTION_MAX_BYTES);
+
+    return NULL;
+}
+
+/*
+ * The hop ceiling the question would be judged against.
+ *
+ * The direct room's own limit when it has one, the fleet's otherwise.
+ * The same rule check_hops() applies, and 0 in either place means "not
+ * set" rather than "unlimited" -- a room of 0 falls through to the fleet.
+ */
+static guint
+waiting_hop_limit(ClawtMcpTools *self, const gchar *from, const gchar *to)
+{
+    guint fleet = 0;
+    guint room_limit = 0;
+
+    if (self->guard != NULL)
+        fleet = clawt_loop_guard_get_max_hops(self->guard);
+
+    if (self->room_manager != NULL && from != NULL && to != NULL) {
+        g_autofree gchar *room_id = clawt_room_manager_direct_id(from, to);
+        ClawtRoom *room = clawt_room_manager_get(self->room_manager, room_id);
+
+        if (room != NULL)
+            room_limit = clawt_room_get_max_hops(room);
+    }
+
+    return (room_limit != 0) ? room_limit : fleet;
+}
+
+/*
+ * Why a question to another agent does not go out, or %NULL when it may.
+ *
+ * waiting_on names an agent is clawtilla_ask_agent by another door: the
+ * caller's rule for that tool decides, and the question is one hop past
+ * this turn, which is what check_hops() will read on the message.  A
+ * reworded question used to leave at depth 0, so the limit never arrived.
+ *
+ * `operator` and `external:` are not that tool.  They are not asked here.
+ */
+static gchar *
+waiting_on_agent_refusal(ClawtMcpTools *self, const gchar *agent_id,
+                         const gchar *turn_room, const gchar *waiting_on,
+                         gint depth)
+{
+    g_autofree gchar *rule = NULL;
+    ClawtPolicyMode mode;
+    guint limit;
+
+    mode = policy_mode(self, agent_id, turn_room, "clawtilla_ask_agent",
+                       NULL, &rule);
+
+    if (mode == CLAWT_POLICY_DENY || policy_waits(mode)) {
+        if (mode == CLAWT_POLICY_DENY)
+            return g_strdup_printf(
+                "Refused by the action rule '%s'. This is a standing "
+                "rule, not a mistake in your call: do not retry it.",
+                rule != NULL ? rule : "clawtilla_ask_agent");
+
+        return g_strdup_printf(
+            "The action rule '%s' needs a person's answer, and this "
+            "route cannot wait for one.",
+            rule != NULL ? rule : "clawtilla_ask_agent");
+    }
+
+    limit = waiting_hop_limit(self, agent_id, waiting_on);
+
+    if (limit > 0 && depth >= (gint)limit)
+        return g_strdup_printf(
+            "this message is %d hops from the original request, and the "
+            "limit is %u. Delegation has gone deeper than intended; "
+            "answer directly rather than passing it on again.",
+            depth, limit);
+
+    return NULL;
+}
+
 /*
  * Why @waiting_on is not somebody a task can wait on, or %NULL when it
  * is: an agent of this fleet other than the caller, `operator`, or
@@ -7133,6 +7208,11 @@ static gchar *
 waiting_on_refusal(ClawtMcpTools *self, const gchar *agent_id,
                    const gchar *waiting_on, const gchar *question)
 {
+    g_autofree gchar *shape = waiting_question_shape_refusal(question);
+
+    if (shape != NULL)
+        return g_steal_pointer(&shape);
+
     if (g_str_has_prefix(waiting_on, "external:")) {
         const gchar *name = waiting_on + strlen("external:");
         const gchar *c;
@@ -7167,6 +7247,28 @@ waiting_on_refusal(ClawtMcpTools *self, const gchar *agent_id,
     return NULL;
 }
 
+/*
+ * Whether a task is this agent's business, and why not when it is not.
+ *
+ * Written once because it was written twice already: clawtilla_task_cancel
+ * and clawtilla_task_complete each grew their own inline origin/assignee
+ * test, and the three verbs beside them -- status, result and progress --
+ * were left with none, which is the shape a check acquires when it is
+ * added where somebody noticed rather than where the rule is.  All five
+ * are NEEDS_NOTHING, so any agent that has ever seen a task id in a
+ * listing or a delivery preamble could read another agent's verbatim
+ * result and its delegator's private reason, or write a progress note
+ * that is rendered as the *assignee's* own words and holds somebody
+ * else's task open past its turn.
+ *
+ * Readable by its assignee, its delegator and its reviewer.
+ *
+ * An unknown id is not refused here.  The caller already says "there is
+ * no such task", and answering a bad id with a permission refusal tells
+ * an agent that a task it invented exists.
+ *
+ * Returns: (transfer full) (nullable): the refusal, or %NULL when allowed
+ */
 static gchar *
 task_refusal_for(ClawtMcpTools *self, const gchar *task_id,
                  const gchar *agent_id, gboolean assignee_only)
@@ -11663,9 +11765,29 @@ tools_call_run(ClawtMcpTools *self,
             is_error = TRUE;
             text = g_steal_pointer(&bad_party);
         } else if (waiting_on != NULL) {
-            if (self->tasks != NULL &&
+            gboolean asks_agent =
+                !g_str_has_prefix(waiting_on, "external:") &&
+                g_strcmp0(waiting_on, "operator") != 0;
+            gint depth = 0;
+            g_autofree gchar *ask_refusal = NULL;
+
+            /*
+             * An agent is asked the way clawtilla_ask_agent asks: one
+             * hop past this turn, and only when that tool's rule allows
+             * it.  operator and external: are not that send.
+             */
+            if (asks_agent) {
+                depth = outbound_depth(self, agent_id, turn_room);
+                ask_refusal = waiting_on_agent_refusal(
+                    self, agent_id, turn_room, waiting_on, depth);
+            }
+
+            if (ask_refusal != NULL) {
+                is_error = TRUE;
+                text = g_steal_pointer(&ask_refusal);
+            } else if (self->tasks != NULL &&
                 clawt_task_manager_wait_on(self->tasks, task_id, waiting_on,
-                                           question, note))
+                                           question, note, depth))
                 text = g_strdup_printf(
                     "Noted against %s, which is now blocked: waiting on "
                     "%s.%s It stays yours -- report on it or finish it "

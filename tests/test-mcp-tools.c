@@ -2883,6 +2883,198 @@ test_waiting_on_somebody_blocks_the_task(void)
 }
 
 /*
+ * The question is one line, and not a page.
+ *
+ * It is pasted into a message to whoever was named.  A newline is a
+ * second sentence, and anything past 500 bytes is a prompt.  Both are
+ * refused before the task is blocked, so a retry with one line still
+ * has a task to block.
+ */
+static void
+test_a_waiting_question_is_one_short_line(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) broken = NULL;
+    g_autoptr(JsonNode) huge = NULL;
+    g_autoptr(JsonNode) ok = NULL;
+    g_autofree gchar *arguments = NULL;
+    g_autofree gchar *filled = NULL;
+    ClawtTask *task;
+    gboolean is_error = FALSE;
+    const gchar *text;
+    const gchar *id;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n"
+                            "    chief_of_staff: true\n  - id: oryx\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "oryx",
+                                     "merge the daemon PR", NULL, NULL);
+    id = clawt_task_get_id(task);
+
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"held\",\"waiting_on\":\"chief\","
+        "\"question\":\"one\\ntwo\"}", id);
+    broken = call_tool(&fixture, "oryx", "clawtilla_task_progress",
+                       arguments);
+    text = response_text(broken, &is_error);
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "newline"));
+    g_assert_cmpint(clawt_task_get_state(task), !=, CLAWT_TASK_BLOCKED);
+    g_clear_pointer(&arguments, g_free);
+
+    filled = g_strnfill(501, 'x');
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"held\",\"waiting_on\":\"chief\","
+        "\"question\":\"%s\"}", id, filled);
+    huge = call_tool(&fixture, "oryx", "clawtilla_task_progress", arguments);
+    text = response_text(huge, &is_error);
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "500"));
+    g_assert_cmpint(clawt_task_get_state(task), !=, CLAWT_TASK_BLOCKED);
+    g_clear_pointer(&arguments, g_free);
+    g_clear_pointer(&filled, g_free);
+
+    /* 500 bytes is the last length that is still a question. */
+    filled = g_strnfill(500, 'y');
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"held\",\"waiting_on\":\"chief\","
+        "\"question\":\"%s\"}", id, filled);
+    ok = call_tool(&fixture, "oryx", "clawtilla_task_progress", arguments);
+    response_text(ok, &is_error);
+    g_assert_false(is_error);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Waiting on an agent is asking them.
+ *
+ * clawtilla_ask_agent=deny therefore refuses it, and says so as an
+ * error.  operator and external: are not that tool: the person and a
+ * service that is down are still something a task can block on.
+ */
+static void
+test_waiting_on_an_agent_obeys_the_ask_rule(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) denied = NULL;
+    g_autoptr(JsonNode) person = NULL;
+    g_autoptr(JsonNode) service = NULL;
+    g_autofree gchar *arguments = NULL;
+    ClawtTask *task;
+    gboolean is_error = FALSE;
+    const gchar *text;
+    const gchar *id;
+
+    fixture_setup(&fixture,
+        "agents:\n"
+        "  - id: chief\n    chief_of_staff: true\n"
+        "  - id: oryx\n"
+        "    policy:\n"
+        "      rules: [\"clawtilla_ask_agent=deny\"]\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "oryx",
+                                     "merge the daemon PR", NULL, NULL);
+    id = clawt_task_get_id(task);
+
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"held\",\"waiting_on\":\"chief\","
+        "\"question\":\"May I?\"}", id);
+    denied = call_tool(&fixture, "oryx", "clawtilla_task_progress",
+                       arguments);
+    text = response_text(denied, &is_error);
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "clawtilla_ask_agent=deny"));
+    g_assert_cmpint(clawt_task_get_state(task), !=, CLAWT_TASK_BLOCKED);
+    g_clear_pointer(&arguments, g_free);
+
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"held\",\"waiting_on\":\"operator\","
+        "\"question\":\"May I?\"}", id);
+    person = call_tool(&fixture, "oryx", "clawtilla_task_progress",
+                       arguments);
+    response_text(person, &is_error);
+    g_assert_false(is_error);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+    g_assert_cmpstr(clawt_task_get_waiting_on(task), ==, "operator");
+    g_clear_pointer(&arguments, g_free);
+
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"VENTURE is down\","
+        "\"waiting_on\":\"external:venture\"}", id);
+    service = call_tool(&fixture, "oryx", "clawtilla_task_progress",
+                        arguments);
+    response_text(service, &is_error);
+    g_assert_false(is_error);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+    g_assert_cmpstr(clawt_task_get_waiting_on(task), ==, "external:venture");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A question from a turn at depth N is hop N+1, and N+1 at the ceiling
+ * is refused.
+ *
+ * The guard's default ceiling is 8.  A turn at 4 may still ask (the
+ * message would be 5).  A turn at 7 would send at 8, which check_hops()
+ * refuses, and the task is not blocked on an ask that never left.
+ */
+static void
+test_waiting_on_an_agent_stops_at_max_hops(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) allowed = NULL;
+    g_autoptr(JsonNode) refused = NULL;
+    g_autofree gchar *arguments = NULL;
+    ClawtAgent *oryx;
+    ClawtTask *first;
+    ClawtTask *second;
+    gboolean is_error = TRUE;
+    const gchar *text;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n"
+                            "    chief_of_staff: true\n  - id: oryx\n");
+    clawt_loop_guard_set_limits(fixture.guard, 8, 30, 0);
+
+    oryx = clawt_agent_manager_get(fixture.agents, "oryx");
+    clawt_agent_set_hop_depth(oryx, 4);
+    g_assert_cmpint(clawt_agent_get_hop_depth_in(oryx, NULL), ==, 4);
+
+    first = clawt_task_manager_create(fixture.tasks, "chief", "oryx",
+                                      "the first ask", NULL, NULL);
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"held\",\"waiting_on\":\"chief\","
+        "\"question\":\"Still under the ceiling?\"}",
+        clawt_task_get_id(first));
+    allowed = call_tool(&fixture, "oryx", "clawtilla_task_progress",
+                        arguments);
+    response_text(allowed, &is_error);
+    g_assert_false(is_error);
+    g_assert_cmpint(clawt_task_get_state(first), ==, CLAWT_TASK_BLOCKED);
+    g_clear_pointer(&arguments, g_free);
+
+    clawt_agent_set_hop_depth(oryx, 7);
+    g_assert_cmpint(clawt_agent_get_hop_depth_in(oryx, NULL), ==, 7);
+
+    second = clawt_task_manager_create(fixture.tasks, "chief", "oryx",
+                                       "the hop that does not fit", NULL, NULL);
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"held\",\"waiting_on\":\"chief\","
+        "\"question\":\"And now?\"}", clawt_task_get_id(second));
+    refused = call_tool(&fixture, "oryx", "clawtilla_task_progress",
+                        arguments);
+    text = response_text(refused, &is_error);
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "hops"));
+    g_assert_nonnull(strstr(text, "8"));
+    g_assert_cmpint(clawt_task_get_state(second), !=, CLAWT_TASK_BLOCKED);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * Progress on a task that has already ended is refused rather than
  * silently accepted, so an assignee does not believe it has kept alive
  * something that was cancelled out from under it.
@@ -4801,6 +4993,12 @@ main(int argc, char *argv[])
                     test_reporting_progress_keeps_a_task_open);
     g_test_add_func("/mcp/task-progress/waiting-on-blocks",
                     test_waiting_on_somebody_blocks_the_task);
+    g_test_add_func("/mcp/task-progress/question-is-one-short-line",
+                    test_a_waiting_question_is_one_short_line);
+    g_test_add_func("/mcp/task-progress/ask-rule-covers-an-agent",
+                    test_waiting_on_an_agent_obeys_the_ask_rule);
+    g_test_add_func("/mcp/task-progress/stops-at-max-hops",
+                    test_waiting_on_an_agent_stops_at_max_hops);
     g_test_add_func("/mcp/task-progress/refused-once-finished",
                     test_progress_on_a_finished_task_is_refused);
     g_test_add_func("/mcp/task-result/an-inferred-result-is-labelled",

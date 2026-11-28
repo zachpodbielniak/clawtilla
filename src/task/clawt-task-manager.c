@@ -1704,7 +1704,8 @@ clawt_task_manager_wait_on(ClawtTaskManager *self,
                            const gchar      *task_id,
                            const gchar      *waiting_on,
                            const gchar      *question,
-                           const gchar      *note_text)
+                           const gchar      *note_text,
+                           gint              depth)
 {
     ClawtTask *task;
     gboolean moved;
@@ -1751,7 +1752,7 @@ clawt_task_manager_wait_on(ClawtTaskManager *self,
     emit_changed(self, task, what);
 
     if (moved)
-        g_signal_emit(self, signals[SIGNAL_TASK_WAITING], 0, task_id);
+        g_signal_emit(self, signals[SIGNAL_TASK_WAITING], 0, task_id, depth);
 
     return TRUE;
 }
@@ -2024,15 +2025,19 @@ clawt_task_manager_class_init(ClawtTaskManagerClass *klass)
      * ClawtTaskManager::task-waiting:
      * @self: the manager
      * @task_id: the task whose assignee now waits on somebody
+     * @depth: hop depth of the question, already one past the caller's
+     *   turn, or 0 when the wait asks nobody in this fleet
      *
      * clawt_task_manager_wait_on() put the task in `blocked`, or changed
      * who it waits on or what it asked.  Once per change, so whoever is
      * waited on is asked once, not on every repeat of the same report.
+     * @depth is the depth the question is sent at, so the hop limit sees
+     * a reworded question instead of a fresh chain.
      */
     signals[SIGNAL_TASK_WAITING] =
         g_signal_new("task-waiting", CLAWT_TYPE_TASK_MANAGER,
                      G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
-                     G_TYPE_NONE, 1, G_TYPE_STRING);
+                     G_TYPE_NONE, 2, G_TYPE_STRING, G_TYPE_INT);
 
     /**
      * ClawtTaskManager::task-resumed:

@@ -766,6 +766,10 @@ gboolean clawt_task_manager_block(ClawtTaskManager *self,
  * @question: (nullable): one line for them
  * @note_text: (nullable): the progress note, as
  *   clawt_task_manager_note_progress() takes it
+ * @depth: how far the question has already travelled.  One past the
+ *   caller's turn -- the same figure clawtilla_message_agent stamps --
+ *   or 0 when the wait asks nobody in this fleet.  Passed through to
+ *   ::task-waiting so the message is sent at that depth.
  *
  * Its assignee cannot go on until somebody else does something.  The
  * task goes to `blocked` with the reason, and stays its assignee's: no
@@ -780,7 +784,8 @@ gboolean clawt_task_manager_wait_on(ClawtTaskManager *self,
                                     const gchar      *task_id,
                                     const gchar      *waiting_on,
                                     const gchar      *question,
-                                    const gchar      *note_text);
+                                    const gchar      *note_text,
+                                    gint              depth);
 
 /**
  * clawt_task_manager_resume:

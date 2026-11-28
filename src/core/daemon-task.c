@@ -296,7 +296,7 @@ static JsonNode *handle_checkout_request(ClawtDaemon *self,
  */
 static void
 on_task_waiting(ClawtTaskManager *tasks, const gchar *task_id,
-                gpointer user_data)
+                gint depth, gpointer user_data)
 {
     ClawtDaemon *self = user_data;
     ClawtTask *task = clawt_task_manager_get(tasks, task_id);
@@ -341,6 +341,13 @@ on_task_waiting(ClawtTaskManager *tasks, const gchar *task_id,
 
     message = clawt_message_new(clawt_room_get_id(room), assignee, body);
     clawt_message_set_only_for(message, party);
+
+    /*
+     * The caller's turn plus one, the same figure message_agent stamps.
+     * Left at 0, check_hops() read a fresh chain, and rewording the
+     * question kept the exchange going past max_hops.
+     */
+    clawt_message_set_depth(message, depth);
 
     if (clawt_mailbox_router_send(self->router, message, &error) < 0)
         g_warning("daemon: task %s waits on %s, who could not be asked: %s",

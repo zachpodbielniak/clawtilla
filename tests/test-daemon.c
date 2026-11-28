@@ -11312,6 +11312,83 @@ test_a_task_waiting_on_somebody_asks_and_is_unblocked(void)
 }
 
 /*
+ * A question asked from a turn at depth N arrives at depth N+1.
+ *
+ * That is the figure check_hops() reads.  Sent at 0, rewording the
+ * question started a fresh chain and max_hops never arrived.  A turn
+ * already at the ceiling is refused, and the task is not blocked on an
+ * ask that the router would have dropped.
+ */
+static void
+test_a_waiting_question_carries_the_turns_depth(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) queued = NULL;
+    g_autofree gchar *wait_args = NULL;
+    g_autofree gchar *deep_args = NULL;
+    ClawtAgent *worker;
+    ClawtTask *task;
+    ClawtTask *deep;
+    ClawtMailboxItem *item;
+
+    fixture_setup(&fixture,
+        "orchestration:\n  max_hops: 8\n"
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: worker\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    worker = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                     "worker");
+    clawt_agent_set_hop_depth(worker, 4);
+    g_assert_cmpint(clawt_agent_get_hop_depth_in(worker, NULL), ==, 4);
+
+    task = clawt_task_manager_create(fixture.daemon->tasks, "chief",
+                                     "worker", "merge the daemon PR",
+                                     NULL, NULL);
+    clawt_task_manager_start(fixture.daemon->tasks, clawt_task_get_id(task));
+
+    wait_args = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"CI is held\","
+        "\"waiting_on\":\"chief\","
+        "\"question\":\"May I turn the heavy runner back on?\"}",
+        clawt_task_get_id(task));
+    g_assert_true(report_progress(&fixture, "worker", wait_args));
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+
+    queued = clawt_mailbox_list(clawt_agent_get_mailbox(
+        clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                "chief")), NULL);
+    g_assert_nonnull(queued);
+    g_assert_cmpuint(queued->len, ==, 1);
+    item = g_ptr_array_index(queued, 0);
+    g_assert_nonnull(strstr(clawt_mailbox_item_get_body(item),
+                            "May I turn the heavy runner back on?"));
+    g_assert_cmpint(clawt_mailbox_item_get_depth(item), ==, 5);
+
+    /* Outbound would be 8, which is the ceiling, so it does not go. */
+    clawt_agent_set_hop_depth(worker, 7);
+    deep = clawt_task_manager_create(fixture.daemon->tasks, "chief",
+                                     "worker", "one hop too far", NULL, NULL);
+    clawt_task_manager_start(fixture.daemon->tasks, clawt_task_get_id(deep));
+    deep_args = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"still held\","
+        "\"waiting_on\":\"chief\",\"question\":\"And this one?\"}",
+        clawt_task_get_id(deep));
+    g_assert_false(report_progress(&fixture, "worker", deep_args));
+    g_assert_cmpint(clawt_task_get_state(deep), !=, CLAWT_TASK_BLOCKED);
+
+    g_ptr_array_unref(queued);
+    queued = clawt_mailbox_list(clawt_agent_get_mailbox(
+        clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                "chief")), NULL);
+    g_assert_cmpuint(queued->len, ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A VENTURE that stops answering the mirror is an event, integration.health
  * with state down and the failed answer, and its return is state up: a
  * rule can release every part waiting on external:venture on the second
@@ -14145,6 +14222,8 @@ main(int argc, char *argv[])
                     test_venture_health_is_an_event);
     g_test_add_func("/daemon/task/waiting-on-asks-and-is-unblocked",
                     test_a_task_waiting_on_somebody_asks_and_is_unblocked);
+    g_test_add_func("/daemon/task/waiting-question-carries-depth",
+                    test_a_waiting_question_carries_the_turns_depth);
     g_test_add_func("/daemon/failover/held-agent-is-degraded-and-not-fed",
                     test_a_held_agent_is_degraded_and_not_fed);
     g_test_add_func("/daemon/failover/held-account-is-one-alert",
