@@ -1288,6 +1288,16 @@ clawt_daemon_handle_hold(ClawtDaemon  *self,
 void clawt_daemon_triggers_stop(ClawtDaemon *self);
 
 /*
+ * clawt_daemon_tasks_watch_waits:
+ * @self: the daemon
+ *
+ * Asks whoever a task now waits on (ClawtTaskManager::task-waiting) and
+ * wakes the assignee when the wait is lifted (::task-resumed).
+ * daemon-task.c.
+ */
+void clawt_daemon_tasks_watch_waits(ClawtDaemon *self);
+
+/*
  * clawt_daemon_held_changed:
  * @self: the daemon
  * @agent: an agent whose agent.failover state was just set or cleared

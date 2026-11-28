@@ -184,6 +184,27 @@ void           clawt_task_set_consult(ClawtTask *self, gboolean consult);
 const gchar   *clawt_task_get_progress_note(ClawtTask *self);
 
 /**
+ * clawt_task_get_waiting_on:
+ * @self: a #ClawtTask
+ *
+ * Who or what a blocked task waits on, as its assignee said with
+ * clawtilla_task_progress: an agent id, `operator`, or `external:NAME`
+ * for a service.  %NULL for a task that waits on nothing, or only on the
+ * tasks it was delegated `after`.
+ *
+ * Returns: (nullable): the party
+ */
+const gchar   *clawt_task_get_waiting_on(ClawtTask *self);
+
+/**
+ * clawt_task_get_question:
+ * @self: a #ClawtTask
+ *
+ * Returns: (nullable): the one line its assignee asked whoever it waits on
+ */
+const gchar   *clawt_task_get_question(ClawtTask *self);
+
+/**
  * clawt_task_get_cancelled_by:
  * @self: a #ClawtTask
  *
@@ -374,6 +395,8 @@ void clawt_task_set_reason(ClawtTask *self, const gchar *reason);
 void clawt_task_set_model(ClawtTask *self, const gchar *model);
 void clawt_task_set_result(ClawtTask *self, const gchar *result);
 void clawt_task_set_progress_note(ClawtTask *self, const gchar *note);
+void clawt_task_set_waiting_on(ClawtTask *self, const gchar *waiting_on);
+void clawt_task_set_question(ClawtTask *self, const gchar *question);
 void clawt_task_set_state(ClawtTask *self, ClawtTaskState state);
 void clawt_task_set_depth(ClawtTask *self, gint depth);
 

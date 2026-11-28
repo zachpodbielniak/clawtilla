@@ -14,6 +14,8 @@ enum {
     SIGNAL_TASK_CHANGED,
     SIGNAL_BLOCKERS_CHANGED,
     SIGNAL_REVIEW_REQUESTED,
+    SIGNAL_TASK_WAITING,
+    SIGNAL_TASK_RESUMED,
     N_SIGNALS
 };
 
@@ -131,6 +133,27 @@ emit_changed(ClawtTaskManager *self, ClawtTask *task, const gchar *what)
 
     g_signal_emit(self, signals[SIGNAL_TASK_CHANGED], 0,
                   clawt_task_get_id(task), clawt_task_get_state(task));
+}
+
+/*
+ * Blocked because its assignee said who it waits on, rather than for the
+ * tasks it was delegated after.  Still the assignee's work: it may report
+ * progress on it, and finish it, and either ends the wait.
+ */
+static gboolean
+is_waiting(ClawtTask *task)
+{
+    return clawt_task_get_state(task) == CLAWT_TASK_BLOCKED &&
+           clawt_task_get_waiting_on(task) != NULL;
+}
+
+/* The wait is over: back with its assignee, the party forgotten. */
+static void
+end_wait(ClawtTask *task)
+{
+    clawt_task_set_waiting_on(task, NULL);
+    clawt_task_set_question(task, NULL);
+    clawt_task_set_state(task, CLAWT_TASK_RUNNING);
 }
 
 /* Records @task as one of its parent's children. */
@@ -622,6 +645,10 @@ clawt_task_manager_complete(ClawtTaskManager *self,
     if (task == NULL)
         return FALSE;
 
+    /* Its assignee finishing work it was waiting on: the wait is over. */
+    if (is_waiting(task))
+        end_wait(task);
+
     /*
      * A task that already ended stays ended.  A late result arriving after
      * a cancellation must not quietly un-cancel it -- somebody stopped that
@@ -803,7 +830,14 @@ clawt_task_manager_note_progress(ClawtTaskManager *self,
     ClawtTask *task = clawt_task_manager_get(self, task_id);
 
     /* Progress is the assignee's to report, on work it has. */
-    if (task == NULL || !clawt_task_state_is_active(clawt_task_get_state(task)))
+    if (task == NULL)
+        return FALSE;
+
+    /* Reporting on work it was waiting for is the wait being over. */
+    if (is_waiting(task))
+        end_wait(task);
+
+    if (!clawt_task_state_is_active(clawt_task_get_state(task)))
         return FALSE;
 
     clawt_task_set_progress_note(task, progress);
@@ -1578,6 +1612,14 @@ clawt_task_manager_unblock(ClawtTaskManager *self, const gchar *task_id)
     if (task == NULL || clawt_task_get_state(task) != CLAWT_TASK_BLOCKED)
         return FALSE;
 
+    /*
+     * Held by a party its assignee named, not by tasks: the tasks it was
+     * after completing does not answer the question.  See
+     * clawt_task_manager_resume().
+     */
+    if (clawt_task_get_waiting_on(task) != NULL)
+        return FALSE;
+
     /* Back to the backlog if nobody had it yet, to its assignee if so. */
     clawt_task_set_state(task, clawt_task_get_assignee(task) != NULL
                                    ? CLAWT_TASK_PENDING
@@ -1585,6 +1627,115 @@ clawt_task_manager_unblock(ClawtTaskManager *self, const gchar *task_id)
     emit_changed(self, task, "released: everything it waited for completed");
 
     return TRUE;
+}
+
+gboolean
+clawt_task_manager_wait_on(ClawtTaskManager *self,
+                           const gchar      *task_id,
+                           const gchar      *waiting_on,
+                           const gchar      *question,
+                           const gchar      *note_text)
+{
+    ClawtTask *task;
+    gboolean moved;
+    g_autofree gchar *what = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+    g_return_val_if_fail(waiting_on != NULL && *waiting_on != '\0', FALSE);
+
+    task = clawt_task_manager_get(self, task_id);
+    if (task == NULL)
+        return FALSE;
+
+    /* A task already waiting may say it waits on somebody else now. */
+    if (!is_waiting(task) &&
+        !clawt_task_state_is_active(clawt_task_get_state(task)))
+        return FALSE;
+
+    moved = !is_waiting(task) ||
+            g_strcmp0(clawt_task_get_waiting_on(task), waiting_on) != 0 ||
+            g_strcmp0(clawt_task_get_question(task), question) != 0;
+
+    if (note_text != NULL)
+        clawt_task_set_progress_note(task, note_text);
+    clawt_task_set_waiting_on(task, waiting_on);
+    clawt_task_set_question(task, question);
+    clawt_task_set_state(task, CLAWT_TASK_BLOCKED);
+
+    /*
+     * The reason is a note as well as the journal line, so it reaches a
+     * mirrored ticket as a comment: a ticket that only says "blocked"
+     * makes whoever reads it ask the question again.
+     */
+    what = (question != NULL && *question != '\0')
+        ? g_strdup_printf("waiting on %s: %s", waiting_on, question)
+        : g_strdup_printf("waiting on %s", waiting_on);
+    if (moved) {
+        g_autofree gchar *body = note_text != NULL
+            ? g_strdup_printf("%s\n\n%s", what, note_text)
+            : g_strdup(what);
+
+        note(self, task, clawt_task_get_assignee(task),
+             CLAWT_TASK_NOTE_PROGRESS, body);
+    }
+    emit_changed(self, task, what);
+
+    if (moved)
+        g_signal_emit(self, signals[SIGNAL_TASK_WAITING], 0, task_id);
+
+    return TRUE;
+}
+
+guint
+clawt_task_manager_resume(ClawtTaskManager *self,
+                          const gchar      *task_id,
+                          const gchar      *waiting_on,
+                          const gchar      *by)
+{
+    GPtrArray *ids = g_ptr_array_new_with_free_func(g_free);
+    guint resumed = 0;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), 0);
+
+    /* Collected first: resuming changes what a later match sees. */
+    for (i = 0; i < self->order->len; i++) {
+        ClawtTask *task = clawt_task_manager_get(
+            self, g_ptr_array_index(self->order, i));
+
+        if (task == NULL || !is_waiting(task))
+            continue;
+        if (task_id != NULL &&
+            g_strcmp0(clawt_task_get_id(task), task_id) != 0)
+            continue;
+        if (waiting_on != NULL &&
+            g_strcmp0(clawt_task_get_waiting_on(task), waiting_on) != 0)
+            continue;
+
+        g_ptr_array_add(ids, g_strdup(clawt_task_get_id(task)));
+    }
+
+    for (i = 0; i < ids->len; i++) {
+        const gchar *id = g_ptr_array_index(ids, i);
+        ClawtTask *task = clawt_task_manager_get(self, id);
+        g_autofree gchar *what = g_strdup_printf(
+            "resumed: %s no longer waits on %s%s%s",
+            clawt_task_get_assignee(task) != NULL
+                ? clawt_task_get_assignee(task) : "it",
+            clawt_task_get_waiting_on(task),
+            by != NULL ? ", says " : "", by != NULL ? by : "");
+        g_autofree gchar *party = g_strdup(clawt_task_get_waiting_on(task));
+
+        end_wait(task);
+        emit_changed(self, task, what);
+        g_signal_emit(self, signals[SIGNAL_TASK_RESUMED], 0, id, party,
+                      by);
+        resumed++;
+    }
+
+    g_ptr_array_unref(ids);
+
+    return resumed;
 }
 
 gboolean
@@ -1798,6 +1949,37 @@ clawt_task_manager_class_init(ClawtTaskManagerClass *klass)
         g_signal_new("review-requested", CLAWT_TYPE_TASK_MANAGER,
                      G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
                      G_TYPE_NONE, 1, G_TYPE_STRING);
+
+    /**
+     * ClawtTaskManager::task-waiting:
+     * @self: the manager
+     * @task_id: the task whose assignee now waits on somebody
+     *
+     * clawt_task_manager_wait_on() put the task in `blocked`, or changed
+     * who it waits on or what it asked.  Once per change, so whoever is
+     * waited on is asked once, not on every repeat of the same report.
+     */
+    signals[SIGNAL_TASK_WAITING] =
+        g_signal_new("task-waiting", CLAWT_TYPE_TASK_MANAGER,
+                     G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+                     G_TYPE_NONE, 1, G_TYPE_STRING);
+
+    /**
+     * ClawtTaskManager::task-resumed:
+     * @self: the manager
+     * @task_id: the task
+     * @waiting_on: who it had waited on
+     * @by: (nullable): who said the wait was over
+     *
+     * clawt_task_manager_resume() gave the task back to its assignee.
+     * Not emitted when the assignee itself ended the wait by reporting
+     * or finishing: it knows.
+     */
+    signals[SIGNAL_TASK_RESUMED] =
+        g_signal_new("task-resumed", CLAWT_TYPE_TASK_MANAGER,
+                     G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+                     G_TYPE_NONE, 3, G_TYPE_STRING, G_TYPE_STRING,
+                     G_TYPE_STRING);
 }
 
 static void

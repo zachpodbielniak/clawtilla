@@ -707,6 +707,50 @@ gboolean clawt_task_manager_block(ClawtTaskManager *self,
                                   const gchar      *task_id);
 
 /**
+ * clawt_task_manager_wait_on:
+ * @self: a #ClawtTaskManager
+ * @task_id: a task its assignee has
+ * @waiting_on: who or what it waits on: an agent id, `operator`, or
+ *   `external:NAME`
+ * @question: (nullable): one line for them
+ * @note_text: (nullable): the progress note, as
+ *   clawt_task_manager_note_progress() takes it
+ *
+ * Its assignee cannot go on until somebody else does something.  The
+ * task goes to `blocked` with the reason, and stays its assignee's: no
+ * turn end completes it and no turn timeout is about it, but the
+ * assignee may still report on it or finish it, which ends the wait.  The
+ * reason is noted on the task (so a mirrored ticket shows it), and
+ * ::task-waiting is emitted when who or what is asked changes.
+ *
+ * Returns: %TRUE when the task was the assignee's to hold
+ */
+gboolean clawt_task_manager_wait_on(ClawtTaskManager *self,
+                                    const gchar      *task_id,
+                                    const gchar      *waiting_on,
+                                    const gchar      *question,
+                                    const gchar      *note_text);
+
+/**
+ * clawt_task_manager_resume:
+ * @self: a #ClawtTaskManager
+ * @task_id: (nullable): one task, or %NULL for any
+ * @waiting_on: (nullable): only tasks waiting on this party
+ * @by: (nullable): who says the wait is over, for the record
+ *
+ * Gives waiting tasks back to their assignees, running, and emits
+ * ::task-resumed for each.  With @task_id, that task; with @waiting_on,
+ * every task waiting on it -- `external:venture` coming back releases
+ * every part that waited on it.
+ *
+ * Returns: how many were resumed
+ */
+guint clawt_task_manager_resume(ClawtTaskManager *self,
+                                const gchar      *task_id,
+                                const gchar      *waiting_on,
+                                const gchar      *by);
+
+/**
  * clawt_task_manager_unblock:
  * @self: a #ClawtTaskManager
  * @task_id: a blocked task

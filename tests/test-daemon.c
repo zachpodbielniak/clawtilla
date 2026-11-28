@@ -10947,6 +10947,152 @@ test_a_held_account_is_one_alert(void)
     fixture_teardown(&fixture);
 }
 
+/* The bodies of everything queued for @agent_id, joined. */
+static gchar *
+queued_bodies(Fixture *fixture, const gchar *agent_id)
+{
+    ClawtAgent *agent = clawt_agent_manager_get(
+        clawt_daemon_get_agents(fixture->daemon), agent_id);
+    g_autoptr(GPtrArray) items = clawt_mailbox_list(
+        clawt_agent_get_mailbox(agent), NULL);
+    GString *out = g_string_new(NULL);
+    guint i;
+
+    for (i = 0; items != NULL && i < items->len; i++)
+        g_string_append_printf(out, "%s: %s\n",
+            clawt_mailbox_item_get_from(g_ptr_array_index(items, i)),
+            clawt_mailbox_item_get_body(g_ptr_array_index(items, i)));
+
+    return g_string_free(out, FALSE);
+}
+
+/* The latest task.changed for @task_id, its detail @key. */
+static gchar *
+last_task_detail(ClawtDaemon *daemon, const gchar *task_id, const gchar *key)
+{
+    g_autoptr(GPtrArray) events = clawt_event_bus_replay(
+        clawt_daemon_get_event_bus(daemon), 0, NULL);
+    gchar *found = NULL;
+    guint i;
+
+    for (i = 0; events != NULL && i < events->len; i++) {
+        ClawtEvent *event = g_ptr_array_index(events, i);
+
+        if (g_strcmp0(clawt_event_get_kind(event), "task.changed") == 0 &&
+            g_strcmp0(clawt_event_get_subject(event), task_id) == 0) {
+            g_free(found);
+            found = g_strdup(clawt_event_get_detail(event, key));
+        }
+    }
+
+    return found;
+}
+
+/*
+ * A task waiting on an agent asks that agent, once, as its assignee, so
+ * the answer comes back to the assignee; the event says who it waits on
+ * and what it asked, and the reason is a note on the task, which is what
+ * a mirrored ticket shows.  `task.unblock` ends the wait and tells the
+ * assignee; `on` ends every wait on one party, the move when a service
+ * that was down is back.
+ */
+static void
+test_a_task_waiting_on_somebody_asks_and_is_unblocked(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) one = NULL;
+    g_autoptr(JsonNode) both = NULL;
+    g_autoptr(JsonNode) idle = NULL;
+    g_autoptr(JsonNode) notes = NULL;
+    g_autofree gchar *asked = NULL;
+    g_autofree gchar *again = NULL;
+    g_autofree gchar *woken = NULL;
+    g_autofree gchar *party = NULL;
+    g_autofree gchar *question = NULL;
+    g_autofree gchar *args = NULL;
+    g_autofree gchar *notes_text = NULL;
+    ClawtTask *task;
+    ClawtTask *part_a;
+    ClawtTask *part_b;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: worker\n  - id: other\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    task = clawt_task_manager_create(fixture.daemon->tasks, "other",
+                                     "worker", "merge the daemon PR",
+                                     NULL, NULL);
+    clawt_task_manager_start(fixture.daemon->tasks, clawt_task_get_id(task));
+
+    g_assert_true(clawt_task_manager_wait_on(fixture.daemon->tasks,
+        clawt_task_get_id(task), "chief",
+        "May I turn the heavy runner back on?", "CI is held"));
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+
+    asked = queued_bodies(&fixture, "chief");
+    g_assert_nonnull(strstr(asked, "worker: worker cannot go on with task"));
+    g_assert_nonnull(strstr(asked, "May I turn the heavy runner back on?"));
+    g_assert_cmpuint(clawt_test_count_substrings(asked, "cannot go on"), ==,
+                     1);
+
+    /* said again: not asked again */
+    g_assert_true(clawt_task_manager_wait_on(fixture.daemon->tasks,
+        clawt_task_get_id(task), "chief",
+        "May I turn the heavy runner back on?", "CI is held"));
+    again = queued_bodies(&fixture, "chief");
+    g_assert_cmpuint(clawt_test_count_substrings(again, "cannot go on"), ==,
+                     1);
+
+    party = last_task_detail(fixture.daemon, clawt_task_get_id(task),
+                             "waiting_on");
+    question = last_task_detail(fixture.daemon, clawt_task_get_id(task),
+                                "question");
+    g_assert_cmpstr(party, ==, "chief");
+    g_assert_cmpstr(question, ==, "May I turn the heavy runner back on?");
+
+    notes = clawt_task_manager_notes(fixture.daemon->tasks,
+                                     clawt_task_get_id(task), NULL);
+    g_assert_nonnull(notes);
+    notes_text = json_to_string(notes, FALSE);
+    g_assert_nonnull(strstr(notes_text, "waiting on chief: May I turn"));
+
+    args = g_strdup_printf("{\"task\":\"%s\"}", clawt_task_get_id(task));
+    one = request(&fixture, "task.unblock", args);
+    g_assert_false(clawt_ipc_frame_is_error(one));
+    g_assert_cmpint(json_object_get_int_member(payload_of(one), "resumed"),
+                    ==, 1);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_RUNNING);
+    g_assert_null(clawt_task_get_waiting_on(task));
+
+    woken = queued_bodies(&fixture, "worker");
+    g_assert_nonnull(strstr(woken, "no longer waits on chief"));
+
+    /* not waiting any more: refused, with why */
+    idle = request(&fixture, "task.unblock", args);
+    g_assert_true(clawt_ipc_frame_is_error(idle));
+
+    /* every part waiting on one service */
+    part_a = clawt_task_manager_create(fixture.daemon->tasks, "other",
+                                       "worker", "part a", NULL, NULL);
+    part_b = clawt_task_manager_create(fixture.daemon->tasks, "other",
+                                       "chief", "part b", NULL, NULL);
+    g_assert_true(clawt_task_manager_wait_on(fixture.daemon->tasks,
+        clawt_task_get_id(part_a), "external:venture", NULL, NULL));
+    g_assert_true(clawt_task_manager_wait_on(fixture.daemon->tasks,
+        clawt_task_get_id(part_b), "external:venture", NULL, NULL));
+
+    both = request(&fixture, "task.unblock", "{\"on\":\"external:venture\"}");
+    g_assert_cmpint(json_object_get_int_member(payload_of(both), "resumed"),
+                    ==, 2);
+    g_assert_cmpint(clawt_task_get_state(part_a), ==, CLAWT_TASK_RUNNING);
+    g_assert_cmpint(clawt_task_get_state(part_b), ==, CLAWT_TASK_RUNNING);
+
+    fixture_teardown(&fixture);
+}
+
 /*
  * A fallback list is checked where it arrives.  Another sign-in to the
  * agent's own subscription is refused with the reason and nothing is
@@ -13669,6 +13815,8 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/usage/fleet-page-summary",
                     test_usage_summary_for_the_fleet_page);
+    g_test_add_func("/daemon/task/waiting-on-asks-and-is-unblocked",
+                    test_a_task_waiting_on_somebody_asks_and_is_unblocked);
     g_test_add_func("/daemon/failover/held-agent-is-degraded-and-not-fed",
                     test_a_held_agent_is_degraded_and_not_fed);
     g_test_add_func("/daemon/failover/held-account-is-one-alert",

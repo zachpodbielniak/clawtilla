@@ -73,6 +73,8 @@ struct _ClawtTask {
     /* `mode: consult`: the assignee's turn is offered no tool that acts. */
     gboolean consult;
     gchar *progress_note;
+    gchar *waiting_on;    /* who or what a blocked task waits on, 0.78 */
+    gchar *question;      /* what it asked them */
     gchar *cancelled_by;
     gchar *retried_by;
     guint  retries;
@@ -219,6 +221,8 @@ clawt_task_copy(ClawtTask *self)
     copy->project_brief = g_strdup(self->project_brief);
     copy->review_round = self->review_round;
     copy->progress_note = g_strdup(self->progress_note);
+    copy->waiting_on = g_strdup(self->waiting_on);
+    copy->question = g_strdup(self->question);
     copy->cancelled_by = g_strdup(self->cancelled_by);
     copy->retried_by = g_strdup(self->retried_by);
     copy->retries = self->retries;
@@ -281,6 +285,8 @@ clawt_task_free(ClawtTask *self)
     g_free(self->remote_peer);
     g_free(self->remote_task);
     g_free(self->progress_note);
+    g_free(self->waiting_on);
+    g_free(self->question);
     g_free(self->cancelled_by);
     g_free(self->retried_by);
     g_clear_pointer(&self->owners, g_ptr_array_unref);
@@ -309,6 +315,8 @@ GETTER(thread_room, thread_room)
 GETTER(remote_peer, remote_peer)
 GETTER(remote_task, remote_task)
 GETTER(progress_note, progress_note)
+GETTER(waiting_on, waiting_on)
+GETTER(question, question)
 GETTER(cancelled_by, cancelled_by)
 GETTER(retried_by, retried_by)
 
@@ -365,6 +373,8 @@ SETTER(reason, reason)
 SETTER(model, model)
 SETTER(result, result)
 SETTER(progress_note, progress_note)
+SETTER(waiting_on, waiting_on)
+SETTER(question, question)
 SETTER(cancelled_by, cancelled_by)
 
 #undef SETTER
@@ -897,6 +907,8 @@ clawt_task_to_json(ClawtTask *self)
     add_string(builder, "remote_peer", self->remote_peer);
     add_string(builder, "remote_task", self->remote_task);
     add_string(builder, "progress_note", self->progress_note);
+    add_string(builder, "waiting_on", self->waiting_on);
+    add_string(builder, "question", self->question);
     add_string(builder, "cancelled_by", self->cancelled_by);
     add_string(builder, "retried_by", self->retried_by);
 
@@ -1029,6 +1041,8 @@ clawt_task_new_from_json(JsonNode *node, GError **error)
     self->remote_peer = dup_member(object, "remote_peer");
     self->remote_task = dup_member(object, "remote_task");
     self->progress_note = dup_member(object, "progress_note");
+    self->waiting_on = dup_member(object, "waiting_on");
+    self->question = dup_member(object, "question");
     self->cancelled_by = dup_member(object, "cancelled_by");
     self->retried_by = dup_member(object, "retried_by");
 

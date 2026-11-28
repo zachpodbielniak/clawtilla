@@ -367,7 +367,16 @@ static const ClawtParamInfo task_result_params[] = {
 static const ClawtParamInfo task_progress_params[] = {
     { "task_id", "string", "The task you are still working on.", TRUE },
     { "note",    "string",
-      "Where the work has got to, for whoever delegated it.", TRUE }
+      "Where the work has got to, for whoever delegated it.", TRUE },
+    { "waiting_on", "string",
+      "Who or what you cannot go on without: an agent id, \"operator\" "
+      "for your human, or \"external:NAME\" for a service that is down "
+      "(external:venture, external:forge). The task is then marked "
+      "blocked, with this as the reason, until they answer, somebody "
+      "unblocks it, or you report on it or finish it again.", FALSE },
+    { "question", "string",
+      "One line for whoever you wait on: what you need from them. An "
+      "agent you name is sent it.", FALSE }
 };
 
 static const ClawtParamInfo task_list_params[] = {
@@ -1447,7 +1456,10 @@ static const ToolDefinition tools[] = {
          "on somebody. It records the note and marks the task running so "
          "nobody re-delegates it. Called as you stop, it keeps the task "
          "open past the end of this turn; if you go on working after it, "
-         "the turn's last message is taken as the result as usual.",
+         "the turn's last message is taken as the result as usual. If a "
+         "person, another agent or a service blocks you, say so with "
+         "waiting_on and question: the task shows as blocked on them "
+         "rather than as silent, and go on with any other part you can.",
          NEEDS_NOTHING, task_progress_params, CLAWT_ACTION_MESSAGE),
 
     TOOL("clawtilla_mailbox_list",
@@ -7107,6 +7119,51 @@ append_handoff_history(ClawtMcpTools *self, GString *out,
  *
  * Returns: (transfer full) (nullable): the refusal, or %NULL when allowed
  */
+/*
+ * Why @waiting_on is not somebody a task can wait on, or %NULL when it
+ * is: an agent of this fleet other than the caller, `operator`, or
+ * `external:NAME` with a short plain name.  Refused here rather than
+ * stored, because a task blocked on a party nobody can resolve is a task
+ * nothing will ever release.
+ */
+static gchar *
+waiting_on_refusal(ClawtMcpTools *self, const gchar *agent_id,
+                   const gchar *waiting_on, const gchar *question)
+{
+    if (g_str_has_prefix(waiting_on, "external:")) {
+        const gchar *name = waiting_on + strlen("external:");
+        const gchar *c;
+
+        if (*name == '\0' || strlen(name) > 64)
+            return g_strdup("waiting_on external:NAME needs a short name "
+                            "for the service, such as external:venture.");
+        for (c = name; *c != '\0'; c++)
+            if (!g_ascii_isalnum(*c) && *c != '-' && *c != '_' && *c != '.')
+                return g_strdup("waiting_on external:NAME takes letters, "
+                                "digits, '-', '_' and '.' only.");
+        return NULL;
+    }
+
+    if (question == NULL || *question == '\0')
+        return g_strdup_printf("Say what you need from %s: question is "
+                               "required when waiting on a person or an "
+                               "agent.", waiting_on);
+
+    if (g_strcmp0(waiting_on, "operator") == 0)
+        return NULL;
+
+    if (g_strcmp0(waiting_on, agent_id) == 0)
+        return g_strdup("A task cannot wait on its own assignee.");
+
+    if (self->agents == NULL ||
+        clawt_agent_manager_get(self->agents, waiting_on) == NULL)
+        return g_strdup_printf("There is no agent '%s'. waiting_on is an "
+                               "agent id, \"operator\", or "
+                               "\"external:NAME\".", waiting_on);
+
+    return NULL;
+}
+
 static gchar *
 task_refusal_for(ClawtMcpTools *self, const gchar *task_id,
                  const gchar *agent_id, gboolean assignee_only)
@@ -7260,6 +7317,14 @@ tool_task_status(ClawtMcpTools *self, const gchar *agent_id,
         g_string_append_printf(out, "\nLatest from %s: %s",
                                clawt_task_get_assignee(task),
                                clawt_task_get_progress_note(task));
+
+    if (clawt_task_get_waiting_on(task) != NULL)
+        g_string_append_printf(out, "\nWaiting on %s%s%s",
+                               clawt_task_get_waiting_on(task),
+                               clawt_task_get_question(task) != NULL
+                                   ? ": " : "",
+                               clawt_task_get_question(task) != NULL
+                                   ? clawt_task_get_question(task) : "");
 
     /*
      * And whether anybody actually said it was done.  "They reported a
@@ -11501,9 +11566,18 @@ tools_call_run(ClawtMcpTools *self,
     } else if (g_strcmp0(tool_name, "clawtilla_task_progress") == 0) {
         const gchar *task_id = argument_string(arguments, "task_id");
         const gchar *note = argument_string(arguments, "note");
+        const gchar *waiting_on = argument_string(arguments, "waiting_on");
+        const gchar *question = argument_string(arguments, "question");
 
         g_autofree gchar *refusal =
             task_refusal_for(self, task_id, agent_id, TRUE);
+        g_autofree gchar *bad_party = NULL;
+
+        if (waiting_on != NULL && *waiting_on == '\0')
+            waiting_on = NULL;
+        if (waiting_on != NULL)
+            bad_party = waiting_on_refusal(self, agent_id, waiting_on,
+                                           question);
 
         if (task_id == NULL || note == NULL) {
             is_error = TRUE;
@@ -11511,6 +11585,28 @@ tools_call_run(ClawtMcpTools *self,
         } else if (refusal != NULL) {
             is_error = TRUE;
             text = g_steal_pointer(&refusal);
+        } else if (bad_party != NULL) {
+            is_error = TRUE;
+            text = g_steal_pointer(&bad_party);
+        } else if (waiting_on != NULL) {
+            if (self->tasks != NULL &&
+                clawt_task_manager_wait_on(self->tasks, task_id, waiting_on,
+                                           question, note))
+                text = g_strdup_printf(
+                    "Noted against %s, which is now blocked: waiting on "
+                    "%s.%s It stays yours -- report on it or finish it "
+                    "when you can go on, and that ends the wait. Meanwhile "
+                    "go on with any other part you can.",
+                    task_id, waiting_on,
+                    g_str_has_prefix(waiting_on, "external:") ||
+                    g_strcmp0(waiting_on, "operator") == 0
+                        ? "" : " They have been sent your question.");
+            else {
+                is_error = TRUE;
+                text = g_strdup_printf("There is no open task %s of yours "
+                                       "to mark waiting; it may have "
+                                       "already finished.", task_id);
+            }
         } else if (self->tasks != NULL &&
                    clawt_task_manager_note_progress(self->tasks, task_id,
                                                     note)) {

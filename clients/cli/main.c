@@ -169,6 +169,8 @@ static const gchar *usage_tail =
     "  clawtilla task venture-retry task-01m0k6           # send it to VENTURE again\n"
     "  clawtilla task incidents            # broken runs, and who was told\n"
     "  clawtilla task retry task-01m0k5    # send a failed run round again\n"
+    "  clawtilla task unblock task-01m0k6  # the answer it waited on is in\n"
+    "  clawtilla task unblock --on external:venture  # the service is back\n"
     "\n"
     "  # Look at what is queued for an agent that is currently stopped\n"
     "  clawtilla mailbox list researcher\n"
@@ -7875,6 +7877,33 @@ cmd_task(int argc, char *argv[])
     }
 
     /*
+     * The wait an assignee declared (clawtilla_task_progress waiting_on)
+     * is over: one task, or with --on every task waiting on one party.
+     */
+    if (g_strcmp0(verb, "unblock") == 0) {
+        gboolean on = argc >= 5 && g_strcmp0(argv[3], "--on") == 0;
+
+        if (argc < 4 || (g_strcmp0(argv[3], "--on") == 0 && !on)) {
+            g_printerr("Usage: clawtilla task unblock <task-id>\n"
+                       "       clawtilla task unblock --on "
+                       "<agent|operator|external:NAME>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "task.unblock",
+                     on ? build_payload("on", argv[4], NULL)
+                        : build_payload("task", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Unblocked %" G_GINT64_FORMAT " task(s).\n",
+                json_object_get_int_member(json_node_get_object(reply),
+                                           "resumed"));
+
+        return EXIT_SUCCESS;
+    }
+
+    /*
      * Sends a failed or stalled run round again: a task by its id, or an
      * incident (`inc-...`) from `task incidents`, which is how a routine
      * that never made a task is retried.
@@ -14332,7 +14361,7 @@ static const ClawtVerb verbs[] = {
       cmd_account },
     { "policy-hook", "--agent ID --token-file PATH", "Claude Code's PreToolUse hook (run by the daemon's settings)",
       cmd_policy_hook },
-    { "task",    "<verb>",   "Tasks: list, show, create, assign, comment, link, unlink, review, diff, checkout-remove, venture-retry, cancel, retry, incidents",
+    { "task",    "<verb>",   "Tasks: list, show, create, assign, comment, link, unlink, review, diff, checkout-remove, venture-retry, cancel, unblock, retry, incidents",
       cmd_task },
     { "decision", "<verb>",  "Answer what an agent has asked you",
       cmd_decision },

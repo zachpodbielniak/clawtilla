@@ -1165,7 +1165,9 @@ A client offers the choices by walking ~clawt_ack_check_model_count()~
 
 *** task.*
 
-~task.list~, ~task.show~, ~task.cancel~, ~task.retry~.
+~task.list~, ~task.show~, ~task.cancel~, ~task.unblock~, ~task.retry~.
+
+~task.unblock~ takes ~task~ (a task id) or ~on~ (an agent id, =operator= or =external:NAME=) and ends the wait an assignee declared with ~clawtilla_task_progress~'s ~waiting_on~: the task goes back to =running= and its assignee is told.  With ~on~, every task waiting on that party.  It answers ~resumed~, how many.  A task that is not waiting on anybody is =INVALID_ARGUMENT=, saying whether it waits on tasks instead (~task link~ changes those).  A waiting task carries ~waiting_on~ and ~question~ in ~task.list~ and ~task.show~, and so does its ~task.changed~ event.
 
 Tasks and incidents are kept in ~tasks.db~ across restarts (since 0.35.0; docs/tasks.org, "Tasks are kept, and survive a restart").
 

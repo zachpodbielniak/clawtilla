@@ -19,7 +19,7 @@ This page is the reference for the work model. How tasks fit into delegation, cr
 | ~unassigned~  | on the operator's backlog, with nobody                        | no       | yes         | no        |
 | ~pending~     | with its assignee, no turn on it yet                          | no       | yes         | no        |
 | ~running~     | its assignee has started a turn on it                         | no       | yes         | no        |
-| ~blocked~     | held until the tasks it waits for complete                    | no       | yes         | no        |
+| ~blocked~     | held until the tasks it waits for complete, or until whoever its assignee said it waits on answers | no       | yes         | no        |
 | ~review~      | finished by its assignee, waiting for the reviewer's verdict  | no       | yes         | no        |
 | ~completed~   | done (accepted, when it had a reviewer)                       | yes      | no          | no        |
 | ~failed~      | it broke, or the agent or daemon went away under it           | yes      | no          | yes       |
@@ -38,6 +38,15 @@ Code asks the library instead of comparing states: =clawt_task_state_is_finished
                                                        └──── review ◄──────┘ (has a reviewer)
                      any unfinished state ──► cancelled        running ──► failed / stalled (retry: back to pending)
 #+end_example
+
+* Waiting on somebody
+
+An assignee that cannot go on until somebody else acts says so with ~clawtilla_task_progress~: ~waiting_on~ is an agent id, =operator=, or =external:NAME= for a service (=external:venture=, =external:forge=), and ~question~ is the one line it needs answered (required for an agent or the operator).  The task goes to ~blocked~ with "waiting on NAME: QUESTION" as the reason; that reason is noted on the task, so a mirrored VENTURE ticket shows =blocked= with it as a comment.  The ~task.changed~ event carries ~waiting_on~ and ~question~, so a pod can tell the party (=on_task_changed=).
+
+- An agent named is sent the question once, in its direct room with the assignee, so its reply reaches the assignee as an ordinary message.  Saying the same again sends nothing more.
+- The task stays its assignee's.  No turn end completes it and no turn timeout or idle guard is about it, but the assignee may still report progress on it or finish it, and either ends the wait.
+- ~clawtilla task unblock TASK~ ends it from outside, and ~--on PARTY~ ends every wait on one party -- the move when a service that was down is back.  The assignee is told and the task is ~running~ again.
+- Before this, ~blocked~ meant only "waits for other tasks", so a task held by a person or an outage stayed ~running~ with the block in a progress note, and looked silent rather than blocked.
 
 * Tasks are kept, and survive a restart (since 0.35.0)
 
@@ -172,6 +181,8 @@ clawtilla task review <task-id> changes "<what to change>"
 clawtilla task diff <task-id>
 clawtilla task checkout-remove <task-id> [--force]
 clawtilla task cancel <task-id>
+clawtilla task unblock <task-id>
+clawtilla task unblock --on <agent|operator|external:NAME>
 clawtilla task retry <task-id|incident-id>
 clawtilla task venture-retry <task-id>
 clawtilla project list|create|set|rm
@@ -189,7 +200,7 @@ What each agent may call is decided by the ~tools/list~ gate; the =# BEGIN clawt
 | ~clawtilla_task_result~    | a finished task's result                                                 |
 | ~clawtilla_task_cancel~    | cancels a task it delegated, with everything under it                    |
 | ~clawtilla_task_complete~  | reports its own task done (to ~review~ when it has a reviewer)           |
-| ~clawtilla_task_progress~  | says the work is not finished, so ending the turn does not close it      |
+| ~clawtilla_task_progress~  | says the work is not finished, so ending the turn does not close it; with ~waiting_on~ and ~question~, that it is blocked on somebody |
 | ~clawtilla_task_retry~     | sends a failed or stalled run round again                                |
 | ~clawtilla_task_link~      | adds or takes away a blocker on a task it delegated that is still ~blocked~ |
 | ~clawtilla_task_review~    | the reviewer's verdict: ~accept~, or changes with ~notes~                |

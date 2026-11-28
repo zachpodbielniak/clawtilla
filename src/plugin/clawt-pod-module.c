@@ -472,7 +472,8 @@ on_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
      * wait.changed; `decision`, `how`, `answer` and `via` from
      * decision.settled; `kind`, `team`, `routine`, `recipient` and
      * `occurrences` from incident.opened; `delivery` and `max_pending`
-     * from trigger.dropped.
+     * from trigger.dropped; `waiting_on` and `question` from a
+     * task.changed whose task waits on somebody.
      */
     {
         static const gchar *const carried[] = {
@@ -483,7 +484,7 @@ on_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
             "primary_model", "reset_at", "retry_at", "context_lost",
             "message", "wait", "decision", "how", "answer", "via",
             "kind", "team", "routine", "recipient", "occurrences",
-            "delivery", "max_pending", NULL
+            "delivery", "max_pending", "waiting_on", "question", NULL
         };
         gsize k;
 

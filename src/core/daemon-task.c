@@ -285,6 +285,132 @@ static JsonNode *handle_checkout_request(ClawtDaemon *self,
                                          JsonNode    *request,
                                          JsonObject  *payload);
 
+/* ── Waiting on somebody (clawtilla_task_progress waiting_on) ─────── */
+
+/*
+ * A task's assignee now waits on another agent: that agent is asked,
+ * once, in its direct room with the assignee, so its answer goes back
+ * to the assignee as an ordinary reply.  `operator` and `external:` are
+ * told by the task.changed event and the mirrored ticket, not here --
+ * the operator has their own notifiers and a service cannot read.
+ */
+static void
+on_task_waiting(ClawtTaskManager *tasks, const gchar *task_id,
+                gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+    ClawtTask *task = clawt_task_manager_get(tasks, task_id);
+    const gchar *party;
+    const gchar *assignee;
+    const gchar *what;
+    g_autoptr(ClawtMessage) message = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *body = NULL;
+    g_autofree gchar *clip = NULL;
+    ClawtRoom *room;
+
+    if (task == NULL || self->router == NULL || self->rooms == NULL)
+        return;
+
+    party = clawt_task_get_waiting_on(task);
+    assignee = clawt_task_get_assignee(task);
+
+    if (party == NULL || assignee == NULL ||
+        g_strcmp0(party, "operator") == 0 ||
+        g_str_has_prefix(party, "external:") ||
+        clawt_agent_manager_get(self->agents, party) == NULL)
+        return;
+
+    room = clawt_room_manager_get_direct(self->rooms, assignee, party);
+    if (room == NULL)
+        return;
+
+    what = clawt_task_get_title(task);
+    if (what == NULL) {
+        clip = clawt_utf8_truncate(clawt_task_get_prompt(task), 120, FALSE);
+        what = clip;
+    }
+
+    body = g_strdup_printf(
+        "%s cannot go on with task %s (\"%s\") until you answer:\n\n%s\n\n"
+        "[clawtilla] Reply here and %s gets your answer. The task is "
+        "blocked on you until then.",
+        assignee, task_id, what != NULL ? what : "",
+        clawt_task_get_question(task) != NULL
+            ? clawt_task_get_question(task) : "", assignee);
+
+    message = clawt_message_new(clawt_room_get_id(room), assignee, body);
+    clawt_message_set_only_for(message, party);
+
+    if (clawt_mailbox_router_send(self->router, message, &error) < 0)
+        g_warning("daemon: task %s waits on %s, who could not be asked: %s",
+                  task_id, party, error->message);
+}
+
+/*
+ * The wait is over, said by somebody other than the assignee: the
+ * operator's `task unblock`, or a service coming back.  The assignee is
+ * woken in the task's room, since the work is back with it.
+ */
+static void
+on_task_resumed(ClawtTaskManager *tasks, const gchar *task_id,
+                const gchar *waiting_on, const gchar *by,
+                gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+    ClawtTask *task = clawt_task_manager_get(tasks, task_id);
+    g_autoptr(ClawtMessage) message = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *body = NULL;
+    const gchar *assignee;
+    ClawtRoom *room = NULL;
+
+    if (task == NULL || self->router == NULL || self->rooms == NULL)
+        return;
+
+    assignee = clawt_task_get_assignee(task);
+    if (assignee == NULL)
+        return;
+
+    if (clawt_task_get_room(task) != NULL)
+        room = clawt_room_manager_get(self->rooms, clawt_task_get_room(task));
+    if (room == NULL && clawt_task_get_origin(task) != NULL)
+        room = clawt_room_manager_get_direct(self->rooms,
+                                             clawt_task_get_origin(task),
+                                             assignee);
+    if (room == NULL)
+        return;
+
+    body = g_strdup_printf(
+        "[clawtilla] Task %s no longer waits on %s%s%s. It is running and "
+        "yours again: carry on with it.",
+        task_id, waiting_on != NULL ? waiting_on : "anybody",
+        by != NULL ? " -- " : "", by != NULL ? by : "");
+
+    message = clawt_message_new(clawt_room_get_id(room), CLAWT_SYSTEM_SENDER,
+                                body);
+    clawt_message_set_task_id(message, task_id);
+    clawt_message_set_only_for(message, assignee);
+
+    if (clawt_mailbox_router_send(self->router, message, &error) < 0)
+        g_warning("daemon: task %s resumed and %s could not be told: %s",
+                  task_id, assignee, error->message);
+}
+
+void
+clawt_daemon_tasks_watch_waits(ClawtDaemon *self)
+{
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    if (self->tasks == NULL)
+        return;
+
+    g_signal_connect(self->tasks, "task-waiting",
+                     G_CALLBACK(on_task_waiting), self);
+    g_signal_connect(self->tasks, "task-resumed",
+                     G_CALLBACK(on_task_resumed), self);
+}
+
 JsonNode *
 clawt_daemon_handle_task(
     ClawtDaemon  *self,
@@ -837,6 +963,43 @@ clawt_daemon_handle_task(
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "cancelled");
         json_builder_add_int_value(builder, cancelled);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /*
+     * The wait a task's assignee declared is over: one task, or every
+     * task waiting on one party (`on`, e.g. external:venture, when the
+     * service is back).  "user" says, because the clients are the
+     * operator's hands.
+     */
+    if (g_strcmp0(kind, "task.unblock") == 0) {
+        const gchar *task_id = clawt_ipc_payload_string(payload, "task");
+        const gchar *on = clawt_ipc_payload_string(payload, "on");
+        guint resumed;
+
+        if (task_id == NULL && on == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "which task, or waiting on what?");
+
+        resumed = clawt_task_manager_resume(self->tasks, task_id, on,
+                                            "the operator");
+
+        if (resumed == 0 && task_id != NULL) {
+            ClawtTask *task = clawt_task_manager_get(self->tasks, task_id);
+
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                task == NULL ? "there is no such task"
+                : clawt_task_get_state(task) == CLAWT_TASK_BLOCKED
+                    ? "that task waits on the tasks it was delegated after, "
+                      "not on somebody; `task link` changes those"
+                    : "that task is not waiting on anybody");
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "resumed");
+        json_builder_add_int_value(builder, resumed);
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));

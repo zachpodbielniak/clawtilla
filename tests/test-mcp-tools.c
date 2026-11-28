@@ -2761,6 +2761,125 @@ test_reporting_progress_keeps_a_task_open(void)
 }
 
 /*
+ * An assignee blocked on somebody says who, and the task says it is
+ * blocked on them rather than looking silent.  The task is held -- the
+ * turn ending does not complete it -- and stays the assignee's: status
+ * shows the party and the question, a later report or a finish ends the
+ * wait.  A party nobody could resolve is refused, and so is a person or
+ * an agent with no question to answer.  Before, waiting_on did not
+ * exist: the task stayed running with the block in a note.
+ */
+static void
+test_waiting_on_somebody_blocks_the_task(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    g_autoptr(JsonNode) refused = NULL;
+    g_autoptr(JsonNode) unasked = NULL;
+    g_autoptr(JsonNode) status = NULL;
+    g_autoptr(JsonNode) resumed = NULL;
+    g_autoptr(JsonNode) external = NULL;
+    g_autoptr(JsonNode) done = NULL;
+    g_autofree gchar *arguments = NULL;
+    g_autofree gchar *held = NULL;
+    ClawtTask *task;
+    gboolean is_error = TRUE;
+    const gchar *text;
+    const gchar *id;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n"
+                            "    chief_of_staff: true\n  - id: oryx\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "oryx",
+                                     "merge the daemon PR", NULL, NULL);
+    id = clawt_task_get_id(task);
+
+    /* nobody by that name */
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"held\",\"waiting_on\":\"nobody\","
+        "\"question\":\"x?\"}", id);
+    refused = call_tool(&fixture, "oryx", "clawtilla_task_progress",
+                        arguments);
+    text = response_text(refused, &is_error);
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "no agent 'nobody'"));
+    g_clear_pointer(&arguments, g_free);
+
+    /* an agent, with nothing asked of it */
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"held\",\"waiting_on\":\"chief\"}",
+        id);
+    unasked = call_tool(&fixture, "oryx", "clawtilla_task_progress",
+                        arguments);
+    response_text(unasked, &is_error);
+    g_assert_true(is_error);
+    g_assert_cmpint(clawt_task_get_state(task), !=, CLAWT_TASK_BLOCKED);
+    g_clear_pointer(&arguments, g_free);
+
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"CI cannot run: the heavy runner is "
+        "off\",\"waiting_on\":\"chief\",\"question\":\"May I turn the "
+        "heavy runner back on?\"}", id);
+    response = call_tool(&fixture, "oryx", "clawtilla_task_progress",
+                         arguments);
+    text = response_text(response, &is_error);
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "blocked: waiting on chief"));
+
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+    g_assert_cmpstr(clawt_task_get_waiting_on(task), ==, "chief");
+    g_assert_cmpstr(clawt_task_get_question(task), ==,
+                    "May I turn the heavy runner back on?");
+
+    /* the turn ending is not the result */
+    g_assert_false(clawt_task_manager_complete_on_turn_end(
+                       fixture.tasks, id, "oryx", "waiting", &held));
+    g_assert_false(clawt_task_is_finished(task));
+
+    {
+        g_autofree gchar *id_arg = g_strdup_printf("{\"task_id\":\"%s\"}", id);
+
+        status = call_tool(&fixture, "chief", "clawtilla_task_status",
+                           id_arg);
+        text = response_text(status, NULL);
+        g_assert_nonnull(strstr(text, "Waiting on chief: May I turn the "
+                                      "heavy runner back on?"));
+    }
+
+    /* a report without waiting_on: the wait is over */
+    g_clear_pointer(&arguments, g_free);
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"runner is back, CI going\"}", id);
+    resumed = call_tool(&fixture, "oryx", "clawtilla_task_progress",
+                        arguments);
+    response_text(resumed, &is_error);
+    g_assert_false(is_error);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_RUNNING);
+    g_assert_null(clawt_task_get_waiting_on(task));
+
+    /* a service, which needs no question; and finishing ends it too */
+    g_clear_pointer(&arguments, g_free);
+    arguments = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"VENTURE is down\","
+        "\"waiting_on\":\"external:venture\"}", id);
+    external = call_tool(&fixture, "oryx", "clawtilla_task_progress",
+                         arguments);
+    response_text(external, &is_error);
+    g_assert_false(is_error);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+
+    g_clear_pointer(&arguments, g_free);
+    arguments = g_strdup_printf("{\"task_id\":\"%s\",\"result\":\"merged\"}",
+                                id);
+    done = call_tool(&fixture, "oryx", "clawtilla_task_complete", arguments);
+    response_text(done, &is_error);
+    g_assert_false(is_error);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * Progress on a task that has already ended is refused rather than
  * silently accepted, so an assignee does not believe it has kept alive
  * something that was cancelled out from under it.
@@ -4436,6 +4555,8 @@ main(int argc, char *argv[])
                     test_an_empty_filtered_listing_says_what_it_covered);
     g_test_add_func("/mcp/task-progress/keeps-a-task-open",
                     test_reporting_progress_keeps_a_task_open);
+    g_test_add_func("/mcp/task-progress/waiting-on-blocks",
+                    test_waiting_on_somebody_blocks_the_task);
     g_test_add_func("/mcp/task-progress/refused-once-finished",
                     test_progress_on_a_finished_task_is_refused);
     g_test_add_func("/mcp/task-result/an-inferred-result-is-labelled",

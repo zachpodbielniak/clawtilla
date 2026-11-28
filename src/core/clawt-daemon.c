@@ -2036,6 +2036,15 @@ on_task_changed(ClawtTaskManager *manager,
             clawt_event_set_detail(event, "agent",
                                    clawt_task_get_assignee(task));
 
+        /* who a blocked task waits on, for a rule to tell them */
+        if (task != NULL && clawt_task_get_waiting_on(task) != NULL) {
+            clawt_event_set_detail(event, "waiting_on",
+                                   clawt_task_get_waiting_on(task));
+            if (clawt_task_get_question(task) != NULL)
+                clawt_event_set_detail(event, "question",
+                                       clawt_task_get_question(task));
+        }
+
         clawt_event_bus_publish(self->bus, event);
     }
 
@@ -8009,6 +8018,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     g_signal_connect(self->agents, "agent-state-changed",
                      G_CALLBACK(on_agent_state_changed), self);
+    clawt_daemon_tasks_watch_waits(self);
     g_signal_connect(self->tasks, "task-changed",
                      G_CALLBACK(on_task_changed), self);
     g_signal_connect(self->tasks, "blockers-changed",
@@ -10216,6 +10226,18 @@ clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
         json_builder_set_member_name(builder, "progress_note");
         json_builder_add_string_value(builder,
                                       clawt_task_get_progress_note(task));
+    }
+
+    /* Who a blocked task waits on, as its assignee said (0.78). */
+    if (clawt_task_get_waiting_on(task) != NULL) {
+        json_builder_set_member_name(builder, "waiting_on");
+        json_builder_add_string_value(builder,
+                                      clawt_task_get_waiting_on(task));
+        if (clawt_task_get_question(task) != NULL) {
+            json_builder_set_member_name(builder, "question");
+            json_builder_add_string_value(builder,
+                                          clawt_task_get_question(task));
+        }
     }
 
     /*
