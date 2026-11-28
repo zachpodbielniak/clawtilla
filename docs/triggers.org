@@ -1101,6 +1101,7 @@ problem that is not there.
 | ~trigger.changed~ | the trigger was added, edited, removed or rotated |
 | ~trigger.refused~ | a delivery did not authenticate |
 | ~trigger.verified~ | the handshake delivery was captured |
+| ~trigger.dropped~ | an authenticated delivery was dropped at =max_pending= |
 
 ~trigger.refused~ is the one worth binding.  A burst of them on a
 trigger nobody is rotating is somebody guessing at an endpoint they
@@ -1113,10 +1114,24 @@ All five are bindable from a podomation pod as ~on_trigger_fired~,
 forward them, though this page said it did) -- the DSL's lexer cannot parse a dot in an event name.  See
 [[file:automation.org][automation.org]].
 
-A rate-limited or dropped delivery publishes *nothing*; it is in the
-receipts and nowhere else.  A limit that fired an event on every
-refusal would be a way to make the daemon publish as fast as somebody
-can POST.
+~trigger.dropped~ (as ~on_trigger_dropped~, with ~reason~, ~delivery~ and
+~max_pending~) is the other one worth binding: a delivery that
+authenticated, passed the rate limit, and was still not run, because the
+trigger already had =max_pending= runs in flight.  It is published
+because the receipt is read only by somebody who already suspects the
+trigger, and a forge shows the 429 in a log nobody opens.  It cannot be
+used to flood the bus: only a correctly signed delivery reaches the cap,
+and the rate limit below is checked first, so a trigger publishes at
+most that many a minute.
+
+A run's slot is given back when its task ends -- completed, failed or
+cancelled -- and at start the daemon settles every receipt whose task
+has ended or is no longer known, so a run that ended while it was down
+does not hold a slot for ever.
+
+A rate-limited delivery publishes *nothing*; it is in the receipts and
+nowhere else.  A limit that fired an event on every refusal would be a
+way to make the daemon publish as fast as somebody can POST.
 
 ** Editing the file by hand
 

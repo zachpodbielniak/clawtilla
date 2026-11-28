@@ -109,6 +109,7 @@ event name, and every event podomation ships is named that way.
 | ~on_trigger_changed~ | A trigger was added, edited, removed or rotated (since 0.65.1) | --- |
 | ~on_trigger_refused~ | A webhook delivery did not authenticate (since 0.65.1) | --- |
 | ~on_trigger_verified~ | A trigger's setup handshake was captured (since 0.65.1) | --- |
+| ~on_trigger_dropped~ | A delivery was dropped because the trigger had =max_pending= runs unfinished | ~reason~, ~delivery~, ~max_pending~ |
 | ~on_daemon_started~ | The daemon came up | --- |
 | ~on_daemon_reloaded~ | The configuration was reloaded | --- |
 | ~on_daemon_stopped~ | The daemon is going away | --- |

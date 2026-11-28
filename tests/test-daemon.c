@@ -12527,6 +12527,167 @@ test_match_ignores_and_cap_drops(void)
 	fixture_teardown(&fixture);
 }
 
+/* How many events of @kind the bus has published since the daemon began. */
+static guint
+count_events(ClawtDaemon *daemon, const gchar *kind)
+{
+	g_autoptr(GPtrArray) events = clawt_event_bus_replay(
+		clawt_daemon_get_event_bus(daemon), 0, NULL);
+	guint i, count = 0;
+
+	for (i = 0; events != NULL && i < events->len; i++) {
+		if (g_strcmp0(clawt_event_get_kind(g_ptr_array_index(events, i)),
+		              kind) == 0)
+			count++;
+	}
+
+	return count;
+}
+
+/* The task the newest receipt of @trigger_id started, copied out. */
+static gchar *
+newest_task(Fixture *fixture, const gchar *trigger_id)
+{
+	g_autoptr(GPtrArray) rows = clawt_trigger_store_list_deliveries(
+		fixture->daemon->trigger_store, trigger_id, 1);
+	const gchar *task;
+
+	g_assert_cmpuint(rows->len, ==, 1);
+	task = g_hash_table_lookup(rows->pdata[0], "task");
+	g_assert_nonnull(task);
+
+	return g_strdup(task);
+}
+
+/*
+ * A run that ends gives its slot back, however it ends.
+ *
+ * With max_pending 1 the trigger takes one delivery and drops the next
+ * while that run is open -- and once the run completes, fails or is
+ * cancelled the next delivery starts a run again.  Before, nothing
+ * marked a receipt finished, so the first run held the only slot for
+ * ever and every later delivery was dropped.  Each drop is also an
+ * event on the bus, so it can be seen without reading the receipts.
+ */
+static void
+test_a_finished_run_frees_its_slot(void)
+{
+	Fixture fixture = { 0 };
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *first_task = NULL;
+	g_autofree gchar *third_task = NULL;
+	g_autofree gchar *fourth_task = NULL;
+	const gchar *ids[] = { "run-1", "run-2", "run-3", "run-4", "run-5" };
+	ClawtTriggerEvent *events[5];
+	guint before;
+	guint i;
+
+	fixture_setup(&fixture,
+		"agents:\n  - id: builder\n"
+		"triggers:\n  - id: ci\n    agent: builder\n    enabled: true\n"
+		"    max_pending: 1\n    instructions: 'Go {{repo}}'\n");
+	g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+	g_assert_no_error(error);
+	verify_trigger(&fixture, "ci");
+	before = count_tasks(&fixture);
+
+	/* a prompt of its own each, or the loop guard refuses the repeat */
+	for (i = 0; i < G_N_ELEMENTS(events); i++) {
+		g_autofree gchar *repo = g_strdup_printf("zach/repo-%u", i);
+
+		events[i] = clawt_trigger_event_new(CLAWT_TRIGGER_PROVIDER_GENERIC,
+		                                    "push", ids[i]);
+		clawt_trigger_event_set_repo(events[i], repo);
+	}
+
+	g_assert_cmpuint(deliver_event(&fixture, "ci", events[0]), ==, 200);
+	g_assert_cmpuint(count_tasks(&fixture), ==, before + 1);
+	first_task = newest_task(&fixture, "ci");
+
+	/* the one slot is taken: dropped, and said on the bus */
+	g_assert_cmpuint(count_events(fixture.daemon, "trigger.dropped"), ==, 0);
+	g_assert_cmpuint(deliver_event(&fixture, "ci", events[1]), ==, 429);
+	g_assert_cmpstr(newest_outcome(&fixture, "ci", NULL), ==, "dropped");
+	g_assert_cmpuint(count_events(fixture.daemon, "trigger.dropped"), ==, 1);
+
+	/* completed */
+	g_assert_true(clawt_task_manager_complete(fixture.daemon->tasks,
+	                                          first_task, "done"));
+	g_assert_cmpuint(clawt_trigger_store_count_unfinished(
+		fixture.daemon->trigger_store, "ci"), ==, 0);
+	g_assert_cmpuint(deliver_event(&fixture, "ci", events[2]), ==, 200);
+	g_assert_cmpstr(newest_outcome(&fixture, "ci", NULL), ==, "ran");
+	g_assert_cmpuint(count_tasks(&fixture), ==, before + 2);
+	third_task = newest_task(&fixture, "ci");
+
+	/* failed */
+	g_assert_true(clawt_task_manager_fail(fixture.daemon->tasks,
+	                                      third_task, "broke"));
+	g_assert_cmpuint(deliver_event(&fixture, "ci", events[3]), ==, 200);
+	g_assert_cmpuint(count_tasks(&fixture), ==, before + 3);
+	fourth_task = newest_task(&fixture, "ci");
+
+	/* cancelled */
+	g_assert_cmpuint(clawt_task_manager_cancel(fixture.daemon->tasks,
+	                                           fourth_task, "not needed",
+	                                           "user"), >, 0);
+	g_assert_cmpuint(deliver_event(&fixture, "ci", events[4]), ==, 200);
+	g_assert_cmpuint(count_tasks(&fixture), ==, before + 4);
+
+	/* only the one drop was ever published */
+	g_assert_cmpuint(count_events(fixture.daemon, "trigger.dropped"), ==, 1);
+
+	for (i = 0; i < G_N_ELEMENTS(events); i++)
+		clawt_trigger_event_free(events[i]);
+
+	fixture_teardown(&fixture);
+}
+
+/*
+ * A receipt whose run ended while nothing was listening is settled at
+ * start: a task that is finished, or that the daemon no longer knows, no
+ * longer holds a slot -- and one still running keeps its slot.  This is
+ * what lets a trigger stuck at max_pending under an older daemon take
+ * deliveries again after an upgrade.
+ */
+static void
+test_start_settles_runs_that_ended(void)
+{
+	Fixture fixture = { 0 };
+	g_autoptr(GError) error = NULL;
+	g_autoptr(ClawtTriggerEvent) live = NULL;
+	g_autoptr(ClawtTriggerEvent) ghost = NULL;
+
+	fixture_setup(&fixture,
+		"agents:\n  - id: builder\n"
+		"triggers:\n  - id: ci\n    agent: builder\n    enabled: true\n"
+		"    max_pending: 2\n    instructions: 'Go'\n");
+	g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+	g_assert_no_error(error);
+	verify_trigger(&fixture, "ci");
+
+	live = clawt_trigger_event_new(CLAWT_TRIGGER_PROVIDER_GENERIC, "push",
+	                               "live-1");
+	g_assert_cmpuint(deliver_event(&fixture, "ci", live), ==, 200);
+
+	/* a receipt an older daemon left: its task is long gone */
+	ghost = clawt_trigger_event_new(CLAWT_TRIGGER_PROVIDER_GENERIC, "push",
+	                                "ghost-1");
+	clawt_trigger_store_record(fixture.daemon->trigger_store, "ci", ghost,
+	                           CLAWT_DELIVERY_RAN, "ran", "task-long-gone");
+	g_assert_cmpuint(clawt_trigger_store_count_unfinished(
+		fixture.daemon->trigger_store, "ci"), ==, 2);
+
+	clawt_daemon_triggers_stop(fixture.daemon);
+	clawt_daemon_triggers_start(fixture.daemon);
+
+	g_assert_nonnull(fixture.daemon->trigger_store);
+	g_assert_cmpuint(clawt_trigger_store_count_unfinished(
+		fixture.daemon->trigger_store, "ci"), ==, 1);
+
+	fixture_teardown(&fixture);
+}
+
 /*
  * The two other refusals a sender is told about.  A trigger whose own
  * settings cannot be acted on (a filter that does not read, a post with
@@ -13554,6 +13715,10 @@ main(int argc, char *argv[])
     g_test_add_func("/daemon/trigger/synthetic-fanout", test_synthetic_fanout);
     g_test_add_func("/daemon/trigger/post-mode", test_post_mode_spends_no_run);
     g_test_add_func("/daemon/trigger/match-and-cap", test_match_ignores_and_cap_drops);
+    g_test_add_func("/daemon/trigger/a-finished-run-frees-its-slot",
+        test_a_finished_run_frees_its_slot);
+    g_test_add_func("/daemon/trigger/start-settles-runs-that-ended",
+        test_start_settles_runs_that_ended);
     g_test_add_func("/daemon/trigger/misconfigured-and-rate-limit",
                     test_trigger_refuses_misconfigured_and_too_fast);
     g_test_add_func("/daemon/trigger/settings-refused", test_trigger_settings_refused_on_arrival);

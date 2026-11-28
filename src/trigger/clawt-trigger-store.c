@@ -1018,6 +1018,32 @@ clawt_trigger_store_finish(ClawtTriggerStore *self, const gchar *task_id)
     sqlite3_finalize(stmt);
 }
 
+GPtrArray *
+clawt_trigger_store_list_unfinished_tasks(ClawtTriggerStore *self)
+{
+    sqlite3_stmt *stmt = NULL;
+    GPtrArray *out;
+
+    g_return_val_if_fail(CLAWT_IS_TRIGGER_STORE(self), NULL);
+
+    out = g_ptr_array_new_with_free_func(g_free);
+
+    if (sqlite3_prepare_v2(self->db,
+                           "SELECT DISTINCT task_id FROM deliveries"
+                           " WHERE finished = 0 AND task_id IS NOT NULL"
+                           " AND task_id <> ''",
+                           -1, &stmt, NULL) != SQLITE_OK)
+        return out;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+        g_ptr_array_add(out,
+                        g_strdup((const gchar *)sqlite3_column_text(stmt, 0)));
+
+    sqlite3_finalize(stmt);
+
+    return out;
+}
+
 guint
 clawt_trigger_store_recent_count(ClawtTriggerStore *self,
                                  const gchar       *trigger_id,

@@ -83,6 +83,9 @@ static const EventName events[] = {
       "A webhook delivery did not authenticate" },
     { "on_trigger_verified", "trigger.verified",
       "A trigger's setup handshake was captured" },
+    { "on_trigger_dropped", "trigger.dropped",
+      "A delivery was dropped because the trigger had max_pending runs "
+      "unfinished; `reason`, `delivery` and `max_pending` say which" },
     { "on_daemon_started", "daemon.started", "The daemon came up" },
     { "on_daemon_reloaded", "daemon.reloaded",
       "The configuration was reloaded" },

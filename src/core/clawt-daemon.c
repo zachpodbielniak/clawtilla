@@ -2039,6 +2039,8 @@ on_task_changed(ClawtTaskManager *manager,
         clawt_daemon_skill_tests_settled(self, task);
 
     if (task != NULL && clawt_task_is_finished(task)) {
+        /* a trigger's run gives its max_pending slot back */
+        clawt_daemon_triggers_task_settled(self, task);
         clawt_daemon_tree_settled(self, task);
         send_settle_notice(self, task, state);
 

@@ -1930,13 +1930,15 @@ default) and returns receipts newest first, each with ~trigger~,
 empty, because "nothing has been delivered" and "the receiver is not
 running" are different facts and only one is about the sender.
 
-~trigger.fired~, ~trigger.posted~, ~trigger.changed~, ~trigger.refused~
-and ~trigger.verified~ are published as events.  ~trigger.posted~ is a
+~trigger.fired~, ~trigger.posted~, ~trigger.changed~, ~trigger.refused~,
+~trigger.verified~ and ~trigger.dropped~ are published as events.  ~trigger.posted~ is a
 ~mode: post~ delivery written into its room.  ~trigger.refused~ is an
-authentication failure and nothing else: a delivery turned away by the
-rate limit or dropped at ~max_pending~ is in the receipts and publishes
-*nothing*, since an event per refusal is a way to make the daemon
-publish as fast as somebody can POST.  A receipt's ~outcome~ is one of
+authentication failure and nothing else.  ~trigger.dropped~ (~reason~,
+~delivery~, ~max_pending~) is an authenticated delivery dropped at
+~max_pending~; it is bounded by the rate limit, which is checked first.
+A delivery turned away by the rate limit is in the receipts and
+publishes *nothing*, since an event per refusal is a way to make the
+daemon publish as fast as somebody can POST.  A receipt's ~outcome~ is one of
 =ran=, =duplicate=, =ignored=, =captured=, =refused=, =failed=, =dropped=
 and =posted=.
 *** grok.*
@@ -2398,7 +2400,7 @@ Every kind published, by subject:
 | the daemon | ~sentinel.finished~ (~ok~, ~error~) |
 | an agent | ~turn.cost~ (~cost_micros~, ~task~): what a turn just cost, for the sentinel |
 | an agent | ~memory.changed~ (a memory tool call or an undo changed what it remembers) |
-| a trigger | ~trigger.fired~, ~trigger.posted~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
+| a trigger | ~trigger.fired~, ~trigger.posted~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~, ~trigger.dropped~ |
 | the daemon, or an agent | ~notice.changed~ (~reason~, ~id~): the notification list moved -- ask ~notice.list~ again |
 | a Grok job | ~grok.job_updated~ (~bot~, ~agent~, ~state~) |
 | a Grok bot | ~grok.bots_changed~ |

@@ -695,6 +695,26 @@ clawt_daemon_trigger_deliver(ClawtDaemon        *self,
                                                trigger_id, event,
                                                CLAWT_DELIVERY_DROPPED, why);
 
+            /*
+             * And published, because a receipt is only read by somebody
+             * who already suspects the trigger.  A forge shows a 429 in
+             * a log nobody opens; a pod can bind this and say so.
+             */
+            {
+                g_autoptr(ClawtEvent) dropped =
+                    clawt_event_new("trigger.dropped", trigger_id);
+                const gchar *delivery =
+                    clawt_trigger_event_get_delivery_id(event);
+
+                clawt_event_set_detail(dropped, "reason", why);
+                if (delivery != NULL)
+                    clawt_event_set_detail(dropped, "delivery", delivery);
+                clawt_event_set_detail_int(
+                    dropped, "max_pending",
+                    clawt_trigger_get_max_pending(trigger));
+                clawt_event_bus_publish(self->bus, dropped);
+            }
+
             DELIVER_RETURN(429, "this trigger has as many runs unfinished "
                                 "as it allows; retry later\n");
         }
@@ -735,6 +755,29 @@ clawt_daemon_triggers_start(ClawtDaemon *self)
 
     clawt_trigger_store_prune(self->trigger_store,
                               DELIVERY_RETENTION_SECONDS);
+
+    /*
+     * A run that ended while no store was open -- before this start, or
+     * under a daemon that never marked one finished at all -- still
+     * holds its slot. Settled here against the restored tasks, so a
+     * trigger stuck at max_pending takes deliveries again without
+     * anybody editing its database. A task the manager no longer knows
+     * is not in flight either.
+     */
+    {
+        g_autoptr(GPtrArray) open =
+            clawt_trigger_store_list_unfinished_tasks(self->trigger_store);
+        guint i;
+
+        for (i = 0; open != NULL && i < open->len; i++) {
+            const gchar *task_id = g_ptr_array_index(open, i);
+            ClawtTask *task = self->tasks != NULL
+                ? clawt_task_manager_get(self->tasks, task_id) : NULL;
+
+            if (task == NULL || clawt_task_is_finished(task))
+                clawt_trigger_store_finish(self->trigger_store, task_id);
+        }
+    }
 
     /*
      * Every configured trigger gets its endpoint now rather than on its
@@ -802,6 +845,18 @@ clawt_daemon_triggers_start(ClawtDaemon *self)
                       (const gchar *)g_ptr_array_index(where, i),
                       (guint)port);
     }
+}
+
+void
+clawt_daemon_triggers_task_settled(ClawtDaemon *self, ClawtTask *task)
+{
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+    g_return_if_fail(task != NULL);
+
+    if (self->trigger_store == NULL || !clawt_task_is_finished(task))
+        return;
+
+    clawt_trigger_store_finish(self->trigger_store, clawt_task_get_id(task));
 }
 
 void

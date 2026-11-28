@@ -1276,6 +1276,19 @@ clawt_daemon_handle_hold(ClawtDaemon  *self,
 void clawt_daemon_triggers_stop(ClawtDaemon *self);
 
 /*
+ * clawt_daemon_triggers_task_settled:
+ * @self: the daemon
+ * @task: a task that has just reached an end state
+ *
+ * Gives back the trigger slot the run held, if a trigger started it.
+ * Every end counts -- completed, failed and cancelled -- because each
+ * one is a run that is no longer in flight, which is what
+ * `triggers.max_pending` counts.
+ */
+void clawt_daemon_triggers_task_settled(ClawtDaemon *self,
+                                        ClawtTask   *task);
+
+/*
  * device.pair, device.list, device.revoke, and what the daemon does for
  * paired devices on start, reload and sweep.  See src/core/daemon-device.c.
  */

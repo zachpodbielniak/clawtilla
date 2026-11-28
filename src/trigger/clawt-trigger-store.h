@@ -370,6 +370,18 @@ void clawt_trigger_store_finish(ClawtTriggerStore *self,
                                 const gchar       *task_id);
 
 /**
+ * clawt_trigger_store_list_unfinished_tasks:
+ * @self: a #ClawtTriggerStore
+ *
+ * Every task a receipt started that is not yet marked finished, once
+ * each. For the daemon's start, to settle receipts whose run ended while
+ * nothing was listening.
+ *
+ * Returns: (transfer full) (element-type utf8): the task ids
+ */
+GPtrArray *clawt_trigger_store_list_unfinished_tasks(ClawtTriggerStore *self);
+
+/**
  * clawt_trigger_store_recent_count:
  * @self: a #ClawtTriggerStore
  * @trigger_id: which trigger
