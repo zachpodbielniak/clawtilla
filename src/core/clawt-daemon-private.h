@@ -2132,6 +2132,16 @@ clawt_daemon_handle_task(
     gboolean     *handled
 );
 
+/*
+ * daemon-board.c: task.board, the agent board (0.78.0).  The board is
+ * built by clawt_board_build(); this supplies what only the daemon
+ * knows -- agents' live state and steps, mailboxes, open decisions,
+ * waits and spend -- and answers with it.
+ */
+JsonNode *clawt_daemon_task_board(ClawtDaemon *self,
+                                  JsonNode    *request,
+                                  JsonObject  *payload);
+
 /* ── Defined in daemon-selinux.c: each team's SELinux level ───────── */
 
 /*

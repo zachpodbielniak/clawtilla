@@ -156,6 +156,8 @@ static const gchar *usage_tail =
     "  clawtilla send chief-of-staff \"summarize this week's commits\"\n"
     "  clawtilla task list\n"
     "  clawtilla task list --history --state failed   # kept across restarts\n"
+    "  clawtilla task board --agent oxpecker          # where it is, what is left\n"
+    "  clawtilla task board --team forge --window 7d --json\n"
     "  clawtilla task show task-01m0k5 --journal       # what happened to it\n"
     "  clawtilla task create \"Write the release notes\"    # on the backlog\n"
     "  clawtilla task create --agent scout --title \"Fix export\" \"...\"\n"
@@ -7460,6 +7462,74 @@ cmd_task(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
+    /*
+     * The agent board (0.78.0): one agent's work, column by column.  The
+     * text is clawt_board_render_text() over the very reply --json
+     * prints, so the two never say different things.
+     */
+    if (g_strcmp0(verb, "board") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        gboolean as_json = FALSE;
+        gboolean named = FALSE;
+        gint arg;
+
+        json_builder_begin_object(builder);
+
+        for (arg = 3; arg < argc; arg++) {
+            const gchar *opt = argv[arg];
+            const gchar *value = (arg + 1 < argc) ? argv[arg + 1] : NULL;
+
+            if (g_strcmp0(opt, "--json") == 0) {
+                as_json = TRUE;
+            } else if (g_strcmp0(opt, "--no-timeline") == 0) {
+                json_builder_set_member_name(builder, "timeline");
+                json_builder_add_boolean_value(builder, FALSE);
+            } else if ((g_strcmp0(opt, "--agent") == 0 ||
+                        g_strcmp0(opt, "--team") == 0 ||
+                        g_strcmp0(opt, "--window") == 0) && value != NULL) {
+                named = named || g_strcmp0(opt, "--window") != 0;
+                json_builder_set_member_name(builder, opt + 2);
+                json_builder_add_string_value(builder, value);
+                arg++;
+            } else if (opt[0] != '-' && !named) {
+                /* `clawtilla task board oxpecker`, as a shorthand. */
+                named = TRUE;
+                json_builder_set_member_name(builder, "agent");
+                json_builder_add_string_value(builder, opt);
+            } else {
+                named = FALSE;
+                break;
+            }
+        }
+
+        json_builder_end_object(builder);
+
+        if (!named) {
+            g_printerr("Usage: clawtilla task board --agent AGENT [--team TEAM] "
+                       "[--window today|<N>h|<N>d] [--no-timeline] [--json]\n"
+                       "       clawtilla task board --team TEAM   "
+                       "# its lead's board, with the team's lanes\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "task.board", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        if (as_json) {
+            g_autofree gchar *text = json_to_string(reply, TRUE);
+
+            g_print("%s\n", text);
+        } else {
+            g_autofree gchar *text = clawt_board_render_text(
+                json_node_get_object(reply));
+
+            g_print("%s", text);
+        }
+
+        return EXIT_SUCCESS;
+    }
+
     if (g_strcmp0(verb, "show") == 0) {
         JsonObject *task;
 
@@ -14705,7 +14775,7 @@ static const ClawtVerb verbs[] = {
       cmd_account },
     { "policy-hook", "--agent ID --token-file PATH", "Claude Code's PreToolUse hook (run by the daemon's settings)",
       cmd_policy_hook },
-    { "task",    "<verb>",   "Tasks: list, show, create, assign, comment, link, unlink, review, diff, checkout-remove, venture-retry, cancel, unblock, retry, incidents",
+    { "task",    "<verb>",   "Tasks: list, board, show, create, assign, comment, link, unlink, review, diff, checkout-remove, venture-retry, cancel, unblock, retry, incidents",
       cmd_task },
     { "decision", "<verb>",  "Answer what an agent has asked you",
       cmd_decision },

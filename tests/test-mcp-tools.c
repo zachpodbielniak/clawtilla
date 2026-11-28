@@ -2694,6 +2694,93 @@ test_an_empty_filtered_listing_says_what_it_covered(void)
  * status note and the task closed under it -- with a result that said,
  * in so many words, that the report had not been sent yet.
  */
+/*
+ * `phase` on clawtilla_task_progress and clawtilla_task_complete (0.78.0):
+ * where the agent board draws the card.  A misspelt phase is refused
+ * with the six that are accepted and records nothing -- not the note,
+ * not the result -- so the agent calls again rather than leaving a
+ * half-made report; a good one is kept, and the arguments the tools
+ * took before still work without it.
+ */
+static void
+test_progress_and_complete_take_a_phase(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) refused = NULL;
+    g_autoptr(JsonNode) noted = NULL;
+    g_autoptr(JsonNode) plain = NULL;
+    g_autoptr(JsonNode) bad_finish = NULL;
+    g_autoptr(JsonNode) finished = NULL;
+    g_autofree gchar *bad = NULL;
+    g_autofree gchar *good = NULL;
+    g_autofree gchar *without = NULL;
+    g_autofree gchar *bad_done = NULL;
+    g_autofree gchar *done = NULL;
+    ClawtTask *task;
+    gboolean is_error = FALSE;
+    const gchar *text;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n"
+                            "    chief_of_staff: true\n  - id: oryx\n");
+
+    task = clawt_task_manager_create(fixture.tasks, "chief", "oryx",
+                                     "land the fix", NULL, NULL);
+
+    bad = g_strdup_printf("{\"task_id\":\"%s\",\"note\":\"building\","
+                          "\"phase\":\"compiling\"}", clawt_task_get_id(task));
+    refused = call_tool(&fixture, "oryx", "clawtilla_task_progress", bad);
+    text = response_text(refused, &is_error);
+
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "'compiling' is not a phase"));
+    g_assert_nonnull(strstr(text, "planning, delegated, reviewing, gating, "
+                                  "landing or blocked"));
+    g_assert_nonnull(strstr(text, "Nothing was recorded"));
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_PENDING);
+    g_assert_null(clawt_task_get_progress_note(task));
+
+    good = g_strdup_printf("{\"task_id\":\"%s\",\"note\":\"make test\","
+                           "\"phase\":\"gating\"}", clawt_task_get_id(task));
+    noted = call_tool(&fixture, "oryx", "clawtilla_task_progress", good);
+    text = response_text(noted, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "Its phase is now gating."));
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_RUNNING);
+    g_assert_cmpint(clawt_task_get_phase(task), ==, CLAWT_TASK_PHASE_GATING);
+
+    /* Without a phase it is the call it always was; the phase stays. */
+    without = g_strdup_printf("{\"task_id\":\"%s\",\"note\":\"still on it\"}",
+                              clawt_task_get_id(task));
+    plain = call_tool(&fixture, "oryx", "clawtilla_task_progress", without);
+    text = response_text(plain, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_null(strstr(text, "phase"));
+    g_assert_cmpint(clawt_task_get_phase(task), ==, CLAWT_TASK_PHASE_GATING);
+
+    bad_done = g_strdup_printf("{\"task_id\":\"%s\",\"result\":\"done\","
+                               "\"phase\":\"shipped\"}",
+                               clawt_task_get_id(task));
+    bad_finish = call_tool(&fixture, "oryx", "clawtilla_task_complete",
+                           bad_done);
+    response_text(bad_finish, &is_error);
+
+    g_assert_true(is_error);
+    g_assert_false(clawt_task_is_finished(task));
+
+    done = g_strdup_printf("{\"task_id\":\"%s\",\"result\":\"landed 0b2bf57a\","
+                           "\"phase\":\"landing\"}", clawt_task_get_id(task));
+    finished = call_tool(&fixture, "oryx", "clawtilla_task_complete", done);
+    response_text(finished, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
+    g_assert_cmpint(clawt_task_get_phase(task), ==, CLAWT_TASK_PHASE_LANDING);
+
+    fixture_teardown(&fixture);
+}
+
 static void
 test_reporting_progress_keeps_a_task_open(void)
 {
@@ -5030,6 +5117,8 @@ main(int argc, char *argv[])
                     test_an_empty_filtered_listing_says_what_it_covered);
     g_test_add_func("/mcp/task-progress/keeps-a-task-open",
                     test_reporting_progress_keeps_a_task_open);
+    g_test_add_func("/mcp/task-progress/takes-a-phase",
+                    test_progress_and_complete_take_a_phase);
     g_test_add_func("/mcp/task-progress/waiting-on-blocks",
                     test_waiting_on_somebody_blocks_the_task);
     g_test_add_func("/mcp/task-progress/question-is-one-short-line",

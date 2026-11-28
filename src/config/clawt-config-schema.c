@@ -1183,6 +1183,28 @@ static const ClawtSchemaEntry schema[] = {
   "in the inbox, rather than the two going round again. 0 removes the\n"
   "limit.", "0.38.0" },
 
+{ "orchestration.board_quiet_minutes", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "20", NULL,
+  "How long a running card on the agent board may go without a sign of\n"
+  "life before it is flagged quiet, in minutes.\n"
+  "\n"
+  "A sign of life is a progress or phase report, a streamed step, or a\n"
+  "state change, on the task or on a running task it handed on. A quiet\n"
+  "card is pinned in the board's blocked column with the reason `quiet`.\n"
+  "Not the `stalled` task state, which is a limit stopping the work: a\n"
+  "quiet task is still running, nobody has heard from it. A card whose\n"
+  "assignee has a clawtilla wait pending, or whose children are queued,\n"
+  "held or in review, is never quiet. 0 turns the rule off.", "0.78.0" },
+
+{ "orchestration.board_window", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "today", NULL,
+  "How far back the agent board's done column reaches, when task.board\n"
+  "does not say.\n"
+  "\n"
+  "`today` is since local midnight; `<N>h` and `<N>d` count back from now,\n"
+  "up to 90 days. A window longer than a day reads the rest of what the\n"
+  "agent completed back from the task store.", "0.78.0" },
+
 { "orchestration.checkout_keep_days", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_COMMENTED, "14", NULL,
   "How long a finished task's checkout is kept, in days.\n"

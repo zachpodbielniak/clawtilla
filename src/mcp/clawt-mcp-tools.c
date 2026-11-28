@@ -361,7 +361,11 @@ static const ClawtParamInfo task_id_params[] = {
 
 static const ClawtParamInfo task_result_params[] = {
     { "task_id", "string", "The task being finished.", TRUE },
-    { "result",  "string", "What it produced.", TRUE }
+    { "result",  "string", "What it produced.", TRUE },
+    { "phase",   "string",
+      "Optional: the phase the work ended in, for the agent board's "
+      "timeline -- planning, delegated, reviewing, gating, landing or "
+      "blocked.", FALSE }
 };
 
 static const ClawtParamInfo task_progress_params[] = {
@@ -376,7 +380,13 @@ static const ClawtParamInfo task_progress_params[] = {
       "unblocks it, or you report on it or finish it again.", FALSE },
     { "question", "string",
       "One line for whoever you wait on: what you need from them. An "
-      "agent you name is sent it.", FALSE }
+      "agent you name is sent it.", FALSE },
+    { "phase", "string",
+      "Optional: where the work has got to, which puts it in that column "
+      "of the agent board -- planning (working it out), delegated (parts "
+      "are with other agents), reviewing (reading work handed back), "
+      "gating (building or testing), landing (merging or releasing) or "
+      "blocked. It lasts until the task goes back to pending.", FALSE }
 };
 
 static const ClawtParamInfo task_list_params[] = {
@@ -11700,13 +11710,30 @@ tools_call_run(ClawtMcpTools *self,
     } else if (g_strcmp0(tool_name, "clawtilla_task_complete") == 0) {
         const gchar *task_id = argument_string(arguments, "task_id");
         const gchar *result = argument_string(arguments, "result");
+        const gchar *phase_nick = argument_string(arguments, "phase");
+        ClawtTaskPhase phase = CLAWT_TASK_PHASE_NONE;
+        g_autoptr(GError) phase_error = NULL;
         ClawtTask *task = (self->tasks != NULL)
                           ? clawt_task_manager_get(self->tasks, task_id)
                           : NULL;
 
+        /*
+         * An optional phase (0.78.0), checked before anything happens: a
+         * misspelt one refuses the call, so the agent hears about it
+         * rather than its task finishing with a phase nobody can read.
+         */
+        if (phase_nick != NULL && *phase_nick == '\0')
+            phase_nick = NULL;
+
         if (task_id == NULL || result == NULL) {
             is_error = TRUE;
             text = g_strdup("task_id and result are both required.");
+        } else if (phase_nick != NULL &&
+                   !clawt_task_phase_parse(phase_nick, &phase, &phase_error)) {
+            is_error = TRUE;
+            text = g_strdup_printf("%s. Nothing was recorded; call it "
+                                   "again with one of those, or without "
+                                   "phase.", phase_error->message);
         } else if (task != NULL &&
                    g_strcmp0(clawt_task_get_assignee(task),
                              agent_id) != 0) {
@@ -11725,7 +11752,8 @@ tools_call_run(ClawtMcpTools *self,
                 clawt_task_get_assignee(task) != NULL
                     ? clawt_task_get_assignee(task) : "its assignee");
         } else if (self->tasks != NULL &&
-                   clawt_task_manager_complete(self->tasks, task_id, result)) {
+                   clawt_task_manager_complete_in_phase(self->tasks, task_id,
+                                                        result, phase)) {
             /*
              * The settle notice this just fired is the delegation's
              * answer, so the invite of the turn making this call is
@@ -11754,6 +11782,9 @@ tools_call_run(ClawtMcpTools *self,
         const gchar *note = argument_string(arguments, "note");
         const gchar *waiting_on = argument_string(arguments, "waiting_on");
         const gchar *question = argument_string(arguments, "question");
+        const gchar *phase_nick = argument_string(arguments, "phase");
+        ClawtTaskPhase phase = CLAWT_TASK_PHASE_NONE;
+        g_autoptr(GError) phase_error = NULL;
 
         g_autofree gchar *refusal =
             task_refusal_for(self, task_id, agent_id, TRUE);
@@ -11764,10 +11795,22 @@ tools_call_run(ClawtMcpTools *self,
         if (waiting_on != NULL)
             bad_party = waiting_on_refusal(self, agent_id, waiting_on,
                                            question);
+        if (phase_nick != NULL && *phase_nick == '\0')
+            phase_nick = NULL;
 
         if (task_id == NULL || note == NULL) {
             is_error = TRUE;
             text = g_strdup("task_id and note are both required.");
+        } else if (phase_nick != NULL &&
+                   !clawt_task_phase_parse(phase_nick, &phase, &phase_error)) {
+            /*
+             * Refused before the note is kept, so a misspelt phase does
+             * not leave a half-recorded report: the agent calls again.
+             */
+            is_error = TRUE;
+            text = g_strdup_printf("%s. Nothing was recorded; call it "
+                                   "again with one of those, or without "
+                                   "phase.", phase_error->message);
         } else if (refusal != NULL) {
             is_error = TRUE;
             text = g_steal_pointer(&refusal);
@@ -11800,7 +11843,16 @@ tools_call_run(ClawtMcpTools *self,
             } else if (self->tasks != NULL &&
                 clawt_task_manager_wait_on(self->tasks, task_id, waiting_on,
                                            question, note, depth,
-                                           &wait_error))
+                                           &wait_error)) {
+                /*
+                 * A phase given with a wait is kept on the blocked task:
+                 * where the work had got to when it stopped.  It cannot
+                 * be refused here -- the task is blocked, not finished.
+                 */
+                if (phase != CLAWT_TASK_PHASE_NONE)
+                    (void)clawt_task_manager_set_phase(self->tasks, task_id,
+                                                       phase, NULL);
+
                 text = g_strdup_printf(
                     "Noted against %s, which is now blocked: waiting on "
                     "%s.%s It stays yours -- report on it or finish it "
@@ -11811,7 +11863,7 @@ tools_call_run(ClawtMcpTools *self,
                     g_strcmp0(waiting_on, "operator") == 0
                         ? "" : " They have been sent your question, and "
                                "their answer ends the wait.");
-            else if (wait_error != NULL &&
+            } else if (wait_error != NULL &&
                      g_error_matches(wait_error, CLAWT_ERROR,
                                      CLAWT_ERROR_FAILED)) {
                 /*
@@ -11820,8 +11872,8 @@ tools_call_run(ClawtMcpTools *self,
                  * not done, so it holds the task open past this turn
                  * the way a plain progress note does.
                  */
-                gboolean held = clawt_task_manager_note_progress(
-                    self->tasks, task_id, note);
+                gboolean held = clawt_task_manager_note_progress_in_phase(
+                    self->tasks, task_id, note, phase);
 
                 is_error = TRUE;
                 text = g_strdup_printf(
@@ -11838,19 +11890,26 @@ tools_call_run(ClawtMcpTools *self,
                                        "already finished.", task_id);
             }
         } else if (self->tasks != NULL &&
-                   clawt_task_manager_note_progress(self->tasks, task_id,
-                                                    note)) {
+                   clawt_task_manager_note_progress_in_phase(self->tasks,
+                                                             task_id, note,
+                                                             phase)) {
             /*
              * Says what it bought, because the whole point is that
              * ending a turn silently would have closed the task -- an
              * agent that cannot tell whether the call worked calls it
              * again, or worse, goes back to narrating to stay alive.
+             * And the phase, when one was given, so the agent knows the
+             * board took it.
              */
             text = g_strdup_printf(
                 "Noted against %s, which stays open past the end of this "
-                "turn. Do this again next time you stop with work "
+                "turn.%s%s%s Do this again next time you stop with work "
                 "outstanding, or clawtilla_task_complete when it is done.",
-                task_id);
+                task_id,
+                phase != CLAWT_TASK_PHASE_NONE ? " Its phase is now " : "",
+                phase != CLAWT_TASK_PHASE_NONE
+                    ? clawt_task_phase_to_nick(phase) : "",
+                phase != CLAWT_TASK_PHASE_NONE ? "." : "");
         } else {
             is_error = TRUE;
             text = g_strdup_printf("There is no open task %s to report "

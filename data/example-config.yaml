@@ -1050,6 +1050,26 @@ orchestration:
   # limit.
   review_rounds: 3
 
+  # How long a running card on the agent board may go without a sign of
+  # life before it is flagged quiet, in minutes.
+  #
+  # A sign of life is a progress or phase report, a streamed step, or a
+  # state change, on the task or on a running task it handed on. A quiet
+  # card is pinned in the board's blocked column with the reason `quiet`.
+  # Not the `stalled` task state, which is a limit stopping the work: a
+  # quiet task is still running, nobody has heard from it. A card whose
+  # assignee has a clawtilla wait pending, or whose children are queued,
+  # held or in review, is never quiet. 0 turns the rule off.
+  board_quiet_minutes: 20
+
+  # How far back the agent board's done column reaches, when task.board
+  # does not say.
+  #
+  # `today` is since local midnight; `<N>h` and `<N>d` count back from now,
+  # up to 90 days. A window longer than a day reads the rest of what the
+  # agent completed back from the task store.
+  board_window: "today"
+
   # How long a finished task's checkout is kept, in days.
   #
   # A task given a repository (`repo` on clawtilla_delegate or a new task)

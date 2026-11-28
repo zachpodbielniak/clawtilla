@@ -336,6 +336,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-activity.c \
 	$(SRCDIR)/core/daemon-mailbox.c \
 	$(SRCDIR)/core/daemon-task.c \
+	$(SRCDIR)/core/daemon-board.c \
 	$(SRCDIR)/core/daemon-project.c \
 	$(SRCDIR)/core/daemon-revisions.c \
 	$(SRCDIR)/core/daemon-skill-tests.c \

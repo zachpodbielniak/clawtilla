@@ -580,6 +580,36 @@ stays in review and the verdict becomes the operator's, as a decision
 in the inbox, rather than the two going round again. 0 removes the
 limit.
 
+### `orchestration.board_quiet_minutes`
+
+- Type: integer
+- Default: `20`
+- Since: 0.78.0
+
+How long a running card on the agent board may go without a sign of
+life before it is flagged quiet, in minutes.
+
+A sign of life is a progress or phase report, a streamed step, or a
+state change, on the task or on a running task it handed on. A quiet
+card is pinned in the board's blocked column with the reason `quiet`.
+Not the `stalled` task state, which is a limit stopping the work: a
+quiet task is still running, nobody has heard from it. A card whose
+assignee has a clawtilla wait pending, or whose children are queued,
+held or in review, is never quiet. 0 turns the rule off.
+
+### `orchestration.board_window`
+
+- Type: string
+- Default: `today`
+- Since: 0.78.0
+
+How far back the agent board's done column reaches, when task.board
+does not say.
+
+`today` is since local midnight; `<N>h` and `<N>d` count back from now,
+up to 90 days. A window longer than a day reads the rest of what the
+agent completed back from the task store.
+
 ### `orchestration.checkout_keep_days`
 
 - Type: integer

@@ -687,6 +687,10 @@ clawt_daemon_handle_task(
         g_strcmp0(kind, "task.checkout_remove") == 0)
         return handle_checkout_request(self, kind, request, payload);
 
+    /* The agent board (0.78.0): one agent's work, column by column. */
+    if (g_strcmp0(kind, "task.board") == 0)
+        return clawt_daemon_task_board(self, request, payload);
+
     /*
      * The operator's Retry on a task the mirror gave up on, or found
      * unmatched: its dead rows queued again, and the task looked at

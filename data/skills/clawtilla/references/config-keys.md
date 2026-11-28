@@ -161,6 +161,8 @@ see security.md).
 | `orchestration.handoff_busy_retries` | integer | `3` |  | How many times a handoff waits for a busy assignee before giving up and saying so. |
 | `orchestration.handoff_receipt_days` | integer | `2` |  | How long a finished handoff's receipt is kept. |
 | `orchestration.review_rounds` | integer | `3` |  | How many times a reviewer may send a task back for changes before the operator decides. |
+| `orchestration.board_quiet_minutes` | integer | `20` |  | How long a running card on the agent board may go without a sign of life before it is flagged quiet, in minutes. |
+| `orchestration.board_window` | string | `today` |  | How far back the agent board's done column reaches, when task.board does not say. |
 | `orchestration.checkout_keep_days` | integer | `14` |  | How long a finished task's checkout is kept, in days. |
 | `orchestration.task_retention_days` | integer | `180` |  | How long a finished task is kept, in days. |
 | `orchestration.max_waits_per_agent` | integer | `10` | `max_waits` | How many pending waits one agent may have. |

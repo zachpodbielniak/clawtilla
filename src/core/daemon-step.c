@@ -241,6 +241,20 @@ clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step)
     /* And it is not silent any more: a rescue offer is withdrawn. */
     clawt_daemon_rescue_life(self, agent_id, room_id);
 
+    /*
+     * And a sign of life for the task the turn is on, which is what the
+     * agent board's quiet rule reads (any step, a note's included: the
+     * turn is visibly moving).  Memory only and silent.
+     */
+    if (self->tasks != NULL && self->agents != NULL) {
+        ClawtAgent *stepper = clawt_agent_manager_get(self->agents, agent_id);
+
+        if (stepper != NULL)
+            clawt_task_manager_note_activity(
+                self->tasks, clawt_agent_get_turn_task_id_in(stepper, room_id),
+                agent_id, clawt_turn_step_get_timestamp(step));
+    }
+
     /* A turn that moved on, or gave up waiting, inside one run. */
     note_turn_boundary(self, step, agent_id, room_id, text);
 
