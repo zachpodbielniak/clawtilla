@@ -534,6 +534,8 @@ struct _ClawtDaemon {
     GHashTable        *idle_started;   /* agent -> gint64 unix start */
     GHashTable        *idle_stopped;   /* agents asleep until a message */
     gulong             idle_bus_handler;
+    /* daemon-task.c: an answer from a waited-on agent ends the wait. */
+    gulong             waits_bus_handler;
 
     /* daemon-browser.c: every browser session, made on an agent's first call */
     ClawtBrowserManager *browsers;
@@ -1295,11 +1297,15 @@ void clawt_daemon_triggers_stop(ClawtDaemon *self);
  * clawt_daemon_tasks_watch_waits:
  * @self: the daemon
  *
- * Asks whoever a task now waits on (ClawtTaskManager::task-waiting) and
- * wakes the assignee when the wait is lifted (::task-resumed).
- * daemon-task.c.
+ * Asks whoever a task now waits on (ClawtTaskManager::task-waiting),
+ * ends the wait when that agent's answer is queued for the assignee in
+ * their direct room (the bus's mailbox.queued), and wakes the assignee
+ * when the wait is lifted (::task-resumed).  daemon-task.c.
  */
 void clawt_daemon_tasks_watch_waits(ClawtDaemon *self);
+
+/* The bus handler clawt_daemon_tasks_watch_waits() connected, gone. */
+void clawt_daemon_tasks_unwatch_waits(ClawtDaemon *self);
 
 /*
  * clawt_daemon_held_changed:

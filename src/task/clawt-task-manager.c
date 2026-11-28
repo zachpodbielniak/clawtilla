@@ -1705,32 +1705,78 @@ clawt_task_manager_wait_on(ClawtTaskManager *self,
                            const gchar      *waiting_on,
                            const gchar      *question,
                            const gchar      *note_text,
-                           gint              depth)
+                           gint              depth,
+                           GError          **error)
 {
     ClawtTask *task;
     gboolean moved;
+    gboolean was_waiting;
     g_autofree gchar *what = NULL;
+    g_autofree gchar *was_on = NULL;
+    g_autofree gchar *was_asked = NULL;
+    g_autofree gchar *unsent = NULL;
 
     g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
     g_return_val_if_fail(waiting_on != NULL && *waiting_on != '\0', FALSE);
+    g_return_val_if_fail(error == NULL || *error == NULL, FALSE);
 
     task = clawt_task_manager_get(self, task_id);
-    if (task == NULL)
+    if (task == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no task %s", task_id);
         return FALSE;
+    }
+
+    was_waiting = is_waiting(task);
 
     /* A task already waiting may say it waits on somebody else now. */
-    if (!is_waiting(task) &&
-        !clawt_task_state_is_active(clawt_task_get_state(task)))
+    if (!was_waiting &&
+        !clawt_task_state_is_active(clawt_task_get_state(task))) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "task %s is not open with its assignee", task_id);
         return FALSE;
+    }
 
-    moved = !is_waiting(task) ||
+    moved = !was_waiting ||
             g_strcmp0(clawt_task_get_waiting_on(task), waiting_on) != 0 ||
             g_strcmp0(clawt_task_get_question(task), question) != 0;
 
-    if (note_text != NULL)
-        clawt_task_set_progress_note(task, note_text);
+    was_on = g_strdup(clawt_task_get_waiting_on(task));
+    was_asked = g_strdup(clawt_task_get_question(task));
+
+    /*
+     * Who and what first, so whoever handles ::task-waiting reads them
+     * from the task; the state only once the asking has gone out.  A
+     * question that could not be sent must not leave the task blocked
+     * on somebody who was never asked: nothing would ever end that
+     * wait, and the assignee would be told it had been sent.
+     */
     clawt_task_set_waiting_on(task, waiting_on);
     clawt_task_set_question(task, question);
+
+    if (moved)
+        g_signal_emit(self, signals[SIGNAL_TASK_WAITING], 0, task_id, depth,
+                      &unsent);
+
+    if (unsent != NULL) {
+        g_autofree gchar *body = g_strdup_printf(
+            "could not ask %s, so not waiting on them: %s", waiting_on,
+            unsent);
+
+        /* Back to what it was: still running, or the wait it had. */
+        clawt_task_set_waiting_on(task, was_waiting ? was_on : NULL);
+        clawt_task_set_question(task, was_waiting ? was_asked : NULL);
+        note(self, task, clawt_task_get_assignee(task),
+             CLAWT_TASK_NOTE_PROGRESS, body);
+        emit_changed(self, task, body);
+
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "%s could not be asked: %s", waiting_on, unsent);
+        return FALSE;
+    }
+
+    if (note_text != NULL)
+        clawt_task_set_progress_note(task, note_text);
     clawt_task_set_state(task, CLAWT_TASK_BLOCKED);
 
     /*
@@ -1751,10 +1797,28 @@ clawt_task_manager_wait_on(ClawtTaskManager *self,
     }
     emit_changed(self, task, what);
 
-    if (moved)
-        g_signal_emit(self, signals[SIGNAL_TASK_WAITING], 0, task_id, depth);
-
     return TRUE;
+}
+
+/*
+ * ::task-waiting's return: the first handler that says the party could
+ * not be asked wins, and the rest are not run -- one refusal is enough to
+ * undo the wait.
+ */
+static gboolean
+first_refusal(GSignalInvocationHint *hint, GValue *accumulated,
+              const GValue *handler_return, gpointer data)
+{
+    const gchar *refusal = g_value_get_string(handler_return);
+
+    (void)hint;
+    (void)data;
+
+    if (refusal == NULL)
+        return TRUE;
+
+    g_value_set_string(accumulated, refusal);
+    return FALSE;
 }
 
 guint
@@ -2028,16 +2092,24 @@ clawt_task_manager_class_init(ClawtTaskManagerClass *klass)
      * @depth: hop depth of the question, already one past the caller's
      *   turn, or 0 when the wait asks nobody in this fleet
      *
-     * clawt_task_manager_wait_on() put the task in `blocked`, or changed
-     * who it waits on or what it asked.  Once per change, so whoever is
-     * waited on is asked once, not on every repeat of the same report.
-     * @depth is the depth the question is sent at, so the hop limit sees
-     * a reworded question instead of a fresh chain.
+     * clawt_task_manager_wait_on() is about to put the task in
+     * `blocked`, or change who it waits on or what it asked; the task
+     * already names the party and the question.  Once per change, so
+     * whoever is waited on is asked once, not on every repeat of the same
+     * report.  @depth is the depth the question is sent at, so the hop
+     * limit sees a reworded question instead of a fresh chain.
+     *
+     * A handler that asks the party and cannot returns why.  The wait is
+     * then undone -- the task is not left blocked on somebody who was
+     * never asked -- and clawt_task_manager_wait_on() fails with it.
+     *
+     * Returns: (transfer full) (nullable): why the party could not be
+     *   asked, or %NULL when it was, or needed no asking
      */
     signals[SIGNAL_TASK_WAITING] =
         g_signal_new("task-waiting", CLAWT_TYPE_TASK_MANAGER,
-                     G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
-                     G_TYPE_NONE, 2, G_TYPE_STRING, G_TYPE_INT);
+                     G_SIGNAL_RUN_LAST, 0, first_refusal, NULL, NULL,
+                     G_TYPE_STRING, 2, G_TYPE_STRING, G_TYPE_INT);
 
     /**
      * ClawtTaskManager::task-resumed:

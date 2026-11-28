@@ -11782,12 +11782,15 @@ tools_call_run(ClawtMcpTools *self,
                     self, agent_id, turn_room, waiting_on, depth);
             }
 
+            g_autoptr(GError) wait_error = NULL;
+
             if (ask_refusal != NULL) {
                 is_error = TRUE;
                 text = g_steal_pointer(&ask_refusal);
             } else if (self->tasks != NULL &&
                 clawt_task_manager_wait_on(self->tasks, task_id, waiting_on,
-                                           question, note, depth))
+                                           question, note, depth,
+                                           &wait_error))
                 text = g_strdup_printf(
                     "Noted against %s, which is now blocked: waiting on "
                     "%s.%s It stays yours -- report on it or finish it "
@@ -11796,8 +11799,29 @@ tools_call_run(ClawtMcpTools *self,
                     task_id, waiting_on,
                     g_str_has_prefix(waiting_on, "external:") ||
                     g_strcmp0(waiting_on, "operator") == 0
-                        ? "" : " They have been sent your question.");
-            else {
+                        ? "" : " They have been sent your question, and "
+                               "their answer ends the wait.");
+            else if (wait_error != NULL &&
+                     g_error_matches(wait_error, CLAWT_ERROR,
+                                     CLAWT_ERROR_FAILED)) {
+                /*
+                 * The question did not go out, so the task is not
+                 * blocked on them.  The note still says the work is
+                 * not done, so it holds the task open past this turn
+                 * the way a plain progress note does.
+                 */
+                gboolean held = clawt_task_manager_note_progress(
+                    self->tasks, task_id, note);
+
+                is_error = TRUE;
+                text = g_strdup_printf(
+                    "Your question was not sent: %s. So %s is not blocked "
+                    "on %s.%s Ask them yourself with clawtilla_ask_agent, "
+                    "or try again.",
+                    wait_error->message, task_id, waiting_on,
+                    held ? " Your note is kept as ordinary progress, and "
+                           "the task stays open past this turn." : "");
+            } else {
                 is_error = TRUE;
                 text = g_strdup_printf("There is no open task %s of yours "
                                        "to mark waiting; it may have "

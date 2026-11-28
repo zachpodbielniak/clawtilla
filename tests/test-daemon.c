@@ -11397,12 +11397,13 @@ report_progress(Fixture *fixture, const gchar *agent_id, const gchar *args)
 }
 
 /*
- * A task waiting on an agent asks that agent, once, as its assignee, so
- * the answer comes back to the assignee; the event says who it waits on
- * and what it asked, and the reason is a note on the task, which is what
- * a mirrored ticket shows.  `task.unblock` ends the wait and tells the
- * assignee; `on` ends every wait on one party, the move when a service
- * that was down is back.
+ * A task waiting on an agent asks that agent, once, as its assignee, in
+ * their direct room; the event says who it waits on and what it asked,
+ * and the reason is a note on the task, which is what a mirrored ticket
+ * shows.  `task.unblock` ends the wait and tells the assignee; `on` ends
+ * every wait on one party, the move when a service that was down is
+ * back.  This test sends no answer: an answer ending the wait is
+ * /daemon/task/waiting-on-ends-when-answered.
  */
 static void
 test_a_task_waiting_on_somebody_asks_and_is_unblocked(void)
@@ -11508,6 +11509,151 @@ test_a_task_waiting_on_somebody_asks_and_is_unblocked(void)
                     ==, 2);
     g_assert_cmpint(clawt_task_get_state(part_a), ==, CLAWT_TASK_RUNNING);
     g_assert_cmpint(clawt_task_get_state(part_b), ==, CLAWT_TASK_RUNNING);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * The answer is what ends the wait.  The question goes to the agent as an
+ * ordinary message in its direct room with the assignee, and the answer
+ * comes back the same way, in a turn that is not the task's.  Before,
+ * nothing about that answer touched the task: a blocked task is not
+ * active, so the turn end completed nothing, and an assignee that read
+ * the answer and stopped left it blocked for good.  Now the answer
+ * resumes it, and the assignee is woken in the task's room.  Mail from
+ * somebody else, or from the party in another room, does not.
+ */
+static void
+test_a_wait_ends_when_the_party_answers(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtMessage) aside = NULL;
+    g_autoptr(ClawtMessage) answer = NULL;
+    g_autofree gchar *wait_args = NULL;
+    g_autofree gchar *woken = NULL;
+    ClawtTask *task;
+    ClawtTask *elsewhere;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: worker\n  - id: other\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    task = clawt_task_manager_create(fixture.daemon->tasks, "other",
+                                     "worker", "merge the daemon PR",
+                                     NULL, NULL);
+    clawt_task_manager_start(fixture.daemon->tasks, clawt_task_get_id(task));
+
+    /* the same assignee's task waiting on somebody else stays waiting */
+    elsewhere = clawt_task_manager_create(fixture.daemon->tasks, "other",
+                                          "worker", "the release notes",
+                                          NULL, NULL);
+    clawt_task_manager_start(fixture.daemon->tasks,
+                             clawt_task_get_id(elsewhere));
+
+    wait_args = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"CI is held\","
+        "\"waiting_on\":\"chief\","
+        "\"question\":\"May I turn the heavy runner back on?\"}",
+        clawt_task_get_id(task));
+    g_assert_true(report_progress(&fixture, "worker", wait_args));
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+
+    g_free(wait_args);
+    wait_args = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"needs the operator\","
+        "\"waiting_on\":\"operator\",\"question\":\"Which tag?\"}",
+        clawt_task_get_id(elsewhere));
+    g_assert_true(report_progress(&fixture, "worker", wait_args));
+    g_assert_cmpint(clawt_task_get_state(elsewhere), ==, CLAWT_TASK_BLOCKED);
+
+    /* somebody else writing to the assignee is not the answer */
+    aside = clawt_message_new("worker", "other", "Lunch at noon?");
+    g_assert_cmpint(clawt_mailbox_router_send(fixture.daemon->router, aside,
+                                              &error), >=, 0);
+    g_assert_no_error(error);
+    pump_for(&fixture, 100);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+
+    /* the party's answer, in their direct room */
+    answer = clawt_message_new("worker", "chief",
+                               "Yes, turn the heavy runner back on.");
+    g_assert_cmpint(clawt_mailbox_router_send(fixture.daemon->router, answer,
+                                              &error), >=, 0);
+    g_assert_no_error(error);
+    pump_for(&fixture, 100);
+
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_RUNNING);
+    g_assert_null(clawt_task_get_waiting_on(task));
+    g_assert_cmpint(clawt_task_get_state(elsewhere), ==, CLAWT_TASK_BLOCKED);
+
+    /* the answer, and the wake in the task's room */
+    woken = queued_bodies(&fixture, "worker");
+    g_assert_nonnull(strstr(woken, "Yes, turn the heavy runner back on."));
+    g_assert_nonnull(strstr(woken, "no longer waits on chief -- chief "
+                                   "answered you"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A question that could not be sent does not block the task.  Here the
+ * direct room is stalled, so the router refuses it.  Before, the refusal
+ * was only logged: the task stayed blocked on an agent who had never
+ * been asked, which nothing would ever end, and the tool told the
+ * assignee its question had been sent.  Now the wait is undone, the
+ * tool says the question was not sent, and the note still holds the
+ * task open past the turn.
+ */
+static void
+test_an_unsent_question_does_not_block(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) notes = NULL;
+    g_autofree gchar *room_id = NULL;
+    g_autofree gchar *wait_args = NULL;
+    g_autofree gchar *notes_text = NULL;
+    g_autofree gchar *asked = NULL;
+    ClawtTask *task;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: worker\n  - id: other\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    task = clawt_task_manager_create(fixture.daemon->tasks, "other",
+                                     "worker", "merge the daemon PR",
+                                     NULL, NULL);
+    clawt_task_manager_start(fixture.daemon->tasks, clawt_task_get_id(task));
+
+    room_id = clawt_room_manager_direct_id("worker", "chief");
+    g_assert_true(clawt_loop_guard_stall_room(fixture.daemon->guard, room_id,
+                                              CLAWT_STALL_REPEATED_MESSAGE,
+                                              "the same thing again"));
+
+    wait_args = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"CI is held\","
+        "\"waiting_on\":\"chief\","
+        "\"question\":\"May I turn the heavy runner back on?\"}",
+        clawt_task_get_id(task));
+    g_assert_false(report_progress(&fixture, "worker", wait_args));
+
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_RUNNING);
+    g_assert_null(clawt_task_get_waiting_on(task));
+    g_assert_true(clawt_task_get_holds_completion(task));
+
+    asked = queued_bodies(&fixture, "chief");
+    g_assert_null(strstr(asked, "cannot go on"));
+
+    notes = clawt_task_manager_notes(fixture.daemon->tasks,
+                                     clawt_task_get_id(task), NULL);
+    g_assert_nonnull(notes);
+    notes_text = json_to_string(notes, FALSE);
+    g_assert_nonnull(strstr(notes_text, "could not ask chief"));
 
     fixture_teardown(&fixture);
 }
@@ -14438,6 +14584,10 @@ main(int argc, char *argv[])
                     test_venture_health_is_an_event);
     g_test_add_func("/daemon/task/waiting-on-asks-and-is-unblocked",
                     test_a_task_waiting_on_somebody_asks_and_is_unblocked);
+    g_test_add_func("/daemon/task/waiting-on-ends-when-answered",
+                    test_a_wait_ends_when_the_party_answers);
+    g_test_add_func("/daemon/task/waiting-on-unsent-does-not-block",
+                    test_an_unsent_question_does_not_block);
     g_test_add_func("/daemon/task/waiting-question-carries-depth",
                     test_a_waiting_question_carries_the_turns_depth);
     g_test_add_func("/daemon/failover/held-agent-is-degraded-and-not-fed",

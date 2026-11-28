@@ -290,11 +290,16 @@ static JsonNode *handle_checkout_request(ClawtDaemon *self,
 /*
  * A task's assignee now waits on another agent: that agent is asked,
  * once, in its direct room with the assignee, so its answer goes back
- * to the assignee as an ordinary reply.  `operator` and `external:` are
+ * to the assignee as an ordinary reply -- and that reply is what ends
+ * the wait (on_answer_queued() below).  `operator` and `external:` are
  * told by the task.changed event and the mirrored ticket, not here --
  * the operator has their own notifiers and a service cannot read.
+ *
+ * Returns why the agent could not be asked, or NULL.  The manager then
+ * undoes the wait, so a task is never blocked on a question that never
+ * went out, and the tool that asked says so instead of "sent".
  */
-static void
+static gchar *
 on_task_waiting(ClawtTaskManager *tasks, const gchar *task_id,
                 gint depth, gpointer user_data)
 {
@@ -309,21 +314,28 @@ on_task_waiting(ClawtTaskManager *tasks, const gchar *task_id,
     g_autofree gchar *clip = NULL;
     ClawtRoom *room;
 
-    if (task == NULL || self->router == NULL || self->rooms == NULL)
-        return;
+    if (task == NULL)
+        return NULL;
 
     party = clawt_task_get_waiting_on(task);
     assignee = clawt_task_get_assignee(task);
 
+    /* Nobody in this fleet to ask: nothing to send, nothing to fail. */
     if (party == NULL || assignee == NULL ||
         g_strcmp0(party, "operator") == 0 ||
-        g_str_has_prefix(party, "external:") ||
-        clawt_agent_manager_get(self->agents, party) == NULL)
-        return;
+        g_str_has_prefix(party, "external:"))
+        return NULL;
+
+    if (clawt_agent_manager_get(self->agents, party) == NULL)
+        return g_strdup_printf("there is no agent %s in this fleet", party);
+
+    if (self->router == NULL || self->rooms == NULL)
+        return g_strdup("the daemon is not routing messages yet");
 
     room = clawt_room_manager_get_direct(self->rooms, assignee, party);
     if (room == NULL)
-        return;
+        return g_strdup_printf("there is no direct room between %s and %s",
+                               assignee, party);
 
     what = clawt_task_get_title(task);
     if (what == NULL) {
@@ -333,7 +345,7 @@ on_task_waiting(ClawtTaskManager *tasks, const gchar *task_id,
 
     body = g_strdup_printf(
         "%s cannot go on with task %s (\"%s\") until you answer:\n\n%s\n\n"
-        "[clawtilla] Reply here and %s gets your answer. The task is "
+        "[not from clawtilla] Reply here and %s gets your answer. The task is "
         "blocked on you until then.",
         assignee, task_id, what != NULL ? what : "",
         clawt_task_get_question(task) != NULL
@@ -349,9 +361,152 @@ on_task_waiting(ClawtTaskManager *tasks, const gchar *task_id,
      */
     clawt_message_set_depth(message, depth);
 
-    if (clawt_mailbox_router_send(self->router, message, &error) < 0)
-        g_warning("daemon: task %s waits on %s, who could not be asked: %s",
-                  task_id, party, error->message);
+    /*
+     * Logged, not warned: the refusal goes back to the assignee as the
+     * tool's answer and onto the task as a note, so it is handled.
+     */
+    if (clawt_mailbox_router_send(self->router, message, &error) < 0) {
+        g_message("daemon: task %s would wait on %s, who could not be "
+                  "asked: %s", task_id, party, error->message);
+        return g_strdup(error->message);
+    }
+
+    return NULL;
+}
+
+/*
+ * An answer from the agent a task waits on, queued for the task's
+ * assignee in their direct room.
+ *
+ * The question went out as an ordinary room message, so the answer comes
+ * back as one, in a turn that is not the task's.  Nothing else ended the
+ * wait -- a blocked task is not "active", so no turn end completes it and
+ * no turn timeout is about it -- and an assignee that read the answer and
+ * ended its turn without a task tool left the task blocked for good.  So
+ * the answer itself resumes every task of the assignee's waiting on that
+ * agent, and ::task-resumed wakes the assignee in the task's room, in a
+ * turn that is the task's.
+ *
+ * Matched on the router's mailbox.queued, so only an answer that was
+ * really queued for the assignee counts, and on nothing kept in memory:
+ * a task restored blocked after a restart is resumed by the answer the
+ * same way.  Run from an idle, not inside the router's send that
+ * published the event, so the wake is not routed from inside that send.
+ */
+typedef struct {
+    ClawtDaemon *daemon;    /* a reference */
+    gchar       *assignee;
+    gchar       *party;
+} Answered;
+
+static void
+answered_free(gpointer data)
+{
+    Answered *answered = data;
+
+    g_object_unref(answered->daemon);
+    g_free(answered->assignee);
+    g_free(answered->party);
+    g_free(answered);
+}
+
+/* The assignee's tasks blocked on @party; borrowed tasks, in a container. */
+static GPtrArray *
+tasks_waiting_for(ClawtDaemon *self, const gchar *assignee,
+                  const gchar *party)
+{
+    g_autoptr(GPtrArray) mine = NULL;
+    GPtrArray *out = g_ptr_array_new();
+    guint i;
+
+    if (self->tasks == NULL)
+        return out;
+
+    mine = clawt_task_manager_list(self->tasks, assignee, FALSE);
+
+    for (i = 0; mine != NULL && i < mine->len; i++) {
+        ClawtTask *task = g_ptr_array_index(mine, i);
+
+        if (clawt_task_get_state(task) == CLAWT_TASK_BLOCKED &&
+            g_strcmp0(clawt_task_get_waiting_on(task), party) == 0)
+            g_ptr_array_add(out, task);
+    }
+
+    return out;
+}
+
+static gboolean
+on_answer_idle(gpointer user_data)
+{
+    Answered *answered = user_data;
+    ClawtDaemon *self = answered->daemon;
+    g_autoptr(GPtrArray) waiting = NULL;
+    g_autoptr(GPtrArray) ids = g_ptr_array_new_with_free_func(g_free);
+    g_autofree gchar *by = NULL;
+    guint i;
+
+    waiting = tasks_waiting_for(self, answered->assignee, answered->party);
+
+    /* Ids first: resuming emits signals that may change the list. */
+    for (i = 0; i < waiting->len; i++)
+        g_ptr_array_add(ids, g_strdup(clawt_task_get_id(
+            g_ptr_array_index(waiting, i))));
+
+    by = g_strdup_printf("%s answered you in your direct room",
+                         answered->party);
+
+    for (i = 0; i < ids->len; i++)
+        clawt_task_manager_resume(self->tasks, g_ptr_array_index(ids, i),
+                                  answered->party, by);
+
+    return G_SOURCE_REMOVE;
+}
+
+static void
+on_answer_queued(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+    const gchar *assignee;
+    const gchar *party;
+    const gchar *room;
+    g_autofree gchar *direct = NULL;
+    g_autoptr(GPtrArray) waiting = NULL;
+    Answered *answered;
+    GSource *source;
+
+    (void)bus;
+
+    if (g_strcmp0(clawt_event_get_kind(event), "mailbox.queued") != 0)
+        return;
+
+    assignee = clawt_event_get_subject(event);
+    party = clawt_event_get_detail(event, "from");
+    room = clawt_event_get_detail(event, "room");
+
+    if (assignee == NULL || party == NULL || room == NULL ||
+        self->agents == NULL ||
+        clawt_agent_manager_get(self->agents, party) == NULL)
+        return;
+
+    /* Their direct room: where the question was asked, so where it is answered. */
+    direct = clawt_room_manager_direct_id(assignee, party);
+    if (g_strcmp0(direct, room) != 0)
+        return;
+
+    /* Checked now so that ordinary mail does not schedule anything. */
+    waiting = tasks_waiting_for(self, assignee, party);
+    if (waiting->len == 0)
+        return;
+
+    answered = g_new0(Answered, 1);
+    answered->daemon = g_object_ref(self);
+    answered->assignee = g_strdup(assignee);
+    answered->party = g_strdup(party);
+
+    source = g_idle_source_new();
+    g_source_set_callback(source, on_answer_idle, answered, answered_free);
+    g_source_attach(source, self->main_context);
+    g_source_unref(source);
 }
 
 /*
@@ -416,6 +571,20 @@ clawt_daemon_tasks_watch_waits(ClawtDaemon *self)
                      G_CALLBACK(on_task_waiting), self);
     g_signal_connect(self->tasks, "task-resumed",
                      G_CALLBACK(on_task_resumed), self);
+
+    if (self->bus != NULL && self->waits_bus_handler == 0)
+        self->waits_bus_handler = g_signal_connect(
+            self->bus, "event", G_CALLBACK(on_answer_queued), self);
+}
+
+void
+clawt_daemon_tasks_unwatch_waits(ClawtDaemon *self)
+{
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    if (self->bus != NULL && self->waits_bus_handler != 0)
+        g_signal_handler_disconnect(self->bus, self->waits_bus_handler);
+    self->waits_bus_handler = 0;
 }
 
 JsonNode *

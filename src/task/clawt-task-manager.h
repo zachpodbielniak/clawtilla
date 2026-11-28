@@ -770,6 +770,7 @@ gboolean clawt_task_manager_block(ClawtTaskManager *self,
  *   caller's turn -- the same figure clawtilla_message_agent stamps --
  *   or 0 when the wait asks nobody in this fleet.  Passed through to
  *   ::task-waiting so the message is sent at that depth.
+ * @error: return location for a #GError, or %NULL
  *
  * Its assignee cannot go on until somebody else does something.  The
  * task goes to `blocked` with the reason, and stays its assignee's: no
@@ -778,14 +779,20 @@ gboolean clawt_task_manager_block(ClawtTaskManager *self,
  * reason is noted on the task (so a mirrored ticket shows it), and
  * ::task-waiting is emitted when who or what is asked changes.
  *
- * Returns: %TRUE when the task was the assignee's to hold
+ * When a ::task-waiting handler could not ask the party, the wait is
+ * undone -- the task stays running, or keeps the wait it already had --
+ * a note says why, and this fails with %CLAWT_ERROR_FAILED.  A task is
+ * never blocked on a question that was not sent.
+ *
+ * Returns: %TRUE when the task is now blocked on @waiting_on
  */
 gboolean clawt_task_manager_wait_on(ClawtTaskManager *self,
                                     const gchar      *task_id,
                                     const gchar      *waiting_on,
                                     const gchar      *question,
                                     const gchar      *note_text,
-                                    gint              depth);
+                                    gint              depth,
+                                    GError          **error);
 
 /**
  * clawt_task_manager_resume:

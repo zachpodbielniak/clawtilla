@@ -8634,6 +8634,7 @@ clawt_daemon_stop(ClawtDaemon *self)
 
     clawt_daemon_grok_stop(self);
     clawt_daemon_held_stop(self);
+    clawt_daemon_tasks_unwatch_waits(self);
     clawt_daemon_triggers_stop(self);
     clawt_daemon_venture_stop(self);
 
