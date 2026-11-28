@@ -818,6 +818,26 @@ GPtrArray *clawt_lrg_agent_memories(JsonNode    *reply,
                                     const gchar *scope,
                                     gint64       now_us);
 
+/* ── Fleet: a waiting agent's row ─────────────────────────────────── */
+
+/**
+ * clawt_lrg_fleet_waiting_text:
+ * @agent: (nullable): one agent object from `agent.list`
+ * @now: the clock, Unix seconds
+ *
+ * What a Fleet row says under its cost line when the agent is waiting,
+ * or %NULL when the row is unchanged.  The order is
+ * clawt_board_agent_activity(): a running turn (`activity` `working`)
+ * is working whatever is pending, nothing pending is idle, and only
+ * then is it waiting.  The words are clawt_board_waiting_label() --
+ * `waiting: <label> (<age>)` -- with ` +N` for the N waits behind the
+ * newest.  The age is @now minus `waiting_since`, so a page with no
+ * clock of its own shows the age as of the event that asked it to draw.
+ *
+ * Returns: (transfer full) (nullable): the line, or %NULL
+ */
+gchar *clawt_lrg_fleet_waiting_text(JsonObject *agent, gint64 now);
+
 /* ── Fleet: the daemon's warnings ─────────────────────────────────── */
 
 /**

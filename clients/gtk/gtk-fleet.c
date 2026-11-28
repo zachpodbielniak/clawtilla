@@ -12,7 +12,11 @@
  * long since its last turn, whether it is idle -- with Stop on an agent
  * that is running and doing nothing, and "Stop the idle ones" for all of
  * them.  The text is libclawt's (clawt_usage_fleet_*), shared with the
- * web and libregnum clients.
+ * web and libregnum clients.  A waiting agent adds one line under that,
+ * clawt_lrg_fleet_waiting_text() over the agent.list object -- the same
+ * function the libregnum Fleet page calls, so the two cannot spell a
+ * wait differently.  The page has no clock: the age is the one at the
+ * event that asked it to read again.
  *
  * Above the spend, the plan allowances (usage.providers): one card per
  * login with a meter per window -- what is *left*, coloured by
@@ -22,6 +26,8 @@
  */
 
 #include "clawt-window-private.h"
+
+#include "../lrg/clawt-lrg-fleet-model.h"
 
 /* Two weeks of shape, without the strip outgrowing a line. */
 #define STRIP_DAYS (14)
@@ -157,6 +163,7 @@ agent_row(ClawtWindow *self, JsonObject *agent, JsonObject *machine,
     const gchar *state = clawt_json_string(agent, "state", NULL);
     gint64 cost = clawt_json_int(agent, "cost_micros", 0);
     g_autofree gchar *subtitle = clawt_usage_fleet_row_subtitle(agent, now);
+    g_autofree gchar *waiting = clawt_lrg_fleet_waiting_text(machine, now);
     g_autofree gchar *detail = clawt_container_agent_detail(machine);
     g_autofree gchar *pressure = clawt_container_memory_pressure_text(
         id, machine);
@@ -167,7 +174,19 @@ agent_row(ClawtWindow *self, JsonObject *agent, JsonObject *machine,
     GtkWidget *value;
     GtkWidget *fleet_fallback;
 
-    if (detail != NULL)
+    /*
+     * Cost line first, then the wait, then the computer.  A working or
+     * idle agent has no wait line, so those rows read as they did.
+     * The label is text the agent wrote.  clawt_gtk_set_row_text()
+     * turns Pango markup off for the whole subtitle, so a "<" in it is
+     * a character and not a tag.  Escaping it into entities here would
+     * show the entities, because the row does not parse markup.
+     */
+    if (waiting != NULL && detail != NULL)
+        shown = g_strdup_printf("%s\n%s\n%s", subtitle, waiting, detail);
+    else if (waiting != NULL)
+        shown = g_strdup_printf("%s\n%s", subtitle, waiting);
+    else if (detail != NULL)
         shown = g_strdup_printf("%s\n%s", subtitle, detail);
 
     clawt_gtk_set_row_text(row, name != NULL ? name : "?",

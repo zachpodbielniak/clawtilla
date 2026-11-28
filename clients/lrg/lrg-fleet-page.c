@@ -13,7 +13,10 @@
  * turn, whether it is idle -- with Stop on any agent that is running and
  * doing nothing, and "Stop the idle ones" for all of them at once.
  * Every line of text is libclawt's (clawt_usage_fleet_*), so the three
- * clients say the same thing.
+ * clients say the same thing.  A waiting agent adds
+ * clawt_lrg_fleet_waiting_text() under that, from the agent.list object,
+ * which is the same function the GTK Fleet page calls.  The page has no
+ * clock: the age is the one at the event that asked it to read again.
  *
  * Above the spend, the plan allowances (usage.providers), as in GTK: a
  * card per login, a meter per window filled for what is left, coloured
@@ -147,6 +150,7 @@ agent_row(ClawtLrgApp *app, JsonObject *agent, gint64 total, gint64 now)
     JsonObject *machine = listed_agent(id);
     gint64 cost = clawt_ipc_payload_int(agent, "cost_micros", 0);
     g_autofree gchar *subtitle = clawt_usage_fleet_row_subtitle(agent, now);
+    g_autofree gchar *waiting = clawt_lrg_fleet_waiting_text(machine, now);
     g_autofree gchar *detail = clawt_container_agent_detail(machine);
     g_autofree gchar *pressure = clawt_container_memory_pressure_text(id,
                                                                       machine);
@@ -159,7 +163,15 @@ agent_row(ClawtLrgApp *app, JsonObject *agent, gint64 total, gint64 now)
     const gchar *state = clawt_ipc_payload_string(agent, "state");
     LrgWidget *row;
 
-    if (detail != NULL)
+    /*
+     * Cost line first, then the wait, then the computer.  A working or
+     * idle agent has no wait line, so those rows read as they did.
+     */
+    if (waiting != NULL && detail != NULL)
+        shown = g_strdup_printf("%s\n%s\n%s", subtitle, waiting, detail);
+    else if (waiting != NULL)
+        shown = g_strdup_printf("%s\n%s", subtitle, waiting);
+    else if (detail != NULL)
         shown = g_strdup_printf("%s\n%s", subtitle, detail);
 
     if (name == NULL || *name == '\0')
@@ -625,11 +637,17 @@ event(ClawtLrgApp *app, ClawtEvent *event)
     if (fleet.page == NULL || !page_showing(app))
         return;
 
-    /* a message is usually a turn's answer, and a turn is a cost */
+    /*
+     * A message is usually a turn's answer, and a turn is a cost.
+     * A wait moving the row is clawt_board_event_refreshes(), the same
+     * list as the board, so this file does not name that kind.  No
+     * timer ages the line.
+     */
     if (g_strcmp0(kind, "message") == 0 ||
         g_strcmp0(kind, "agent.state") == 0 ||
         g_strcmp0(kind, "agent.idle_stopped") == 0 ||
         g_strcmp0(kind, "agent.failover") == 0 ||
+        clawt_board_event_refreshes(kind) ||
         g_strcmp0(kind, "spending.limit-reached") == 0)
         request_fleet(app);
 

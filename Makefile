@@ -776,6 +776,9 @@ GTK_SOURCES   += $(LRG_SRCDIR)/lrg-schedule-model.c
 # The agent board's rows.  Web parses the same reply itself and is not
 # linked to this file.
 GTK_SOURCES   += $(LRG_SRCDIR)/lrg-board-model.c
+# A waiting Fleet row.  The cost page draws clawt_lrg_fleet_waiting_text()
+# and nothing of its own; the rest of this file is the lrg client's.
+GTK_SOURCES   += $(LRG_SRCDIR)/lrg-fleet-model.c
 WEB_SOURCES    = $(wildcard $(WEB_SRCDIR)/*.c)
 # The Schedule page draws the same cards as GTK and lrg: one model.
 WEB_SOURCES   += $(LRG_SRCDIR)/lrg-schedule-model.c

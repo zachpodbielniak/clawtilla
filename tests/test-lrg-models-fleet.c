@@ -17,6 +17,7 @@
 #include <clawtilla.h>
 
 #include "../clients/lrg/lrg-fleet-model.c"
+#include "../clients/lrg/lrg-text-model.c"
 
 static JsonNode *
 parse(const gchar *json)
@@ -798,6 +799,88 @@ test_agent_memories(void)
                                              "query"), ==, "tea");
 }
 
+/* ── Fleet: a waiting agent's row (VENTURE #71) ───────────────────── */
+
+#define WAITING_NOW (1000000)
+
+static JsonObject *
+agent_object(JsonNode *node)
+{
+    return json_node_get_object(node);
+}
+
+static void
+test_fleet_waiting_text(void)
+{
+    g_autoptr(JsonNode) one = parse(
+        "{\"id\":\"x\",\"activity\":\"waiting\",\"waits_pending\":1,"
+        "\"wait_label\":\"gate g39\",\"waiting_since\":999280}");
+    g_autoptr(JsonNode) three = parse(
+        "{\"id\":\"x\",\"activity\":\"waiting\",\"waits_pending\":3,"
+        "\"wait_label\":\"gate g39\",\"waiting_since\":999280}");
+    g_autoptr(JsonNode) no_age = parse(
+        "{\"id\":\"x\",\"activity\":\"waiting\",\"waits_pending\":1,"
+        "\"wait_label\":\"the deploy\",\"waiting_since\":0}");
+    g_autoptr(JsonNode) unnamed = parse(
+        "{\"id\":\"x\",\"activity\":\"waiting\",\"waits_pending\":1,"
+        "\"waiting_since\":999955}");
+    g_autoptr(JsonNode) idle = parse(
+        "{\"id\":\"x\",\"activity\":\"idle\",\"waits_pending\":0}");
+    g_autoptr(JsonNode) zero = parse(
+        "{\"id\":\"x\",\"activity\":\"waiting\",\"waits_pending\":0,"
+        "\"wait_label\":\"gate g39\",\"waiting_since\":999280}");
+    g_autoptr(JsonNode) working = parse(
+        "{\"id\":\"x\",\"activity\":\"working\",\"waits_pending\":0}");
+    g_autoptr(JsonNode) working_waits = parse(
+        "{\"id\":\"x\",\"activity\":\"working\",\"waits_pending\":2,"
+        "\"wait_label\":\"build\",\"waiting_since\":999280}");
+    g_autofree gchar *a = clawt_lrg_fleet_waiting_text(agent_object(one),
+                                                       WAITING_NOW);
+    g_autofree gchar *b = clawt_lrg_fleet_waiting_text(agent_object(three),
+                                                       WAITING_NOW);
+    g_autofree gchar *c = clawt_lrg_fleet_waiting_text(agent_object(no_age),
+                                                       WAITING_NOW);
+    g_autofree gchar *d = clawt_lrg_fleet_waiting_text(agent_object(unnamed),
+                                                       WAITING_NOW);
+
+    g_assert_cmpstr(a, ==, "waiting: gate g39 (12m)");
+    g_assert_cmpstr(b, ==, "waiting: gate g39 (12m) +2");
+    g_assert_cmpstr(c, ==, "waiting: the deploy");
+    g_assert_cmpstr(d, ==, "waiting: something in the background (45s)");
+
+    /* idle, and a waiting nickname with nothing pending, draw nothing */
+    g_assert_null(clawt_lrg_fleet_waiting_text(agent_object(idle),
+                                               WAITING_NOW));
+    g_assert_null(clawt_lrg_fleet_waiting_text(agent_object(zero),
+                                               WAITING_NOW));
+
+    /* a running turn beats its waits */
+    g_assert_null(clawt_lrg_fleet_waiting_text(agent_object(working),
+                                               WAITING_NOW));
+    g_assert_null(clawt_lrg_fleet_waiting_text(agent_object(working_waits),
+                                               WAITING_NOW));
+    g_assert_null(clawt_lrg_fleet_waiting_text(NULL, WAITING_NOW));
+}
+
+/* The label is the agent's own words.  The lrg row draws it through
+ * clawt_lrg_paragraph(), which escapes markdown; a raw "<" must not
+ * survive that.  GTK turns markup off instead of inserting entities. */
+static void
+test_fleet_waiting_text_is_escaped_for_markdown(void)
+{
+    g_autoptr(JsonNode) hostile = parse(
+        "{\"id\":\"x\",\"activity\":\"waiting\",\"waits_pending\":1,"
+        "\"wait_label\":\"<script>alert(1)</script>\","
+        "\"waiting_since\":999280}");
+    g_autofree gchar *line = clawt_lrg_fleet_waiting_text(
+        agent_object(hostile), WAITING_NOW);
+    g_autofree gchar *escaped = clawt_lrg_markdown_escape(line);
+
+    g_assert_nonnull(strstr(line, "<script>alert(1)</script>"));
+    g_assert_null(strstr(escaped, "<script>"));
+    g_assert_nonnull(strstr(escaped, "\\<script\\>"));
+}
+
 /* ── Fleet: the daemon's warnings ─────────────────────────────────── */
 
 static void
@@ -869,6 +952,9 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg/fleet/memory/recall", test_recall);
     g_test_add_func("/lrg/fleet/memory/operator", test_operator);
     g_test_add_func("/lrg/fleet/memory/agent", test_agent_memories);
+    g_test_add_func("/lrg/fleet/waiting-text", test_fleet_waiting_text);
+    g_test_add_func("/lrg/fleet/waiting-text-escaped",
+                    test_fleet_waiting_text_is_escaped_for_markdown);
     g_test_add_func("/lrg/fleet/warnings", test_fleet_warnings);
     g_test_add_func("/lrg/fleet/oom-notice", test_fleet_oom_notice);
 

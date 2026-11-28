@@ -2207,12 +2207,16 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
     /*
      * The Fleet page while it is up: a message is usually a turn's answer
      * and a turn is a cost; a state change or a sleep moves a Stop button.
+     * A wait moving the row is clawt_board_event_refreshes(), the same
+     * list as the board, so this file does not name that kind.  The
+     * page asks again rather than growing a timer to age the line.
      * Before the branches below, several of which return.
      */
     if (clawt_gtk_current_page(self) == CLAWT_PAGE_FLEET &&
         (g_strcmp0(kind, "message") == 0 || g_strcmp0(kind, "agent.state") == 0 ||
          g_strcmp0(kind, "agent.idle_stopped") == 0 ||
          g_strcmp0(kind, "agent.failover") == 0 ||
+         clawt_board_event_refreshes(kind) ||
          g_strcmp0(kind, "spending.limit-reached") == 0))
         clawt_gtk_refresh_fleet(self);
 

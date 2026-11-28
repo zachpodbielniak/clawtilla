@@ -1688,6 +1688,42 @@ clawt_lrg_agent_memories(JsonNode *reply, const gchar *scope, gint64 now_us)
     return out;
 }
 
+gchar *
+clawt_lrg_fleet_waiting_text(JsonObject *agent, gint64 now)
+{
+    const gchar *activity;
+    gint64 pending;
+    guint waits;
+    g_autofree gchar *base = NULL;
+
+    /*
+     * The same order the daemon published `activity` with.  Re-asked
+     * here so a row cannot invent a second one: a turn beats a wait,
+     * and a count of zero is idle even if the nickname still says
+     * waiting.  A negative count is not a wait.
+     */
+    if (agent == NULL)
+        return NULL;
+
+    activity = clawt_ipc_payload_string(agent, "activity");
+    pending = clawt_ipc_payload_int(agent, "waits_pending", 0);
+    waits = (pending > 0) ? (guint)pending : 0;
+
+    if (clawt_board_agent_activity(g_strcmp0(activity, "working") == 0,
+                                   waits) != CLAWT_AGENT_ACTIVITY_WAITING)
+        return NULL;
+
+    base = clawt_board_waiting_label(
+        clawt_ipc_payload_string(agent, "wait_label"),
+        clawt_ipc_payload_int(agent, "waiting_since", 0), now);
+
+    /* the label is the newest wait's; how many more sit behind it */
+    if (waits > 1)
+        return g_strdup_printf("%s +%u", base, waits - 1);
+
+    return g_steal_pointer(&base);
+}
+
 GPtrArray *
 clawt_lrg_fleet_warnings(JsonNode *reply)
 {
