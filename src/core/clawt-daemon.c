@@ -9000,7 +9000,19 @@ clawt_daemon_setting_needs_a_new_session(const gchar *key)
          * The network namespace is made when the child is spawned, and
          * the broker's token is minted for that process.
          */
-        "runtime.network"
+        "runtime.network",
+
+        /*
+         * The PreToolUse hook, including --offline-reads, is written
+         * when the session starts (write_claude_settings) and not again
+         * until the next one. A rule change reaches the files at once
+         * and the hook only then, so Read, Glob, Grep and LS keep the
+         * allowance they were started with. federation.enabled also
+         * drops --offline-reads
+         * (clawt_policy_agent_reads_without_daemon) but it is a fleet
+         * key and never arrives here.
+         */
+        "policy.rules"
     };
     gsize i;
 

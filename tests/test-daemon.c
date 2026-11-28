@@ -11847,6 +11847,21 @@ test_agent_set_reports_a_role_needs_a_new_session(void)
 }
 
 /*
+ * policy.rules is baked into the PreToolUse hook when the session starts.
+ *
+ * --offline-reads is written then (write_claude_settings) and not again
+ * until the next session. A change has to be reported as needing a
+ * restart, or Read, Glob, Grep and LS keep the allowance the hook was
+ * written with. federation.enabled also drops that flag, but it is a
+ * fleet key and never reaches this function.
+ */
+static void
+test_policy_rules_need_a_new_session(void)
+{
+    g_assert_true(clawt_daemon_setting_needs_a_new_session("policy.rules"));
+}
+
+/*
  * Starting an agent with no id is an error, not a critical.
  *
  * The id reaches this from an IPC payload, an agent's config or a pod
@@ -14495,6 +14510,8 @@ main(int argc, char *argv[])
                     test_agent_set_refuses_a_value_the_enum_lacks);
     g_test_add_func("/daemon/agent-set-reports-a-role-needs-a-session",
                     test_agent_set_reports_a_role_needs_a_new_session);
+    g_test_add_func("/daemon/policy-rules-need-a-new-session",
+                    test_policy_rules_need_a_new_session);
     g_test_add_func("/daemon/hop-depth/one-turn-one-depth",
                     test_a_turn_sends_every_message_at_the_same_depth);
     g_test_add_func("/daemon/computer/agent-stop-stops-the-machine",
