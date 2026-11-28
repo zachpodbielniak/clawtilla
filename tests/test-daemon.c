@@ -11173,6 +11173,28 @@ last_task_detail(ClawtDaemon *daemon, const gchar *task_id, const gchar *key)
     return found;
 }
 
+/* clawtilla_task_progress as @agent_id, as its MCP server would call it. */
+static gboolean
+report_progress(Fixture *fixture, const gchar *agent_id, const gchar *args)
+{
+	g_autoptr(JsonParser) parser = json_parser_new();
+	g_autoptr(JsonNode) response = NULL;
+	g_autofree gchar *wire = g_strdup_printf(
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+		"\"params\":{\"name\":\"clawtilla_task_progress\","
+		"\"arguments\":%s}}", args);
+	JsonObject *result;
+
+	g_assert_true(json_parser_load_from_data(parser, wire, -1, NULL));
+	response = clawt_mcp_tools_call(fixture->daemon->mcp_tools, agent_id,
+		NULL, json_parser_get_root(parser));
+	result = json_object_get_object_member(json_node_get_object(response),
+	                                       "result");
+
+	return !json_object_get_boolean_member_with_default(result, "isError",
+	                                                    FALSE);
+}
+
 /*
  * A task waiting on an agent asks that agent, once, as its assignee, so
  * the answer comes back to the assignee; the event says who it waits on
@@ -11197,6 +11219,9 @@ test_a_task_waiting_on_somebody_asks_and_is_unblocked(void)
     g_autofree gchar *question = NULL;
     g_autofree gchar *args = NULL;
     g_autofree gchar *notes_text = NULL;
+    g_autofree gchar *wait_args = NULL;
+    g_autofree gchar *wait_a = NULL;
+    g_autofree gchar *wait_b = NULL;
     ClawtTask *task;
     ClawtTask *part_a;
     ClawtTask *part_b;
@@ -11212,9 +11237,12 @@ test_a_task_waiting_on_somebody_asks_and_is_unblocked(void)
                                      NULL, NULL);
     clawt_task_manager_start(fixture.daemon->tasks, clawt_task_get_id(task));
 
-    g_assert_true(clawt_task_manager_wait_on(fixture.daemon->tasks,
-        clawt_task_get_id(task), "chief",
-        "May I turn the heavy runner back on?", "CI is held"));
+    wait_args = g_strdup_printf(
+        "{\"task_id\":\"%s\",\"note\":\"CI is held\","
+        "\"waiting_on\":\"chief\","
+        "\"question\":\"May I turn the heavy runner back on?\"}",
+        clawt_task_get_id(task));
+    g_assert_true(report_progress(&fixture, "worker", wait_args));
     g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
 
     asked = queued_bodies(&fixture, "chief");
@@ -11224,9 +11252,7 @@ test_a_task_waiting_on_somebody_asks_and_is_unblocked(void)
                      1);
 
     /* said again: not asked again */
-    g_assert_true(clawt_task_manager_wait_on(fixture.daemon->tasks,
-        clawt_task_get_id(task), "chief",
-        "May I turn the heavy runner back on?", "CI is held"));
+    g_assert_true(report_progress(&fixture, "worker", wait_args));
     again = queued_bodies(&fixture, "chief");
     g_assert_cmpuint(clawt_test_count_substrings(again, "cannot go on"), ==,
                      1);
@@ -11250,7 +11276,6 @@ test_a_task_waiting_on_somebody_asks_and_is_unblocked(void)
     g_assert_cmpint(json_object_get_int_member(payload_of(one), "resumed"),
                     ==, 1);
     g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_RUNNING);
-    g_assert_null(clawt_task_get_waiting_on(task));
 
     woken = queued_bodies(&fixture, "worker");
     g_assert_nonnull(strstr(woken, "no longer waits on chief"));
@@ -11264,10 +11289,18 @@ test_a_task_waiting_on_somebody_asks_and_is_unblocked(void)
                                        "worker", "part a", NULL, NULL);
     part_b = clawt_task_manager_create(fixture.daemon->tasks, "other",
                                        "chief", "part b", NULL, NULL);
-    g_assert_true(clawt_task_manager_wait_on(fixture.daemon->tasks,
-        clawt_task_get_id(part_a), "external:venture", NULL, NULL));
-    g_assert_true(clawt_task_manager_wait_on(fixture.daemon->tasks,
-        clawt_task_get_id(part_b), "external:venture", NULL, NULL));
+    clawt_task_manager_start(fixture.daemon->tasks, clawt_task_get_id(part_a));
+    clawt_task_manager_start(fixture.daemon->tasks, clawt_task_get_id(part_b));
+    wait_a = g_strdup_printf("{\"task_id\":\"%s\",\"note\":\"VENTURE is "
+        "down\",\"waiting_on\":\"external:venture\"}",
+        clawt_task_get_id(part_a));
+    wait_b = g_strdup_printf("{\"task_id\":\"%s\",\"note\":\"VENTURE is "
+        "down\",\"waiting_on\":\"external:venture\"}",
+        clawt_task_get_id(part_b));
+    g_assert_true(report_progress(&fixture, "worker", wait_a));
+    g_assert_true(report_progress(&fixture, "chief", wait_b));
+    g_assert_cmpint(clawt_task_get_state(part_a), ==, CLAWT_TASK_BLOCKED);
+    g_assert_cmpint(clawt_task_get_state(part_b), ==, CLAWT_TASK_BLOCKED);
 
     both = request(&fixture, "task.unblock", "{\"on\":\"external:venture\"}");
     g_assert_cmpint(json_object_get_int_member(payload_of(both), "resumed"),

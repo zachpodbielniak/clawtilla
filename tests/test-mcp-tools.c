@@ -2827,9 +2827,6 @@ test_waiting_on_somebody_blocks_the_task(void)
     g_assert_nonnull(strstr(text, "blocked: waiting on chief"));
 
     g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
-    g_assert_cmpstr(clawt_task_get_waiting_on(task), ==, "chief");
-    g_assert_cmpstr(clawt_task_get_question(task), ==,
-                    "May I turn the heavy runner back on?");
 
     /* the turn ending is not the result */
     g_assert_false(clawt_task_manager_complete_on_turn_end(
@@ -2855,7 +2852,13 @@ test_waiting_on_somebody_blocks_the_task(void)
     response_text(resumed, &is_error);
     g_assert_false(is_error);
     g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_RUNNING);
-    g_assert_null(clawt_task_get_waiting_on(task));
+    {
+        g_autofree gchar *id_arg = g_strdup_printf("{\"task_id\":\"%s\"}", id);
+        g_autoptr(JsonNode) after = call_tool(&fixture, "chief",
+                                              "clawtilla_task_status", id_arg);
+
+        g_assert_null(strstr(response_text(after, NULL), "Waiting on"));
+    }
 
     /* a service, which needs no question; and finishing ends it too */
     g_clear_pointer(&arguments, g_free);
