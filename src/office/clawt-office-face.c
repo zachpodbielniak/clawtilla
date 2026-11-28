@@ -176,6 +176,38 @@ straight_rgba(
 }
 #endif
 
+/*
+ * Width and height from the IHDR.  No allocation: cairo would build the
+ * whole surface, and a 2 MiB PNG may declare an edge cairo will accept
+ * (up to 32767) before this function can refuse it.
+ */
+static gboolean
+png_ihdr_edges(
+	const guint8 *data,
+	gsize         length,
+	gint         *width,
+	gint         *height
+){
+	guint32 w;
+	guint32 h;
+
+	if (length < 24)
+		return FALSE;
+	/* bytes 8..11 are the chunk length, 13; 12..15 are "IHDR" */
+	if (data[8] != 0 || data[9] != 0 || data[10] != 0 || data[11] != 13)
+		return FALSE;
+	if (data[12] != 'I' || data[13] != 'H' || data[14] != 'D' || data[15] != 'R')
+		return FALSE;
+	w = ((guint32)data[16] << 24) | ((guint32)data[17] << 16) |
+	    ((guint32)data[18] << 8) | (guint32)data[19];
+	h = ((guint32)data[20] << 24) | ((guint32)data[21] << 16) |
+	    ((guint32)data[22] << 8) | (guint32)data[23];
+	/* a value that does not fit in gint is past the edge cap */
+	*width = w > (guint32)G_MAXINT ? G_MAXINT : (gint)w;
+	*height = h > (guint32)G_MAXINT ? G_MAXINT : (gint)h;
+	return TRUE;
+}
+
 gboolean
 clawt_office_portrait_decode(
 	const guint8 *data,
@@ -184,18 +216,19 @@ clawt_office_portrait_decode(
 	gint         *out_size,
 	GError      **error
 ){
+	gint width = 0;
+	gint height = 0;
 #ifdef CLAWT_HAVE_POPPLER
 	PngReader reader = { NULL, 0, 0 };
 	cairo_surface_t *source;
 	cairo_surface_t *dest;
 	cairo_t *cr;
-	gint width;
-	gint height;
 	gint side = CLAWT_OFFICE_PORTRAIT_SIZE;
 	gdouble scale;
 	gdouble smaller;
 	guint8 *rgba;
 	const guint32 *pixels;
+#endif
 
 	g_return_val_if_fail(out_rgba != NULL, FALSE);
 	g_return_val_if_fail(out_size != NULL, FALSE);
@@ -213,7 +246,29 @@ clawt_office_portrait_decode(
 		            length, CLAWT_OFFICE_PORTRAIT_MAX_BYTES);
 		return FALSE;
 	}
+	if (!png_ihdr_edges(data, length, &width, &height)) {
+		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		                    "a profile picture has to be a PNG");
+		return FALSE;
+	}
+	if (width < 1 || height < 1 ||
+	    width > CLAWT_OFFICE_PORTRAIT_MAX_EDGE ||
+	    height > CLAWT_OFFICE_PORTRAIT_MAX_EDGE) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		            "the profile picture is %dx%d, over the %d pixel edge cap",
+		            width, height, CLAWT_OFFICE_PORTRAIT_MAX_EDGE);
+		return FALSE;
+	}
 
+#ifndef CLAWT_HAVE_POPPLER
+	(void)data;
+	(void)length;
+	g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+	                    "cairo PNG decode is not in this build (POPPLER=0); "
+	                    "gdk-pixbuf is not used because glycin's bwrap sandbox "
+	                    "does not run in these containers");
+	return FALSE;
+#else
 	reader.data = data;
 	reader.length = length;
 	source = cairo_image_surface_create_from_png_stream(read_png, &reader);
@@ -268,15 +323,5 @@ clawt_office_portrait_decode(
 	*out_rgba = rgba;
 	*out_size = side;
 	return TRUE;
-#else
-	(void)data;
-	(void)length;
-	g_return_val_if_fail(out_rgba != NULL, FALSE);
-	g_return_val_if_fail(out_size != NULL, FALSE);
-	g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
-	                    "cairo PNG decode is not in this build (POPPLER=0); "
-	                    "gdk-pixbuf is not used because glycin's bwrap sandbox "
-	                    "does not run in these containers");
-	return FALSE;
 #endif
 }

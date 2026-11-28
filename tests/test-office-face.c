@@ -147,6 +147,52 @@ test_decode_png(void)
     g_assert_cmpint(error->code, ==, CLAWT_ERROR_INVALID_ARGUMENT);
 }
 
+/*
+ * A PNG can name an enormous image in 24 bytes.  The refusal has to be
+ * the edge cap, read from the IHDR, and not cairo's read error: cairo
+ * would allocate the surface before this function could look at it.
+ * The CRC is wrong on purpose.  A decode that reached cairo reports
+ * "cairo" and never the declared 40000.
+ */
+static void
+test_decode_refuses_huge_ihdr(void)
+{
+    guint8 png[64];
+    g_autofree guint8 *rgba = NULL;
+    gint size = 0;
+    g_autoptr(GError) error = NULL;
+
+    memset(png, 0, sizeof(png));
+    png[0] = 137;
+    png[1] = 'P';
+    png[2] = 'N';
+    png[3] = 'G';
+    png[4] = 13;
+    png[5] = 10;
+    png[6] = 26;
+    png[7] = 10;
+    png[11] = 13;
+    png[12] = 'I';
+    png[13] = 'H';
+    png[14] = 'D';
+    png[15] = 'R';
+    /* 40000 = 0x00009C40, both edges */
+    png[18] = 0x9c;
+    png[19] = 0x40;
+    png[22] = 0x9c;
+    png[23] = 0x40;
+    png[24] = 8;
+    png[25] = 2;
+
+    g_assert_false(clawt_office_portrait_decode(png, sizeof(png), &rgba, &size, &error));
+    g_assert_null(rgba);
+    g_assert_nonnull(error);
+    g_assert_cmpint(error->code, ==, CLAWT_ERROR_INVALID_ARGUMENT);
+    g_assert_nonnull(strstr(error->message, "40000"));
+    g_assert_null(strstr(error->message, "cairo"));
+    g_assert_nonnull(strstr(error->message, "2048"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -156,6 +202,7 @@ main(int argc, char *argv[])
     g_test_add_func("/office-face/visitor-and-grok", test_visitor_and_grok);
     g_test_add_func("/office-face/picture-url", test_picture_url);
     g_test_add_func("/office-face/decode-png", test_decode_png);
+    g_test_add_func("/office-face/decode-refuses-huge-ihdr", test_decode_refuses_huge_ihdr);
 
     return g_test_run();
 }

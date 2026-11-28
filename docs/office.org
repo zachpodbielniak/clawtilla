@@ -239,7 +239,7 @@ The order, first match:
 
 In 2D the picture is a round token on the coloured body -- standing, seated and walking -- the size the head already is, so Fit keeps it legible.  In 3D it is a billboard disc above the body, in place of the plain sphere.  A pixel-art world still samples a character sheet as points; the portrait is bilinear, because a face a few pixels across turns to noise when it is not.  The name, the hover and the click are unchanged.
 
-The bytes are PNG, decoded with cairo (=cairo_image_surface_create_from_png_stream=, the =POPPLER=1= build), not gdk-pixbuf.  gdk-pixbuf hands the file to glycin, and glycin's bwrap sandbox does not run in the containers the office is tested in, so a picture decoded that way fails and the office draws a blob.  A JPEG picture is not decoded on this path and falls back to the generated face or the letter disc.
+The bytes are PNG, decoded with cairo (=cairo_image_surface_create_from_png_stream=, the =POPPLER=1= build), not gdk-pixbuf.  The IHDR width and height are refused when an edge is under 1 or over 2048, before cairo allocates a surface.  gdk-pixbuf hands the file to glycin, and glycin's bwrap sandbox does not run in the containers the office is tested in, so a picture decoded that way fails and the office draws a blob.  A JPEG picture is not decoded on this path and falls back to the generated face or the letter disc.
 
 *** Characters
 

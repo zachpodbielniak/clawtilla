@@ -150,8 +150,9 @@ gboolean clawt_office_portrait_decode_available(void);
  * A PNG as a circle-masked token.  Scaled with a bilinear filter so a
  * pixel-art portrait stays legible when the office draws it small, and
  * refused when it is not a PNG, when it is over
- * %CLAWT_OFFICE_PORTRAIT_MAX_BYTES, or when an edge is over
- * %CLAWT_OFFICE_PORTRAIT_MAX_EDGE.  JPEG is not decoded here.
+ * %CLAWT_OFFICE_PORTRAIT_MAX_BYTES, or when the IHDR width or height is
+ * under 1 or over %CLAWT_OFFICE_PORTRAIT_MAX_EDGE.  The edge is read from
+ * the header before cairo allocates a surface.  JPEG is not decoded here.
  *
  * Returns: %TRUE when @out_rgba holds the token
  */
