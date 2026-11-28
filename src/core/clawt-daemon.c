@@ -11560,6 +11560,7 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
 {
     JsonObject *frame;
     const gchar *acting = NULL;
+    const gchar *connection_agent;
     JsonNode *reply;
 
     g_return_val_if_fail(CLAWT_IS_DAEMON(self), NULL);
@@ -11578,6 +11579,29 @@ clawt_daemon_handle_request(ClawtDaemon *self, JsonNode *request)
      * Here rather than at the socket, so every door into the handler
      * attributes the same way.
      */
+    /*
+     * On an agent's own socket the connection is the agent, and that is
+     * who a save is credited to -- the frame's `acting_agent` is not
+     * read at all.  It is only a name, but a name that credits work to
+     * somebody: an agent's process could otherwise send `acting_agent:
+     * beta` and have its change notes and revisions say beta made them.
+     * A mismatching one is refused by the agent filter before this runs
+     * (daemon-agent-socket.c); this is the other half, so nothing that
+     * reaches the handler from an agent socket can be credited elsewhere.
+     * No `via`: it is the agent's own credential, not the operator's
+     * carried through the CLI.
+     */
+    connection_agent = (self->ipc_server != NULL)
+        ? clawt_ipc_server_get_current_agent(self->ipc_server) : NULL;
+
+    if (connection_agent != NULL) {
+        clawt_change_actor_push(connection_agent, NULL);
+        reply = handle_request(self, request);
+        clawt_change_actor_pop();
+
+        return reply;
+    }
+
     if (frame != NULL && json_object_has_member(frame, "acting_agent")) {
         JsonNode *node = json_object_get_member(frame, "acting_agent");
 

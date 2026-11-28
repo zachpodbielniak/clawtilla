@@ -260,6 +260,31 @@ agent_socket_filter(ClawtIpcServer  *server,
         return FALSE;
     }
 
+    /*
+     * The frame's own `acting_agent` (the CLI sets it from
+     * CLAWTILLA_AGENT_ID) names who a save is credited to.  On this
+     * socket that is the connection's agent and nobody else, for every
+     * verb -- a read included -- so one naming another agent is refused
+     * the way a payload's `agent` is.  The daemon credits the connection's
+     * agent whatever the frame says (clawt_daemon_handle_request()).
+     */
+    if (JSON_NODE_HOLDS_OBJECT(request) &&
+        json_object_has_member(json_node_get_object(request),
+                               "acting_agent")) {
+        JsonNode *named = json_object_get_member(
+            json_node_get_object(request), "acting_agent");
+
+        if (!JSON_NODE_HOLDS_VALUE(named) ||
+            json_node_get_value_type(named) != G_TYPE_STRING ||
+            g_strcmp0(json_node_get_string(named), agent_id) != 0) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_AUTH,
+                        "this socket belongs to agent '%s', and a request "
+                        "on it is credited to '%s' only: acting_agent "
+                        "cannot name another agent", agent_id, agent_id);
+            return FALSE;
+        }
+    }
+
     if (verb->scope == AGENT_VERB_BARE)
         return TRUE;
 

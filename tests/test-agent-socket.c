@@ -109,6 +109,14 @@ fixture_setup(Fixture *fixture)
                                       NULL));
     g_assert_cmpint(g_chmod(stub, 0755), ==, 0);
 
+    /*
+     * Not the runner's own agent id: ClawtClient puts CLAWTILLA_AGENT_ID
+     * in every frame as acting_agent, and a suite run from inside an
+     * agent's shell would otherwise be refused as that agent on alpha's
+     * socket.  The test that wants it sets it itself.
+     */
+    g_unsetenv("CLAWTILLA_AGENT_ID");
+
     fixture->saved_path = g_strdup(g_getenv("PATH"));
     path = g_strdup_printf("%s:%s", fixture->bin,
                            fixture->saved_path != NULL ? fixture->saved_path
@@ -710,6 +718,73 @@ test_one_agent_cannot_act_as_another(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * The frame's `acting_agent` (the CLI sets it from CLAWTILLA_AGENT_ID)
+ * says who a save is credited to.  On alpha's socket a frame naming beta
+ * is refused before anything runs -- a read and an act alike -- so it is
+ * never credited to beta; naming alpha, or nobody, is served.  On the
+ * head before this, the frame was served and the daemon credited beta.
+ */
+static void
+test_acting_agent_is_the_connection(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *own = NULL;
+    g_autofree gchar *token = NULL;
+    g_autofree gchar *call = NULL;
+    g_autofree gchar *saved = g_strdup(g_getenv("CLAWTILLA_AGENT_ID"));
+    g_autoptr(ClawtClient) client = NULL;
+
+    fixture_setup(&fixture);
+    start_fleet(&fixture);
+
+    own = agent_socket(&fixture, "alpha");
+    token = agent_token(&fixture, "alpha");
+    client = connect_to(own);
+    call = g_strdup_printf(
+        "{\"token\":\"%s\",\"request\":"
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}}",
+        token);
+
+    /* As a CLI run with beta's id in its environment would send it. */
+    g_setenv("CLAWTILLA_AGENT_ID", "beta", TRUE);
+
+    {
+        g_autoptr(GError) error = NULL;
+        g_autoptr(JsonNode) reply = ask(client, "agent.list", NULL, &error);
+
+        g_assert_null(reply);
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_AUTH);
+        g_assert_nonnull(strstr(error->message, "acting_agent"));
+    }
+
+    {
+        g_autoptr(GError) error = NULL;
+        g_autoptr(JsonNode) reply = ask(client, "tool.rpc", call, &error);
+
+        g_assert_null(reply);
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_AUTH);
+    }
+
+    /* Naming the connection's own agent is served. */
+    g_setenv("CLAWTILLA_AGENT_ID", "alpha", TRUE);
+
+    {
+        g_autoptr(GError) error = NULL;
+        g_autoptr(JsonNode) reply = ask(client, "tool.rpc", call, &error);
+
+        g_assert_no_error(error);
+        g_assert_nonnull(reply);
+    }
+
+    if (saved != NULL)
+        g_setenv("CLAWTILLA_AGENT_ID", saved, TRUE);
+    else
+        g_unsetenv("CLAWTILLA_AGENT_ID");
+
+    fixture_teardown(&fixture);
+}
+
 /* ── The socket itself ───────────────────────────────────────────── */
 
 /*
@@ -805,6 +880,8 @@ main(int argc, char *argv[])
                     test_rendered_clients_dial_the_agent_socket);
     g_test_add_func("/agent-socket/one-agent-cannot-act-as-another",
                     test_one_agent_cannot_act_as_another);
+    g_test_add_func("/agent-socket/acting-agent-is-the-connection",
+                    test_acting_agent_is_the_connection);
     g_test_add_func("/agent-socket/lifecycle", test_socket_lifecycle);
 
     return g_test_run();
