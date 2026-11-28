@@ -98,7 +98,7 @@ Same protocol on the unix socket (`daemon.socket`, default `$XDG_RUNTIME_DIR/cla
 |---|---|
 | `control.status` | -> `version`, `commit`, `config`, `agents`, `connected`, `clients`, `cursor`, `hold` |
 | `control.reload`, `control.pause`/`control.resume` (`agent`), `control.shutdown` | reload answers `refused`; pause/resume answer `hold` (`held`, `draining`, ...) |
-| `agent.list`, `agent.show` (`agent`), `agent.start`/`stop`/`restart`/`interrupt`/`reset` | lifecycle |
+| `agent.list`, `agent.show` (`agent`), `agent.start`/`stop`/`restart`/`interrupt`/`reset` | lifecycle; each agent carries `activity` (`working`, `waiting` or `idle` -- a turn beats a pending wait beats nothing), `waits_pending`, and while one is pending `wait_label` (newest wait's `job`, else label) and `waiting_since` (Unix s) (0.78.0; event `agent.activity`; CLI `clawtilla agent list [--json]`) |
 | `agent.set` (`agent`, `key`, `value`) | `refused`, `restart_required`, `shadow` |
 | `msg.send` (`target`, `body`, `from`) | `queued`, `target_state` |
 | `room.list`, `room.history`, `room.steps`, `room.read` | rooms and transcripts |

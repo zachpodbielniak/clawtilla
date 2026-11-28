@@ -65,6 +65,7 @@ Each participant has one activity, chosen by priority: the loud ones win.
 | =delivering= | it just handed work over (a task assigned, a handoff queued) | beside the assignee's desk with a folder |
 | =working= | a turn is running and it used a tool in the last 45 seconds | the tool's station, see below |
 | =thinking= | a turn is running with no tool in hand | at its desk |
+| =working= (desk) | no turn, but a clawtilla wait it set is pending: its build or deploy is running and it is waiting to be told (since 0.78.0; =clawt_board_agent_activity()=, the rule ~agent.list~'s ~activity~ answers with) | at its desk |
 | =arriving= | an ephemeral helper spawned in the last 15 seconds | at the entrance |
 | =leaving= | an ephemeral helper being reaped | walking out through the entrance |
 | =idle= | running, nothing to do | the lounge |

@@ -108,7 +108,8 @@ projects:
 - Quiet (not "stalled", which is a state): running, no wait pending, every unfinished child running, nothing heard (progress, phase, streamed step, state change) for `orchestration.board_quiet_minutes` (20; 0 off). Cards carry `quiet_at` for client-side timers.
 - Timeline per card/chip: state spans from the journal (a row per state change since 0.35.0), else from created/started/finished stamps (`source: stamps`); phase spans from the task's phase history (0.78.0 on).
 - Totals: `listed` (= `task.list {agent}`) = `cards` + `hidden` + `nested` − `from_history`.
-- No daemon polling: clients re-ask on `task.changed`, `task.noted`, `agent.state`, `mailbox.*`, `decision.*`, `wait.changed`; patch steps from `turn.step`.
+- No daemon polling: clients re-ask on `task.changed`, `task.noted`, `agent.state`, `mailbox.*`, `decision.*`, `wait.changed`, `agent.activity`; patch steps from `turn.step`.
+- Waiting, not idle (0.78.0): an agent with a pending wait and no turn is `activity: waiting` on `agent.list` and the board's header/lanes, with `wait_label` and `waiting_since`. Give `clawtilla_wait_until` a `job` ("gate g39 in clawt-oxpecker") and that is what the Fleet shows instead of the label.
 - `clawtilla task board --agent A [--team T] [--window today|6h|7d] [--no-timeline] [--json]`; text = `clawt_board_render_text()` over the same JSON.
 
 ## Task CLI summary

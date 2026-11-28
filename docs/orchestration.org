@@ -2112,7 +2112,7 @@ Every client draws a note as one compact row with the kind's icon (=clawt_change
 
 | Tool | What it does |
 |------+--------------|
-| ~clawtilla_wait_until~ | set one: a label in the operator's words, a ~kind~, its condition, ~hours~ (default 24, at most 168) and an optional ~note~ to itself |
+| ~clawtilla_wait_until~ | set one: a label in the operator's words, a ~kind~, its condition, ~hours~ (default 24, at most 168), an optional ~note~ to itself and an optional ~job~ -- the background job it waits on, in a few words (=gate g39 in clawt-oxpecker=), which the Fleet shows instead of the label |
 | ~clawtilla_wait_list~ | the agent's own pending waits: condition, last check and what it saw, next check, expiry |
 | ~clawtilla_wait_cancel~ | stop one of its own; no notice, since it knows |
 
@@ -2162,6 +2162,8 @@ The tick that decides which waits are due runs every five seconds on the daemon'
 *** Where they appear
 
 Every client's agent view has a *Waiting for* list: each wait's label, its condition, ~checked 4m ago · next check in 1m · expires in 23h~ (one line, built by ~clawt_wait_schedule_label()~ so the three clients cannot word it three ways), what the last check saw, and a *Cancel* button.  It refills on ~wait.changed~, which is published when a wait is set, ends, or is looked at with something new to show -- not on every look, or a file wait would publish four events a minute saying "still not there".  The limit is editable in the agent's settings with the other fleet settings an agent may override.  The frames are ~wait.list~ and ~wait.cancel~ in [[file:ipc-protocol.org][ipc-protocol.org]].
+
+An agent with a wait pending and no turn running is *waiting*, not idle (since 0.78.0): ~agent.list~ carries ~activity~ (~working~, ~waiting~ or ~idle~), ~waits_pending~, ~wait_label~ -- the newest wait's ~job~, else its label -- and ~waiting_since~, and ~agent.activity~ is published when any of them changes, so the Fleet row of a lead whose gate is running in its computer says ~waiting: gate g39 in clawt-oxpecker (12m)~ instead of nothing.  A running turn still beats a wait.  ~clawtilla agent list~ prints the same line, the agent board's header and lanes carry the same members, and the office seats a waiting agent at its desk working.  See "What an agent is doing, with its waits" in [[file:ipc-protocol.org][ipc-protocol.org]].
 
 ** The decision inbox
 

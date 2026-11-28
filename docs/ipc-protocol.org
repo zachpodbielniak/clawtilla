@@ -487,6 +487,27 @@ None of these three reach ~clawtilla_list_agents~.  An agent's own
 ~bash~ runs on the daemon's host whatever computer it has, so a
 sibling's pid there is a signal number away from being an action.
 
+**** What an agent is doing, with its waits (since 0.78.0)
+
+An agent that starts a long build in its computer, sets ~clawtilla_wait_until~ on a file the build writes and ends its turn is not idle: it is waiting to be told.  Every agent in ~agent.list~ and ~agent.show~ carries what that comes to, beside ~state~ and ~busy~:
+
+| Member | Type | Present | Meaning |
+|--------+------+---------+---------|
+| ~activity~ | string | always | ~working~, ~waiting~ or ~idle~ (the =ClawtAgentActivity= nickname) |
+| ~waits_pending~ | int | always | how many clawtilla waits it has pending |
+| ~wait_label~ | string | while ~waits_pending~ > 0 | what the *newest* pending wait waits for: its ~job~ when the agent gave one, else its ~label~ |
+| ~waiting_since~ | int | while ~waits_pending~ > 0 | Unix seconds (UTC): when the *oldest* pending wait was set -- since then the agent has had a wait pending without a break |
+
+~activity~ is =clawt_board_agent_activity()= of ~busy~ and ~waits_pending~, the one rule every surface asks: a running turn is ~working~ whatever is pending; otherwise one or more pending waits is ~waiting~; otherwise ~idle~.  ~wait_label~ and ~waiting_since~ ride whenever a wait is pending, also while it works, so a client can say "working, and waiting on a build"; they are absent with nothing pending.
+
+It is a member of its own rather than a new ~state~, for the reason ~held~ is: ~state~ is the process's, a =ClawtAgentState= nickname every client parses as one -- the libregnum client refuses an unknown nickname outright, and the Stop button is decided on it -- so ~state: waiting~ would have broken both.  ~activity~ does not read the run state either: a stopped agent's waits are still looked at and its notice waits in its mailbox, so a stopped agent with a wait pending is ~waiting~.  A Fleet row shows ~state~ first and ~activity~ for a running agent.
+
+A row writes a waiting agent with =clawt_board_waiting_label()=: ~waiting: gate g39 in clawt-oxpecker (12m)~, the age from ~waiting_since~ at render time.
+
+*~agent.activity~* (subject the agent; detail ~agent~, ~activity~, ~waits_pending~, and while one is pending ~wait_label~ and ~waiting_since~, all strings on the wire) is published when any of those would change: a wait set, held, failed, expired or cancelled (by the agent or over ~wait.cancel~); a turn's agent edge, rising or falling; a turn the daemon ends itself (an interrupt, the grace after one); a run-state change; and once per agent holding a wait a previous daemon left, at start.  A look at a wait that changed nothing a row shows publishes nothing, and there is no timer: a client moves the row from the event's detail, or asks ~agent.list~ again.
+
+~clawtilla_list_agents~, the agents' own listing, is unchanged.
+
 ~agent.reorder~ takes ~agents~, the ids comma separated in the order
 wanted, and numbers them in tens.  An id it does not know is skipped
 rather than refused: the list comes from a client's view, which may be a
@@ -1317,13 +1338,13 @@ Errors: neither ~agent~ nor ~team~, a ~team~ with no lead and no ~agent~, or a b
 
 *~timeline~*: ~source~ is ~journal~ (the task's journal rows, a row per state change) or ~stamps~ (an older task without one: created, first started, finished).  ~states~ is an array of ~{state, from, to}~ and ~phases~ of ~{phase, from, to}~, oldest first; the last span of each has no ~to~ -- still open, or the state the task ended in.
 
-*The header*: ~agent~, ~name~, ~state~ (the =ClawtAgentState= nickname, or =unknown=), ~team~, ~step~ (~{text, tool, at}~: the running turn's latest step, absent between turns), ~busy_since~ (the running turn's start), ~idle~ (0 in a turn; else seconds since its last streamed step; absent when none was seen), ~mailbox~ (depth), ~current_task~ (~{id, title}~: its running turn's task, else its most recently active running task) and ~counts~ (per column, plus ~in_flight~ = planning + delegated + gating and ~in_review~ = review).
+*The header*: ~agent~, ~name~, ~state~ (the =ClawtAgentState= nickname, or =unknown=), ~team~, ~activity~, ~waits_pending~, ~wait_label~ and ~waiting_since~ (as on ~agent.list~, since 0.78.0, with "in a turn" read as ~busy_since~ being present), ~step~ (~{text, tool, at}~: the running turn's latest step, absent between turns), ~busy_since~ (the running turn's start), ~idle~ (0 in a turn; else seconds since its last streamed step; absent when none was seen), ~mailbox~ (depth), ~current_task~ (~{id, title}~: its running turn's task, else its most recently active running task) and ~counts~ (per column, plus ~in_flight~ = planning + delegated + gating and ~in_review~ = review).
 
-*A lane*: ~agent~, ~role~ (~member~ of the team, or a ~worker~ a chip names from outside it), the header's live members (~name~, ~state~, ~team~, ~step~, ~busy_since~, ~idle~, ~mailbox~, ~current_task~) and ~queue~: ~{queued, running, review, mailbox}~ -- its pending and held tasks, running ones, its results in review, and its mailbox depth.  Lanes are the team's members, then the chip workers not on it, never the board's own agent.
+*A lane*: ~agent~, ~role~ (~member~ of the team, or a ~worker~ a chip names from outside it), the header's live members (~name~, ~state~, ~team~, ~activity~, ~waits_pending~, ~wait_label~, ~waiting_since~, ~step~, ~busy_since~, ~idle~, ~mailbox~, ~current_task~) and ~queue~: ~{queued, running, review, mailbox}~ -- its pending and held tasks, running ones, its results in review, and its mailbox depth.  Lanes are the team's members, then the chip workers not on it, never the board's own agent.
 
 *~totals~*: ~listed~ is what ~task.list {agent}~ returns for the agent; ~listed~ = ~cards~ + ~hidden~ + ~nested~ − ~from_history~.
 
-*Live updates.*  No subscription of its own and no polling in the daemon: ask ~task.board~ again, debounced, on ~task.changed~, ~task.noted~, ~agent.state~, ~mailbox.queued~, ~mailbox.delivered~, ~decision.asked~, ~decision.settled~, ~decision.deleted~ and ~wait.changed~.  ~turn.step~ (subject the agent) may patch ~header.step~ or a lane's ~step~ in place: ~text~ there is what =clawt_turn_step_summary()= makes of the step.  Quiet changes with time alone: re-ask, or flip the card locally, at its ~quiet_at~.
+*Live updates.*  No subscription of its own and no polling in the daemon: ask ~task.board~ again, debounced, on ~task.changed~, ~task.noted~, ~agent.state~, ~mailbox.queued~, ~mailbox.delivered~, ~decision.asked~, ~decision.settled~, ~decision.deleted~, ~wait.changed~ and ~agent.activity~.  ~turn.step~ (subject the agent) may patch ~header.step~ or a lane's ~step~ in place: ~text~ there is what =clawt_turn_step_summary()= makes of the step.  Quiet changes with time alone: re-ask, or flip the card locally, at its ~quiet_at~.
 
 *~phase~ on the agent tools.*  ~clawtilla_task_progress~ and ~clawtilla_task_complete~ take an optional ~phase~ (since 0.78.0): ~planning~, ~delegated~, ~reviewing~, ~gating~, ~landing~ or ~blocked~.  Anything else refuses the call with the six listed and records nothing.  It rides the existing ~tool.rpc~ path; no agent-side verb was added.  A task object in ~task.list~ and ~task.show~ is unchanged; the phase is read from ~task.board~.
 
@@ -2065,7 +2086,7 @@ event for a task it is showing.
 
 Conditions an agent asked to be told about with ~clawtilla_wait_until~, checked by the daemon rather than by the model.  See [[file:orchestration.org::*Waits: a condition checked by code][orchestration.org]].
 
-~wait.list~ takes an optional ~agent~ and returns ~{"waits": [...]}~, the pending ones only, oldest first.  Each carries ~id~, ~agent~, ~room~ (where its notice goes), ~label~ (the agent's words), ~note~ when there is one, ~kind~ (~url~, ~file~, ~task~, ~computer~ or ~command~), ~condition~ (the daemon's phrase for it, so a client does not rebuild one per kind), ~state~ (always ~pending~ here), ~created_at~, ~last_check_at~ (0 before the first look), ~next_check_at~ and ~expires_at~ in microseconds since the epoch, ~checks~, ~failures~ (looks in a row that went unanswered, which is what the backoff counts) and ~last_result~ when a look has seen something.  A client draws the schedule with ~clawt_wait_schedule_label()~ from the three timestamps, at render time.
+~wait.list~ takes an optional ~agent~ and returns ~{"waits": [...]}~, the pending ones only, oldest first.  Each carries ~id~, ~agent~, ~room~ (where its notice goes), ~label~ (the agent's words), ~note~ when there is one, ~job~ when the agent named the background job it waits on (since 0.78.0; what a row about the agent shows instead of the label), ~kind~ (~url~, ~file~, ~task~, ~computer~ or ~command~), ~condition~ (the daemon's phrase for it, so a client does not rebuild one per kind), ~state~ (always ~pending~ here), ~created_at~, ~last_check_at~ (0 before the first look), ~next_check_at~ and ~expires_at~ in microseconds since the epoch, ~checks~, ~failures~ (looks in a row that went unanswered, which is what the backoff counts) and ~last_result~ when a look has seen something.  A client draws the schedule with ~clawt_wait_schedule_label()~ from the three timestamps, at render time.
 
 ~wait.cancel~ takes ~wait~ (the id) and ends it as the operator: any agent's wait, and the agent is sent a notice saying so, because it would otherwise go on believing it was waiting.  The reply is ~{"cancelled": "<id>"}~; an id that is not pending is ~NOT_FOUND~.
 
@@ -2610,6 +2631,7 @@ Every kind published, by subject:
 | an agent | ~decision.asked~ (~decision~, ~room~), ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~, ~defaulted~ or ~deleted~, ~room~, ~answer~, ~via~), ~decision.deleted~ (~decision~, ~room~) |
 | a routine | ~routine.ran~, ~routine.changed~, ~routine.turned_off~ (~agent~, ~failures~, ~error~) |
 | an agent | ~wait.changed~ (~wait~, ~state~) |
+| an agent | ~agent.activity~ (~agent~, ~activity~, ~waits_pending~, ~wait_label~, ~waiting_since~): working, waiting on a wait it set, or idle (since 0.78.0) |
 | an agent | ~steps.changed~, ~steps.replayed~ (~name~, ~ok~, ~done~, ~steps~, ~error~) |
 | an agent | ~turn.no_reply~ (~room~, ~seconds~, ~choices~), ~turn.no_reply_cleared~ (~room~) |
 | the daemon | ~sentinel.finished~ (~ok~, ~error~) |
