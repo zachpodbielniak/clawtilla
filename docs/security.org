@@ -312,12 +312,21 @@ the daemon runs no further check on who is calling -- so "0600, in a 0700
 directory, owned by you" is the entire statement, and anything that can
 open the path is a client.
 
-Which is a reason to reach for ~confine: bwrap~ on a host agent, since an
-agent that can open ~daemon.sock~ can reconfigure the fleet it belongs
-to.  bwrap builds its filesystem from nothing -- ~/usr~ and ~/etc~
-read-only, a tmpfs ~/tmp~, the agent's root and its ~allow_paths~ -- so
-~$XDG_RUNTIME_DIR~ is simply not there.  The other three modes leave it
-exactly where it is.
+An agent that can open ~daemon.sock~ can therefore reconfigure the fleet
+it belongs to, and ~confine: bwrap~ does not take that away.  bwrap
+builds its filesystem from nothing -- ~/usr~ and ~/etc~ read-only, a
+tmpfs ~/tmp~, the agent's root and its ~allow_paths~ -- so the rest of
+~$XDG_RUNTIME_DIR~ is not there, but the IPC socket file itself is
+bound in (the table under *bwrap*, below; =clawt_agent_confine_build()=
+grants every socket it is given), because the agent's
+~clawtilla-mcp-server~ reaches the daemon through it.  So a confined
+agent's processes can send any IPC verb a client can: ~trigger.add~,
+~agent.set~, ~config~ changes.  What an agent is *offered* is narrowed
+by the tool gate; what its processes *can do* is not, since no verb asks
+who is calling.  The other three modes leave the socket exactly where it
+is.  A real boundary needs the daemon to tell an agent's connection from
+the operator's -- a per-agent socket, or ~SO_PEERCRED~ with the agent's
+sandbox -- and to refuse operator verbs on the first.
 
 A stale socket from an unclean shutdown is removed only after checking
 nothing is listening on it.  Unlinking a live socket would leave the

@@ -11150,6 +11150,56 @@ test_venture_health_is_an_event(void)
 }
 
 /*
+ * What clawtilla_trigger_list tells an agent about making a trigger is what
+ * the daemon does.  trigger.add takes no caller identity: the control
+ * socket trusts whoever can open it, which is the operator's CLI and also
+ * a process inside an agent's sandbox.  So the tool may not say only the
+ * operator can make one -- an agent read "You cannot create one" and
+ * passed the job to a person who did not need to do it.  It names the
+ * command, and asks for a trigger to be made only when asked for.
+ */
+static void
+test_the_trigger_tool_says_what_trigger_add_does(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) added = NULL;
+    g_autoptr(JsonNode) listing = NULL;
+    JsonArray *tools;
+    const gchar *description = NULL;
+    guint i;
+
+    fixture_setup(&fixture, "agents:\n  - id: builder\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    /* the frame an agent's MCP server would send, carrying nobody */
+    added = request(&fixture, "trigger.add",
+                    "{\"id\": \"ci\", \"agent\": \"builder\","
+                    " \"instructions\": \"Go\"}");
+    g_assert_false(clawt_ipc_frame_is_error(added));
+
+    listing = clawt_mcp_tools_list(fixture.daemon->mcp_tools, "builder");
+    tools = json_object_get_array_member(json_node_get_object(listing),
+                                         "tools");
+    for (i = 0; i < json_array_get_length(tools); i++) {
+        JsonObject *tool = json_array_get_object_element(tools, i);
+
+        if (g_strcmp0(json_object_get_string_member(tool, "name"),
+                      "clawtilla_trigger_list") == 0)
+            description = json_object_get_string_member(tool,
+                                                        "description");
+    }
+
+    g_assert_nonnull(description);
+    g_assert_null(strstr(description, "cannot create"));
+    g_assert_null(strstr(description, "only they"));
+    g_assert_nonnull(strstr(description, "clawtilla trigger add"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A fallback list is checked where it arrives.  Another sign-in to the
  * agent's own subscription is refused with the reason and nothing is
  * written; a provider change that would make the current list such a
@@ -13871,6 +13921,8 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/usage/fleet-page-summary",
                     test_usage_summary_for_the_fleet_page);
+    g_test_add_func("/daemon/trigger/tool-says-what-trigger-add-does",
+                    test_the_trigger_tool_says_what_trigger_add_does);
     g_test_add_func("/daemon/venture/health-is-an-event",
                     test_venture_health_is_an_event);
     g_test_add_func("/daemon/task/waiting-on-asks-and-is-unblocked",

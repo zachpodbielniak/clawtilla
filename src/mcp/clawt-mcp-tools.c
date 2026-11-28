@@ -1413,8 +1413,11 @@ static const ToolDefinition tools[] = {
          "The triggers that can wake you: what event each waits for, from "
          "which forge and which repository. Read this when a run arrives "
          "that nobody asked you for -- it is how you find out what started "
-         "it. You cannot create one: a trigger is a public address on the "
-         "operator's network, so only they make them.",
+         "it. No tool here creates one. A trigger is made with `clawtilla "
+         "trigger add` on the daemon's machine (`clawtilla trigger --help`), "
+         "which anybody who can run clawtilla there may do; it opens a "
+         "public address on the operator's network, so make one only when "
+         "you were asked to, and say that you did.",
          NEEDS_NOTHING, no_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_task_list",

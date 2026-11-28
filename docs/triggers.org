@@ -1092,6 +1092,19 @@ An agent with none is told so in words, because "no triggers exist" and
 agent reading the first as the second goes looking for a configuration
 problem that is not there.
 
+** Who can make one
+
+~trigger.add~ is an IPC verb, and the control socket trusts whoever can
+open it ([[file:security.org][security.org]], "Anything with the socket
+has the fleet").  So a trigger is made by whoever can run ~clawtilla
+trigger add~ on the daemon's machine: the operator, and also any agent
+whose processes can reach ~daemon.sock~ -- which includes a ~confine:
+bwrap~ agent, since its MCP server uses that socket.  No agent tool
+creates one, and ~clawtilla_trigger_list~ says so in those words rather
+than "only the operator can", which was not true.  A new trigger starts
+switched off, and is switched on only after its first authenticated
+delivery.
+
 ** Reacting to a trigger
 
 | Event | When |
